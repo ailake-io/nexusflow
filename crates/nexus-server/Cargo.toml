@@ -1,0 +1,16 @@
+[package]
+name = "nexus-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+axum = "0.8.9"
+nexus-core = { version = "0.1.0", path = "../nexus-core" }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[dev-dependencies]
+tower = { version = "0.5.3", features = ["util"] }
