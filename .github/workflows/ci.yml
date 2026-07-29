@@ -38,4 +38,27 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace --all-features
+
+      # nexus-connector-postgres needs the real ADBC PostgreSQL driver at test
+      # runtime (it's a C++/libpq implementation, not a crates.io package —
+      # see scripts/build-adbc-postgresql-driver.sh). Integration tests also
+      # need a live Postgres via testcontainers, which GitHub-hosted runners
+      # can do out of the box (Docker daemon is preinstalled).
+      - name: Install native build deps for the ADBC PostgreSQL driver
+        run: sudo apt-get update && sudo apt-get install -y cmake pkg-config libpq-dev libfmt-dev
+
+      - name: Cache built ADBC driver
+        id: adbc-cache
+        uses: actions/cache@v4
+        with:
+          path: target/adbc
+          key: adbc-postgresql-driver-${{ runner.os }}-${{ hashFiles('scripts/build-adbc-postgresql-driver.sh') }}
+
+      - name: Build ADBC PostgreSQL driver
+        if: steps.adbc-cache.outputs.cache-hit != 'true'
+        run: ./scripts/build-adbc-postgresql-driver.sh
+
+      - name: Run tests
+        env:
+          ADBC_DRIVER_POSTGRESQL_PATH: ${{ github.workspace }}/target/adbc/libadbc_driver_postgresql.so
+        run: cargo test --workspace --all-features

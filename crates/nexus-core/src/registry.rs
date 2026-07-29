@@ -1,5 +1,9 @@
 use crate::traits::ConnectorCapability;
 
+// Re-exported so downstream connector crates don't need their own direct
+// `inventory` dependency just to call `submit_connector!`.
+pub use inventory;
+
 /// Metadata a connector crate publishes about itself. Each connector crate calls
 /// `nexus_core::registry::submit_connector!(...)` in its own lib.rs — nexus-server
 /// never hardcodes a connector list, it just iterates the registry.
@@ -14,7 +18,7 @@ inventory::collect!(ConnectorDescriptor);
 #[macro_export]
 macro_rules! submit_connector {
     ($name:expr, $capability:expr) => {
-        ::inventory::submit! {
+        $crate::registry::inventory::submit! {
             $crate::registry::ConnectorDescriptor {
                 name: $name,
                 capability: $capability,

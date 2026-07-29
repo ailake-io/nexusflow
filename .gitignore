@@ -1,1 +1,8 @@
 /target
+
+# nexus-connectors is a nested workspace (crate-per-connector, see
+# ARCHITECTURE.md §3); the root Cargo.lock is authoritative for actual
+# builds, this one is only a byproduct of running cargo directly inside a
+# connector crate's directory.
+crates/nexus-connectors/Cargo.lock
+crates/nexus-connectors/target
