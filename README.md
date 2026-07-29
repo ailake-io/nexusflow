@@ -19,6 +19,7 @@ Detalhes completos de stack, arquitetura e regras de código: ver [`CLAUDE.md`](
 | [`CLAUDE.md`](./CLAUDE.md) | Visão geral, stack, estrutura de diretórios, regras de código pro assistente AI |
 | [`ARCHITECTURE.md`](./ARCHITECTURE.md) | Arquitetura técnica detalhada: roteador de conectores, streaming/backpressure, checkpointing, pipeline de embeddings |
 | [`ROADMAP.md`](./ROADMAP.md) | Fases de desenvolvimento, milestones, critérios de conclusão do MVP |
+| [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md) | Detalhamento de engenharia marco a marco: crates/arquivos concretos, ordem de execução, critério de "pronto" |
 | [`CONTRIBUTING.md`](./CONTRIBUTING.md) | Como contribuir, convenções de código, processo de PR |
 | [`LICENSING.md`](./LICENSING.md) | Modelo open-core: o que é OSS vs. o que é pago |
 | [`LICENSE`](./LICENSE) | Apache License 2.0 (community edition) |

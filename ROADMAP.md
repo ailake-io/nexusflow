@@ -2,6 +2,8 @@
 
 Ordem por dependência técnica, não por prioridade de negócio isolada. Cada fase assume a anterior estável.
 
+> Detalhamento de engenharia (arquivos/crates concretos, critério de "pronto" por marco): ver [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md).
+
 ## Fase 0 — Fundação (workspace)
 - [ ] `Cargo.toml` workspace + crates vazios: `nexus-core`, `nexus-ai`, `nexus-server`, e `crates/nexus-connectors/` já como workspace de sub-crates (não crate único) — ver `CLAUDE.md §3` e `ARCHITECTURE.md §3`
 - [ ] Traits base (`Source`, `Sink`, `Transform`) em `nexus-core`
