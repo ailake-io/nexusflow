@@ -1,5 +1,6 @@
 use crate::config::PostgresConnectorConfig;
 use crate::driver::open_connection;
+use crate::identifier::quote_identifier;
 use adbc_core::{Connection as _, Statement as _};
 use adbc_driver_manager::ManagedConnection;
 use arrow_array::RecordBatch;
@@ -60,6 +61,11 @@ impl PostgresSource {
         cfg: &PostgresConnectorConfig,
         range: PartitionRange,
     ) -> Result<Self, NexusError> {
+        // Fail fast on a malformed table/primary_key before opening any
+        // connection — see identifier.rs for why this can't be a bind param.
+        quote_identifier(&cfg.table)?;
+        quote_identifier(&cfg.primary_key)?;
+
         let connection = open_connection(&cfg.uri)?;
         let schema = connection
             .get_table_schema(None, None, &cfg.table)
@@ -74,15 +80,23 @@ impl PostgresSource {
         })
     }
 
-    fn build_query(&self) -> String {
+    fn build_query(&self) -> Result<String, NexusError> {
         build_select_query(&self.table, &self.primary_key, self.range)
     }
 }
 
 /// Pure query-string builder, kept free of any connection state so it's
-/// testable without a live driver (`CLAUDE.md §8.6`).
-fn build_select_query(table: &str, primary_key: &str, range: PartitionRange) -> String {
-    match range.upper_exclusive {
+/// testable without a live driver (`CLAUDE.md §8.6`). `table`/`primary_key`
+/// are validated and quoted here — this is the only place that's allowed to
+/// splice them into SQL text.
+fn build_select_query(
+    table: &str,
+    primary_key: &str,
+    range: PartitionRange,
+) -> Result<String, NexusError> {
+    let table = quote_identifier(table)?;
+    let primary_key = quote_identifier(primary_key)?;
+    Ok(match range.upper_exclusive {
         Some(upper) => format!(
             "SELECT * FROM {table} WHERE {primary_key} >= {} AND {primary_key} < {upper}",
             range.lower_inclusive
@@ -91,7 +105,7 @@ fn build_select_query(table: &str, primary_key: &str, range: PartitionRange) -> 
             "SELECT * FROM {table} WHERE {primary_key} >= {}",
             range.lower_inclusive
         ),
-    }
+    })
 }
 
 #[async_trait]
@@ -99,7 +113,7 @@ impl Source for PostgresSource {
     async fn read_batches(
         &mut self,
     ) -> Result<BoxStream<'_, Result<RecordBatch, NexusError>>, NexusError> {
-        let query = self.build_query();
+        let query = self.build_query()?;
         let mut connection = self.connection.clone();
 
         // ADBC calls are blocking FFI (libpq under the hood); run off the
@@ -144,8 +158,12 @@ mod tests {
                 lower_inclusive: 0,
                 upper_exclusive: Some(1000),
             },
+        )
+        .unwrap();
+        assert_eq!(
+            query,
+            "SELECT * FROM \"events\" WHERE \"id\" >= 0 AND \"id\" < 1000"
         );
-        assert_eq!(query, "SELECT * FROM events WHERE id >= 0 AND id < 1000");
     }
 
     #[test]
@@ -157,8 +175,23 @@ mod tests {
                 lower_inclusive: 9000,
                 upper_exclusive: None,
             },
-        );
-        assert_eq!(query, "SELECT * FROM events WHERE id >= 9000");
+        )
+        .unwrap();
+        assert_eq!(query, "SELECT * FROM \"events\" WHERE \"id\" >= 9000");
+    }
+
+    #[test]
+    fn build_query_rejects_sql_injection_in_table_name() {
+        let err = build_select_query(
+            "events; DROP TABLE users; --",
+            "id",
+            PartitionRange {
+                lower_inclusive: 0,
+                upper_exclusive: None,
+            },
+        )
+        .expect_err("malicious table name must be rejected");
+        assert!(matches!(err, NexusError::Schema(_)));
     }
 
     #[test]

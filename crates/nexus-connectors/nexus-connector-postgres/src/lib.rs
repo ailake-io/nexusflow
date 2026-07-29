@@ -8,6 +8,7 @@
 
 mod config;
 mod driver;
+mod identifier;
 mod introspect;
 mod sink;
 mod source;

@@ -1,5 +1,6 @@
 use crate::config::PostgresConnectorConfig;
 use crate::driver::open_connection;
+use crate::identifier::quote_identifier;
 use adbc_core::{Connection as _, Statement as _};
 use adbc_driver_manager::ManagedConnection;
 use arrow_array::RecordBatch;
@@ -16,7 +17,7 @@ impl PostgresSink {
     /// `write_batch` — ADBC binds parameters positionally.
     pub fn connect(cfg: &PostgresConnectorConfig, columns: &[String]) -> Result<Self, NexusError> {
         let connection = open_connection(&cfg.uri)?;
-        let upsert_sql = build_upsert_sql(&cfg.table, &cfg.primary_key, columns);
+        let upsert_sql = build_upsert_sql(&cfg.table, &cfg.primary_key, columns)?;
         Ok(Self {
             connection,
             upsert_sql,
@@ -27,20 +28,40 @@ impl PostgresSink {
 /// `INSERT ... ON CONFLICT (pk) DO UPDATE` — the idempotency contract every
 /// Sink must satisfy (ARCHITECTURE.md §5: checkpointing guarantees
 /// at-least-once, so retried batches must not duplicate rows).
-fn build_upsert_sql(table: &str, primary_key: &str, columns: &[String]) -> String {
-    let placeholders: Vec<String> = (1..=columns.len()).map(|i| format!("${i}")).collect();
+///
+/// `table`, `primary_key` and every entry in `columns` come from the pipeline
+/// spec (attacker-controlled request body) and get spliced into SQL text —
+/// ADBC's `bind` only covers row *values*, not identifiers. Every one of them
+/// is validated and quoted via `quote_identifier` before that happens; this
+/// is the only place allowed to build the upsert SQL.
+fn build_upsert_sql(
+    table: &str,
+    primary_key: &str,
+    columns: &[String],
+) -> Result<String, NexusError> {
+    let quoted_table = quote_identifier(table)?;
+    let quoted_primary_key = quote_identifier(primary_key)?;
+    let quoted_columns = columns
+        .iter()
+        .map(|c| quote_identifier(c))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let placeholders: Vec<String> = (1..=quoted_columns.len())
+        .map(|i| format!("${i}"))
+        .collect();
     let updates: Vec<String> = columns
         .iter()
-        .filter(|c| c.as_str() != primary_key)
-        .map(|c| format!("{c} = EXCLUDED.{c}"))
+        .zip(quoted_columns.iter())
+        .filter(|(raw, _)| raw.as_str() != primary_key)
+        .map(|(_, quoted)| format!("{quoted} = EXCLUDED.{quoted}"))
         .collect();
 
-    format!(
-        "INSERT INTO {table} ({cols}) VALUES ({vals}) ON CONFLICT ({primary_key}) DO UPDATE SET {upd}",
-        cols = columns.join(", "),
+    Ok(format!(
+        "INSERT INTO {quoted_table} ({cols}) VALUES ({vals}) ON CONFLICT ({quoted_primary_key}) DO UPDATE SET {upd}",
+        cols = quoted_columns.join(", "),
         vals = placeholders.join(", "),
         upd = updates.join(", "),
-    )
+    ))
 }
 
 #[async_trait]
@@ -91,12 +112,31 @@ mod tests {
             "events",
             "id",
             &["id".to_string(), "name".to_string(), "score".to_string()],
-        );
+        )
+        .unwrap();
 
         assert_eq!(
             sql,
-            "INSERT INTO events (id, name, score) VALUES ($1, $2, $3) \
-             ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, score = EXCLUDED.score"
+            "INSERT INTO \"events\" (\"id\", \"name\", \"score\") VALUES ($1, $2, $3) \
+             ON CONFLICT (\"id\") DO UPDATE SET \"name\" = EXCLUDED.\"name\", \"score\" = EXCLUDED.\"score\""
         );
+    }
+
+    #[test]
+    fn rejects_sql_injection_in_table_name() {
+        let err = build_upsert_sql("events\"; DROP TABLE users; --", "id", &["id".to_string()])
+            .expect_err("malicious table name must be rejected");
+        assert!(matches!(err, NexusError::Schema(_)));
+    }
+
+    #[test]
+    fn rejects_sql_injection_in_column_name() {
+        let err = build_upsert_sql(
+            "events",
+            "id",
+            &["id".to_string(), "score); DROP TABLE users; --".to_string()],
+        )
+        .expect_err("malicious column name must be rejected");
+        assert!(matches!(err, NexusError::Schema(_)));
     }
 }

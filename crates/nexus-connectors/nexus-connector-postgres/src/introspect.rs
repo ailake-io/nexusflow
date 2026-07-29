@@ -1,5 +1,6 @@
 use crate::config::PostgresConnectorConfig;
 use crate::driver::open_connection;
+use crate::identifier::quote_identifier;
 use adbc_core::{Connection as _, Statement as _};
 use arrow_array::{Array, Int64Array};
 use arrow_schema::SchemaRef;
@@ -12,6 +13,7 @@ use std::sync::Arc;
 pub async fn table_schema(cfg: &PostgresConnectorConfig) -> Result<SchemaRef, NexusError> {
     let cfg = cfg.clone();
     tokio::task::spawn_blocking(move || {
+        quote_identifier(&cfg.table)?;
         let connection = open_connection(&cfg.uri)?;
         connection
             .get_table_schema(None, None, &cfg.table)
@@ -29,16 +31,18 @@ pub async fn primary_key_bounds(
 ) -> Result<Option<(i64, i64)>, NexusError> {
     let cfg = cfg.clone();
     tokio::task::spawn_blocking(move || {
+        // `pk`/`table` come from the pipeline spec (attacker-controlled) and
+        // get spliced into SQL text — ADBC's `bind` only covers values, not
+        // identifiers. See identifier.rs.
+        let pk = quote_identifier(&cfg.primary_key)?;
+        let table = quote_identifier(&cfg.table)?;
+
         let mut connection = open_connection(&cfg.uri)?;
         let mut statement = connection
             .new_statement()
             .map_err(|e| NexusError::Connector(e.to_string()))?;
         statement
-            .set_sql_query(format!(
-                "SELECT MIN({pk}), MAX({pk}) FROM {table}",
-                pk = cfg.primary_key,
-                table = cfg.table
-            ))
+            .set_sql_query(format!("SELECT MIN({pk}), MAX({pk}) FROM {table}"))
             .map_err(|e| NexusError::Connector(e.to_string()))?;
         let reader = statement
             .execute()
