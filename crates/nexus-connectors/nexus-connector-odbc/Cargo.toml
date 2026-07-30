@@ -1,0 +1,27 @@
+[package]
+name = "nexus-connector-odbc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# odbc-api links against a driver manager (unixODBC). `vendored-unix-odbc`
+# builds it from source instead of requiring a system package, so the
+# workspace default build never depends on host ODBC install — see
+# CLAUDE.md §8.5.
+[features]
+default = []
+legacy = ["dep:odbc-api", "dep:tokio"]
+
+[dependencies]
+arrow-array = "58.4.0"
+arrow-schema = "58.4.0"
+async-trait = "0.1.91"
+futures = "0.3.33"
+nexus-core = { version = "0.1.0", path = "../../nexus-core" }
+odbc-api = { version = "29.0.0", optional = true, default-features = false, features = [
+    "odbc_version_3_80",
+    "vendored-unix-odbc",
+] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["rt"], optional = true }

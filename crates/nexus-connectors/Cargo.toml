@@ -1,6 +1,13 @@
 [workspace]
 resolver = "2"
-members = ["nexus-connector-postgres", "nexus-connector-sqlite"]
+members = [
+    "nexus-connector-postgres",
+    "nexus-connector-sqlite",
+    "nexus-connector-rest",
+    "nexus-connector-mongodb",
+    "nexus-connector-kafka",
+    "nexus-connector-odbc",
+]
 
 [workspace.package]
 version = "0.1.0"

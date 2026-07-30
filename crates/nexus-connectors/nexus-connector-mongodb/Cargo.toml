@@ -1,0 +1,20 @@
+[package]
+name = "nexus-connector-mongodb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+arrow-array = "58.4.0"
+arrow-schema = "58.4.0"
+async-trait = "0.1.91"
+futures = "0.3.33"
+mongodb = { version = "3.8.0", default-features = false, features = ["compat-3-0-0", "rustls-tls", "dns-resolver"] }
+nexus-core = { version = "0.1.0", path = "../../nexus-core" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+
+[dev-dependencies]
+testcontainers = "0.27.3"
+testcontainers-modules = { version = "0.15.0", features = ["mongo"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
