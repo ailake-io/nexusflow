@@ -1,15 +1,16 @@
-use nexus_core::NexusError;
+use crate::error::NexusError;
 
-/// Table/column names come from the pipeline spec (attacker-controlled HTTP
-/// request body) and get spliced into SQL text — ADBC's `bind` only covers
-/// *values*, not identifiers, so there's no parameterized-query escape hatch
-/// for them. Every identifier must go through here before it touches a
-/// `format!` that builds SQL: reject anything outside a strict safe subset,
-/// then double-quote it (Postgres identifier quoting, doubling any embedded
-/// `"`) so mixed-case names and reserved words round-trip correctly too.
+/// Shared by every SQL-based connector (Postgres, SQLite, ...). Table/column
+/// names come from the pipeline spec (attacker-controlled HTTP request body)
+/// and get spliced into SQL text — ADBC's `bind` only covers row *values*,
+/// not identifiers, so there's no parameterized-query escape hatch for them.
+/// Every identifier must go through here before it touches a `format!` that
+/// builds SQL: reject anything outside a strict safe subset, then
+/// double-quote it (ANSI SQL identifier quoting, doubling any embedded `"`)
+/// so mixed-case names and reserved words round-trip correctly too.
 pub fn quote_identifier(name: &str) -> Result<String, NexusError> {
     let valid = !name.is_empty()
-        && name.len() <= 63 // Postgres NAMEDATALEN limit
+        && name.len() <= 128
         && name
             .chars()
             .next()
@@ -18,7 +19,7 @@ pub fn quote_identifier(name: &str) -> Result<String, NexusError> {
 
     if !valid {
         return Err(NexusError::Schema(format!(
-            "invalid identifier {name:?}: must match [A-Za-z_][A-Za-z0-9_]*, max 63 chars"
+            "invalid identifier {name:?}: must match [A-Za-z_][A-Za-z0-9_]*, max 128 chars"
         )));
     }
 
@@ -50,9 +51,9 @@ mod tests {
     }
 
     #[test]
-    fn rejects_names_longer_than_namedatalen() {
-        let too_long = "a".repeat(64);
+    fn rejects_names_longer_than_the_limit() {
+        let too_long = "a".repeat(129);
         assert!(quote_identifier(&too_long).is_err());
-        assert!(quote_identifier(&"a".repeat(63)).is_ok());
+        assert!(quote_identifier(&"a".repeat(128)).is_ok());
     }
 }

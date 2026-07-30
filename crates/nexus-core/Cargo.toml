@@ -5,10 +5,11 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-arrow-array = "59.1.0"
-arrow-schema = "59.1.0"
+arrow-array = "58.4.0"
+arrow-schema = "58.4.0"
 async-trait = "0.1.91"
 chrono = { version = "0.4.45", features = ["serde"] }
+datafusion = { version = "54.1.0", default-features = false, features = ["sql"] }
 futures = "0.3.33"
 inventory = "0.3.24"
 serde = { version = "1.0.229", features = ["derive"] }

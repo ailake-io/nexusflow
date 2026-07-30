@@ -8,7 +8,6 @@
 
 mod config;
 mod driver;
-mod identifier;
 mod introspect;
 mod sink;
 mod source;
@@ -17,6 +16,6 @@ pub use config::PostgresConnectorConfig;
 pub use driver::DRIVER_PATH_ENV;
 pub use introspect::{primary_key_bounds, table_schema};
 pub use sink::PostgresSink;
-pub use source::{PartitionRange, PostgresSource, split_into_partitions};
+pub use source::{split_into_partitions, PartitionRange, PostgresSource};
 
 nexus_core::submit_connector!("postgres", nexus_core::ConnectorCapability::AdbcNative);

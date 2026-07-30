@@ -4,25 +4,25 @@ Ordem por dependência técnica, não por prioridade de negócio isolada. Cada f
 
 > Detalhamento de engenharia (arquivos/crates concretos, critério de "pronto" por marco): ver [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md).
 
-## Fase 0 — Fundação (workspace)
-- [ ] `Cargo.toml` workspace + crates vazios: `nexus-core`, `nexus-ai`, `nexus-server`, e `crates/nexus-connectors/` já como workspace de sub-crates (não crate único) — ver `CLAUDE.md §3` e `ARCHITECTURE.md §3`
-- [ ] Traits base (`Source`, `Sink`, `Transform`) em `nexus-core`
-- [ ] `ConnectorRegistry` em `nexus-core` (registro de conectores, consumido por `nexus-server`)
-- [ ] `RecordBatchBuilder` genérico (adapter fallback)
-- [ ] `src/` como bootstrap fino (só sobe `nexus-server`, zero lógica de orquestração própria)
-- [ ] CI básico (fmt, clippy, test) por crate
-- [ ] Documentar decisão de escopo single-node (`ARCHITECTURE.md §6`) — não é item de código, é alinhamento antes de codar scheduler
+## Fase 0 — Fundação (workspace) ✅
+- [x] `Cargo.toml` workspace + crates vazios: `nexus-core`, `nexus-ai`, `nexus-server`, e `crates/nexus-connectors/` já como workspace de sub-crates (não crate único) — ver `CLAUDE.md §3` e `ARCHITECTURE.md §3`
+- [x] Traits base (`Source`, `Sink`, `Transform`) em `nexus-core`
+- [x] `ConnectorRegistry` em `nexus-core` (registro de conectores, consumido por `nexus-server`)
+- [x] `RecordBatchBuilder` genérico (adapter fallback)
+- [x] `src/` como bootstrap fino (só sobe `nexus-server`, zero lógica de orquestração própria)
+- [x] CI básico (fmt, clippy, test) por crate
+- [x] Documentar decisão de escopo single-node (`ARCHITECTURE.md §6`) — não é item de código, é alinhamento antes de codar scheduler
 
-## Fase 1 — MVP Fast-Path
-- [ ] `nexus-connector-postgres` + `nexus-connector-sqlite` (ADBC, source e sink), cada um seu próprio crate
-- [ ] DAG parser: JSON estrito (2 nodes: source → sink, sem transform ainda)
-- [ ] Canal `mpsc` por partição (config de tamanho por pipeline, não fixo em 100) — ver `ARCHITECTURE.md §4`
-- [ ] Checkpoint por partição (`CheckpointCursor{partition_id, last_updated_at, offset}`) persistido em SQLite
-- [ ] Contrato de idempotência documentado e testado no `Sink` de referência (upsert, não insert puro) — ver `ARCHITECTURE.md §5`
+## Fase 1 — MVP Fast-Path ✅
+- [x] `nexus-connector-postgres` (ADBC real, source e sink), próprio crate — `nexus-connector-sqlite` acabou entrando na Fase 2 junto do transform
+- [x] DAG parser: JSON estrito (2 nodes: source → sink, sem transform ainda)
+- [x] Canal `mpsc` por partição (config de tamanho por pipeline, não fixo em 100) — ver `ARCHITECTURE.md §4`
+- [x] Checkpoint por partição (`CheckpointCursor{partition_id, last_updated_at, offset}`) persistido em SQLite
+- [x] Contrato de idempotência documentado e testado no `Sink` de referência (upsert, não insert puro) — ver `ARCHITECTURE.md §5`
 
-## Fase 2 — Transformação leve (DataFusion)
-- [ ] Node de transform via SQL em memória (`datafusion`)
-- [ ] Suporte a múltiplos sources → um transform → um sink no DAG
+## Fase 2 — Transformação leve (DataFusion) ✅
+- [x] Node de transform via SQL em memória (`datafusion`)
+- [x] Suporte a múltiplos sources → um transform → um sink no DAG (fan-in de N sources, fan-out pra M sinks) — mais `nexus-connector-sqlite` como segundo conector, provando o `ConnectorRegistry`
 
 ## Fase 3 — Conectores híbridos
 - [ ] `nexus-connector-rest` genérico via `reqwest` + `RecordBatchBuilder`
@@ -83,3 +83,4 @@ Ordem por dependência técnica, não por prioridade de negócio isolada. Cada f
 - **RBAC sem escopo por recurso** — 4 papéis globais chega pro MVP; SaaS multi-tenant vai exigir permissão por pipeline/credencial.
 - **Ciclo de vida do modelo ONNX indefinido** — decidir origem/cache/versionamento do modelo antes de codar Fase 5 (`ARCHITECTURE.md §8`).
 - **Execução single-node** — decisão deliberada de escopo, não limitação a esconder do usuário (`ARCHITECTURE.md §6`). Documentar isso claramente também no README quando o produto for anunciado publicamente.
+- **`arrow-array`/`arrow-schema` fixados em `58.4.0` e `adbc_core`/`adbc_driver_manager`/`adbc_ffi` em `0.23.0` (não a última, `0.24.0`) em todo o workspace** — `datafusion` 54.1.0 (última versão publicada) ainda depende de arrow 58.x, enquanto adbc 0.24.0 já exige arrow ≥59. Sem overlap entre as duas, então fixamos tudo em 58.4.0/0.23.0 pra ter um `RecordBatch` só no grafo de dependências. Reavaliar quando o datafusion soltar uma versão em cima de arrow 59+.

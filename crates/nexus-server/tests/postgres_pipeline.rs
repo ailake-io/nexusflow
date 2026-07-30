@@ -74,8 +74,8 @@ async fn moves_100k_rows_and_resumes_after_partial_crash_without_duplicating() {
 
     let spec = json!({
         "pipeline_id": "big-copy",
-        "source": {"connector": "postgres", "config": {"uri": uri, "table": "events", "primary_key": "id"}},
-        "sink": {"connector": "postgres", "config": {"uri": uri, "table": "events_copy", "primary_key": "id"}},
+        "sources": [{"connector": "postgres", "config": {"uri": uri, "table": "events", "primary_key": "id"}}],
+        "sinks": [{"connector": "postgres", "config": {"uri": uri, "table": "events_copy", "primary_key": "id"}}],
         "partitions": PARTITIONS
     });
 

@@ -1,13 +1,12 @@
 use crate::config::PostgresConnectorConfig;
 use crate::driver::open_connection;
-use crate::identifier::quote_identifier;
 use adbc_core::{Connection as _, Statement as _};
 use adbc_driver_manager::ManagedConnection;
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use async_trait::async_trait;
 use futures::stream::{self, BoxStream};
-use nexus_core::{NexusError, Source};
+use nexus_core::{quote_identifier, NexusError, Source};
 use std::sync::Arc;
 
 /// Bounds of one partition's primary-key range. `upper_exclusive: None` means
@@ -52,19 +51,25 @@ pub struct PostgresSource {
     connection: ManagedConnection,
     table: String,
     primary_key: String,
-    range: PartitionRange,
+    /// `None` means "read the whole table, no WHERE clause" — used by the
+    /// Marco 2 transform fan-in path (`ARCHITECTURE.md §6`), which doesn't
+    /// partition and can't assume an `i64`-range-friendly primary key (a
+    /// text PK, for instance, can't be bounded by a numeric sentinel).
+    range: Option<PartitionRange>,
     schema: SchemaRef,
 }
 
 impl PostgresSource {
     pub fn connect(
         cfg: &PostgresConnectorConfig,
-        range: PartitionRange,
+        range: Option<PartitionRange>,
     ) -> Result<Self, NexusError> {
         // Fail fast on a malformed table/primary_key before opening any
-        // connection — see identifier.rs for why this can't be a bind param.
+        // connection — see nexus_core::sql for why this can't be a bind param.
         quote_identifier(&cfg.table)?;
-        quote_identifier(&cfg.primary_key)?;
+        if range.is_some() {
+            quote_identifier(&cfg.primary_key)?;
+        }
 
         let connection = open_connection(&cfg.uri)?;
         let schema = connection
@@ -92,19 +97,24 @@ impl PostgresSource {
 fn build_select_query(
     table: &str,
     primary_key: &str,
-    range: PartitionRange,
+    range: Option<PartitionRange>,
 ) -> Result<String, NexusError> {
     let table = quote_identifier(table)?;
-    let primary_key = quote_identifier(primary_key)?;
-    Ok(match range.upper_exclusive {
-        Some(upper) => format!(
-            "SELECT * FROM {table} WHERE {primary_key} >= {} AND {primary_key} < {upper}",
-            range.lower_inclusive
-        ),
-        None => format!(
-            "SELECT * FROM {table} WHERE {primary_key} >= {}",
-            range.lower_inclusive
-        ),
+    Ok(match range {
+        None => format!("SELECT * FROM {table}"),
+        Some(range) => {
+            let primary_key = quote_identifier(primary_key)?;
+            match range.upper_exclusive {
+                Some(upper) => format!(
+                    "SELECT * FROM {table} WHERE {primary_key} >= {} AND {primary_key} < {upper}",
+                    range.lower_inclusive
+                ),
+                None => format!(
+                    "SELECT * FROM {table} WHERE {primary_key} >= {}",
+                    range.lower_inclusive
+                ),
+            }
+        }
     })
 }
 
@@ -154,10 +164,10 @@ mod tests {
         let query = build_select_query(
             "events",
             "id",
-            PartitionRange {
+            Some(PartitionRange {
                 lower_inclusive: 0,
                 upper_exclusive: Some(1000),
-            },
+            }),
         )
         .unwrap();
         assert_eq!(
@@ -171,13 +181,19 @@ mod tests {
         let query = build_select_query(
             "events",
             "id",
-            PartitionRange {
+            Some(PartitionRange {
                 lower_inclusive: 9000,
                 upper_exclusive: None,
-            },
+            }),
         )
         .unwrap();
         assert_eq!(query, "SELECT * FROM \"events\" WHERE \"id\" >= 9000");
+    }
+
+    #[test]
+    fn build_query_no_range_reads_whole_table_unconditionally() {
+        let query = build_select_query("regions", "region", None).unwrap();
+        assert_eq!(query, "SELECT * FROM \"regions\"");
     }
 
     #[test]
@@ -185,10 +201,10 @@ mod tests {
         let err = build_select_query(
             "events; DROP TABLE users; --",
             "id",
-            PartitionRange {
+            Some(PartitionRange {
                 lower_inclusive: 0,
                 upper_exclusive: None,
-            },
+            }),
         )
         .expect_err("malicious table name must be rejected");
         assert!(matches!(err, NexusError::Schema(_)));

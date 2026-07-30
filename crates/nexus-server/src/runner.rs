@@ -1,28 +1,46 @@
 use crate::checkpoint_store::CheckpointStore;
+use crate::connectors::{build_sink, build_source};
 use nexus_connector_postgres::{
     primary_key_bounds, split_into_partitions, table_schema, PostgresConnectorConfig, PostgresSink,
     PostgresSource,
 };
-use nexus_core::{CheckpointCursor, PartitionHandle, PartitionStats, PipelineEngine, PipelineSpec};
+use nexus_core::{
+    CheckpointCursor, DataFusionTransform, PartitionHandle, PartitionStats, PipelineEngine,
+    PipelineSpec, Transform,
+};
 
-/// Builds partitions from the spec, skips any partition already checkpointed
-/// for this `pipeline_id` (resume behavior — ARCHITECTURE.md §5), runs the
-/// rest, and persists a checkpoint for each partition that succeeds. Only the
-/// `postgres` connector is wired up in Marco 1.
 pub async fn run_pipeline(
     spec: &PipelineSpec,
     checkpoints: &CheckpointStore,
 ) -> anyhow::Result<Vec<PartitionStats>> {
-    if spec.source.connector != "postgres" || spec.sink.connector != "postgres" {
+    if spec.has_transform() {
+        run_transform_pipeline(spec, checkpoints).await
+    } else {
+        run_linear_pipeline(spec, checkpoints).await
+    }
+}
+
+/// Marco 1's path: exactly 1 source, 1 sink, partitioned by PK range,
+/// resumable per partition. Postgres-only for now — see IMPLEMENTATION_PLAN.md
+/// Marco 1.
+async fn run_linear_pipeline(
+    spec: &PipelineSpec,
+    checkpoints: &CheckpointStore,
+) -> anyhow::Result<Vec<PartitionStats>> {
+    let source_node = &spec.sources[0];
+    let sink_node = &spec.sinks[0];
+
+    if source_node.connector != "postgres" || sink_node.connector != "postgres" {
         anyhow::bail!(
-            "unsupported connector: only 'postgres' is wired up in Marco 1 (got source={:?}, sink={:?})",
-            spec.source.connector,
-            spec.sink.connector
+            "unsupported connector: the partitioned (no-transform) path only supports \
+             'postgres' for now (got source={:?}, sink={:?})",
+            source_node.connector,
+            sink_node.connector
         );
     }
 
-    let source_cfg: PostgresConnectorConfig = serde_json::from_value(spec.source.config.clone())?;
-    let sink_cfg: PostgresConnectorConfig = serde_json::from_value(spec.sink.config.clone())?;
+    let source_cfg: PostgresConnectorConfig = serde_json::from_value(source_node.config.clone())?;
+    let sink_cfg: PostgresConnectorConfig = serde_json::from_value(sink_node.config.clone())?;
 
     let schema = table_schema(&source_cfg).await?;
     let columns: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
@@ -40,7 +58,7 @@ pub async fn run_pipeline(
         if done.contains(&partition_id) {
             continue;
         }
-        let source = PostgresSource::connect(&source_cfg, range)?;
+        let source = PostgresSource::connect(&source_cfg, Some(range))?;
         let sink = PostgresSink::connect(&sink_cfg, &columns)?;
         handles.push(PartitionHandle {
             partition_id,
@@ -72,6 +90,82 @@ pub async fn run_pipeline(
     if !errors.is_empty() {
         anyhow::bail!(
             "{} of {} partition(s) failed: {errors:?}",
+            errors.len(),
+            errors.len() + stats.len()
+        );
+    }
+
+    Ok(stats)
+}
+
+/// Marco 2's path: N sources (fan-in) -> 1 SQL transform -> M sinks
+/// (fan-out), connector-agnostic (dispatches through `connectors.rs`).
+/// Unpartitioned — every source is read in full, see ARCHITECTURE.md §6.
+/// Sinks are only built after the transform runs, since their column list
+/// comes from the transform's *output* schema, not any single source's.
+async fn run_transform_pipeline(
+    spec: &PipelineSpec,
+    checkpoints: &CheckpointStore,
+) -> anyhow::Result<Vec<PartitionStats>> {
+    let transform_spec = spec
+        .transform
+        .as_ref()
+        .expect("run_transform_pipeline called on a spec without a transform");
+
+    let done = checkpoints.done_partitions(&spec.pipeline_id).await?;
+
+    let mut sources = Vec::with_capacity(spec.sources.len());
+    for (i, node) in spec.sources.iter().enumerate() {
+        sources.push(build_source(node, i).await?);
+    }
+
+    let inputs = PipelineEngine::drain_sources(sources).await?;
+    let transform = DataFusionTransform::new(&transform_spec.sql);
+    let output = transform.apply(inputs).await?;
+
+    let columns: Vec<String> = output
+        .first()
+        .map(|b| {
+            b.schema()
+                .fields()
+                .iter()
+                .map(|f| f.name().clone())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut sinks = Vec::with_capacity(spec.sinks.len());
+    for (i, node) in spec.sinks.iter().enumerate() {
+        let (name, sink) = build_sink(node, i, &columns)?;
+        if done.contains(&name) {
+            continue; // already committed in a prior run of this pipeline_id
+        }
+        sinks.push((name, sink));
+    }
+
+    let engine = PipelineEngine::new(spec.channel_capacity);
+    let results = engine.fan_out_write(&output, sinks).await;
+
+    let mut stats = Vec::new();
+    let mut errors = Vec::new();
+    for result in results {
+        match result {
+            Ok(stat) => {
+                checkpoints
+                    .commit(
+                        &spec.pipeline_id,
+                        &CheckpointCursor::new(stat.partition_id.clone()),
+                    )
+                    .await?;
+                stats.push(stat);
+            }
+            Err(e) => errors.push(e),
+        }
+    }
+
+    if !errors.is_empty() {
+        anyhow::bail!(
+            "{} of {} sink(s) failed: {errors:?}",
             errors.len(),
             errors.len() + stats.len()
         );

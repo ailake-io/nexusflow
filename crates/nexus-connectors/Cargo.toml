@@ -1,3 +1,8 @@
 [workspace]
 resolver = "2"
-members = ["nexus-connector-postgres"]
+members = ["nexus-connector-postgres", "nexus-connector-sqlite"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"

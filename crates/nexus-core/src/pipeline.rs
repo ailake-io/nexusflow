@@ -1,7 +1,8 @@
 use crate::checkpoint::CheckpointCursor;
 use crate::error::NexusError;
-use crate::traits::{Sink, Source};
+use crate::traits::{Sink, Source, Transform};
 use arrow_array::RecordBatch;
+use arrow_schema::SchemaRef;
 use futures::StreamExt;
 use serde::Serialize;
 
@@ -123,6 +124,84 @@ impl PipelineEngine {
         }
         results
     }
+
+    /// Drains every named source fully (Marco 2's fan-in step) — no
+    /// PK-range partitioning here: combining arbitrary joined/aggregated
+    /// sources doesn't have a well-defined per-partition correspondence, so
+    /// the whole table is read. Split out from `run_transform_pipeline` so
+    /// callers can inspect the transform's *output* schema (only known after
+    /// running it) before constructing sinks that need to know their column
+    /// list upfront — see `nexus-server`'s runner.
+    pub async fn drain_sources(
+        sources: Vec<(String, Box<dyn Source>)>,
+    ) -> Result<Vec<(String, SchemaRef, Vec<RecordBatch>)>, NexusError> {
+        let mut inputs = Vec::with_capacity(sources.len());
+        for (name, mut source) in sources {
+            let schema = source.schema();
+            let mut stream = source.read_batches().await?;
+            let mut batches = Vec::new();
+            while let Some(item) = stream.next().await {
+                batches.push(item?);
+            }
+            drop(stream);
+            inputs.push((name, schema, batches));
+        }
+        Ok(inputs)
+    }
+
+    /// Broadcast fan-out: every sink gets the full `batches` output, then
+    /// commits one checkpoint. A failed sink doesn't stop the others (same
+    /// per-slot-error contract as `run`).
+    pub async fn fan_out_write(
+        &self,
+        batches: &[RecordBatch],
+        sinks: Vec<(String, Box<dyn Sink>)>,
+    ) -> Vec<Result<PartitionStats, NexusError>> {
+        let rows_in_output: usize = batches.iter().map(|b| b.num_rows()).sum();
+
+        let mut results = Vec::with_capacity(sinks.len());
+        for (name, mut sink) in sinks {
+            let outcome: Result<PartitionStats, NexusError> = async {
+                for batch in batches {
+                    sink.write_batch(batch.clone()).await?;
+                }
+                sink.commit_checkpoint(CheckpointCursor::new(name.clone()))
+                    .await?;
+                Ok(PartitionStats {
+                    partition_id: name.clone(),
+                    batches_written: batches.len(),
+                    rows_written: rows_in_output,
+                })
+            }
+            .await;
+            results.push(outcome);
+        }
+        results
+    }
+
+    /// Runs a fan-in/fan-out transform pipeline end to end (Marco 2): drains
+    /// every source, runs the transform once, writes the output to every
+    /// sink. Convenience wrapper over `drain_sources`/`fan_out_write` for
+    /// callers whose sinks don't need the transform's output schema to be
+    /// constructed (e.g. tests, or fixed-schema sinks).
+    pub async fn run_transform_pipeline(
+        &self,
+        pipeline: TransformPipeline,
+    ) -> Result<Vec<PartitionStats>, NexusError> {
+        let inputs = Self::drain_sources(pipeline.sources).await?;
+        let output = pipeline.transform.apply(inputs).await?;
+        self.fan_out_write(&output, pipeline.sinks)
+            .await
+            .into_iter()
+            .collect()
+    }
+}
+
+/// N named sources (fan-in) -> 1 transform -> M named sinks (fan-out).
+pub struct TransformPipeline {
+    pub sources: Vec<(String, Box<dyn Source>)>,
+    pub transform: Box<dyn Transform>,
+    pub sinks: Vec<(String, Box<dyn Sink>)>,
 }
 
 #[cfg(test)]
@@ -243,5 +322,78 @@ mod tests {
             .map(|r| r.expect("partition succeeds").rows_written)
             .sum();
         assert_eq!(total_rows, 5);
+    }
+
+    /// Concatenates whatever it's given — enough to exercise fan-in/fan-out
+    /// wiring without pulling DataFusion into nexus-core's own test suite
+    /// (that's covered by `transform::tests` against `DataFusionTransform`).
+    struct ConcatTransform;
+
+    #[async_trait]
+    impl Transform for ConcatTransform {
+        async fn apply(
+            &self,
+            inputs: Vec<(String, SchemaRef, Vec<RecordBatch>)>,
+        ) -> Result<Vec<RecordBatch>, NexusError> {
+            Ok(inputs
+                .into_iter()
+                .flat_map(|(_, _, batches)| batches)
+                .collect())
+        }
+    }
+
+    #[tokio::test]
+    async fn run_transform_pipeline_fans_in_two_sources_and_fans_out_to_two_sinks() {
+        let source_a = VecSource {
+            schema: test_schema(),
+            batches: vec![test_batch(vec![1, 2])],
+        };
+        let source_b = VecSource {
+            schema: test_schema(),
+            batches: vec![test_batch(vec![3, 4, 5])],
+        };
+
+        let sink_a_received = Arc::new(Mutex::new(Vec::new()));
+        let sink_b_received = Arc::new(Mutex::new(Vec::new()));
+
+        let engine = PipelineEngine::new(8);
+        let stats = engine
+            .run_transform_pipeline(TransformPipeline {
+                sources: vec![
+                    ("a".to_string(), Box::new(source_a)),
+                    ("b".to_string(), Box::new(source_b)),
+                ],
+                transform: Box::new(ConcatTransform),
+                sinks: vec![
+                    (
+                        "sink_a".to_string(),
+                        Box::new(RecordingSink {
+                            received: sink_a_received.clone(),
+                            checkpoints: Arc::new(Mutex::new(Vec::new())),
+                        }) as Box<dyn Sink>,
+                    ),
+                    (
+                        "sink_b".to_string(),
+                        Box::new(RecordingSink {
+                            received: sink_b_received.clone(),
+                            checkpoints: Arc::new(Mutex::new(Vec::new())),
+                        }) as Box<dyn Sink>,
+                    ),
+                ],
+            })
+            .await
+            .expect("transform pipeline runs");
+
+        assert_eq!(stats.len(), 2, "one stats entry per sink");
+        for s in &stats {
+            assert_eq!(s.rows_written, 5, "fan-in concatenated both sources");
+        }
+
+        // Broadcast fan-out: both sinks receive the full (fanned-in) output.
+        let rows_in = |received: &Arc<Mutex<Vec<RecordBatch>>>| -> usize {
+            received.lock().unwrap().iter().map(|b| b.num_rows()).sum()
+        };
+        assert_eq!(rows_in(&sink_a_received), 5);
+        assert_eq!(rows_in(&sink_b_received), 5);
     }
 }

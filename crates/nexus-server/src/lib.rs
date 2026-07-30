@@ -1,4 +1,5 @@
 mod checkpoint_store;
+mod connectors;
 mod error;
 mod runner;
 
@@ -117,8 +118,8 @@ mod tests {
 
         let body = serde_json::json!({
             "pipeline_id": "body-id",
-            "source": {"connector": "postgres", "config": {}},
-            "sink": {"connector": "postgres", "config": {}}
+            "sources": [{"connector": "postgres", "config": {}}],
+            "sinks": [{"connector": "postgres", "config": {}}]
         });
 
         let response = app
@@ -142,8 +143,8 @@ mod tests {
 
         let body = serde_json::json!({
             "pipeline_id": "p1",
-            "source": {"connector": "mongodb", "config": {}},
-            "sink": {"connector": "postgres", "config": {}}
+            "sources": [{"connector": "mongodb", "config": {}}],
+            "sinks": [{"connector": "postgres", "config": {}}]
         });
 
         let response = app

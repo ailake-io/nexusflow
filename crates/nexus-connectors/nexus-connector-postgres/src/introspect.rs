@@ -1,9 +1,9 @@
 use crate::config::PostgresConnectorConfig;
 use crate::driver::open_connection;
-use crate::identifier::quote_identifier;
 use adbc_core::{Connection as _, Statement as _};
 use arrow_array::{Array, Int64Array};
 use arrow_schema::SchemaRef;
+use nexus_core::quote_identifier;
 use nexus_core::NexusError;
 use std::sync::Arc;
 
@@ -33,7 +33,7 @@ pub async fn primary_key_bounds(
     tokio::task::spawn_blocking(move || {
         // `pk`/`table` come from the pipeline spec (attacker-controlled) and
         // get spliced into SQL text — ADBC's `bind` only covers values, not
-        // identifiers. See identifier.rs.
+        // identifiers. See nexus_core::sql.
         let pk = quote_identifier(&cfg.primary_key)?;
         let table = quote_identifier(&cfg.table)?;
 

@@ -39,26 +39,29 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      # nexus-connector-postgres needs the real ADBC PostgreSQL driver at test
-      # runtime (it's a C++/libpq implementation, not a crates.io package —
-      # see scripts/build-adbc-postgresql-driver.sh). Integration tests also
-      # need a live Postgres via testcontainers, which GitHub-hosted runners
-      # can do out of the box (Docker daemon is preinstalled).
-      - name: Install native build deps for the ADBC PostgreSQL driver
-        run: sudo apt-get update && sudo apt-get install -y cmake pkg-config libpq-dev libfmt-dev
+      # nexus-connector-postgres/nexus-connector-sqlite need the real ADBC
+      # drivers at test runtime (C++ implementations, not crates.io packages —
+      # see scripts/build-adbc-*-driver.sh). Integration tests also need a
+      # live Postgres via testcontainers, which GitHub-hosted runners can do
+      # out of the box (Docker daemon is preinstalled).
+      - name: Install native build deps for the ADBC drivers
+        run: sudo apt-get update && sudo apt-get install -y cmake pkg-config libpq-dev libsqlite3-dev libfmt-dev
 
-      - name: Cache built ADBC driver
+      - name: Cache built ADBC drivers
         id: adbc-cache
         uses: actions/cache@v4
         with:
           path: target/adbc
-          key: adbc-postgresql-driver-${{ runner.os }}-${{ hashFiles('scripts/build-adbc-postgresql-driver.sh') }}
+          key: adbc-drivers-${{ runner.os }}-${{ hashFiles('scripts/build-adbc-postgresql-driver.sh', 'scripts/build-adbc-sqlite-driver.sh') }}
 
-      - name: Build ADBC PostgreSQL driver
+      - name: Build ADBC drivers
         if: steps.adbc-cache.outputs.cache-hit != 'true'
-        run: ./scripts/build-adbc-postgresql-driver.sh
+        run: |
+          ./scripts/build-adbc-postgresql-driver.sh
+          ./scripts/build-adbc-sqlite-driver.sh
 
       - name: Run tests
         env:
           ADBC_DRIVER_POSTGRESQL_PATH: ${{ github.workspace }}/target/adbc/libadbc_driver_postgresql.so
+          ADBC_DRIVER_SQLITE_PATH: ${{ github.workspace }}/target/adbc/libadbc_driver_sqlite.so
         run: cargo test --workspace --all-features
