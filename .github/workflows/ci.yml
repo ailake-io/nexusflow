@@ -65,3 +65,39 @@ jobs:
           ADBC_DRIVER_POSTGRESQL_PATH: ${{ github.workspace }}/target/adbc/libadbc_driver_postgresql.so
           ADBC_DRIVER_SQLITE_PATH: ${{ github.workspace }}/target/adbc/libadbc_driver_sqlite.so
         run: cargo test --workspace --all-features
+
+  # crates/nexus-connectors is its own Cargo workspace (crate-per-connector,
+  # see CLAUDE.md §3/§8.5) — none of the jobs above touch it, since only
+  # connectors nexus-server actually imports (postgres/sqlite) get pulled
+  # into the root workspace graph. This job is the only place rest/mongodb/
+  # kafka/odbc get built, linted and tested at all.
+  connectors:
+    name: connectors
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/nexus-connectors
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/nexus-connectors
+
+      # nexus-connector-kafka's `consumer` feature builds librdkafka from
+      # vendored source (needs zlib headers); nexus-connector-odbc's
+      # `legacy` feature vendors unixODBC the same way but only needs a C
+      # compiler, already on the runner — see IMPLEMENTATION_PLAN.md Marco 3.
+      - name: Install native build deps for the kafka consumer feature
+        run: sudo apt-get update && sudo apt-get install -y zlib1g-dev
+
+      - run: cargo fmt --all -- --check
+
+      # Every connector must also compile with no features enabled — that's
+      # the whole point of gating rdkafka/odbc-api behind Cargo features
+      # (CLAUDE.md §8.5), so it's checked on its own before --all-features.
+      - run: cargo check --workspace
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --workspace --all-features
