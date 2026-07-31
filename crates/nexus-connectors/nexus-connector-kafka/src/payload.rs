@@ -144,10 +144,7 @@ mod tests {
     fn debezium_insert_uses_after_and_maps_c_to_insert() {
         let bytes = br#"{"before": null, "after": {"id": 1, "name": "alice"}, "op": "c"}"#;
         let row = parse_payload(bytes, KafkaEnvelope::Debezium).unwrap();
-        assert_eq!(
-            row,
-            json!({"id": 1, "name": "alice", "__opcode": "I"})
-        );
+        assert_eq!(row, json!({"id": 1, "name": "alice", "__opcode": "I"}));
     }
 
     #[test]

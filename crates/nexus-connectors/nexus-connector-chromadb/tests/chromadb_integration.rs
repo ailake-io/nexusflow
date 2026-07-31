@@ -5,7 +5,9 @@
 use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use nexus_ai::chunking::{chunk_recursive_character, RecursiveCharacterConfig};
-use nexus_ai::embedding::{append_embedding_column, EmbeddingModel, EmbeddingModelConfig, ModelConfig};
+use nexus_ai::embedding::{
+    append_embedding_column, EmbeddingModel, EmbeddingModelConfig, ModelConfig,
+};
 use nexus_connector_chromadb::{ChromaConnectorConfig, ChromaSink};
 use nexus_core::Sink;
 use serde_json::Value;
@@ -54,7 +56,7 @@ async fn text_chunk_embed_chromadb_end_to_end() {
     create_response
         .expect("creates collection")
         .error_for_status()
-    .expect("collection creation succeeds");
+        .expect("collection creation succeeds");
 
     // --- chunk ---
     let source_text = "NexusFlow moves data at high speed.\n\n\
@@ -68,7 +70,10 @@ async fn text_chunk_embed_chromadb_end_to_end() {
             ..RecursiveCharacterConfig::default()
         },
     );
-    assert!(chunks.len() >= 2, "expected multiple chunks, got {chunks:?}");
+    assert!(
+        chunks.len() >= 2,
+        "expected multiple chunks, got {chunks:?}"
+    );
 
     // --- embed ---
     let embedding_cfg = EmbeddingModelConfig {
@@ -160,7 +165,8 @@ async fn text_chunk_embed_chromadb_end_to_end() {
         ],
     )
     .unwrap();
-    let delete_batch = append_embedding_column(&delete_batch, &embeddings[..1], 384, "embedding").unwrap();
+    let delete_batch =
+        append_embedding_column(&delete_batch, &embeddings[..1], 384, "embedding").unwrap();
     sink.write_batch(delete_batch)
         .await
         .expect("writes delete batch");

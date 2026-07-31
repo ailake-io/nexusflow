@@ -42,7 +42,7 @@ impl Sink for MongoSink {
             let opcode = row
                 .get(OPCODE_COLUMN)
                 .and_then(serde_json::Value::as_str)
-                .and_then(Opcode::from_str);
+                .and_then(Opcode::from_letter);
             if let Some(obj) = row.as_object_mut() {
                 obj.remove(OPCODE_COLUMN);
             }

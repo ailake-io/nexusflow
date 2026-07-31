@@ -21,7 +21,9 @@ pub use row_mapping::batch_to_json_rows;
 pub use sink::OdbcSink;
 #[cfg(feature = "legacy")]
 pub use source::OdbcSource;
-pub use sql::{build_insert_sql, build_select_sql, build_update_sql, update_param_order};
+pub use sql::{
+    build_delete_sql, build_insert_sql, build_select_sql, build_update_sql, update_param_order,
+};
 
 #[cfg(feature = "legacy")]
 nexus_core::submit_connector!("odbc", nexus_core::ConnectorCapability::Bridged);

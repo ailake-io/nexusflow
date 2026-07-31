@@ -98,7 +98,7 @@ fn write_rows(config: &OdbcConnectorConfig, rows: &[Value]) -> Result<(), NexusE
         let opcode = row
             .get(OPCODE_COLUMN)
             .and_then(Value::as_str)
-            .and_then(Opcode::from_str);
+            .and_then(Opcode::from_letter);
         if opcode == Some(Opcode::Delete) {
             let pk_value = row.get(&config.primary_key).unwrap_or(&Value::Null);
             let delete_params = vec![to_param(pk_value, pk_field.data_type)];

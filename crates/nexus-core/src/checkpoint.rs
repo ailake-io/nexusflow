@@ -47,7 +47,7 @@ impl Opcode {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn from_letter(s: &str) -> Option<Self> {
         match s {
             "I" => Some(Opcode::Insert),
             "U" => Some(Opcode::Update),
@@ -64,12 +64,12 @@ mod tests {
     #[test]
     fn opcode_round_trips_through_canonical_letter() {
         for op in [Opcode::Insert, Opcode::Update, Opcode::Delete] {
-            assert_eq!(Opcode::from_str(op.as_str()), Some(op));
+            assert_eq!(Opcode::from_letter(op.as_str()), Some(op));
         }
     }
 
     #[test]
     fn unknown_letter_is_not_an_opcode() {
-        assert_eq!(Opcode::from_str("X"), None);
+        assert_eq!(Opcode::from_letter("X"), None);
     }
 }

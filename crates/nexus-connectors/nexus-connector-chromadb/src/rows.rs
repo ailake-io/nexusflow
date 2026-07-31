@@ -74,7 +74,10 @@ pub fn batch_to_metadata(batch: &RecordBatch, skip: &[&str]) -> Result<Vec<Value
 }
 
 /// Reads `column_name` (a `FixedSizeList<Float32>`) as one `Vec<f32>` per row.
-pub fn extract_embeddings(batch: &RecordBatch, column_name: &str) -> Result<Vec<Vec<f32>>, NexusError> {
+pub fn extract_embeddings(
+    batch: &RecordBatch,
+    column_name: &str,
+) -> Result<Vec<Vec<f32>>, NexusError> {
     let idx = batch
         .schema()
         .index_of(column_name)
@@ -83,7 +86,9 @@ pub fn extract_embeddings(batch: &RecordBatch, column_name: &str) -> Result<Vec<
         .column(idx)
         .as_any()
         .downcast_ref::<FixedSizeListArray>()
-        .ok_or_else(|| NexusError::Schema(format!("column '{column_name}' is not a FixedSizeList")))?;
+        .ok_or_else(|| {
+            NexusError::Schema(format!("column '{column_name}' is not a FixedSizeList"))
+        })?;
 
     let mut embeddings = Vec::with_capacity(list.len());
     for row in 0..list.len() {
@@ -91,7 +96,9 @@ pub fn extract_embeddings(batch: &RecordBatch, column_name: &str) -> Result<Vec<
         let floats = values
             .as_any()
             .downcast_ref::<Float32Array>()
-            .ok_or_else(|| NexusError::Schema(format!("column '{column_name}' items are not Float32")))?;
+            .ok_or_else(|| {
+                NexusError::Schema(format!("column '{column_name}' items are not Float32"))
+            })?;
         embeddings.push(floats.values().to_vec());
     }
     Ok(embeddings)
@@ -175,7 +182,8 @@ mod tests {
     #[test]
     fn extract_ids_supports_int64_primary_key() {
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
-        let batch = RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![1, 2]))]).unwrap();
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![1, 2]))]).unwrap();
         let ids = extract_ids(&batch, "id").unwrap();
         assert_eq!(ids, vec!["1".to_string(), "2".to_string()]);
     }

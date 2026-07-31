@@ -2,7 +2,9 @@ use crate::config::ChromaConnectorConfig;
 use crate::rows::{batch_to_metadata, extract_embeddings, extract_ids};
 use arrow_array::RecordBatch;
 use async_trait::async_trait;
-use nexus_core::{project_column, split_by_opcode, CheckpointCursor, NexusError, Sink, OPCODE_COLUMN};
+use nexus_core::{
+    project_column, split_by_opcode, CheckpointCursor, NexusError, Sink, OPCODE_COLUMN,
+};
 use serde_json::{json, Value};
 
 /// AI Lakehouse sink #6 (last, most complex to operate — ROADMAP.md Fase 5).
@@ -24,11 +26,9 @@ impl ChromaSink {
             "{host}/api/v2/tenants/{}/databases/{}/collections/{}",
             cfg.tenant, cfg.database, cfg.collection
         );
-        let response = client
-            .get(&get_url)
-            .send()
-            .await
-            .map_err(|e| NexusError::Connector(format!("chroma get_collection request failed: {e}")))?;
+        let response = client.get(&get_url).send().await.map_err(|e| {
+            NexusError::Connector(format!("chroma get_collection request failed: {e}"))
+        })?;
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
@@ -40,9 +40,9 @@ impl ChromaSink {
             .json()
             .await
             .map_err(|e| NexusError::Connector(format!("chroma get_collection response: {e}")))?;
-        let collection_id = body["id"]
-            .as_str()
-            .ok_or_else(|| NexusError::Connector("chroma collection response missing 'id'".to_string()))?;
+        let collection_id = body["id"].as_str().ok_or_else(|| {
+            NexusError::Connector("chroma collection response missing 'id'".to_string())
+        })?;
 
         Ok(Self {
             client,

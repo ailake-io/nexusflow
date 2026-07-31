@@ -122,7 +122,8 @@ impl Source for KafkaSource {
                 continue;
             };
             buffer.push(parse_payload(bytes, self.envelope)?);
-            self.last_offsets.insert(message.partition(), message.offset());
+            self.last_offsets
+                .insert(message.partition(), message.offset());
             consumed += 1;
 
             if buffer.len() >= self.batch_size {

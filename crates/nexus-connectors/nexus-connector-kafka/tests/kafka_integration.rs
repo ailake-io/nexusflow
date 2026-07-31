@@ -155,5 +155,8 @@ async fn resumes_from_explicit_start_offset() {
             second_rows += batch.unwrap().num_rows();
         }
     }
-    assert_eq!(second_rows, 2, "must consume only the remaining messages, not replay");
+    assert_eq!(
+        second_rows, 2,
+        "must consume only the remaining messages, not replay"
+    );
 }
