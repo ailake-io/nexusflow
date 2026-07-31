@@ -90,8 +90,12 @@ jobs:
       # vendored source (needs zlib headers); nexus-connector-odbc's
       # `legacy` feature vendors unixODBC the same way but only needs a C
       # compiler, already on the runner — see IMPLEMENTATION_PLAN.md Marco 3.
-      - name: Install native build deps for the kafka consumer feature
-        run: sudo apt-get update && sudo apt-get install -y zlib1g-dev
+      # protobuf-compiler (protoc): nexus-connector-lancedb pulls in
+      # lance-encoding, whose build.rs shells out to protoc to compile its
+      # .proto files — no vendored/pure-Rust fallback. zlib1g-dev is for
+      # nexus-connector-kafka's `consumer` feature (vendored librdkafka).
+      - name: Install native build deps for the kafka consumer feature and lancedb's protoc build dep
+        run: sudo apt-get update && sudo apt-get install -y zlib1g-dev protobuf-compiler
 
       - run: cargo fmt --all -- --check
 
