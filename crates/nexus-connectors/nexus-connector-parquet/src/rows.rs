@@ -42,9 +42,8 @@ mod tests {
         );
 
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Utf8, false)]));
-        let batch =
-            RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(vec!["a", "b"]))])
-                .unwrap();
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(vec!["a", "b"]))])
+            .unwrap();
         assert_eq!(
             extract_pk_strings(&batch, "id").unwrap(),
             vec!["a".to_string(), "b".to_string()]
@@ -53,7 +52,11 @@ mod tests {
 
     #[test]
     fn extract_pk_strings_rejects_unsupported_column() {
-        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Float64, false)]));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "id",
+            DataType::Float64,
+            false,
+        )]));
         let batch = RecordBatch::try_new(
             schema,
             vec![Arc::new(arrow_array::Float64Array::from(vec![1.0]))],

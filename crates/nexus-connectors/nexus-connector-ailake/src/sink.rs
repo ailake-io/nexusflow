@@ -37,8 +37,11 @@ impl AilakeSink {
         let store: Arc<dyn Store> = Arc::new(LocalStore::new(&cfg.warehouse));
         let catalog: Arc<dyn CatalogProvider> = Arc::new(HadoopCatalog::new(store.clone(), ""));
         let table = TableIdent::new(&cfg.namespace, &cfg.table);
-        let policy =
-            VectorStoragePolicy::default_f16(&cfg.embedding_column, cfg.dimension, VectorMetric::Cosine);
+        let policy = VectorStoragePolicy::default_f16(
+            &cfg.embedding_column,
+            cfg.dimension,
+            VectorMetric::Cosine,
+        );
 
         Ok(Self {
             catalog,

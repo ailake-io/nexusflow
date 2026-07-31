@@ -1,6 +1,6 @@
 //! Real end-to-end: same pipeline shape as the other Marco 6 formats —
 //! writes a batch, reads it back, validates schema/data, then a CDC upsert
-//! + delete confirm real Delta Lake semantics (transaction log versions).
+//! and delete confirm real Delta Lake semantics (transaction log versions).
 //! Plain local table directory, no container. See IMPLEMENTATION_PLAN.md
 //! Marco 6.
 
@@ -96,9 +96,7 @@ async fn writes_reads_back_and_deletes_via_delta_ops() {
         .expect("writes delete batch");
 
     // --- re-read: id=1 gone, id=2 updated, id=3 unchanged ---
-    let mut source = DeltaSource::connect(&cfg)
-        .await
-        .expect("source reconnects");
+    let mut source = DeltaSource::connect(&cfg).await.expect("source reconnects");
     let mut stream = source.read_batches().await.expect("reads batches");
     let mut rows: Vec<(i64, String)> = Vec::new();
     while let Some(batch) = stream.next().await {

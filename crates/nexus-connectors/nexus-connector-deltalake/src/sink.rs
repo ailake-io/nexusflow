@@ -5,12 +5,12 @@ use async_trait::async_trait;
 use deltalake::operations::create::CreateBuilder;
 use deltalake::table::builder::ensure_table_uri;
 use deltalake::writer::{DeltaWriter, RecordBatchWriter};
-use deltalake::{open_table, DeltaOps, DeltaTable};
+use deltalake::{open_table, DeltaTable};
 use nexus_core::{split_by_opcode, CheckpointCursor, NexusError, Sink};
 
 /// Delta Lake sink (Marco 6 — `deltalake` crate directly). Table creation
 /// and appends use the lower-level `CreateBuilder`/`RecordBatchWriter` (no
-/// query engine involved); CDC deletes go through `DeltaOps::delete()` with
+/// query engine involved); CDC deletes go through `DeltaTable::delete()` with
 /// a SQL `IN (...)` predicate, which needs the `datafusion` feature but not
 /// a direct `datafusion` dependency of our own — the predicate is a plain
 /// string, parsed internally by deltalake's bundled DataFusion.
@@ -61,7 +61,7 @@ impl DeltaSink {
             return Ok(table);
         }
         let predicate = in_predicate(batch_for_types, &self.primary_key, pks)?;
-        let (table, _metrics) = DeltaOps(table)
+        let (table, _metrics) = table
             .delete()
             .with_predicate(predicate)
             .await

@@ -189,9 +189,8 @@ mod tests {
         );
 
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Utf8, false)]));
-        let batch =
-            RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(vec!["a", "b"]))])
-                .unwrap();
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(vec!["a", "b"]))])
+            .unwrap();
         assert_eq!(
             extract_pk_strings(&batch, "id").unwrap(),
             vec!["a".to_string(), "b".to_string()]

@@ -121,10 +121,7 @@ async fn writes_reads_back_and_deletes_via_rewrite() {
     rows.sort_by_key(|(id, _)| *id);
     assert_eq!(
         rows,
-        vec![
-            (2, "paid".to_string()),
-            (3, "pending".to_string()),
-        ],
+        vec![(2, "paid".to_string()), (3, "pending".to_string()),],
         "id=1 must have been deleted, id=2 updated, id=3 unchanged: {rows:?}"
     );
 }

@@ -1,6 +1,9 @@
 use arrow_array::{Array, ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_cast::cast::cast;
-use arrow_schema::{DataType as ArrowDataType, Field as ArrowField, Schema as ArrowSchema, SchemaRef as ArrowSchemaRef};
+use arrow_schema::{
+    DataType as ArrowDataType, Field as ArrowField, Schema as ArrowSchema,
+    SchemaRef as ArrowSchemaRef,
+};
 use deltalake::{DataType as DeltaDataType, PrimitiveType, StructField, StructType};
 use nexus_core::NexusError;
 use std::sync::Arc;
@@ -45,7 +48,10 @@ pub fn in_predicate(
         .map_err(|_| NexusError::Schema(format!("column '{column_name}' not found")))?;
     let is_string = matches!(batch.schema().field(idx).data_type(), ArrowDataType::Utf8);
     let rendered: Vec<String> = if is_string {
-        values.iter().map(|v| format!("'{}'", v.replace('\'', "''"))).collect()
+        values
+            .iter()
+            .map(|v| format!("'{}'", v.replace('\'', "''")))
+            .collect()
     } else {
         values.to_vec()
     };
@@ -162,7 +168,11 @@ mod tests {
     fn delta_schema_to_arrow_maps_supported_types() {
         let delta_schema = StructType::try_new(vec![
             StructField::new("id", DeltaDataType::Primitive(PrimitiveType::Long), false),
-            StructField::new("name", DeltaDataType::Primitive(PrimitiveType::String), true),
+            StructField::new(
+                "name",
+                DeltaDataType::Primitive(PrimitiveType::String),
+                true,
+            ),
         ])
         .unwrap();
         let arrow_schema = delta_schema_to_arrow(&delta_schema).unwrap();
@@ -194,7 +204,10 @@ mod tests {
             false,
         )]));
         let normalized = normalize_batch(batch, &target_schema).unwrap();
-        assert_eq!(normalized.schema().field(0).data_type(), &ArrowDataType::Utf8);
+        assert_eq!(
+            normalized.schema().field(0).data_type(),
+            &ArrowDataType::Utf8
+        );
         let col = normalized
             .column(0)
             .as_any()
@@ -205,7 +218,11 @@ mod tests {
 
     #[test]
     fn extract_pk_strings_supports_int64_and_utf8() {
-        let schema = Arc::new(Schema::new(vec![Field::new("id", ArrowDataType::Int64, false)]));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "id",
+            ArrowDataType::Int64,
+            false,
+        )]));
         let batch =
             RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![1, 2]))]).unwrap();
         assert_eq!(
@@ -216,13 +233,21 @@ mod tests {
 
     #[test]
     fn in_predicate_quotes_string_columns_only() {
-        let schema = Arc::new(Schema::new(vec![Field::new("id", ArrowDataType::Int64, false)]));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "id",
+            ArrowDataType::Int64,
+            false,
+        )]));
         let batch =
             RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![1]))]).unwrap();
         let pred = in_predicate(&batch, "id", &["1".to_string(), "2".to_string()]).unwrap();
         assert_eq!(pred, "id IN (1, 2)");
 
-        let schema = Arc::new(Schema::new(vec![Field::new("id", ArrowDataType::Utf8, false)]));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "id",
+            ArrowDataType::Utf8,
+            false,
+        )]));
         let batch =
             RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(vec!["a"]))]).unwrap();
         let pred = in_predicate(&batch, "id", &["a".to_string(), "b".to_string()]).unwrap();

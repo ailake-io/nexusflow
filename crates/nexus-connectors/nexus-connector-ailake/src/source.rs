@@ -58,7 +58,8 @@ impl AilakeSource {
                 cfg.namespace, cfg.table
             ))
         })?;
-        let batch = read_file_batch(&store, &first.path, &cfg.embedding_column, cfg.dimension).await?;
+        let batch =
+            read_file_batch(&store, &first.path, &cfg.embedding_column, cfg.dimension).await?;
 
         Ok(Self {
             catalog,
@@ -112,8 +113,9 @@ async fn deleted_primary_keys(
             .get(&file.path)
             .await
             .map_err(|e| NexusError::Connector(format!("ailake read failed: {e}")))?;
-        let pairs = read_equality_delete_values(&bytes)
-            .map_err(|e| NexusError::Connector(format!("ailake equality delete decode failed: {e}")))?;
+        let pairs = read_equality_delete_values(&bytes).map_err(|e| {
+            NexusError::Connector(format!("ailake equality delete decode failed: {e}"))
+        })?;
         for (col, val) in pairs {
             if col == primary_key {
                 deleted.insert(val);
@@ -139,9 +141,13 @@ impl Source for AilakeSource {
 
         let mut batches = Vec::with_capacity(files.len());
         for file in files {
-            let batch =
-                read_file_batch(&self.store, &file.path, &self.embedding_column, self.dimension)
-                    .await?;
+            let batch = read_file_batch(
+                &self.store,
+                &file.path,
+                &self.embedding_column,
+                self.dimension,
+            )
+            .await?;
             let batch = if deleted.is_empty() {
                 batch
             } else {
