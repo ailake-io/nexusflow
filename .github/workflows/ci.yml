@@ -98,9 +98,11 @@ jobs:
           workspaces: crates/nexus-connectors
 
       # zlib headers (kafka consumer feature) + protoc (lancedb's build.rs
-      # shells out to it) are installed once on the self-hosted host, not
-      # per-run — no sudo apt-get here (runner service has no interactive
-      # sudo, and the packages persist on this disk between jobs anyway).
+      # shells out to it) + libsqlite3-dev (nexus-connector-iceberg's
+      # iceberg-catalog-sql -> sqlx "sqlite" feature links the system lib)
+      # are installed once on the self-hosted host, not per-run — no sudo
+      # apt-get here (runner service has no interactive sudo, and the
+      # packages persist on this disk between jobs anyway).
       - run: cargo fmt --all -- --check
 
       # Every connector must also compile with no features enabled — that's
