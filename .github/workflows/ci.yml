@@ -97,12 +97,16 @@ jobs:
         with:
           workspaces: crates/nexus-connectors
 
+      # GitHub-hosted runners already ship their own /swapfile (already
+      # swapped on), so fallocate-ing over it fails with "Text file busy" —
+      # use a different path for the extra swap this job needs.
       - name: Add swap space (linking lancedb/milvus/mongodb test binaries needs more than the runner's RAM)
         run: |
-          sudo fallocate -l 8G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
+          sudo fallocate -l 8G /swapfile-extra
+          sudo chmod 600 /swapfile-extra
+          sudo mkswap /swapfile-extra
+          sudo swapon /swapfile-extra
+          free -h
 
       # nexus-connector-kafka's `consumer` feature builds librdkafka from
       # vendored source (needs zlib headers); nexus-connector-odbc's
