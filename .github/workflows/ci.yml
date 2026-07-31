@@ -73,22 +73,18 @@ jobs:
   # kafka/odbc get built, linted and tested at all.
   connectors:
     name: connectors
-    runs-on: ubuntu-latest
+    # Self-hosted runner (nexusflow-local) — heaviest job (lancedb/milvus/
+    # mongodb dep trees), was hitting the 14GB disk cap on ubuntu-latest.
+    # Repo is private, single-maintainer, so no untrusted-PR risk.
+    runs-on: self-hosted
     defaults:
       run:
         working-directory: crates/nexus-connectors
     # nexus-connector-lancedb/-milvus/-mongodb each pull in huge dependency
     # trees (Lance/DataFusion/arrow-flight, tonic+prost, the full mongodb
-    # driver). The earlier "SIGBUS while linking" failures (CI runs
-    # 30599631960, 30620035322) turned out to be the standard GitHub-hosted
-    # runner's 14GB disk filling up mid-write on a huge .rlib (confirmed by
-    # run 30622086743: same build, explicit "No space left on device" once
-    # the swap file — itself eating disk — was removed from the equation).
-    # Not a RAM or linker-choice problem after all. Fixed by reclaiming
-    # ~30-50GB from unused preinstalled toolchains and shrinking debug info
-    # in Cargo.toml (see [profile.dev] there) so target/ itself is smaller.
-    env:
-      CARGO_BUILD_JOBS: "2"
+    # driver) — this is what blew past the GitHub-hosted runner's 14GB disk
+    # (see git history for that saga). Moot on self-hosted: real disk, no
+    # preinstalled-toolchain cleanup or job-count throttling needed.
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -98,21 +94,10 @@ jobs:
         with:
           workspaces: crates/nexus-connectors
 
-      - name: Free disk space (preinstalled toolchains this job never uses)
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL "$AGENT_TOOLSDIRECTORY"
-          df -h /
-
-      # nexus-connector-kafka's `consumer` feature builds librdkafka from
-      # vendored source (needs zlib headers); nexus-connector-odbc's
-      # `legacy` feature vendors unixODBC the same way but only needs a C
-      # compiler, already on the runner — see IMPLEMENTATION_PLAN.md Marco 3.
-      # protobuf-compiler (protoc): nexus-connector-lancedb pulls in
-      # lance-encoding, whose build.rs shells out to protoc to compile its
-      # .proto files — no vendored/pure-Rust fallback.
-      - name: Install native build deps for the kafka consumer feature and lancedb's protoc build dep
-        run: sudo apt-get update && sudo apt-get install -y zlib1g-dev protobuf-compiler
-
+      # zlib headers (kafka consumer feature) + protoc (lancedb's build.rs
+      # shells out to it) are installed once on the self-hosted host, not
+      # per-run — no sudo apt-get here (runner service has no interactive
+      # sudo, and the packages persist on this disk between jobs anyway).
       - run: cargo fmt --all -- --check
 
       # Every connector must also compile with no features enabled — that's
