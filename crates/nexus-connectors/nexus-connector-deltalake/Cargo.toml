@@ -1,0 +1,25 @@
+[package]
+name = "nexus-connector-deltalake"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+arrow-array = "58.4.0"
+arrow-cast = "58.4.0"
+arrow-schema = "58.4.0"
+async-trait = "0.1.91"
+# `datafusion` feature is only needed for DeleteBuilder (CDC deletes via a SQL
+# predicate) — table creation and appends use the lower-level
+# CreateBuilder/RecordBatchWriter, which don't need it. Reads go through
+# `deltalake::parquet` (re-exported, guaranteed version-matched) directly
+# against the table's physical Parquet files rather than deltalake's own
+# query engine, so no separate `parquet` dependency is needed either.
+deltalake = { version = "0.32.4", features = ["datafusion"] }
+futures = "0.3.33"
+nexus-core = { version = "0.1.0", path = "../../nexus-core" }
+serde = { version = "1.0.229", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3.14.0"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }

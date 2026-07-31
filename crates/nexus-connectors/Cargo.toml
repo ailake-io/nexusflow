@@ -15,6 +15,7 @@ members = [
     "nexus-connector-chromadb",
     "nexus-connector-ailake",
     "nexus-connector-parquet",
+    "nexus-connector-deltalake",
 ]
 
 [workspace.package]
