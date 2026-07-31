@@ -22,6 +22,7 @@ jobs:
 
   clippy:
     name: clippy
+    needs: fmt
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,6 +34,7 @@ jobs:
 
   test:
     name: test
+    needs: clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -73,6 +75,7 @@ jobs:
   # kafka/odbc get built, linted and tested at all.
   connectors:
     name: connectors
+    needs: test
     # Self-hosted runner (nexusflow-local) — heaviest job (lancedb/milvus/
     # mongodb dep trees), was hitting the 14GB disk cap on ubuntu-latest.
     # Repo is private, single-maintainer, so no untrusted-PR risk.
