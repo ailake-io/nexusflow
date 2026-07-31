@@ -77,6 +77,12 @@ jobs:
     defaults:
       run:
         working-directory: crates/nexus-connectors
+    # nexus-connector-lancedb pulls in the full Lance/DataFusion/arrow-flight
+    # dependency tree; linking its test binary with the default `ld` (bfd)
+    # exhausts the standard GitHub-hosted runner's RAM and crashes with
+    # SIGBUS. `lld` uses far less memory to link the same binary.
+    env:
+      RUSTFLAGS: -C link-arg=-fuse-ld=lld
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -92,10 +98,10 @@ jobs:
       # compiler, already on the runner — see IMPLEMENTATION_PLAN.md Marco 3.
       # protobuf-compiler (protoc): nexus-connector-lancedb pulls in
       # lance-encoding, whose build.rs shells out to protoc to compile its
-      # .proto files — no vendored/pure-Rust fallback. zlib1g-dev is for
-      # nexus-connector-kafka's `consumer` feature (vendored librdkafka).
-      - name: Install native build deps for the kafka consumer feature and lancedb's protoc build dep
-        run: sudo apt-get update && sudo apt-get install -y zlib1g-dev protobuf-compiler
+      # .proto files — no vendored/pure-Rust fallback. lld: see RUSTFLAGS
+      # above.
+      - name: Install native build deps for the kafka consumer feature, lancedb's protoc build dep, and the lld linker
+        run: sudo apt-get update && sudo apt-get install -y zlib1g-dev protobuf-compiler lld
 
       - run: cargo fmt --all -- --check
 
