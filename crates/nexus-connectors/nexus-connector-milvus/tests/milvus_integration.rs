@@ -107,15 +107,36 @@ async fn text_chunk_embed_milvus_end_to_end() {
     let setup_client = MilvusClient::new(url.clone())
         .await
         .expect("milvus client connects");
-    let mut builder = CollectionSchemaBuilder::new("docs", "nexusflow marco 5 test");
-    builder.add_field(FieldSchema::new_primary_int64("id", "", false));
-    builder.add_field(FieldSchema::new_varchar("chunk", "", 512));
-    builder.add_field(FieldSchema::new_float_vector("embedding", "", 384));
-    let schema = builder.build().expect("schema builds");
-    setup_client
-        .create_collection(schema, None)
-        .await
-        .expect("creates collection");
+
+    // "Proxy successfully started" (the container's WaitFor) only means the
+    // gRPC proxy accepted the port — RootCoord (which actually serves
+    // CreateCollection) registers itself with etcd a moment later, and on
+    // this memory-constrained host that gap is wide enough for the first
+    // call to hit a client-side "Cancelled: Timeout expired" instead of a
+    // real server error. Same shape as the ChromaDB gotcha (container log
+    // line != fully ready): retry the first DDL call a few times instead of
+    // widening the container-level wait.
+    let mut last_err = None;
+    for attempt in 0..10 {
+        let mut builder = CollectionSchemaBuilder::new("docs", "nexusflow marco 5 test");
+        builder.add_field(FieldSchema::new_primary_int64("id", "", false));
+        builder.add_field(FieldSchema::new_varchar("chunk", "", 512));
+        builder.add_field(FieldSchema::new_float_vector("embedding", "", 384));
+        let schema = builder.build().expect("schema builds");
+        match setup_client.create_collection(schema, None).await {
+            Ok(()) => {
+                last_err = None;
+                break;
+            }
+            Err(e) => {
+                last_err = Some(e);
+                tokio::time::sleep(std::time::Duration::from_millis(1000 * (attempt + 1))).await;
+            }
+        }
+    }
+    if let Some(e) = last_err {
+        panic!("creates collection (after retries): {e}");
+    }
 
     // --- chunk ---
     let source_text = "NexusFlow moves data at high speed.\n\n\
