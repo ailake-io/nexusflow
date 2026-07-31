@@ -47,6 +47,7 @@ async fn postgres_to_kafka_cdc_carries_correct_opcode_per_row() {
         .with_env_var("KAFKA_HEAP_OPTS", "-Xmx192M -Xms128M")
         .with_network(&network)
         .with_container_name(&zk_name)
+        .with_startup_timeout(Duration::from_secs(120))
         .start()
         .await
         .expect("zookeeper starts");
@@ -93,6 +94,7 @@ async fn postgres_to_kafka_cdc_carries_correct_opcode_per_row() {
         .with_mapped_port(kafka_ext_port, 9093.tcp())
         .with_network(&network)
         .with_container_name(&kafka_name)
+        .with_startup_timeout(Duration::from_secs(120))
         .start()
         .await
         .expect("kafka starts");
@@ -111,8 +113,10 @@ async fn postgres_to_kafka_cdc_carries_correct_opcode_per_row() {
         .with_network(&network)
         .with_container_name(&connect_name)
         // The distributed worker's group rebalance + herder startup takes
-        // well past testcontainers' default startup timeout.
-        .with_startup_timeout(Duration::from_secs(180))
+        // well past testcontainers' default startup timeout, and can take
+        // even longer on a loaded/shared CI runner — this is the slowest
+        // and flakiest of the three containers in practice.
+        .with_startup_timeout(Duration::from_secs(300))
         .start()
         .await
         .expect("kafka connect starts");
