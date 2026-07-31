@@ -1,4 +1,4 @@
-use crate::config::KafkaConnectorConfig;
+use crate::config::{KafkaConnectorConfig, KafkaEnvelope};
 use crate::payload::{build_schema, parse_payload};
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
@@ -6,19 +6,28 @@ use async_trait::async_trait;
 use futures::stream::{self, BoxStream, StreamExt};
 use nexus_core::{NexusError, RecordBatchBuilder, Source};
 use rdkafka::consumer::{Consumer, StreamConsumer};
+use rdkafka::error::KafkaError;
 use rdkafka::message::Message;
-use rdkafka::ClientConfig;
-use std::time::Duration;
+use rdkafka::topic_partition_list::TopicPartitionList;
+use rdkafka::types::RDKafkaErrorCode;
+use rdkafka::{ClientConfig, Offset};
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
-/// Basic Kafka consumer — decodes each message payload as JSON and projects
-/// it onto the configured schema. Foundation for Marco 4's Debezium envelope
-/// mode (opcode extraction), not implemented here. See ARCHITECTURE.md §4.1.
+/// Kafka consumer — decodes each message payload per `KafkaEnvelope` and
+/// projects it onto the configured schema. `envelope: Debezium` is Marco 4's
+/// CDC mode (opcode extraction) — see ARCHITECTURE.md §4.1/§7.
 pub struct KafkaSource {
     consumer: StreamConsumer,
     schema: SchemaRef,
+    envelope: KafkaEnvelope,
     batch_size: usize,
     poll_timeout: Duration,
     max_messages: usize,
+    /// Last consumed offset per partition — read after `read_batches` to
+    /// build a `CheckpointCursor` per partition (resume via
+    /// `start_offsets`), per ARCHITECTURE.md §5.
+    last_offsets: HashMap<i32, i64>,
 }
 
 impl KafkaSource {
@@ -31,17 +40,41 @@ impl KafkaSource {
             .create()
             .map_err(|e| NexusError::Connector(format!("kafka consumer create failed: {e}")))?;
 
-        consumer
-            .subscribe(&[config.topic.as_str()])
-            .map_err(|e| NexusError::Connector(format!("kafka subscribe failed: {e}")))?;
+        if config.start_offsets.is_empty() {
+            consumer
+                .subscribe(&[config.topic.as_str()])
+                .map_err(|e| NexusError::Connector(format!("kafka subscribe failed: {e}")))?;
+        } else {
+            // Explicit resume: assign exactly the partitions given, at their
+            // checkpointed offset — mirrors the "only unfinished partitions
+            // get a handle" pattern in nexus-server's runner.rs.
+            let mut tpl = TopicPartitionList::new();
+            for (&partition, &offset) in &config.start_offsets {
+                tpl.add_partition_offset(&config.topic, partition, Offset::Offset(offset))
+                    .map_err(|e| {
+                        NexusError::Connector(format!("kafka seek offset invalid: {e}"))
+                    })?;
+            }
+            consumer
+                .assign(&tpl)
+                .map_err(|e| NexusError::Connector(format!("kafka assign failed: {e}")))?;
+        }
 
         Ok(Self {
             consumer,
-            schema: build_schema(&config.fields),
+            schema: build_schema(&config.fields, config.envelope),
+            envelope: config.envelope,
             batch_size: config.batch_size,
             poll_timeout: Duration::from_millis(config.poll_timeout_ms),
             max_messages: config.max_messages,
+            last_offsets: HashMap::new(),
         })
+    }
+
+    /// Last consumed offset per partition, for the caller to persist as a
+    /// `CheckpointCursor` per `(pipeline_id, "{topic}-{partition}")`.
+    pub fn last_offsets(&self) -> &HashMap<i32, i64> {
+        &self.last_offsets
     }
 }
 
@@ -54,11 +87,30 @@ impl Source for KafkaSource {
         let mut batches = Vec::new();
         let mut buffer = Vec::with_capacity(self.batch_size);
         let mut consumed = 0usize;
+        // A CDC topic is often created lazily by the producer (e.g. Debezium
+        // creates it on its first change event) — a consumer that subscribes
+        // first sees UnknownTopicOrPartition until then. Tolerate it for up
+        // to the same idle-cutoff budget as "no message arrived", instead of
+        // hard-failing the whole read.
+        let mut waiting_for_topic_since: Option<Instant> = None;
 
         while consumed < self.max_messages {
             let next = tokio::time::timeout(self.poll_timeout, message_stream.next()).await;
             let message = match next {
-                Ok(Some(Ok(message))) => message,
+                Ok(Some(Ok(message))) => {
+                    waiting_for_topic_since = None;
+                    message
+                }
+                Ok(Some(Err(KafkaError::MessageConsumption(
+                    RDKafkaErrorCode::UnknownTopicOrPartition,
+                )))) => {
+                    let since = *waiting_for_topic_since.get_or_insert_with(Instant::now);
+                    if since.elapsed() >= self.poll_timeout {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    continue;
+                }
                 Ok(Some(Err(e))) => {
                     return Err(NexusError::Connector(format!("kafka poll error: {e}")))
                 }
@@ -69,7 +121,8 @@ impl Source for KafkaSource {
             let Some(bytes) = message.payload() else {
                 continue;
             };
-            buffer.push(parse_payload(bytes)?);
+            buffer.push(parse_payload(bytes, self.envelope)?);
+            self.last_offsets.insert(message.partition(), message.offset());
             consumed += 1;
 
             if buffer.len() >= self.batch_size {

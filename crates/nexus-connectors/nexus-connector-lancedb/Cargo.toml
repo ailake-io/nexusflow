@@ -1,0 +1,19 @@
+[package]
+name = "nexus-connector-lancedb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+arrow-array = "58.4.0"
+arrow-schema = "58.4.0"
+async-trait = "0.1.91"
+futures = "0.3.33"
+lancedb = "0.33.0"
+nexus-core = { version = "0.1.0", path = "../../nexus-core" }
+serde = { version = "1.0.229", features = ["derive"] }
+
+[dev-dependencies]
+nexus-ai = { path = "../../nexus-ai", features = ["cpu"] }
+tempfile = "3.14.0"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }

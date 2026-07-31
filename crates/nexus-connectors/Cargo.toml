@@ -7,6 +7,12 @@ members = [
     "nexus-connector-mongodb",
     "nexus-connector-kafka",
     "nexus-connector-odbc",
+    "nexus-connector-pgvector",
+    "nexus-connector-qdrant",
+    "nexus-connector-lancedb",
+    "nexus-connector-milvus",
+    "nexus-connector-pinecone",
+    "nexus-connector-chromadb",
 ]
 
 [workspace.package]

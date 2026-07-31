@@ -1,0 +1,15 @@
+{
+  "name": "nexus-postgres-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "database.hostname": "postgres",
+    "database.port": "5432",
+    "database.user": "nexus",
+    "database.password": "nexus",
+    "database.dbname": "nexus",
+    "topic.prefix": "nexus",
+    "plugin.name": "pgoutput",
+    "table.include.list": "public.*",
+    "tombstones.on.delete": "false"
+  }
+}

@@ -4,7 +4,7 @@ use arrow_array::RecordBatch;
 use async_trait::async_trait;
 use mongodb::bson::{doc, Document};
 use mongodb::{Client, Collection};
-use nexus_core::{CheckpointCursor, NexusError, Sink};
+use nexus_core::{CheckpointCursor, NexusError, Opcode, Sink, OPCODE_COLUMN};
 
 /// Idempotent by construction: every row is a `replace_one` upsert keyed on
 /// `primary_key`, matching the `Sink` contract in ARCHITECTURE.md §5
@@ -35,16 +35,37 @@ impl Sink for MongoSink {
     async fn write_batch(&mut self, batch: RecordBatch) -> Result<(), NexusError> {
         let rows = batch_to_json_rows(&batch)?;
 
-        for row in rows {
-            let document = mongodb::bson::to_document(&row)
-                .map_err(|e| NexusError::Serialization(format!("json->bson failed: {e}")))?;
-            let key_value = document.get(&self.primary_key).cloned().ok_or_else(|| {
+        for mut row in rows {
+            // CDC rows carry an `__opcode` field (ARCHITECTURE.md §5) — a `D`
+            // row must be a real delete, not silently upserted. Stripped
+            // either way so it never ends up persisted in the document.
+            let opcode = row
+                .get(OPCODE_COLUMN)
+                .and_then(serde_json::Value::as_str)
+                .and_then(Opcode::from_str);
+            if let Some(obj) = row.as_object_mut() {
+                obj.remove(OPCODE_COLUMN);
+            }
+
+            let key_value = row.get(&self.primary_key).cloned().ok_or_else(|| {
                 NexusError::Schema(format!(
                     "row missing primary key field '{}'",
                     self.primary_key
                 ))
             })?;
+            let key_value = mongodb::bson::to_bson(&key_value)
+                .map_err(|e| NexusError::Serialization(format!("json->bson failed: {e}")))?;
 
+            if opcode == Some(Opcode::Delete) {
+                self.collection
+                    .delete_one(doc! { &self.primary_key: key_value })
+                    .await
+                    .map_err(|e| NexusError::Connector(format!("mongo delete failed: {e}")))?;
+                continue;
+            }
+
+            let document = mongodb::bson::to_document(&row)
+                .map_err(|e| NexusError::Serialization(format!("json->bson failed: {e}")))?;
             self.collection
                 .replace_one(doc! { &self.primary_key: key_value }, document)
                 .upsert(true)

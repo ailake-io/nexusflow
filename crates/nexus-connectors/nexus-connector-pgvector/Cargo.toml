@@ -1,0 +1,21 @@
+[package]
+name = "nexus-connector-pgvector"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+arrow-array = "58.4.0"
+arrow-schema = "58.4.0"
+async-trait = "0.1.91"
+nexus-core = { version = "0.1.0", path = "../../nexus-core" }
+pgvector = { version = "0.4.1", default-features = false, features = ["postgres"] }
+serde = { version = "1.0.229", features = ["derive"] }
+tokio = { version = "1.53.1", features = ["rt"] }
+tokio-postgres = "0.7.13"
+
+[dev-dependencies]
+nexus-ai = { path = "../../nexus-ai", features = ["cpu"] }
+testcontainers = "0.27.3"
+testcontainers-modules = { version = "0.15.0", features = ["postgres"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }

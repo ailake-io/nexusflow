@@ -1,9 +1,9 @@
 use crate::config::{OdbcConnectorConfig, OdbcDataType, OdbcFieldSpec};
 use crate::row_mapping::batch_to_json_rows;
-use crate::sql::{build_insert_sql, build_update_sql, update_param_order};
+use crate::sql::{build_delete_sql, build_insert_sql, build_update_sql, update_param_order};
 use arrow_array::RecordBatch;
 use async_trait::async_trait;
-use nexus_core::{CheckpointCursor, NexusError, Sink};
+use nexus_core::{CheckpointCursor, NexusError, Opcode, Sink, OPCODE_COLUMN};
 use odbc_api::parameter::InputParameter;
 use odbc_api::{Bit, Connection, ConnectionOptions, Environment, IntoParameter, Nullable};
 use serde_json::Value;
@@ -78,9 +78,39 @@ fn write_rows(config: &OdbcConnectorConfig, rows: &[Value]) -> Result<(), NexusE
 
     let update_sql = build_update_sql(&config.table, &config.primary_key, &config.fields)?;
     let insert_sql = build_insert_sql(&config.table, &config.fields)?;
+    let delete_sql = build_delete_sql(&config.table, &config.primary_key)?;
     let update_fields = update_param_order(&config.primary_key, &config.fields);
+    let pk_field = config
+        .fields
+        .iter()
+        .find(|f| f.name == config.primary_key)
+        .ok_or_else(|| {
+            NexusError::Schema(format!(
+                "primary key '{}' not present in configured fields",
+                config.primary_key
+            ))
+        })?;
 
     for row in rows {
+        // CDC batches carry an `__opcode` column (ARCHITECTURE.md §5) — a
+        // `D` row must be a real `DELETE`, not silently upserted. Plain
+        // (non-CDC) rows have no such column and fall through unchanged.
+        let opcode = row
+            .get(OPCODE_COLUMN)
+            .and_then(Value::as_str)
+            .and_then(Opcode::from_str);
+        if opcode == Some(Opcode::Delete) {
+            let pk_value = row.get(&config.primary_key).unwrap_or(&Value::Null);
+            let delete_params = vec![to_param(pk_value, pk_field.data_type)];
+            let mut delete_stmt = conn
+                .preallocate()
+                .map_err(|e| NexusError::Connector(format!("odbc preallocate: {e}")))?;
+            delete_stmt
+                .execute(&delete_sql, delete_params.as_slice())
+                .map_err(|e| NexusError::Connector(format!("odbc delete failed: {e}")))?;
+            continue;
+        }
+
         let update_params = params_for(row, update_fields.iter().copied());
         let mut update_stmt = conn
             .preallocate()

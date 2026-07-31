@@ -1,7 +1,7 @@
-//! Bridging connector for Kafka. Basic consumer: decodes each message
-//! payload as JSON and converts it to `RecordBatch` via `RecordBatchBuilder`.
-//! Foundation for Marco 4's Debezium envelope/CDC opcode mode — see
-//! ARCHITECTURE.md §2/§4.1 and IMPLEMENTATION_PLAN.md Marco 3/4.
+//! Bridging connector for Kafka. Two decode modes: `Raw` (each message
+//! payload is JSON, projected onto `fields`) and `Debezium` (Marco 4 CDC —
+//! decodes a Debezium change event and appends the `__opcode` column). See
+//! ARCHITECTURE.md §2/§4.1/§7 and IMPLEMENTATION_PLAN.md Marco 3/4.
 //!
 //! `librdkafka` is a native C dependency, so the consumer is behind the
 //! `consumer` Cargo feature (CLAUDE.md §8.5) — building this crate with no
@@ -12,7 +12,8 @@ mod payload;
 #[cfg(feature = "consumer")]
 mod source;
 
-pub use config::{KafkaConnectorConfig, KafkaDataType, KafkaFieldSpec};
+pub use config::{KafkaConnectorConfig, KafkaDataType, KafkaEnvelope, KafkaFieldSpec};
+pub use nexus_core::OPCODE_COLUMN;
 pub use payload::{build_schema, parse_payload};
 #[cfg(feature = "consumer")]
 pub use source::KafkaSource;

@@ -1,3 +1,4 @@
+pub mod cdc;
 pub mod checkpoint;
 pub mod dag;
 pub mod error;
@@ -8,7 +9,8 @@ pub mod sql;
 pub mod traits;
 pub mod transform;
 
-pub use checkpoint::{CheckpointCursor, Opcode};
+pub use cdc::{project_column, split_by_opcode, CdcSplit};
+pub use checkpoint::{CheckpointCursor, Opcode, OPCODE_COLUMN};
 pub use dag::{NodeSpec, PipelineSpec, TransformSpec};
 pub use error::NexusError;
 pub use pipeline::{PartitionHandle, PartitionStats, PipelineEngine, TransformPipeline};

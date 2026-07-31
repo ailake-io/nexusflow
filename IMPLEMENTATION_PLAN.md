@@ -70,7 +70,7 @@ Parte da arquitetura já revisada em `ARCHITECTURE.md` v2: crate-por-conector, b
 ---
 
 ## Marco 5 — AI Lakehouse (`nexus-ai`)
-- **Pré-requisito de decisão** (bloqueia início do código): ciclo de vida do modelo ONNX — origem (download HF Hub em runtime vs. empacotado), cache local, versionamento. Resolver explicitamente antes de codar (débito já registrado em `ARCHITECTURE.md §8`).
+- ~~**Pré-requisito de decisão** (bloqueia início do código)~~ — resolvido 2026-07-30: HF Hub em runtime + cache local, versionado por repo+revision fixados na config (ver `ARCHITECTURE.md §8`).
 - `nexus-ai::chunking` — 3 estratégias (fixed-size window, recursive character, semantic), funções puras `fn chunk(text: &str, cfg: ChunkConfig) -> Vec<String>`, testáveis sem I/O.
 - `nexus-ai::embedding` — wrapper `ort` feature-gated (`cpu` primeiro; `cuda`/`metal`/`api` depois, cada um behind `[features]`), batch de inferência, anexa coluna `embedding: FixedSizeList<Float32>` ao `RecordBatch`.
 - Sinks vetoriais, nesta ordem (mais simples de operar → mais complexo, conforme `ROADMAP.md` Fase 5): `nexus-connector-pgvector` → `nexus-connector-qdrant` → `nexus-connector-lancedb` → `nexus-connector-milvus` → `nexus-connector-pinecone` → `nexus-connector-chromadb`.
@@ -143,9 +143,22 @@ Parte da arquitetura já revisada em `ARCHITECTURE.md` v2: crate-por-conector, b
 
 ---
 
+## Marco 13 — CDC nativo (WAL/binlog, condicional — sob demanda)
+
+**Não agendado.** Só entra em execução se o overhead operacional de manter Debezium+Kafka como dependência do Marco 4 virar bloqueador real de adoção confirmado — não é trabalho especulativo, é resposta a sinal de mercado (ver ARCHITECTURE.md §7, débito registrado desde o Marco 4).
+
+- Parser binário do protocolo de replicação lógica do Postgres (WAL, formato `pgoutput` ou `wal2json` direto via `libpq` streaming replication) — sem passar por Kafka/Debezium. Primeiro candidato: Postgres, por já ser o fast-path (Marco 1).
+- Elimina a dependência de infra externa (Kafka+Debezium) só pra CDC — trade-off é reimplementar dentro do nexusflow um subsistema do tamanho do Debezium: gestão de replication slot, resume por LSN, decodificação binária do WAL, mapeamento de tipos Postgres → Arrow sem o schema registry que o Debezium já resolve.
+- `nexus-connector-postgres` ganha um modo de leitura CDC nativo, opcode (`I`/`U`/`D`) como coluna extra do `RecordBatch` — mesma convenção do Marco 4 (`ARCHITECTURE.md §5`), pra manter os dois modos (Debezium e nativo) intercambiáveis do ponto de vista do resto do pipeline.
+- MySQL (binlog) e outros bancos só entram depois, cada um é um parser de protocolo binário próprio — não reaproveita nada do parser Postgres além da convenção de opcode/checkpoint.
+
+**Critério de pronto:** pipeline CDC nativo Postgres, sem Kafka/Debezium na frente, com resume por LSN (não por offset de partição Kafka) e opcode correto — validado com teste de integração contra Postgres real gerando INSERT/UPDATE/DELETE.
+
+---
+
 ## Ordem de execução e paralelização
 
-Sequencial obrigatório: Marco 0 → 1 → (2 e 3 podem ser paralelos entre si) → 4. Marco 5, 6 podem rodar em paralelo com 7 (times/momentos diferentes, sem dependência forte — todos consomem só os traits do Marco 0-1). Marco 8 depende de 7 (precisa da API/WS prontos). Marco 9 pode começar cedo (instrumentar desde o Marco 1) mas "critério de pronto" formal só fecha depois do Marco 7. Marco 10 e 11 são independentes, podem entrar a qualquer momento após Marco 1. Marco 12 é paralelo ao resto, em repo separado.
+Sequencial obrigatório: Marco 0 → 1 → (2 e 3 podem ser paralelos entre si) → 4. Marco 5, 6 podem rodar em paralelo com 7 (times/momentos diferentes, sem dependência forte — todos consomem só os traits do Marco 0-1). Marco 8 depende de 7 (precisa da API/WS prontos). Marco 9 pode começar cedo (instrumentar desde o Marco 1) mas "critério de pronto" formal só fecha depois do Marco 7. Marco 10 e 11 são independentes, podem entrar a qualquer momento após Marco 1. Marco 12 é paralelo ao resto, em repo separado. Marco 13 não tem posição na sequência — é condicional, só entra se confirmado por sinal de adoção (ver Marco 13).
 
 ## Verificação
 

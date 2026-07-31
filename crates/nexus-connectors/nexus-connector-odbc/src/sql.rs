@@ -47,6 +47,14 @@ pub fn update_param_order<'a>(
     order
 }
 
+pub fn build_delete_sql(table: &str, primary_key: &str) -> Result<String, NexusError> {
+    let quoted_table = quote_identifier(table)?;
+    let quoted_primary_key = quote_identifier(primary_key)?;
+    Ok(format!(
+        "DELETE FROM {quoted_table} WHERE {quoted_primary_key} = ?"
+    ))
+}
+
 /// Row values are bound in schema order — matches `fields` directly.
 pub fn build_insert_sql(table: &str, fields: &[OdbcFieldSpec]) -> Result<String, NexusError> {
     let quoted_table = quote_identifier(table)?;
@@ -100,6 +108,12 @@ mod tests {
         let order = update_param_order("id", &fields);
         let names: Vec<&str> = order.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, vec!["name", "id"]);
+    }
+
+    #[test]
+    fn delete_sql_targets_primary_key() {
+        let sql = build_delete_sql("events", "id").unwrap();
+        assert_eq!(sql, "DELETE FROM \"events\" WHERE \"id\" = ?");
     }
 
     #[test]

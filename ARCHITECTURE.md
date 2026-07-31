@@ -98,7 +98,7 @@ Fluxo: `RecordBatch` (texto bruto) → chunking (fixed-size / recursive / semant
 
 Chunking e embedding são etapas **puras** (sem I/O) para ficarem testáveis sem GPU/rede — só o Sink final faz I/O externo.
 
-**Ciclo de vida do modelo ONNX (débito de design, decidir antes da Fase 5 do `ROADMAP.md`)**: de onde o modelo vem (download do Hugging Face Hub em runtime vs. empacotado no build), onde fica cacheado localmente, e como é versionado/atualizado. Não definido ainda — precisa de decisão antes de implementar `nexus-ai`, não durante.
+**Ciclo de vida do modelo ONNX (decidido, Marco 5, 2026-07-30)**: download do Hugging Face Hub em runtime (crate `hf-hub`), cacheado localmente em `~/.cache/nexusflow/models/` (ou equivalente XDG por SO). Primeira execução com um modelo precisa de rede; execuções seguintes usam o cache. Versionamento: repo HF + revision (commit/tag) fixados na config do node — nunca "latest" implícito, pra reprodutibilidade. Sem empacotamento no binário (mantém o binário leve, custo é exigir rede na primeira execução com cada modelo novo).
 
 ## 9. Erros
 

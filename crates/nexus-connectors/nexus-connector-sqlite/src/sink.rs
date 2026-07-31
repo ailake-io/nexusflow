@@ -4,11 +4,15 @@ use adbc_core::{Connection as _, Statement as _};
 use adbc_driver_manager::ManagedConnection;
 use arrow_array::RecordBatch;
 use async_trait::async_trait;
-use nexus_core::{quote_identifier, CheckpointCursor, NexusError, Sink};
+use nexus_core::{
+    project_column, quote_identifier, split_by_opcode, CheckpointCursor, NexusError, Sink,
+};
 
 pub struct SqliteSink {
     connection: ManagedConnection,
     upsert_sql: String,
+    delete_sql: String,
+    primary_key: String,
 }
 
 impl SqliteSink {
@@ -17,9 +21,12 @@ impl SqliteSink {
     pub fn connect(cfg: &SqliteConnectorConfig, columns: &[String]) -> Result<Self, NexusError> {
         let connection = open_connection(&cfg.uri)?;
         let upsert_sql = build_upsert_sql(&cfg.table, &cfg.primary_key, columns)?;
+        let delete_sql = build_delete_sql(&cfg.table, &cfg.primary_key)?;
         Ok(Self {
             connection,
             upsert_sql,
+            delete_sql,
+            primary_key: cfg.primary_key.clone(),
         })
     }
 }
@@ -55,11 +62,10 @@ fn build_upsert_sql(
     ))
 }
 
-#[async_trait]
-impl Sink for SqliteSink {
-    async fn write_batch(&mut self, batch: RecordBatch) -> Result<(), NexusError> {
+impl SqliteSink {
+    async fn execute(&self, sql: &str, batch: RecordBatch) -> Result<(), NexusError> {
         let mut connection = self.connection.clone();
-        let sql = self.upsert_sql.clone();
+        let sql = sql.to_string();
 
         tokio::task::spawn_blocking(move || -> Result<(), NexusError> {
             let mut statement = connection
@@ -83,6 +89,38 @@ impl Sink for SqliteSink {
         .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))??;
 
         Ok(())
+    }
+}
+
+fn build_delete_sql(table: &str, primary_key: &str) -> Result<String, NexusError> {
+    let quoted_table = quote_identifier(table)?;
+    let quoted_primary_key = quote_identifier(primary_key)?;
+    Ok(format!(
+        "DELETE FROM {quoted_table} WHERE {quoted_primary_key} = ?"
+    ))
+}
+
+#[async_trait]
+impl Sink for SqliteSink {
+    async fn write_batch(&mut self, batch: RecordBatch) -> Result<(), NexusError> {
+        // CDC batches carry an `__opcode` column (ARCHITECTURE.md §5) — split
+        // it so deletes are issued as real `DELETE`s instead of being
+        // silently upserted. Plain (non-CDC) batches take the unchanged
+        // single upsert path.
+        match split_by_opcode(&batch)? {
+            None => self.execute(&self.upsert_sql.clone(), batch).await,
+            Some(split) => {
+                if split.upserts.num_rows() > 0 {
+                    self.execute(&self.upsert_sql.clone(), split.upserts)
+                        .await?;
+                }
+                if split.deletes.num_rows() > 0 {
+                    let keys = project_column(&split.deletes, &self.primary_key)?;
+                    self.execute(&self.delete_sql.clone(), keys).await?;
+                }
+                Ok(())
+            }
+        }
     }
 
     async fn commit_checkpoint(&mut self, _cursor: CheckpointCursor) -> Result<(), NexusError> {
@@ -115,5 +153,11 @@ mod tests {
         let err = build_upsert_sql("events\"; DROP TABLE users; --", "id", &["id".to_string()])
             .expect_err("malicious table name must be rejected");
         assert!(matches!(err, NexusError::Schema(_)));
+    }
+
+    #[test]
+    fn delete_sql_targets_primary_key() {
+        let sql = build_delete_sql("events", "id").unwrap();
+        assert_eq!(sql, "DELETE FROM \"events\" WHERE \"id\" = ?");
     }
 }
