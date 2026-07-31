@@ -1,0 +1,25 @@
+[package]
+name = "nexus-connector-iceberg"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+arrow-array = "58.4.0"
+arrow-schema = "58.4.0"
+async-trait = "0.1.91"
+futures = "0.3.33"
+iceberg = "0.10.0"
+iceberg-catalog-sql = "0.10.0"
+nexus-core = { version = "0.1.0", path = "../../nexus-core" }
+parquet = "58.4.0"
+serde = { version = "1.0.229", features = ["derive"] }
+# iceberg-catalog-sql only requires sqlx's "any" feature itself — the
+# concrete SQLite driver must come from somewhere in the build (Cargo
+# feature unification), so it's declared here directly. Matches the
+# combination iceberg-catalog-sql's own tests use.
+sqlx = { version = "0.8.1", default-features = false, features = ["any", "runtime-tokio", "sqlite", "tls-rustls"] }
+
+[dev-dependencies]
+tempfile = "3.14.0"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
