@@ -1,0 +1,19 @@
+[package]
+name = "nexus-connector-parquet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+arrow-array = "58.4.0"
+arrow-schema = "58.4.0"
+arrow-select = "58.4.0"
+async-trait = "0.1.91"
+futures = "0.3.33"
+nexus-core = { version = "0.1.0", path = "../../nexus-core" }
+parquet = "58.4.0"
+serde = { version = "1.0.229", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3.14.0"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
