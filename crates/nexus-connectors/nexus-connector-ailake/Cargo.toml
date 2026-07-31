@@ -1,0 +1,35 @@
+[package]
+name = "nexus-connector-ailake"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ailake-catalog = "0.1.10"
+ailake-core = "0.1.10"
+ailake-file = "0.1.10"
+ailake-query = "0.1.10"
+ailake-store = "0.1.10"
+arrow-array = "58.4.0"
+arrow-ipc = "58.4.0"
+arrow-schema = "58.4.0"
+# The ailake-* crates (published independently on crates.io) pin arrow at
+# 52.2.0 internally — a different, incompatible Rust type from our
+# workspace's 58.4.0 `RecordBatch`. Rather than an unsafe transmute across
+# two independently-versioned FFI struct layouts, `bridge.rs` round-trips
+# batches through the Arrow IPC byte format (stable across arrow-rs
+# versions) at the sink/source boundary. These "-old" aliases are that
+# older version, imported under a different name via Cargo's `package` key.
+arrow-array-old = { package = "arrow-array", version = "52.2.0" }
+arrow-ipc-old = { package = "arrow-ipc", version = "52.2.0" }
+arrow-schema-old = { package = "arrow-schema", version = "52.2.0" }
+arrow-select = "58.4.0"
+async-trait = "0.1.91"
+futures = "0.3.33"
+nexus-core = { version = "0.1.0", path = "../../nexus-core" }
+serde = { version = "1.0.229", features = ["derive"] }
+
+[dev-dependencies]
+nexus-ai = { path = "../../nexus-ai", features = ["cpu"] }
+tempfile = "3.14.0"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
