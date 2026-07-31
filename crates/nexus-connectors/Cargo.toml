@@ -19,3 +19,14 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
+
+# Full debug info on a workspace this size (lancedb/milvus/qdrant/mongodb
+# each pull in huge dependency trees — Lance/DataFusion/arrow-flight,
+# tonic+prost, the full mongodb driver) makes target/ big enough to fill a
+# standard CI runner's disk. Line-tables-only keeps panic backtraces useful
+# while cutting artifact size substantially.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"
