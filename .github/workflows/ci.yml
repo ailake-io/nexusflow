@@ -77,12 +77,17 @@ jobs:
     defaults:
       run:
         working-directory: crates/nexus-connectors
-    # nexus-connector-lancedb pulls in the full Lance/DataFusion/arrow-flight
-    # dependency tree; linking its test binary with the default `ld` (bfd)
-    # exhausts the standard GitHub-hosted runner's RAM and crashes with
-    # SIGBUS. `lld` uses far less memory to link the same binary.
+    # nexus-connector-lancedb/-milvus/-mongodb each pull in huge dependency
+    # trees (Lance/DataFusion/arrow-flight, tonic+prost, the full mongodb
+    # driver). Linking several of their test binaries at once exhausts the
+    # standard GitHub-hosted runner's ~7GB RAM and crashes with SIGBUS —
+    # confirmed this isn't a linker-choice problem (rust-lld crashed the
+    # same way `ld` did, see CI run 30620035322): it's genuine memory
+    # exhaustion, not linker inefficiency. Fixed two ways: a swap file so a
+    # transient spike doesn't OOM-kill the linker, and capping build
+    # parallelism so fewer huge binaries link at the same time.
     env:
-      RUSTFLAGS: -C link-arg=-fuse-ld=lld
+      CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -92,16 +97,22 @@ jobs:
         with:
           workspaces: crates/nexus-connectors
 
+      - name: Add swap space (linking lancedb/milvus/mongodb test binaries needs more than the runner's RAM)
+        run: |
+          sudo fallocate -l 8G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+
       # nexus-connector-kafka's `consumer` feature builds librdkafka from
       # vendored source (needs zlib headers); nexus-connector-odbc's
       # `legacy` feature vendors unixODBC the same way but only needs a C
       # compiler, already on the runner — see IMPLEMENTATION_PLAN.md Marco 3.
       # protobuf-compiler (protoc): nexus-connector-lancedb pulls in
       # lance-encoding, whose build.rs shells out to protoc to compile its
-      # .proto files — no vendored/pure-Rust fallback. lld: see RUSTFLAGS
-      # above.
-      - name: Install native build deps for the kafka consumer feature, lancedb's protoc build dep, and the lld linker
-        run: sudo apt-get update && sudo apt-get install -y zlib1g-dev protobuf-compiler lld
+      # .proto files — no vendored/pure-Rust fallback.
+      - name: Install native build deps for the kafka consumer feature and lancedb's protoc build dep
+        run: sudo apt-get update && sudo apt-get install -y zlib1g-dev protobuf-compiler
 
       - run: cargo fmt --all -- --check
 
