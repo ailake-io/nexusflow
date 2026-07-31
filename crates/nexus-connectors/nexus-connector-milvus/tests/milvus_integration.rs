@@ -124,7 +124,7 @@ async fn text_chunk_embed_milvus_end_to_end() {
         builder.add_field(FieldSchema::new_float_vector("embedding", "", 384));
         let schema = builder.build().expect("schema builds");
         match setup_client.create_collection(schema, None).await {
-            Ok(()) => {
+            Ok(_) => {
                 last_err = None;
                 break;
             }
