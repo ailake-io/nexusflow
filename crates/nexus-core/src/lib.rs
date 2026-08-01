@@ -11,7 +11,7 @@ pub mod transform;
 
 pub use cdc::{project_column, split_by_opcode, CdcSplit};
 pub use checkpoint::{CheckpointCursor, Opcode, OPCODE_COLUMN};
-pub use dag::{NodeSpec, PipelineSpec, TransformSpec};
+pub use dag::{DbtCommand, DbtConfig, NodeSpec, PipelineSpec, TransformSpec};
 pub use error::NexusError;
 pub use pipeline::{
     PartitionHandle, PartitionStats, PipelineEngine, ProgressEvent, ProgressSender,

@@ -4,6 +4,7 @@ mod auth_store;
 mod checkpoint_store;
 mod connectors;
 mod crypto;
+mod dbt;
 mod error;
 mod pipeline_store;
 mod progress;
@@ -224,25 +225,54 @@ async fn run_pipeline_handler(
 
     match result {
         Ok(stats) => {
+            // ELT mode (Marco 10): dbt runs against the sink warehouse only
+            // after the raw load lands — a dbt failure fails the whole run,
+            // same recording/alerting as a load failure, not a separate
+            // "partial success" state.
+            if let Some(dbt_config) = &spec.dbt {
+                match dbt::run(dbt_config).await {
+                    Ok(outcome) => {
+                        tracing::info!(
+                            dbt_command = outcome.command,
+                            dbt_stdout = %outcome.stdout,
+                            dbt_stderr = %outcome.stderr,
+                            "dbt step finished for this run"
+                        );
+                    }
+                    Err(e) => {
+                        record_run_failure(&state, run_id, &spec.pipeline_id, &e).await;
+                        return Err(ApiError::internal(e));
+                    }
+                }
+            }
             if let Err(e) = state.pipelines.finish_run_success(run_id, &stats).await {
                 tracing::warn!(error = %e, "failed to record successful pipeline run");
             }
             Ok(Json(stats))
         }
         Err(e) => {
-            if let Err(record_err) = state
-                .pipelines
-                .finish_run_failure(run_id, &e.to_string())
-                .await
-            {
-                tracing::warn!(error = %record_err, "failed to record failed pipeline run");
-            }
-            state
-                .alerts
-                .notify_pipeline_failed(&spec.pipeline_id, run_id, &e.to_string());
+            record_run_failure(&state, run_id, &spec.pipeline_id, &e).await;
             Err(ApiError::internal(e))
         }
     }
+}
+
+async fn record_run_failure(
+    state: &AppState,
+    run_id: i64,
+    pipeline_id: &str,
+    error: &anyhow::Error,
+) {
+    if let Err(record_err) = state
+        .pipelines
+        .finish_run_failure(run_id, &error.to_string())
+        .await
+    {
+        tracing::warn!(error = %record_err, "failed to record failed pipeline run");
+    }
+    state
+        .alerts
+        .notify_pipeline_failed(pipeline_id, run_id, &error.to_string());
 }
 
 async fn create_pipeline_handler(

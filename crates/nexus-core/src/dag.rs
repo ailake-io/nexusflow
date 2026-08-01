@@ -31,6 +31,31 @@ pub struct TransformSpec {
     pub sql: String,
 }
 
+/// Which dbt command to invoke after the raw load succeeds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DbtCommand {
+    Run,
+    Build,
+    Test,
+}
+
+/// ELT mode (Marco 10, CLAUDE.md §4.4): once the raw load into `sinks`
+/// succeeds, run dbt against that same warehouse — dbt operates via SQL on
+/// already-landed tables, not on this pipeline's in-flight Arrow batches,
+/// so this is a post-load step, not a DAG transform node.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DbtConfig {
+    /// Path to the dbt project directory (containing `dbt_project.yml`) —
+    /// must be reachable from the nexus-server process (self-hosted
+    /// deployment, ARCHITECTURE.md §7).
+    pub project_dir: String,
+    pub command: DbtCommand,
+    /// Optional `--select` model selector.
+    #[serde(default)]
+    pub select: Option<String>,
+}
+
 /// Two shapes, both valid DAGs (ARCHITECTURE.md §4):
 /// - No transform: strictly linear `1 source -> 1 sink`, partitioned
 ///   execution (Marco 1's model — `PipelineEngine::run`).
@@ -47,6 +72,11 @@ pub struct PipelineSpec {
     pub channel_capacity: usize,
     #[serde(default = "default_partitions")]
     pub partitions: u32,
+    /// ELT mode — dbt run/build/test against the sink warehouse after the
+    /// raw load succeeds (Marco 10). `None` (the default) means "no dbt
+    /// step", the same as before this field existed.
+    #[serde(default)]
+    pub dbt: Option<DbtConfig>,
 }
 
 fn default_channel_capacity() -> usize {

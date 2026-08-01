@@ -321,6 +321,7 @@ mod tests {
             }],
             channel_capacity: 100,
             partitions: 1,
+            dbt: None,
         }
     }
 
