@@ -30,6 +30,17 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+      # --all-features turns on nexus-server's embed-ui, whose
+      # #[derive(RustEmbed)] needs frontend/dist to exist at compile time
+      # (Marco 11) — build it for real rather than faking an empty dir, so
+      # this also catches an actually-broken frontend build.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci && npm run build
+        working-directory: frontend
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   # frontend/ (Marco 8) doesn't touch the Rust workspace or the self-hosted
@@ -83,6 +94,16 @@ jobs:
         run: |
           ./scripts/build-adbc-postgresql-driver.sh
           ./scripts/build-adbc-sqlite-driver.sh
+
+      # Same reason as the clippy job: --all-features enables embed-ui,
+      # whose RustEmbed derive needs frontend/dist to exist at compile time.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci && npm run build
+        working-directory: frontend
 
       - name: Run tests
         env:

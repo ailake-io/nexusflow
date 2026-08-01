@@ -5,6 +5,8 @@ mod checkpoint_store;
 mod connectors;
 mod crypto;
 mod dbt;
+#[cfg(feature = "embed-ui")]
+mod embedded_ui;
 mod error;
 mod pipeline_store;
 mod progress;
@@ -121,7 +123,7 @@ fn router(state: AppState) -> Router {
         ))
         .layer(Extension(Role::Read));
 
-    Router::new()
+    let app = Router::new()
         .route("/health", get(health))
         // Unauthenticated like /health — Prometheus scrapers don't carry a
         // JWT, and RBAC over metrics access would need a whole separate
@@ -139,7 +141,15 @@ fn router(state: AppState) -> Router {
         .merge(execute_protected)
         .merge(write_protected)
         .merge(read_protected)
-        .with_state(state)
+        .with_state(state);
+
+    // Only wired in for the single-binary build (Marco 11) — without the
+    // feature, an unmatched route just gets axum's default 404, same as
+    // every build before this one.
+    #[cfg(feature = "embed-ui")]
+    let app = app.fallback(embedded_ui::handler);
+
+    app
 }
 
 async fn health() -> &'static str {

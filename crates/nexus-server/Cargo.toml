@@ -13,6 +13,16 @@ default = []
 # (it's just data), but a spec that sets it gets a clear "not compiled in"
 # error instead of silently doing nothing.
 dbt = ["tokio/process"]
+# Single-binary deployment (Marco 11, CLAUDE.md §7): embeds frontend/dist
+# into the binary via rust-embed and serves it (with SPA fallback) for any
+# GET that doesn't match an API route. Off by default because rust-embed's
+# `#[folder = "../../frontend/dist"]` requires that directory to exist at
+# *compile* time — with the feature off, that derive is cfg-stripped
+# before rust-embed's proc-macro ever runs, so a plain `cargo build`/CI's
+# `--all-features` sweep (see dbt's same posture) never needs `npm run
+# build` to have happened first. Build the frontend, then
+# `cargo build --features embed-ui`, to get the real single binary.
+embed-ui = ["dep:rust-embed"]
 
 [dependencies]
 aes-gcm = "0.10.3"
@@ -70,6 +80,7 @@ opentelemetry-otlp = { version = "0.32.0", default-features = false, features = 
 tracing-opentelemetry = { version = "0.33.0", default-features = false, features = ["tracing-log"] }
 opentelemetry-prometheus = "0.32.0"
 prometheus = "0.14.0"
+rust-embed = { version = "8.12.0", optional = true, features = ["mime-guess"] }
 
 [dev-dependencies]
 # Pinned to match the workspace-wide arrow-array/arrow-schema version
