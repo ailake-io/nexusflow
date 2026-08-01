@@ -22,13 +22,43 @@ use tower::ServiceExt;
 const ROW_COUNT: i64 = 100_000;
 const PARTITIONS: u32 = 8;
 
-async fn post_run(app: Router, pipeline_id: &str, spec: &Value) -> (StatusCode, Value) {
+async fn login(app: Router, username: &str, password: &str) -> String {
+    let body = json!({"username": username, "password": password});
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/auth/login")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "login must succeed");
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    body["token"]
+        .as_str()
+        .expect("login response has a token")
+        .to_string()
+}
+
+async fn post_run(
+    app: Router,
+    pipeline_id: &str,
+    spec: &Value,
+    token: &str,
+) -> (StatusCode, Value) {
     let response = app
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri(format!("/pipelines/{pipeline_id}/run"))
                 .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::from(spec.to_string()))
                 .unwrap(),
         )
@@ -41,6 +71,16 @@ async fn post_run(app: Router, pipeline_id: &str, spec: &Value) -> (StatusCode, 
         .unwrap();
     let body: Value = serde_json::from_slice(&bytes).unwrap();
     (status, body)
+}
+
+fn test_server_config(checkpoint_database_url: String) -> ServerConfig {
+    ServerConfig {
+        checkpoint_database_url,
+        auth_database_url: "sqlite::memory:".to_string(),
+        jwt_secret: "test-secret".to_string(),
+        jwt_ttl_seconds: 3600,
+        bootstrap_admin: Some(("admin".to_string(), "test-password".to_string())),
+    }
 }
 
 #[tokio::test]
@@ -87,13 +127,12 @@ async fn moves_100k_rows_and_resumes_after_partial_crash_without_duplicating() {
     let _ = std::fs::remove_file(&checkpoint_db_path);
 
     // --- Phase 1: full run, as a fresh process would do it. ---
-    let app = build_app(&ServerConfig {
-        checkpoint_database_url: checkpoint_db_url.clone(),
-    })
-    .await
-    .expect("app builds");
+    let app = build_app(&test_server_config(checkpoint_db_url.clone()))
+        .await
+        .expect("app builds");
 
-    let (status, body) = post_run(app, "big-copy", &spec).await;
+    let token = login(app.clone(), "admin", "test-password").await;
+    let (status, body) = post_run(app, "big-copy", &spec, &token).await;
     assert_eq!(status, StatusCode::OK, "first run failed: {body:?}");
     let partitions_run = body.as_array().expect("array response").len();
     assert_eq!(
@@ -128,13 +167,12 @@ async fn moves_100k_rows_and_resumes_after_partial_crash_without_duplicating() {
 
     // --- Phase 2: resume, as a restarted process would (fresh `build_app`
     // reconnecting to the same checkpoint file). ---
-    let app2 = build_app(&ServerConfig {
-        checkpoint_database_url: checkpoint_db_url.clone(),
-    })
-    .await
-    .expect("app rebuilds against the same checkpoint db");
+    let app2 = build_app(&test_server_config(checkpoint_db_url.clone()))
+        .await
+        .expect("app rebuilds against the same checkpoint db");
 
-    let (status2, body2) = post_run(app2, "big-copy", &spec).await;
+    let token2 = login(app2.clone(), "admin", "test-password").await;
+    let (status2, body2) = post_run(app2, "big-copy", &spec, &token2).await;
     assert_eq!(status2, StatusCode::OK, "resume run failed: {body2:?}");
     let resumed_partitions: Vec<String> = body2
         .as_array()
