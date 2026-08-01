@@ -2,6 +2,7 @@ mod auth;
 mod auth_store;
 mod checkpoint_store;
 mod connectors;
+mod crypto;
 mod error;
 mod runner;
 
@@ -12,6 +13,7 @@ use axum::middleware;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use checkpoint_store::CheckpointStore;
+use crypto::SecretCipher;
 use error::ApiError;
 use nexus_core::{ConnectorDescriptor, ConnectorRegistry, PartitionStats, PipelineSpec};
 use serde::{Deserialize, Serialize};
@@ -22,6 +24,10 @@ struct AppState {
     checkpoints: CheckpointStore,
     auth_store: AuthStore,
     jwt: JwtCodec,
+    /// Encrypts connector secrets before the pipeline-CRUD layer (Marco 7,
+    /// task #8) persists them — not read by any route yet, wired in ahead
+    /// of that so #8 only has to extract it, not thread it through.
+    secrets: SecretCipher,
 }
 
 /// Lets `Claims`/`require_role` (defined generically over any state `S`
@@ -29,6 +35,12 @@ struct AppState {
 impl FromRef<AppState> for JwtCodec {
     fn from_ref(state: &AppState) -> Self {
         state.jwt.clone()
+    }
+}
+
+impl FromRef<AppState> for SecretCipher {
+    fn from_ref(state: &AppState) -> Self {
+        state.secrets.clone()
     }
 }
 
@@ -138,6 +150,9 @@ pub struct ServerConfig {
     /// `(username, password)` bootstrapped as the sole `Admin` account the
     /// first time the users table is empty — a no-op on every later boot.
     pub bootstrap_admin: Option<(String, String)>,
+    /// 64-char hex string (32 raw bytes) — comes from `NEXUS_ENCRYPTION_KEY`.
+    /// Encrypts connector secrets at rest (CLAUDE.md §5). See `crypto.rs`.
+    pub encryption_key_hex: String,
 }
 
 /// Builds the app without binding a socket — the entrypoint integration
@@ -150,10 +165,13 @@ pub async fn build_app(config: &ServerConfig) -> anyhow::Result<Router> {
         auth_store.seed_admin_if_empty(username, password).await?;
     }
     let jwt = JwtCodec::new(config.jwt_secret.as_bytes(), config.jwt_ttl_seconds);
+    let secrets = SecretCipher::from_hex_key(&config.encryption_key_hex)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(router(AppState {
         checkpoints,
         auth_store,
         jwt,
+        secrets,
     }))
 }
 
@@ -167,6 +185,12 @@ pub async fn run() -> anyhow::Result<()> {
         std::env::var("NEXUS_AUTH_DB").unwrap_or_else(|_| "sqlite://nexusflow-auth.db".into());
     let jwt_secret = std::env::var("NEXUS_JWT_SECRET")
         .map_err(|_| anyhow::anyhow!("NEXUS_JWT_SECRET must be set (ARCHITECTURE.md §10)"))?;
+    let encryption_key_hex = std::env::var("NEXUS_ENCRYPTION_KEY").map_err(|_| {
+        anyhow::anyhow!(
+            "NEXUS_ENCRYPTION_KEY must be set — a 64-char hex string (32 bytes), \
+             e.g. `openssl rand -hex 32` (CLAUDE.md §5)"
+        )
+    })?;
     let bootstrap_admin = match (
         std::env::var("NEXUS_ADMIN_USERNAME"),
         std::env::var("NEXUS_ADMIN_PASSWORD"),
@@ -187,6 +211,7 @@ pub async fn run() -> anyhow::Result<()> {
         jwt_secret,
         jwt_ttl_seconds: 3600,
         bootstrap_admin,
+        encryption_key_hex,
     })
     .await?;
 
@@ -216,6 +241,7 @@ mod tests {
             checkpoints: CheckpointStore::connect("sqlite::memory:").await.unwrap(),
             auth_store,
             jwt: JwtCodec::new(b"test-secret", 3600),
+            secrets: SecretCipher::from_hex_key(&"ab".repeat(32)).unwrap(),
         }
     }
 
