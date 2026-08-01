@@ -1,0 +1,8 @@
+#!/bin/sh
+# AppImage entrypoint — same ADBC driver-path wiring as nexusflow-wrapper.sh
+# (deb/rpm), but relative to $APPDIR since an AppImage has no fixed install
+# prefix (it can run from anywhere, unmounted into a temp dir at launch).
+HERE="$(dirname "$(readlink -f "$0")")"
+export ADBC_DRIVER_POSTGRESQL_PATH="$HERE/usr/lib/libadbc_driver_postgresql.so"
+export ADBC_DRIVER_SQLITE_PATH="$HERE/usr/lib/libadbc_driver_sqlite.so"
+exec "$HERE/usr/bin/nexusflow-bin" "$@"
