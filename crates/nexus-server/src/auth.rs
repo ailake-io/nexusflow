@@ -60,7 +60,11 @@ impl JwtCodec {
             .map_err(|e| ApiError::internal(format!("token issuance failed: {e}")))
     }
 
-    fn verify(&self, token: &str) -> Result<Claims, ApiError> {
+    /// `pub(crate)` (not private) because the progress WebSocket route
+    /// can't use the `Claims` extractor above — browsers' `WebSocket` API
+    /// can't set an `Authorization` header, so that route takes the token
+    /// as a query param and verifies it directly (see `lib.rs`).
+    pub(crate) fn verify(&self, token: &str) -> Result<Claims, ApiError> {
         decode::<Claims>(token, &self.decoding_key, &self.validation)
             .map(|data| data.claims)
             .map_err(|e| ApiError::unauthorized(format!("invalid token: {e}")))

@@ -32,6 +32,28 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+  # frontend/ (Marco 8) doesn't touch the Rust workspace or the self-hosted
+  # runner — no `needs:`, runs independently on GitHub-hosted infra instead
+  # of joining the fmt -> clippy -> test -> connectors chain (that chain is
+  # sequential specifically to avoid overloading the self-hosted machine,
+  # see 052e26c; this job never runs there).
+  frontend:
+    name: frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm run lint
+
   test:
     name: test
     needs: clippy

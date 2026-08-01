@@ -6,17 +6,18 @@ use nexus_connector_postgres::{
 };
 use nexus_core::{
     CheckpointCursor, DataFusionTransform, PartitionHandle, PartitionStats, PipelineEngine,
-    PipelineSpec, Transform,
+    PipelineSpec, ProgressSender, Transform,
 };
 
 pub async fn run_pipeline(
     spec: &PipelineSpec,
     checkpoints: &CheckpointStore,
+    progress: Option<ProgressSender>,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     if spec.has_transform() {
-        run_transform_pipeline(spec, checkpoints).await
+        run_transform_pipeline(spec, checkpoints, progress).await
     } else {
-        run_linear_pipeline(spec, checkpoints).await
+        run_linear_pipeline(spec, checkpoints, progress).await
     }
 }
 
@@ -26,6 +27,7 @@ pub async fn run_pipeline(
 async fn run_linear_pipeline(
     spec: &PipelineSpec,
     checkpoints: &CheckpointStore,
+    progress: Option<ProgressSender>,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     let source_node = &spec.sources[0];
     let sink_node = &spec.sinks[0];
@@ -68,7 +70,7 @@ async fn run_linear_pipeline(
     }
 
     let engine = PipelineEngine::new(spec.channel_capacity);
-    let results = engine.run(handles).await;
+    let results = engine.run(handles, progress).await;
 
     let mut stats = Vec::new();
     let mut errors = Vec::new();
@@ -106,6 +108,7 @@ async fn run_linear_pipeline(
 async fn run_transform_pipeline(
     spec: &PipelineSpec,
     checkpoints: &CheckpointStore,
+    progress: Option<ProgressSender>,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     let transform_spec = spec
         .transform
@@ -144,7 +147,7 @@ async fn run_transform_pipeline(
     }
 
     let engine = PipelineEngine::new(spec.channel_capacity);
-    let results = engine.fan_out_write(&output, sinks).await;
+    let results = engine.fan_out_write(&output, sinks, progress).await;
 
     let mut stats = Vec::new();
     let mut errors = Vec::new();
