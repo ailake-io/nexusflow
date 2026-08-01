@@ -1,3 +1,4 @@
+import type { DbtRunSummary } from '@/lib/api'
 import type { ExecutionStatus, PartitionProgress } from '@/hooks/useRunProgress'
 
 interface ExecutionPanelProps {
@@ -5,6 +6,7 @@ interface ExecutionPanelProps {
   runId: number | null
   partitions: Record<string, PartitionProgress>
   error: string | null
+  dbtSummary: DbtRunSummary | null
 }
 
 const STATUS_LABEL: Record<ExecutionStatus, string> = {
@@ -26,7 +28,13 @@ const STATUS_CLASS: Record<ExecutionStatus, string> = {
 /** Live execution panel (Marco 8 task #16) — consumes the progress
  * WebSocket from Marco 7 (task #9): rows/s and MB/s per partition/sink,
  * computed client-side from the cumulative counters each event carries. */
-export function ExecutionPanel({ status, runId, partitions, error }: ExecutionPanelProps) {
+export function ExecutionPanel({
+  status,
+  runId,
+  partitions,
+  error,
+  dbtSummary,
+}: ExecutionPanelProps) {
   if (status === 'idle') return null
 
   const rows = Object.values(partitions)
@@ -60,6 +68,31 @@ export function ExecutionPanel({ status, runId, partitions, error }: ExecutionPa
             ))}
           </tbody>
         </table>
+      )}
+      {dbtSummary && (
+        <div className="mt-3 border-t pt-2 text-xs">
+          <div className="mb-1 font-medium text-muted-foreground">
+            dbt {dbtSummary.command}
+          </div>
+          <div className="flex flex-wrap gap-x-4 gap-y-1">
+            <span>
+              models: {dbtSummary.models_succeeded}/{dbtSummary.models_total}
+              {dbtSummary.models_failed > 0 && (
+                <span className="text-destructive"> ({dbtSummary.models_failed} failed)</span>
+              )}
+            </span>
+            <span>
+              tests: {dbtSummary.tests_passed}/{dbtSummary.tests_total}
+              {dbtSummary.tests_failed > 0 && (
+                <span className="text-destructive"> ({dbtSummary.tests_failed} failed)</span>
+              )}
+            </span>
+            {dbtSummary.nodes_in_lineage !== null && (
+              <span>lineage: {dbtSummary.nodes_in_lineage} nodes</span>
+            )}
+            <span>{dbtSummary.elapsed_time.toFixed(2)}s</span>
+          </div>
+        </div>
       )}
       {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
     </div>

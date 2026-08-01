@@ -29,6 +29,7 @@ import {
   type ConnectorNodeData,
   type DagNode,
   type DagNodeData,
+  type DbtNodeData,
   type PipelineMeta,
   type PipelineSpec,
   type TransformNodeData,
@@ -102,8 +103,24 @@ function CanvasInner() {
     ])
   }, [])
 
+  const addDbtNode = useCallback(() => {
+    const id = `node-${nextNodeId++}`
+    setNodes((current) => [
+      ...current,
+      {
+        id,
+        type: 'dbt',
+        position: { x: 400, y: 200 },
+        data: { kind: 'dbt', projectDir: '', command: 'run', select: '' },
+      },
+    ])
+  }, [])
+
   const updateNodeData = useCallback(
-    (id: string, patch: Partial<ConnectorNodeData> | Partial<TransformNodeData>) => {
+    (
+      id: string,
+      patch: Partial<ConnectorNodeData> | Partial<TransformNodeData> | Partial<DbtNodeData>,
+    ) => {
       setNodes((current) =>
         current.map((n) =>
           n.id === id ? { ...n, data: { ...n.data, ...patch } as DagNodeData } : n,
@@ -181,14 +198,24 @@ function CanvasInner() {
         runId={execution.runId}
         partitions={execution.partitions}
         error={execution.error}
+        dbtSummary={execution.dbtSummary}
       />
-      <button
-        type="button"
-        onClick={addTransformNode}
-        className="absolute bottom-4 left-64 rounded-md border bg-card px-3 py-1.5 text-sm shadow-sm hover:bg-muted"
-      >
-        + Transform
-      </button>
+      <div className="absolute bottom-4 left-64 flex gap-2">
+        <button
+          type="button"
+          onClick={addTransformNode}
+          className="rounded-md border bg-card px-3 py-1.5 text-sm shadow-sm hover:bg-muted"
+        >
+          + Transform
+        </button>
+        <button
+          type="button"
+          onClick={addDbtNode}
+          className="rounded-md border bg-card px-3 py-1.5 text-sm shadow-sm hover:bg-muted"
+        >
+          + dbt
+        </button>
+      </div>
     </div>
   )
 }

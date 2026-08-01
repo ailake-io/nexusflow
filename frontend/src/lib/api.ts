@@ -51,6 +51,21 @@ export interface ProgressEvent {
   bytes_written: number
 }
 
+/** Matches nexus-server::dbt::DbtOutcome::summary_json's shape (Marco 10
+ * task #26) — `undefined` when the pipeline has no `dbt` step, or the
+ * server build lacks the "dbt" feature. */
+export interface DbtRunSummary {
+  command: string
+  models_total: number
+  models_succeeded: number
+  models_failed: number
+  tests_total: number
+  tests_passed: number
+  tests_failed: number
+  elapsed_time: number
+  nodes_in_lineage: number | null
+}
+
 /** Matches nexus-server::pipeline_store::RunRecord, as returned by GET /pipelines/{id}/runs. */
 export interface RunRecord {
   id: number
@@ -60,6 +75,7 @@ export interface RunRecord {
   status: 'running' | 'success' | 'failed'
   error: string | null
   stats: unknown
+  dbt_summary: DbtRunSummary | null
 }
 
 /**

@@ -59,21 +59,15 @@ impl DbtOutcome {
     /// models/lineage counts only exist in `feature = "dbt"` builds.
     pub fn log_summary(&self) {
         #[cfg(feature = "dbt")]
-        let (models_total, tests_total, nodes_in_lineage) = {
-            let counts = self.run_results.as_ref().map(|r| {
-                let tests = r
-                    .results
-                    .iter()
-                    .filter(|res| resource_type_of(&res.unique_id) == "test")
-                    .count();
-                (r.results.len() - tests, tests)
-            });
-            (
-                counts.map(|(models, _)| models),
-                counts.map(|(_, tests)| tests),
-                self.lineage.as_ref().map(|l| l.parent_map.len()),
-            )
-        };
+        let (models_total, tests_total, nodes_in_lineage) = (
+            self.run_results
+                .as_ref()
+                .map(|r| breakdown(&r.results).models_total),
+            self.run_results
+                .as_ref()
+                .map(|r| breakdown(&r.results).tests_total),
+            self.lineage.as_ref().map(|l| l.parent_map.len()),
+        );
         #[cfg(not(feature = "dbt"))]
         let (models_total, tests_total, nodes_in_lineage): (
             Option<usize>,
@@ -90,6 +84,32 @@ impl DbtOutcome {
             dbt_nodes_in_lineage = nodes_in_lineage,
             "dbt step finished for this run"
         );
+    }
+
+    /// JSON summary for `GET /pipelines/{id}/runs` (task #26's UI panel) —
+    /// `None` in a non-"dbt" build or when `run_results.json` wasn't
+    /// captured. Deliberately *not* the raw `DbtOutcome`: stdout/stderr can
+    /// be large and aren't meant for a run-history list.
+    #[cfg(feature = "dbt")]
+    pub fn summary_json(&self) -> Option<serde_json::Value> {
+        let rr = self.run_results.as_ref()?;
+        let b = breakdown(&rr.results);
+        Some(serde_json::json!({
+            "command": self.command,
+            "models_total": b.models_total,
+            "models_succeeded": b.models_succeeded,
+            "models_failed": b.models_total - b.models_succeeded,
+            "tests_total": b.tests_total,
+            "tests_passed": b.tests_passed,
+            "tests_failed": b.tests_total - b.tests_passed,
+            "elapsed_time": rr.elapsed_time,
+            "nodes_in_lineage": self.lineage.as_ref().map(|l| l.parent_map.len()),
+        }))
+    }
+
+    #[cfg(not(feature = "dbt"))]
+    pub fn summary_json(&self) -> Option<serde_json::Value> {
+        None
     }
 }
 
@@ -108,6 +128,27 @@ fn subcommand(command: DbtCommand) -> &'static str {
 #[cfg(feature = "dbt")]
 fn resource_type_of(unique_id: &str) -> &str {
     unique_id.split('.').next().unwrap_or("")
+}
+
+#[cfg(feature = "dbt")]
+struct QualityBreakdown {
+    models_total: usize,
+    models_succeeded: usize,
+    tests_total: usize,
+    tests_passed: usize,
+}
+
+#[cfg(feature = "dbt")]
+fn breakdown(results: &[DbtRunResult]) -> QualityBreakdown {
+    let (tests, models): (Vec<_>, Vec<_>) = results
+        .iter()
+        .partition(|r| resource_type_of(&r.unique_id) == "test");
+    QualityBreakdown {
+        models_total: models.len(),
+        models_succeeded: models.iter().filter(|r| r.status == "success").count(),
+        tests_total: tests.len(),
+        tests_passed: tests.iter().filter(|r| r.status == "pass").count(),
+    }
 }
 
 #[cfg(feature = "dbt")]
@@ -172,19 +213,14 @@ pub async fn run(config: &DbtConfig) -> anyhow::Result<DbtOutcome> {
         // Quality (task #25) is reported separately from raw model
         // load status — "3 models loaded, 1 test failed" is a materially
         // different signal than one blended pass/fail count.
-        let (tests, models): (Vec<_>, Vec<_>) = rr
-            .results
-            .iter()
-            .partition(|r| resource_type_of(&r.unique_id) == "test");
-        let models_succeeded = models.iter().filter(|r| r.status == "success").count();
-        let tests_passed = tests.iter().filter(|r| r.status == "pass").count();
+        let b = breakdown(&rr.results);
         tracing::info!(
-            models_total = models.len(),
-            models_succeeded = models_succeeded,
-            models_failed = models.len() - models_succeeded,
-            tests_total = tests.len(),
-            tests_passed = tests_passed,
-            tests_failed = tests.len() - tests_passed,
+            models_total = b.models_total,
+            models_succeeded = b.models_succeeded,
+            models_failed = b.models_total - b.models_succeeded,
+            tests_total = b.tests_total,
+            tests_passed = b.tests_passed,
+            tests_failed = b.tests_total - b.tests_passed,
             elapsed_time = rr.elapsed_time,
             "dbt run_results.json captured"
         );

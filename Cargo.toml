@@ -17,6 +17,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Forwards to nexus-server's own "dbt" feature (Marco 10, CLAUDE.md §4.4) —
+# the root binary has no code of its own to gate, just needs the flag to
+# reach the crate that does.
+dbt = ["nexus-server/dbt"]
+
 [dependencies]
 anyhow = "1.0.104"
 nexus-server = { path = "crates/nexus-server" }

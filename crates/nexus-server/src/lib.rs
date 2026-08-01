@@ -229,16 +229,24 @@ async fn run_pipeline_handler(
             // after the raw load lands — a dbt failure fails the whole run,
             // same recording/alerting as a load failure, not a separate
             // "partial success" state.
+            let mut dbt_summary = None;
             if let Some(dbt_config) = &spec.dbt {
                 match dbt::run(dbt_config).await {
-                    Ok(outcome) => outcome.log_summary(),
+                    Ok(outcome) => {
+                        outcome.log_summary();
+                        dbt_summary = outcome.summary_json();
+                    }
                     Err(e) => {
                         record_run_failure(&state, run_id, &spec.pipeline_id, &e).await;
                         return Err(ApiError::internal(e));
                     }
                 }
             }
-            if let Err(e) = state.pipelines.finish_run_success(run_id, &stats).await {
+            if let Err(e) = state
+                .pipelines
+                .finish_run_success(run_id, &stats, dbt_summary.as_ref())
+                .await
+            {
                 tracing::warn!(error = %e, "failed to record successful pipeline run");
             }
             Ok(Json(stats))

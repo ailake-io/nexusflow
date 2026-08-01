@@ -12,6 +12,21 @@ export interface TransformSpec {
   sql: string
 }
 
+/** Matches nexus-core::DbtCommand exactly. */
+export type DbtCommand = 'run' | 'build' | 'test'
+
+/**
+ * Matches nexus-core::DbtConfig exactly — ELT mode (Marco 10): dbt runs
+ * against the sink warehouse via SQL *after* the raw load succeeds, so this
+ * is not a DAG transform node (dbt never touches this pipeline's Arrow
+ * batches), just an optional post-load step on the spec itself.
+ */
+export interface DbtConfig {
+  project_dir: string
+  command: DbtCommand
+  select?: string
+}
+
 /**
  * Matches nexus-core::PipelineSpec exactly — this is the JSON the backend's
  * `PipelineSpec::parse` / `Json<PipelineSpec>` extractor deserializes
@@ -26,6 +41,7 @@ export interface PipelineSpec {
   sinks: NodeSpec[]
   channel_capacity?: number
   partitions?: number
+  dbt?: DbtConfig
 }
 
 export type ConnectorRole = 'source' | 'sink'
@@ -44,7 +60,17 @@ export interface TransformNodeData extends Record<string, unknown> {
   sql: string
 }
 
-export type DagNodeData = ConnectorNodeData | TransformNodeData
+/** Canvas form of `DbtConfig` — `select`/`projectDir` stay as plain strings
+ * (not `string | undefined`) so the inspector's text inputs have something
+ * controlled to bind to; `toPipelineSpec` trims/omits empty ones. */
+export interface DbtNodeData extends Record<string, unknown> {
+  kind: 'dbt'
+  projectDir: string
+  command: DbtCommand
+  select: string
+}
+
+export type DagNodeData = ConnectorNodeData | TransformNodeData | DbtNodeData
 export type DagNode = Node<DagNodeData>
 
 export function isConnectorNode(node: DagNode): node is Node<ConnectorNodeData> {
@@ -53,6 +79,10 @@ export function isConnectorNode(node: DagNode): node is Node<ConnectorNodeData> 
 
 export function isTransformNode(node: DagNode): node is Node<TransformNodeData> {
   return node.data.kind === 'transform'
+}
+
+export function isDbtNode(node: DagNode): node is Node<DbtNodeData> {
+  return node.data.kind === 'dbt'
 }
 
 export class DagSerializationError extends Error {}
@@ -76,8 +106,12 @@ export function toPipelineSpec(nodes: DagNode[], meta: PipelineMeta): PipelineSp
 
   const connectorNodes = nodes.filter(isConnectorNode)
   const transformNodes = nodes.filter(isTransformNode)
+  const dbtNodes = nodes.filter(isDbtNode)
   if (transformNodes.length > 1) {
     throw new DagSerializationError('at most one transform node is allowed')
+  }
+  if (dbtNodes.length > 1) {
+    throw new DagSerializationError('at most one dbt node is allowed')
   }
 
   const sources = connectorNodes
@@ -106,12 +140,23 @@ export function toPipelineSpec(nodes: DagNode[], meta: PipelineMeta): PipelineSp
     throw new DagSerializationError('transform.sql must not be empty')
   }
 
+  let dbt: DbtConfig | undefined
+  if (dbtNodes.length === 1) {
+    const data = dbtNodes[0].data
+    if (!data.projectDir.trim()) {
+      throw new DagSerializationError('dbt node: project_dir must not be empty')
+    }
+    dbt = { project_dir: data.projectDir.trim(), command: data.command }
+    if (data.select.trim()) dbt.select = data.select.trim()
+  }
+
   const spec: PipelineSpec = {
     pipeline_id: meta.pipelineId,
     sources,
     sinks,
   }
   if (transform) spec.transform = transform
+  if (dbt) spec.dbt = dbt
   if (meta.channelCapacity !== undefined) spec.channel_capacity = meta.channelCapacity
   if (meta.partitions !== undefined) spec.partitions = meta.partitions
   return spec
@@ -198,6 +243,24 @@ export function fromPipelineSpec(spec: PipelineSpec): { nodes: DagNode[]; edges:
     })
   } else {
     edges.push({ id: `${sourceIds[0]}-${sinkIds[0]}`, source: sourceIds[0], target: sinkIds[0] })
+  }
+
+  if (spec.dbt) {
+    const dbtId = `import-${importNodeId++}`
+    nodes.push({
+      id: dbtId,
+      type: 'dbt',
+      position: { x: COLUMN_X.sink + 320, y: ((sinkIds.length - 1) * ROW_HEIGHT) / 2 },
+      data: {
+        kind: 'dbt',
+        projectDir: spec.dbt.project_dir,
+        command: spec.dbt.command,
+        select: spec.dbt.select ?? '',
+      },
+    })
+    sinkIds.forEach((sinkId) => {
+      edges.push({ id: `${sinkId}-${dbtId}`, source: sinkId, target: dbtId })
+    })
   }
 
   return { nodes, edges }
