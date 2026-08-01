@@ -1,14 +1,80 @@
 use nexus_core::{DbtCommand, DbtConfig};
 
+/// One model/test result from dbt's `target/run_results.json` (schema
+/// `https://schemas.getdbt.com/dbt/run-results/v6.json`) — only the fields
+/// this module actually reads; serde ignores the rest. Feature-gated along
+/// with everything else below that only the real (feature = "dbt")
+/// `run()` constructs — without the feature, nothing produces one, so the
+/// type itself would just be dead weight in that build.
+#[cfg(feature = "dbt")]
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct DbtRunResult {
+    pub unique_id: String,
+    /// "success"/"error" for models, "pass"/"fail"/"warn" for tests.
+    pub status: String,
+    pub execution_time: f64,
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+#[cfg(feature = "dbt")]
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct DbtRunResults {
+    #[serde(default)]
+    pub results: Vec<DbtRunResult>,
+    #[serde(default)]
+    pub elapsed_time: f64,
+}
+
+/// Basic lineage from `target/manifest.json` — dbt already precomputes the
+/// dependency graph as `parent_map` (node -> its upstream nodes), so there's
+/// no need to walk each node's own `depends_on` by hand.
+#[cfg(feature = "dbt")]
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct DbtManifestSummary {
+    #[serde(default)]
+    pub parent_map: std::collections::HashMap<String, Vec<String>>,
+}
+
 /// Result of one dbt invocation — logged (`tracing::info!`) at the call
 /// site, and returned so `run_pipeline_handler` can fold it into the run's
-/// success/failure and (task #23) parse `manifest.json`/`run_results.json`
-/// out of `config.project_dir/target/`.
+/// success/failure. `run_results`/`lineage` are `None` when the
+/// corresponding artifact under `target/` couldn't be read or parsed —
+/// dbt's own subprocess exit status is what determines success/failure,
+/// these are supplementary observability, not correctness-critical.
 #[derive(Debug, Clone)]
 pub struct DbtOutcome {
     pub command: &'static str,
     pub stdout: String,
     pub stderr: String,
+    #[cfg(feature = "dbt")]
+    pub run_results: Option<DbtRunResults>,
+    #[cfg(feature = "dbt")]
+    pub lineage: Option<DbtManifestSummary>,
+}
+
+impl DbtOutcome {
+    /// Logs this outcome for the enclosing pipeline run — kept here (not in
+    /// `run_pipeline_handler`) so callers never need to know that the
+    /// models/lineage counts only exist in `feature = "dbt"` builds.
+    pub fn log_summary(&self) {
+        #[cfg(feature = "dbt")]
+        let (models_total, nodes_in_lineage) = (
+            self.run_results.as_ref().map(|r| r.results.len()),
+            self.lineage.as_ref().map(|l| l.parent_map.len()),
+        );
+        #[cfg(not(feature = "dbt"))]
+        let (models_total, nodes_in_lineage): (Option<usize>, Option<usize>) = (None, None);
+
+        tracing::info!(
+            dbt_command = self.command,
+            dbt_stdout = %self.stdout,
+            dbt_stderr = %self.stderr,
+            dbt_models_total = models_total,
+            dbt_nodes_in_lineage = nodes_in_lineage,
+            "dbt step finished for this run"
+        );
+    }
 }
 
 fn subcommand(command: DbtCommand) -> &'static str {
@@ -16,6 +82,24 @@ fn subcommand(command: DbtCommand) -> &'static str {
         DbtCommand::Run => "run",
         DbtCommand::Build => "build",
         DbtCommand::Test => "test",
+    }
+}
+
+#[cfg(feature = "dbt")]
+fn read_json_artifact<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Option<T> {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(e) => {
+            tracing::warn!(path = %path.display(), error = %e, "failed to read dbt artifact");
+            return None;
+        }
+    };
+    match serde_json::from_str(&contents) {
+        Ok(parsed) => Some(parsed),
+        Err(e) => {
+            tracing::warn!(path = %path.display(), error = %e, "failed to parse dbt artifact");
+            None
+        }
     }
 }
 
@@ -50,6 +134,53 @@ pub async fn run(config: &DbtConfig) -> anyhow::Result<DbtOutcome> {
         "dbt {command} finished"
     );
 
+    // dbt writes both artifacts under `target/` on every invocation, success
+    // or failure alike — capture them before deciding success/failure below,
+    // so a broken model's own status/message (not just dbt's overall exit
+    // code) ends up in the logs too.
+    let target_dir = std::path::Path::new(&config.project_dir).join("target");
+    let run_results: Option<DbtRunResults> =
+        read_json_artifact(&target_dir.join("run_results.json"));
+    let lineage: Option<DbtManifestSummary> = read_json_artifact(&target_dir.join("manifest.json"));
+
+    if let Some(rr) = &run_results {
+        let succeeded = rr
+            .results
+            .iter()
+            .filter(|r| matches!(r.status.as_str(), "success" | "pass"))
+            .count();
+        let failed = rr.results.len() - succeeded;
+        tracing::info!(
+            models_total = rr.results.len(),
+            models_succeeded = succeeded,
+            models_failed = failed,
+            elapsed_time = rr.elapsed_time,
+            "dbt run_results.json captured"
+        );
+        // Aggregate counts above are enough to know *whether* something
+        // broke; log each non-passing node individually so *which* one and
+        // *why* also lands in the logs (still task #23 — the per-model
+        // pass/fail breakdown from run_results.json is the "observabilidade"
+        // this task is about, not #25's dedicated `dbt test` invocation).
+        for result in &rr.results {
+            if !matches!(result.status.as_str(), "success" | "pass") {
+                tracing::warn!(
+                    unique_id = %result.unique_id,
+                    status = %result.status,
+                    execution_time = result.execution_time,
+                    message = result.message.as_deref().unwrap_or(""),
+                    "dbt node did not succeed"
+                );
+            }
+        }
+    }
+    if let Some(lin) = &lineage {
+        tracing::info!(
+            nodes_in_lineage = lin.parent_map.len(),
+            "dbt manifest.json lineage captured"
+        );
+    }
+
     if !output.status.success() {
         anyhow::bail!("dbt {command} exited with {}: {stderr}", output.status);
     }
@@ -58,6 +189,8 @@ pub async fn run(config: &DbtConfig) -> anyhow::Result<DbtOutcome> {
         command,
         stdout,
         stderr,
+        run_results,
+        lineage,
     })
 }
 
@@ -132,6 +265,14 @@ nexus_fixture:
             "select 1 as id, 'a' as label",
         )
         .unwrap();
+        // A second model depending on the first — gives run_results.json
+        // more than one row and manifest.json a real (non-empty) edge in
+        // parent_map, so the capture assertions below prove something.
+        fs::write(
+            dir.join("models").join("two.sql"),
+            "select * from {{ ref('one') }}",
+        )
+        .unwrap();
     }
 
     #[tokio::test]
@@ -156,6 +297,17 @@ nexus_fixture:
 
         assert_eq!(outcome.command, "run");
         assert!(dir.path().join("nexus_fixture.duckdb").exists());
+
+        let run_results = outcome.run_results.expect("run_results.json was captured");
+        assert_eq!(run_results.results.len(), 2, "both models ran");
+        assert!(run_results.results.iter().all(|r| r.status == "success"));
+
+        let lineage = outcome.lineage.expect("manifest.json was captured");
+        assert_eq!(
+            lineage.parent_map.get("model.nexus_fixture.two").unwrap(),
+            &vec!["model.nexus_fixture.one".to_string()],
+            "model two's real lineage traces back to model one"
+        );
     }
 
     #[tokio::test]

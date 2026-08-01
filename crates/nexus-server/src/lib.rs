@@ -231,14 +231,7 @@ async fn run_pipeline_handler(
             // "partial success" state.
             if let Some(dbt_config) = &spec.dbt {
                 match dbt::run(dbt_config).await {
-                    Ok(outcome) => {
-                        tracing::info!(
-                            dbt_command = outcome.command,
-                            dbt_stdout = %outcome.stdout,
-                            dbt_stderr = %outcome.stderr,
-                            "dbt step finished for this run"
-                        );
-                    }
+                    Ok(outcome) => outcome.log_summary(),
                     Err(e) => {
                         record_run_failure(&state, run_id, &spec.pipeline_id, &e).await;
                         return Err(ApiError::internal(e));
