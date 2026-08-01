@@ -122,6 +122,11 @@ fn router(state: AppState) -> Router {
 
     Router::new()
         .route("/health", get(health))
+        // Unauthenticated like /health — Prometheus scrapers don't carry a
+        // JWT, and RBAC over metrics access would need a whole separate
+        // scrape-auth story; network segmentation is the intended guard
+        // here (ARCHITECTURE.md §9/§10).
+        .route("/metrics", get(metrics_handler))
         .route("/auth/login", post(login_handler))
         // Not behind `require_role` — a browser's `WebSocket` API can't set
         // an `Authorization` header, so this route takes the JWT as a query
@@ -138,6 +143,25 @@ fn router(state: AppState) -> Router {
 
 async fn health() -> &'static str {
     "ok"
+}
+
+/// Same counters the progress WebSocket reads from (Marco 9 task #20) —
+/// see `telemetry::PROMETHEUS_REGISTRY`'s doc comment.
+async fn metrics_handler() -> impl axum::response::IntoResponse {
+    use prometheus::Encoder;
+    let encoder = prometheus::TextEncoder::new();
+    let metric_families = telemetry::PROMETHEUS_REGISTRY.gather();
+    let mut buf = Vec::new();
+    encoder
+        .encode(&metric_families, &mut buf)
+        .expect("encoding already-validated Prometheus metrics cannot fail");
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            encoder.format_type().to_string(),
+        )],
+        buf,
+    )
 }
 
 /// Dynamic connector catalog for the canvas (Marco 8) — every connector
@@ -505,6 +529,126 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn metrics_endpoint_needs_no_auth_and_returns_prometheus_text() {
+        let app = router(test_state().await);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let content_type = response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(content_type.starts_with("text/plain"));
+
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        // Valid (if currently empty, since this process hasn't run any real
+        // pipeline batches) Prometheus exposition text — must not panic.
+        String::from_utf8(bytes.to_vec()).expect("Prometheus text output is valid UTF-8");
+    }
+
+    /// Proves the *real* chain end to end — nexus_core's counters, the
+    /// process-global OTel meter provider, `PROMETHEUS_REGISTRY`, and the
+    /// `/metrics` text encoder — by running a real `PipelineEngine::run_partition`
+    /// (with a fake Source/Sink; only the connector is mocked, not the
+    /// observability stack) and reading the resulting counter back out of
+    /// the HTTP endpoint. Same counters the progress WebSocket reads from
+    /// (task #9) — this is the "one source of truth" the task asked for.
+    #[tokio::test]
+    async fn metrics_reflect_real_batches_written_by_the_engine() {
+        use arrow_array::{Int64Array, RecordBatch};
+        use arrow_schema::{DataType, Field, Schema};
+        use async_trait::async_trait;
+        use futures::stream::{self, BoxStream};
+        use nexus_core::{
+            CheckpointCursor, NexusError, PartitionHandle, PipelineEngine, Sink, Source,
+        };
+        use std::sync::Arc;
+
+        struct OneBatchSource(Option<RecordBatch>);
+        #[async_trait]
+        impl Source for OneBatchSource {
+            async fn read_batches(
+                &mut self,
+            ) -> Result<BoxStream<'_, Result<RecordBatch, NexusError>>, NexusError> {
+                let batch = self.0.take();
+                Ok(Box::pin(stream::iter(batch.into_iter().map(Ok))))
+            }
+            fn schema(&self) -> arrow_schema::SchemaRef {
+                Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]))
+            }
+        }
+
+        struct NullSink;
+        #[async_trait]
+        impl Sink for NullSink {
+            async fn write_batch(&mut self, _batch: RecordBatch) -> Result<(), NexusError> {
+                Ok(())
+            }
+            async fn commit_checkpoint(
+                &mut self,
+                _cursor: CheckpointCursor,
+            ) -> Result<(), NexusError> {
+                Ok(())
+            }
+        }
+
+        // Installs the real global meter provider (idempotent enough for
+        // tests: the tracing-subscriber half may already be set by an
+        // earlier test in this binary, which is fine — we only need the
+        // meter provider side to have run at least once).
+        let _ = telemetry::init();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![1, 2, 3]))]).unwrap();
+
+        let engine = PipelineEngine::new(8);
+        engine
+            .run_partition(
+                PartitionHandle {
+                    partition_id: "metrics-test-partition".to_string(),
+                    source: Box::new(OneBatchSource(Some(batch))),
+                    sink: Box::new(NullSink),
+                },
+                None,
+            )
+            .await
+            .expect("partition runs successfully");
+
+        let app = router(test_state().await);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+
+        assert!(text.contains("nexus_pipeline_rows_written_total"));
+        assert!(text.contains("metrics-test-partition"));
     }
 
     #[tokio::test]

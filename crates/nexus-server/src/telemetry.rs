@@ -1,12 +1,24 @@
 use opentelemetry::KeyValue;
 use opentelemetry_otlp::{SpanExporter, WithExportConfig};
+use opentelemetry_sdk::metrics::SdkMeterProvider;
 use opentelemetry_sdk::trace::{
     span_processor_with_async_runtime::BatchSpanProcessor, SdkTracerProvider,
 };
 use opentelemetry_sdk::Resource;
+use std::sync::LazyLock;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
+
+/// Backs `GET /metrics` (task #20) — a process-wide singleton, matching
+/// how Prometheus registries are conventionally used (one per process,
+/// scraped directly, not per-request). `nexus_core::pipeline`'s
+/// `metrics::record_batch` and this registry are the *same* counters the
+/// progress WebSocket reads from (via `ProgressEvent`, recorded right next
+/// to this in the engine's per-batch loop) — one source of truth, not two
+/// independently-maintained counts that could drift apart.
+pub static PROMETHEUS_REGISTRY: LazyLock<prometheus::Registry> =
+    LazyLock::new(prometheus::Registry::new);
 
 /// Initializes the global tracing subscriber — JSON logs to stdout always
 /// (so a plain `docker logs`/self-host deployment still gets structured
@@ -14,7 +26,25 @@ use tracing_subscriber::EnvFilter;
 /// collector when `NEXUS_OTLP_ENDPOINT` is set. Off by default: this is
 /// observability infra, not security, so a missing endpoint is a no-op
 /// (same posture as the Slack webhook in alerts.rs), not a startup failure.
+///
+/// Metrics (`PROMETHEUS_REGISTRY`) are wired unconditionally, unlike trace
+/// export — Prometheus is pull-based (a Prometheus server scrapes
+/// `GET /metrics` whenever it wants), so there's no "endpoint" to push to
+/// and nothing to gate behind an env var.
 pub fn init() -> anyhow::Result<()> {
+    let resource = Resource::builder()
+        .with_attribute(KeyValue::new("service.name", "nexus-server"))
+        .build();
+
+    let exporter = opentelemetry_prometheus::exporter()
+        .with_registry(PROMETHEUS_REGISTRY.clone())
+        .build()?;
+    let meter_provider = SdkMeterProvider::builder()
+        .with_reader(exporter)
+        .with_resource(resource.clone())
+        .build();
+    opentelemetry::global::set_meter_provider(meter_provider);
+
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let json_layer = tracing_subscriber::fmt::layer().json();
 
@@ -33,11 +63,7 @@ pub fn init() -> anyhow::Result<()> {
                 BatchSpanProcessor::builder(exporter, opentelemetry_sdk::runtime::Tokio).build();
             let provider = SdkTracerProvider::builder()
                 .with_span_processor(batch_processor)
-                .with_resource(
-                    Resource::builder()
-                        .with_attribute(KeyValue::new("service.name", "nexus-server"))
-                        .build(),
-                )
+                .with_resource(resource)
                 .build();
 
             let tracer = opentelemetry::trace::TracerProvider::tracer(&provider, "nexus-server");
