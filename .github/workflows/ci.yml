@@ -98,9 +98,11 @@ jobs:
           workspaces: crates/nexus-connectors
 
       # zlib headers (kafka consumer feature) + protoc (lancedb's build.rs
-      # shells out to it) are installed once on the self-hosted host, not
-      # per-run — no sudo apt-get here (runner service has no interactive
-      # sudo, and the packages persist on this disk between jobs anyway).
+      # shells out to it) + libsqlite3-dev (nexus-connector-iceberg's
+      # iceberg-catalog-sql -> sqlx "sqlite" feature links the system lib)
+      # are installed once on the self-hosted host, not per-run — no sudo
+      # apt-get here (runner service has no interactive sudo, and the
+      # packages persist on this disk between jobs anyway).
       - run: cargo fmt --all -- --check
 
       # Every connector must also compile with no features enabled — that's
@@ -108,4 +110,36 @@ jobs:
       # (CLAUDE.md §8.5), so it's checked on its own before --all-features.
       - run: cargo check --workspace
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - run: cargo test --workspace --all-features
+      # postgres_to_kafka_cdc_carries_correct_opcode_per_row (3 JVMs:
+      # Zookeeper+Kafka+Connect) and text_chunk_embed_milvus_end_to_end
+      # (3 containers: etcd+minio+milvus) are the two heaviest, flakiest
+      # tests in this workspace — this host is a shared dev desktop +
+      # self-hosted runner, chronically near its memory ceiling from normal
+      # desktop use, and these are the tests that feel it first. Deferred to
+      # the connectors-heavy job below so they run only after this job's own
+      # compile step has fully exited (and released its memory) instead of
+      # competing with it.
+      - run: cargo test --workspace --all-features -- --skip postgres_to_kafka_cdc_carries_correct_opcode_per_row --skip text_chunk_embed_milvus_end_to_end
+
+  # Split out from `connectors` so the two heaviest/flakiest multi-container
+  # tests run after that job's huge compile step has fully exited — see the
+  # comment on connectors' last step. Sequential on purpose (needs:
+  # connectors): this is still the same single self-hosted runner, so it
+  # wouldn't run concurrently with connectors anyway, but `needs:` makes the
+  # ordering explicit rather than incidental.
+  connectors-heavy:
+    name: connectors-heavy
+    needs: connectors
+    runs-on: self-hosted
+    defaults:
+      run:
+        working-directory: crates/nexus-connectors
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/nexus-connectors
+
+      - run: cargo test -p nexus-connector-kafka --all-features --test cdc_debezium_integration
+      - run: cargo test -p nexus-connector-milvus --all-features --test milvus_integration

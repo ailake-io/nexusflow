@@ -13,6 +13,10 @@ members = [
     "nexus-connector-milvus",
     "nexus-connector-pinecone",
     "nexus-connector-chromadb",
+    "nexus-connector-ailake",
+    "nexus-connector-parquet",
+    "nexus-connector-deltalake",
+    "nexus-connector-iceberg",
 ]
 
 [workspace.package]
