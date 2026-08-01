@@ -9,6 +9,7 @@ use nexus_core::{
     PipelineSpec, ProgressSender, Transform,
 };
 
+#[tracing::instrument(skip_all, fields(pipeline_id = %spec.pipeline_id))]
 pub async fn run_pipeline(
     spec: &PipelineSpec,
     checkpoints: &CheckpointStore,
@@ -24,6 +25,7 @@ pub async fn run_pipeline(
 /// Marco 1's path: exactly 1 source, 1 sink, partitioned by PK range,
 /// resumable per partition. Postgres-only for now — see IMPLEMENTATION_PLAN.md
 /// Marco 1.
+#[tracing::instrument(skip_all, fields(pipeline_id = %spec.pipeline_id))]
 async fn run_linear_pipeline(
     spec: &PipelineSpec,
     checkpoints: &CheckpointStore,
@@ -105,6 +107,7 @@ async fn run_linear_pipeline(
 /// Unpartitioned — every source is read in full, see ARCHITECTURE.md §6.
 /// Sinks are only built after the transform runs, since their column list
 /// comes from the transform's *output* schema, not any single source's.
+#[tracing::instrument(skip_all, fields(pipeline_id = %spec.pipeline_id))]
 async fn run_transform_pipeline(
     spec: &PipelineSpec,
     checkpoints: &CheckpointStore,

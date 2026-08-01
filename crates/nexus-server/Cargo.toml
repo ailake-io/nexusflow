@@ -35,9 +35,40 @@ sqlx = { version = "0.9.0", default-features = false, features = [
 ] }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+# OTel trace export (Marco 9 task #19) — off by default (see telemetry.rs).
+# This crate only asks for "trace" directly; "metrics" (task #20, used via
+# opentelemetry::global::set_meter_provider in telemetry.rs) comes in
+# through Cargo feature unification with nexus-core's own `opentelemetry`
+# dependency, which needs it for the rows/bytes counters. The async trace
+# batch exporter needs rt-tokio; reqwest-rustls matches this crate's other
+# HTTP client (alerts.rs) even though it's a different reqwest major (OTLP
+# 0.32 pins reqwest 0.13) — not worth fighting the ecosystem's version churn
+# to unify two otherwise-unrelated HTTP stacks.
+opentelemetry = { version = "0.32.0", default-features = false, features = ["trace"] }
+opentelemetry_sdk = { version = "0.32.1", default-features = false, features = [
+    "trace",
+    "rt-tokio",
+    "experimental_trace_batch_span_processor_with_async_runtime",
+] }
+opentelemetry-otlp = { version = "0.32.0", default-features = false, features = [
+    "trace",
+    "http-proto",
+    "reqwest-client",
+    "reqwest-rustls",
+] }
+tracing-opentelemetry = { version = "0.33.0", default-features = false, features = ["tracing-log"] }
+opentelemetry-prometheus = "0.32.0"
+prometheus = "0.14.0"
 
 [dev-dependencies]
+# Pinned to match the workspace-wide arrow-array/arrow-schema version
+# (nexus-core, connectors) — a mismatched version here would be a second,
+# incompatible RecordBatch type.
+arrow-array = "58.4.0"
+arrow-schema = "58.4.0"
+async-trait = "0.1.91"
+futures = "0.3.33"
 futures-util = "0.3.33"
 sqlx = { version = "0.9.0", default-features = false, features = ["postgres", "runtime-tokio", "sqlite"] }
 testcontainers = "0.27.3"

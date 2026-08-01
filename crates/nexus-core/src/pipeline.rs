@@ -38,6 +38,40 @@ pub struct ProgressEvent {
 /// callers (e.g. nexus-core's own tests) pay no cost beyond an `if let`.
 pub type ProgressSender = tokio::sync::broadcast::Sender<ProgressEvent>;
 
+/// Same per-batch counts that feed `ProgressEvent` above, also recorded as
+/// OTel metrics — one source of truth for both the WebSocket and
+/// nexus-server's Prometheus `/metrics` (Marco 9 task #20), not two
+/// independently-maintained counters that could drift apart. Calls are
+/// no-ops until nexus-server installs a real meter provider (`telemetry.rs`);
+/// this crate has no I/O of its own (CLAUDE.md §8.3).
+mod metrics {
+    use opentelemetry::metrics::Counter;
+    use opentelemetry::KeyValue;
+    use std::sync::LazyLock;
+
+    static ROWS_WRITTEN: LazyLock<Counter<u64>> = LazyLock::new(|| {
+        opentelemetry::global::meter("nexus-core")
+            .u64_counter("nexus_pipeline_rows_written_total")
+            .with_description("Rows written by a pipeline sink, per partition/sink")
+            .build()
+    });
+
+    static BYTES_WRITTEN: LazyLock<Counter<u64>> = LazyLock::new(|| {
+        opentelemetry::global::meter("nexus-core")
+            .u64_counter("nexus_pipeline_bytes_written_total")
+            .with_description(
+                "Arrow in-memory bytes written by a pipeline sink, per partition/sink",
+            )
+            .build()
+    });
+
+    pub(super) fn record_batch(partition_id: &str, rows: u64, bytes: u64) {
+        let attrs = [KeyValue::new("partition_id", partition_id.to_string())];
+        ROWS_WRITTEN.add(rows, &attrs);
+        BYTES_WRITTEN.add(bytes, &attrs);
+    }
+}
+
 /// Runs partitions Source -> mpsc channel -> Sink.
 ///
 /// Checkpoint granularity is per-partition, not per-batch: a checkpoint is
@@ -56,6 +90,7 @@ impl PipelineEngine {
         Self { channel_capacity }
     }
 
+    #[tracing::instrument(skip(self, handle, progress), fields(partition_id = %handle.partition_id))]
     pub async fn run_partition(
         &self,
         handle: PartitionHandle,
@@ -90,10 +125,13 @@ impl PipelineEngine {
             let mut bytes_written = 0usize;
 
             while let Some(batch) = rx.recv().await {
-                rows_written += batch.num_rows();
+                let batch_rows = batch.num_rows();
+                let batch_bytes = batch.get_array_memory_size();
+                rows_written += batch_rows;
                 batches_written += 1;
-                bytes_written += batch.get_array_memory_size();
+                bytes_written += batch_bytes;
                 sink.write_batch(batch).await?;
+                metrics::record_batch(&writer_partition_id, batch_rows as u64, batch_bytes as u64);
                 if let Some(tx) = &progress {
                     let _ = tx.send(ProgressEvent {
                         partition_id: writer_partition_id.clone(),
@@ -129,6 +167,7 @@ impl PipelineEngine {
     /// callers see a `NexusError` for that partition's slot and can retry it
     /// independently (checkpoint is per-partition, so retrying one partition
     /// never touches the others' already-committed state).
+    #[tracing::instrument(skip_all, fields(num_partitions = partitions.len()))]
     pub async fn run(
         &self,
         partitions: Vec<PartitionHandle>,
@@ -186,6 +225,7 @@ impl PipelineEngine {
     /// Broadcast fan-out: every sink gets the full `batches` output, then
     /// commits one checkpoint. A failed sink doesn't stop the others (same
     /// per-slot-error contract as `run`).
+    #[tracing::instrument(skip_all, fields(num_sinks = sinks.len(), num_batches = batches.len()))]
     pub async fn fan_out_write(
         &self,
         batches: &[RecordBatch],
@@ -201,8 +241,11 @@ impl PipelineEngine {
                 let mut bytes_written = 0usize;
                 for (i, batch) in batches.iter().enumerate() {
                     sink.write_batch(batch.clone()).await?;
-                    rows_written += batch.num_rows();
-                    bytes_written += batch.get_array_memory_size();
+                    let batch_rows = batch.num_rows();
+                    let batch_bytes = batch.get_array_memory_size();
+                    rows_written += batch_rows;
+                    bytes_written += batch_bytes;
+                    metrics::record_batch(&name, batch_rows as u64, batch_bytes as u64);
                     if let Some(tx) = &progress {
                         let _ = tx.send(ProgressEvent {
                             partition_id: name.clone(),
@@ -231,6 +274,7 @@ impl PipelineEngine {
     /// sink. Convenience wrapper over `drain_sources`/`fan_out_write` for
     /// callers whose sinks don't need the transform's output schema to be
     /// constructed (e.g. tests, or fixed-schema sinks).
+    #[tracing::instrument(skip_all)]
     pub async fn run_transform_pipeline(
         &self,
         pipeline: TransformPipeline,
