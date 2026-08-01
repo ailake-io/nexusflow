@@ -41,3 +41,49 @@ export async function login(username: string, password: string): Promise<string>
 export function listConnectors(token: string): Promise<ConnectorDescriptor[]> {
   return request<ConnectorDescriptor[]>('/connectors', {}, token)
 }
+
+/** Matches nexus-core::ProgressEvent, as sent over the progress WebSocket. */
+export interface ProgressEvent {
+  partition_id: string
+  batches_written: number
+  rows_written: number
+  bytes_written: number
+}
+
+/** Matches nexus-server::pipeline_store::RunRecord, as returned by GET /pipelines/{id}/runs. */
+export interface RunRecord {
+  id: number
+  pipeline_id: string
+  started_at: string
+  finished_at: string | null
+  status: 'running' | 'success' | 'failed'
+  error: string | null
+  stats: unknown
+}
+
+/**
+ * POST /pipelines/{id}/run doesn't resolve until the whole pipeline
+ * finishes — callers that want live progress shouldn't await this before
+ * polling `listRuns` for the new run's id (see hooks/useRunProgress.ts).
+ */
+export function runPipeline(token: string, spec: { pipeline_id: string }): Promise<unknown> {
+  return request(
+    `/pipelines/${encodeURIComponent(spec.pipeline_id)}/run`,
+    { method: 'POST', body: JSON.stringify(spec) },
+    token,
+  )
+}
+
+export function listRuns(token: string, pipelineId: string): Promise<RunRecord[]> {
+  return request<RunRecord[]>(`/pipelines/${encodeURIComponent(pipelineId)}/runs`, {}, token)
+}
+
+/**
+ * Browsers' WebSocket API can't set an Authorization header, so the token
+ * travels as a query param — the server verifies it directly for this one
+ * route instead of through the usual Bearer-header extractor.
+ */
+export function progressSocketUrl(pipelineId: string, runId: number, token: string): string {
+  const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
+  return `${protocol}://${window.location.host}/pipelines/${encodeURIComponent(pipelineId)}/runs/${runId}/progress?token=${encodeURIComponent(token)}`
+}

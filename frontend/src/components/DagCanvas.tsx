@@ -17,9 +17,12 @@ import {
 import '@xyflow/react/dist/style.css'
 import { ConnectorPalette } from '@/components/ConnectorPalette'
 import { dagNodeTypes } from '@/components/dag-nodes'
+import { ExecutionPanel } from '@/components/ExecutionPanel'
 import { NodeInspector } from '@/components/NodeInspector'
 import { PipelineIoPanel } from '@/components/PipelineIoPanel'
+import { useAuth } from '@/lib/auth'
 import { useConnectors } from '@/hooks/useConnectors'
+import { useRunProgress } from '@/hooks/useRunProgress'
 import {
   fromPipelineSpec,
   toPipelineSpec,
@@ -37,11 +40,14 @@ function CanvasInner() {
   const { connectors, loading, error } = useConnectors()
   const { screenToFlowPosition } = useReactFlow()
   const wrapperRef = useRef<HTMLDivElement>(null)
+  const { token } = useAuth()
+  const execution = useRunProgress()
 
   const [nodes, setNodes] = useState<DagNode[]>([])
   const [edges, setEdges] = useState<Edge[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [meta, setMeta] = useState<PipelineMeta>({ pipelineId: '' })
+  const [runTriggerError, setRunTriggerError] = useState<string | null>(null)
 
   const onNodesChange: OnNodesChange<DagNode> = useCallback(
     (changes) => setNodes((current) => applyNodeChanges(changes, current)),
@@ -112,6 +118,17 @@ function CanvasInner() {
     return JSON.stringify(spec, null, 2)
   }, [nodes, meta])
 
+  const handleRun = useCallback(() => {
+    if (!token) return
+    try {
+      const spec = toPipelineSpec(nodes, meta)
+      setRunTriggerError(null)
+      execution.run(token, spec)
+    } catch (err) {
+      setRunTriggerError(err instanceof Error ? err.message : String(err))
+    }
+  }, [nodes, meta, token, execution])
+
   const handleImport = useCallback((json: string) => {
     const spec = JSON.parse(json) as PipelineSpec
     const { nodes: importedNodes, edges: importedEdges } = fromPipelineSpec(spec)
@@ -134,7 +151,12 @@ function CanvasInner() {
         onMetaChange={setMeta}
         onExport={handleExport}
         onImport={handleImport}
+        onRun={handleRun}
+        running={execution.status === 'starting' || execution.status === 'running'}
       />
+      {runTriggerError && (
+        <p className="border-b bg-card px-3 py-1 text-sm text-destructive">{runTriggerError}</p>
+      )}
       <div className="flex flex-1 overflow-hidden">
         <ConnectorPalette connectors={connectors} loading={loading} error={error} />
         <div ref={wrapperRef} className="flex-1" onDragOver={onDragOver} onDrop={onDrop}>
@@ -154,6 +176,12 @@ function CanvasInner() {
         </div>
         {selectedNode && <NodeInspector node={selectedNode} onChange={updateNodeData} />}
       </div>
+      <ExecutionPanel
+        status={execution.status}
+        runId={execution.runId}
+        partitions={execution.partitions}
+        error={execution.error}
+      />
       <button
         type="button"
         onClick={addTransformNode}

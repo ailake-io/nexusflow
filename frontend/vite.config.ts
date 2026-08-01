@@ -19,7 +19,7 @@ export default defineConfig({
     proxy: {
       '/auth': 'http://localhost:8080',
       '/connectors': 'http://localhost:8080',
-      '/pipelines': 'http://localhost:8080',
+      '/pipelines': { target: 'http://localhost:8080', ws: true },
       '/health': 'http://localhost:8080',
     },
   },

@@ -9,6 +9,8 @@ interface PipelineIoPanelProps {
   onMetaChange: (meta: PipelineMeta) => void
   onExport: () => string
   onImport: (json: string) => void
+  onRun: () => void
+  running: boolean
 }
 
 /**
@@ -17,7 +19,14 @@ interface PipelineIoPanelProps {
  * text area that either shows the exported JSON or accepts pasted JSON to
  * load onto the canvas.
  */
-export function PipelineIoPanel({ meta, onMetaChange, onExport, onImport }: PipelineIoPanelProps) {
+export function PipelineIoPanel({
+  meta,
+  onMetaChange,
+  onExport,
+  onImport,
+  onRun,
+  running,
+}: PipelineIoPanelProps) {
   const [text, setText] = useState('')
   const [error, setError] = useState<string | null>(null)
 
@@ -90,6 +99,9 @@ export function PipelineIoPanel({ meta, onMetaChange, onExport, onImport }: Pipe
         </Button>
         <Button type="button" variant="outline" onClick={handleImport}>
           Load JSON
+        </Button>
+        <Button type="button" variant="secondary" onClick={onRun} disabled={running}>
+          {running ? 'Running…' : 'Run'}
         </Button>
       </div>
       {error && <p className="text-sm text-destructive">{error}</p>}
