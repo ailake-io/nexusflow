@@ -5,6 +5,7 @@ use serde_json::json;
 
 /// Every Axum handler error funnels through here so internal errors never
 /// leak raw to the client — see ARCHITECTURE.md §9.
+#[derive(Debug)]
 pub struct ApiError {
     status: StatusCode,
     message: String,
@@ -14,6 +15,20 @@ impl ApiError {
     pub fn bad_request(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
+            message: message.into(),
+        }
+    }
+
+    pub fn unauthorized(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            message: message.into(),
+        }
+    }
+
+    pub fn forbidden(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
             message: message.into(),
         }
     }

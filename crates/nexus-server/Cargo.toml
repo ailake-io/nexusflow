@@ -6,10 +6,23 @@ license.workspace = true
 
 [dependencies]
 anyhow = "1.0.104"
+argon2 = "0.5.3"
 axum = "0.8.9"
+# Neither crypto backend is enabled by default in jsonwebtoken 11 — without
+# picking one, encode/decode panics at runtime ("Could not automatically
+# determine the process-level CryptoProvider"). rust_crypto is pure Rust
+# (no aws-lc-rs/C build), consistent with this workspace's other crates.
+jsonwebtoken = { version = "11.0.0", default-features = false, features = ["rust_crypto"] }
+# argon2's password-hash re-export of rand_core doesn't itself turn on
+# rand_core's "getrandom" feature (that's what makes `OsRng` exist at all) —
+# has to be requested directly here, at the exact rand_core 0.6.x version
+# password-hash 0.5.0 depends on, or `SaltString::generate` has no RNG type
+# that satisfies its `CryptoRngCore` bound.
+rand_core = { version = "0.6.4", features = ["getrandom"] }
 nexus-connector-postgres = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-postgres" }
 nexus-connector-sqlite = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-sqlite" }
 nexus-core = { version = "0.1.0", path = "../nexus-core" }
+serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sqlx = { version = "0.9.0", default-features = false, features = [
     "runtime-tokio",
