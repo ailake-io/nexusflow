@@ -1,3 +1,4 @@
+mod alerts;
 mod auth;
 mod auth_store;
 mod checkpoint_store;
@@ -8,6 +9,7 @@ mod pipeline_store;
 mod progress;
 mod runner;
 
+use alerts::AlertNotifier;
 use auth::{require_role, JwtCodec, Role};
 use auth_store::AuthStore;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -35,6 +37,7 @@ struct AppState {
     secrets: SecretCipher,
     pipelines: PipelineStore,
     progress: ProgressHub,
+    alerts: AlertNotifier,
 }
 
 impl From<PipelineStoreError> for ApiError {
@@ -207,6 +210,9 @@ async fn run_pipeline_handler(
             {
                 tracing::warn!(error = %record_err, "failed to record failed pipeline run");
             }
+            state
+                .alerts
+                .notify_pipeline_failed(&spec.pipeline_id, run_id, &e.to_string());
             Err(ApiError::internal(e))
         }
     }
@@ -364,6 +370,9 @@ pub struct ServerConfig {
     /// 64-char hex string (32 raw bytes) — comes from `NEXUS_ENCRYPTION_KEY`.
     /// Encrypts connector secrets at rest (CLAUDE.md §5). See `crypto.rs`.
     pub encryption_key_hex: String,
+    /// `NEXUS_SLACK_WEBHOOK_URL` — `None` just means alerting is off, not a
+    /// startup failure (see `alerts.rs`).
+    pub slack_webhook_url: Option<String>,
 }
 
 /// Builds the app without binding a socket — the entrypoint integration
@@ -386,6 +395,7 @@ pub async fn build_app(config: &ServerConfig) -> anyhow::Result<Router> {
         secrets,
         pipelines,
         progress: ProgressHub::default(),
+        alerts: AlertNotifier::new(config.slack_webhook_url.clone()),
     }))
 }
 
@@ -420,6 +430,12 @@ pub async fn run() -> anyhow::Result<()> {
             None
         }
     };
+    let slack_webhook_url = std::env::var("NEXUS_SLACK_WEBHOOK_URL").ok();
+    if slack_webhook_url.is_none() {
+        tracing::warn!(
+            "NEXUS_SLACK_WEBHOOK_URL not set — pipeline failures will not raise a Slack alert"
+        );
+    }
 
     let app = build_app(&ServerConfig {
         checkpoint_database_url: database_url,
@@ -429,6 +445,7 @@ pub async fn run() -> anyhow::Result<()> {
         jwt_ttl_seconds: 3600,
         bootstrap_admin,
         encryption_key_hex,
+        slack_webhook_url,
     })
     .await?;
 
@@ -462,6 +479,7 @@ mod tests {
             secrets: SecretCipher::from_hex_key(&"ab".repeat(32)).unwrap(),
             pipelines: PipelineStore::connect("sqlite::memory:").await.unwrap(),
             progress: ProgressHub::default(),
+            alerts: AlertNotifier::new(None),
         }
     }
 

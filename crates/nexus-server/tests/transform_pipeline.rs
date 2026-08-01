@@ -85,6 +85,7 @@ fn test_server_config(checkpoint_database_url: String) -> ServerConfig {
         jwt_ttl_seconds: 3600,
         bootstrap_admin: Some(("admin".to_string(), "test-password".to_string())),
         encryption_key_hex: "ab".repeat(32),
+        slack_webhook_url: None,
     }
 }
 
