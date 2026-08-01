@@ -8,6 +8,7 @@ mod error;
 mod pipeline_store;
 mod progress;
 mod runner;
+pub mod telemetry;
 
 use alerts::AlertNotifier;
 use auth::{require_role, JwtCodec, Role};
@@ -172,6 +173,7 @@ async fn login_handler(
     Ok(Json(LoginResponse { token }))
 }
 
+#[tracing::instrument(skip(state, spec), fields(pipeline_id = %id, run_id))]
 async fn run_pipeline_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -190,6 +192,7 @@ async fn run_pipeline_handler(
     // `POST /pipelines` — ad-hoc runs (body-only, no prior create) still
     // show up in `GET /pipelines/{id}/runs`, same as always-persisted ones.
     let run_id = state.pipelines.start_run(&spec.pipeline_id).await?;
+    tracing::Span::current().record("run_id", run_id);
     let progress_tx = state.progress.start(run_id);
 
     let result = runner::run_pipeline(&spec, &state.checkpoints, Some(progress_tx)).await;

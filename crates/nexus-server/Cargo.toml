@@ -35,7 +35,26 @@ sqlx = { version = "0.9.0", default-features = false, features = [
 ] }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+# OTel trace export (Marco 9) — off by default (see telemetry.rs), only
+# "trace" enabled (not logs/metrics, out of this task's scope). The async
+# batch exporter needs rt-tokio; reqwest-rustls matches this crate's other
+# HTTP client (alerts.rs) even though it's a different reqwest major (OTLP
+# 0.32 pins reqwest 0.13) — not worth fighting the ecosystem's version churn
+# to unify two otherwise-unrelated HTTP stacks.
+opentelemetry = { version = "0.32.0", default-features = false, features = ["trace"] }
+opentelemetry_sdk = { version = "0.32.1", default-features = false, features = [
+    "trace",
+    "rt-tokio",
+    "experimental_trace_batch_span_processor_with_async_runtime",
+] }
+opentelemetry-otlp = { version = "0.32.0", default-features = false, features = [
+    "trace",
+    "http-proto",
+    "reqwest-client",
+    "reqwest-rustls",
+] }
+tracing-opentelemetry = { version = "0.33.0", default-features = false, features = ["tracing-log"] }
 
 [dev-dependencies]
 futures-util = "0.3.33"

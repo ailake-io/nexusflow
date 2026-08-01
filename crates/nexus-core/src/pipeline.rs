@@ -56,6 +56,7 @@ impl PipelineEngine {
         Self { channel_capacity }
     }
 
+    #[tracing::instrument(skip(self, handle, progress), fields(partition_id = %handle.partition_id))]
     pub async fn run_partition(
         &self,
         handle: PartitionHandle,
@@ -129,6 +130,7 @@ impl PipelineEngine {
     /// callers see a `NexusError` for that partition's slot and can retry it
     /// independently (checkpoint is per-partition, so retrying one partition
     /// never touches the others' already-committed state).
+    #[tracing::instrument(skip_all, fields(num_partitions = partitions.len()))]
     pub async fn run(
         &self,
         partitions: Vec<PartitionHandle>,
@@ -186,6 +188,7 @@ impl PipelineEngine {
     /// Broadcast fan-out: every sink gets the full `batches` output, then
     /// commits one checkpoint. A failed sink doesn't stop the others (same
     /// per-slot-error contract as `run`).
+    #[tracing::instrument(skip_all, fields(num_sinks = sinks.len(), num_batches = batches.len()))]
     pub async fn fan_out_write(
         &self,
         batches: &[RecordBatch],
@@ -231,6 +234,7 @@ impl PipelineEngine {
     /// sink. Convenience wrapper over `drain_sources`/`fan_out_write` for
     /// callers whose sinks don't need the transform's output schema to be
     /// constructed (e.g. tests, or fixed-schema sinks).
+    #[tracing::instrument(skip_all)]
     pub async fn run_transform_pipeline(
         &self,
         pipeline: TransformPipeline,
