@@ -59,18 +59,34 @@ impl DbtOutcome {
     /// models/lineage counts only exist in `feature = "dbt"` builds.
     pub fn log_summary(&self) {
         #[cfg(feature = "dbt")]
-        let (models_total, nodes_in_lineage) = (
-            self.run_results.as_ref().map(|r| r.results.len()),
-            self.lineage.as_ref().map(|l| l.parent_map.len()),
-        );
+        let (models_total, tests_total, nodes_in_lineage) = {
+            let counts = self.run_results.as_ref().map(|r| {
+                let tests = r
+                    .results
+                    .iter()
+                    .filter(|res| resource_type_of(&res.unique_id) == "test")
+                    .count();
+                (r.results.len() - tests, tests)
+            });
+            (
+                counts.map(|(models, _)| models),
+                counts.map(|(_, tests)| tests),
+                self.lineage.as_ref().map(|l| l.parent_map.len()),
+            )
+        };
         #[cfg(not(feature = "dbt"))]
-        let (models_total, nodes_in_lineage): (Option<usize>, Option<usize>) = (None, None);
+        let (models_total, tests_total, nodes_in_lineage): (
+            Option<usize>,
+            Option<usize>,
+            Option<usize>,
+        ) = (None, None, None);
 
         tracing::info!(
             dbt_command = self.command,
             dbt_stdout = %self.stdout,
             dbt_stderr = %self.stderr,
             dbt_models_total = models_total,
+            dbt_tests_total = tests_total,
             dbt_nodes_in_lineage = nodes_in_lineage,
             "dbt step finished for this run"
         );
@@ -83,6 +99,15 @@ fn subcommand(command: DbtCommand) -> &'static str {
         DbtCommand::Build => "build",
         DbtCommand::Test => "test",
     }
+}
+
+/// dbt's `unique_id` convention is `{resource_type}.{package}.{name}` (e.g.
+/// `model.nexus_fixture.one`, `test.nexus_fixture.not_null_one_id.<hash>`)
+/// — the prefix alone tells a data-quality test apart from a model, no
+/// need to cross-reference manifest.json for resource_type.
+#[cfg(feature = "dbt")]
+fn resource_type_of(unique_id: &str) -> &str {
+    unique_id.split('.').next().unwrap_or("")
 }
 
 #[cfg(feature = "dbt")]
@@ -144,16 +169,22 @@ pub async fn run(config: &DbtConfig) -> anyhow::Result<DbtOutcome> {
     let lineage: Option<DbtManifestSummary> = read_json_artifact(&target_dir.join("manifest.json"));
 
     if let Some(rr) = &run_results {
-        let succeeded = rr
+        // Quality (task #25) is reported separately from raw model
+        // load status — "3 models loaded, 1 test failed" is a materially
+        // different signal than one blended pass/fail count.
+        let (tests, models): (Vec<_>, Vec<_>) = rr
             .results
             .iter()
-            .filter(|r| matches!(r.status.as_str(), "success" | "pass"))
-            .count();
-        let failed = rr.results.len() - succeeded;
+            .partition(|r| resource_type_of(&r.unique_id) == "test");
+        let models_succeeded = models.iter().filter(|r| r.status == "success").count();
+        let tests_passed = tests.iter().filter(|r| r.status == "pass").count();
         tracing::info!(
-            models_total = rr.results.len(),
-            models_succeeded = succeeded,
-            models_failed = failed,
+            models_total = models.len(),
+            models_succeeded = models_succeeded,
+            models_failed = models.len() - models_succeeded,
+            tests_total = tests.len(),
+            tests_passed = tests_passed,
+            tests_failed = tests.len() - tests_passed,
             elapsed_time = rr.elapsed_time,
             "dbt run_results.json captured"
         );
@@ -332,6 +363,81 @@ nexus_fixture:
         std::env::remove_var("DBT_PROFILES_DIR");
 
         assert!(err.to_string().contains("dbt run exited"));
+    }
+
+    /// Real dbt generic tests (task #25's "qualidade") — `not_null`/`unique`
+    /// (passing) plus `accepted_values` (deliberately failing, since model
+    /// `one`'s `label` column is `'a'`, not `'zzz'`) — proves the
+    /// model-vs-test split in `run_results.json` on a genuine dbt test run,
+    /// not just the model-only fixture the other tests use.
+    #[tokio::test]
+    async fn dbt_test_reports_quality_pass_and_fail_separately_from_models() {
+        require_dbt_cli_or_skip!();
+        let dir = tempfile::tempdir().unwrap();
+        write_fixture_project(dir.path());
+        fs::write(
+            dir.path().join("models").join("schema.yml"),
+            r#"
+version: 2
+models:
+  - name: one
+    columns:
+      - name: id
+        tests:
+          - not_null
+          - unique
+      - name: label
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['zzz']
+"#,
+        )
+        .unwrap();
+
+        let config = DbtConfig {
+            project_dir: dir.path().to_string_lossy().into_owned(),
+            command: DbtCommand::Build,
+            select: None,
+        };
+
+        std::env::set_var("DBT_PROFILES_DIR", dir.path());
+        // `build` runs models then tests — the one failing `accepted_values`
+        // test makes dbt exit non-zero, so the overall step is still an
+        // error (a failing quality check fails the pipeline run, same as a
+        // broken model — CLAUDE.md's quality-gate intent for ELT mode).
+        // `run()` intentionally doesn't leak a partial DbtOutcome through
+        // its Err path, so read run_results.json back directly here with
+        // the same production types/classification (DbtRunResults,
+        // resource_type_of) to prove the model-vs-test split itself is
+        // correct — not just that dbt's own exit code was non-zero.
+        let err = run(&config)
+            .await
+            .expect_err("a failing test fails the build");
+        assert!(err.to_string().contains("dbt build exited"));
+
+        let run_results: DbtRunResults =
+            read_json_artifact(&dir.path().join("target").join("run_results.json"))
+                .expect("run_results.json exists even though the build failed");
+        std::env::remove_var("DBT_PROFILES_DIR");
+
+        let (tests, models): (Vec<_>, Vec<_>) = run_results
+            .results
+            .iter()
+            .partition(|r| resource_type_of(&r.unique_id) == "test");
+        // `build` is DAG-aware: since one of `one`'s tests fails, dbt skips
+        // `two` (which depends on `one`) rather than running it anyway.
+        assert_eq!(models.len(), 2, "both fixture models (one, two)");
+        assert!(models
+            .iter()
+            .any(|r| r.unique_id.ends_with(".one") && r.status == "success"));
+        assert!(models
+            .iter()
+            .any(|r| r.unique_id.ends_with(".two") && r.status == "skipped"));
+        assert_eq!(tests.len(), 3, "not_null + unique + accepted_values");
+        let passed = tests.iter().filter(|r| r.status == "pass").count();
+        assert_eq!(passed, 2, "not_null and unique pass");
+        assert_eq!(tests.len() - passed, 1, "accepted_values fails");
     }
 }
 
