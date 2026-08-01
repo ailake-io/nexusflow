@@ -4,7 +4,7 @@ use crate::traits::{Sink, Source, Transform};
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use futures::StreamExt;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// One partition's Source+Sink pair, ready to run. Partitioning is the unit
 /// of parallelism — see ARCHITECTURE.md §4.
@@ -20,6 +20,23 @@ pub struct PartitionStats {
     pub batches_written: usize,
     pub rows_written: usize,
 }
+
+/// Cumulative progress for one partition/sink, emitted after every batch —
+/// nexus-server relays these over a WebSocket per run (Marco 7 task #9).
+/// Cumulative rather than per-batch deltas so a client that misses one
+/// event (a lagged broadcast receiver) is still consistent on the next.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProgressEvent {
+    pub partition_id: String,
+    pub batches_written: usize,
+    pub rows_written: usize,
+    pub bytes_written: usize,
+}
+
+/// Broadcast so every connected WebSocket client for a run gets every
+/// event, not just one of them (see nexus-server's `ProgressHub`). `None`
+/// callers (e.g. nexus-core's own tests) pay no cost beyond an `if let`.
+pub type ProgressSender = tokio::sync::broadcast::Sender<ProgressEvent>;
 
 /// Runs partitions Source -> mpsc channel -> Sink.
 ///
@@ -42,6 +59,7 @@ impl PipelineEngine {
     pub async fn run_partition(
         &self,
         handle: PartitionHandle,
+        progress: Option<ProgressSender>,
     ) -> Result<PartitionStats, NexusError> {
         let PartitionHandle {
             partition_id,
@@ -69,11 +87,21 @@ impl PipelineEngine {
         let writer = tokio::spawn(async move {
             let mut batches_written = 0usize;
             let mut rows_written = 0usize;
+            let mut bytes_written = 0usize;
 
             while let Some(batch) = rx.recv().await {
                 rows_written += batch.num_rows();
                 batches_written += 1;
+                bytes_written += batch.get_array_memory_size();
                 sink.write_batch(batch).await?;
+                if let Some(tx) = &progress {
+                    let _ = tx.send(ProgressEvent {
+                        partition_id: writer_partition_id.clone(),
+                        batches_written,
+                        rows_written,
+                        bytes_written,
+                    });
+                }
             }
 
             sink.commit_checkpoint(CheckpointCursor::new(writer_partition_id))
@@ -104,13 +132,19 @@ impl PipelineEngine {
     pub async fn run(
         &self,
         partitions: Vec<PartitionHandle>,
+        progress: Option<ProgressSender>,
     ) -> Vec<Result<PartitionStats, NexusError>> {
         let mut set = tokio::task::JoinSet::new();
         for partition in partitions {
             // Reuse run_partition's reader/writer split for each partition,
             // one JoinSet entry per partition so partitions run concurrently.
             let capacity = self.channel_capacity;
-            set.spawn(async move { PipelineEngine::new(capacity).run_partition(partition).await });
+            let progress = progress.clone();
+            set.spawn(async move {
+                PipelineEngine::new(capacity)
+                    .run_partition(partition, progress)
+                    .await
+            });
         }
 
         let mut results = Vec::new();
@@ -156,14 +190,27 @@ impl PipelineEngine {
         &self,
         batches: &[RecordBatch],
         sinks: Vec<(String, Box<dyn Sink>)>,
+        progress: Option<ProgressSender>,
     ) -> Vec<Result<PartitionStats, NexusError>> {
         let rows_in_output: usize = batches.iter().map(|b| b.num_rows()).sum();
 
         let mut results = Vec::with_capacity(sinks.len());
         for (name, mut sink) in sinks {
             let outcome: Result<PartitionStats, NexusError> = async {
-                for batch in batches {
+                let mut rows_written = 0usize;
+                let mut bytes_written = 0usize;
+                for (i, batch) in batches.iter().enumerate() {
                     sink.write_batch(batch.clone()).await?;
+                    rows_written += batch.num_rows();
+                    bytes_written += batch.get_array_memory_size();
+                    if let Some(tx) = &progress {
+                        let _ = tx.send(ProgressEvent {
+                            partition_id: name.clone(),
+                            batches_written: i + 1,
+                            rows_written,
+                            bytes_written,
+                        });
+                    }
                 }
                 sink.commit_checkpoint(CheckpointCursor::new(name.clone()))
                     .await?;
@@ -187,10 +234,11 @@ impl PipelineEngine {
     pub async fn run_transform_pipeline(
         &self,
         pipeline: TransformPipeline,
+        progress: Option<ProgressSender>,
     ) -> Result<Vec<PartitionStats>, NexusError> {
         let inputs = Self::drain_sources(pipeline.sources).await?;
         let output = pipeline.transform.apply(inputs).await?;
-        self.fan_out_write(&output, pipeline.sinks)
+        self.fan_out_write(&output, pipeline.sinks, progress)
             .await
             .into_iter()
             .collect()
@@ -278,11 +326,14 @@ mod tests {
 
         let engine = PipelineEngine::new(8);
         let stats = engine
-            .run_partition(PartitionHandle {
-                partition_id: "p0".to_string(),
-                source: Box::new(source),
-                sink: Box::new(sink),
-            })
+            .run_partition(
+                PartitionHandle {
+                    partition_id: "p0".to_string(),
+                    source: Box::new(source),
+                    sink: Box::new(sink),
+                },
+                None,
+            )
             .await
             .expect("partition runs successfully");
 
@@ -310,10 +361,13 @@ mod tests {
 
         let engine = PipelineEngine::new(8);
         let results = engine
-            .run(vec![
-                make_partition("p0", vec![1, 2]),
-                make_partition("p1", vec![3, 4, 5]),
-            ])
+            .run(
+                vec![
+                    make_partition("p0", vec![1, 2]),
+                    make_partition("p1", vec![3, 4, 5]),
+                ],
+                None,
+            )
             .await;
 
         assert_eq!(results.len(), 2);
@@ -358,29 +412,32 @@ mod tests {
 
         let engine = PipelineEngine::new(8);
         let stats = engine
-            .run_transform_pipeline(TransformPipeline {
-                sources: vec![
-                    ("a".to_string(), Box::new(source_a)),
-                    ("b".to_string(), Box::new(source_b)),
-                ],
-                transform: Box::new(ConcatTransform),
-                sinks: vec![
-                    (
-                        "sink_a".to_string(),
-                        Box::new(RecordingSink {
-                            received: sink_a_received.clone(),
-                            checkpoints: Arc::new(Mutex::new(Vec::new())),
-                        }) as Box<dyn Sink>,
-                    ),
-                    (
-                        "sink_b".to_string(),
-                        Box::new(RecordingSink {
-                            received: sink_b_received.clone(),
-                            checkpoints: Arc::new(Mutex::new(Vec::new())),
-                        }) as Box<dyn Sink>,
-                    ),
-                ],
-            })
+            .run_transform_pipeline(
+                TransformPipeline {
+                    sources: vec![
+                        ("a".to_string(), Box::new(source_a)),
+                        ("b".to_string(), Box::new(source_b)),
+                    ],
+                    transform: Box::new(ConcatTransform),
+                    sinks: vec![
+                        (
+                            "sink_a".to_string(),
+                            Box::new(RecordingSink {
+                                received: sink_a_received.clone(),
+                                checkpoints: Arc::new(Mutex::new(Vec::new())),
+                            }) as Box<dyn Sink>,
+                        ),
+                        (
+                            "sink_b".to_string(),
+                            Box::new(RecordingSink {
+                                received: sink_b_received.clone(),
+                                checkpoints: Arc::new(Mutex::new(Vec::new())),
+                            }) as Box<dyn Sink>,
+                        ),
+                    ],
+                },
+                None,
+            )
             .await
             .expect("transform pipeline runs");
 
@@ -395,5 +452,68 @@ mod tests {
         };
         assert_eq!(rows_in(&sink_a_received), 5);
         assert_eq!(rows_in(&sink_b_received), 5);
+    }
+
+    #[tokio::test]
+    async fn run_partition_emits_cumulative_progress_per_batch() {
+        let source = VecSource {
+            schema: test_schema(),
+            batches: vec![test_batch(vec![1, 2, 3]), test_batch(vec![4, 5])],
+        };
+        let (tx, mut rx) = tokio::sync::broadcast::channel(8);
+
+        let engine = PipelineEngine::new(8);
+        let stats = engine
+            .run_partition(
+                PartitionHandle {
+                    partition_id: "p0".to_string(),
+                    source: Box::new(source),
+                    sink: Box::new(RecordingSink::default()),
+                },
+                Some(tx),
+            )
+            .await
+            .expect("partition runs successfully");
+        assert_eq!(stats.rows_written, 5);
+
+        let first = rx.recv().await.unwrap();
+        assert_eq!(first.partition_id, "p0");
+        assert_eq!(first.batches_written, 1);
+        assert_eq!(first.rows_written, 3);
+        assert!(first.bytes_written > 0);
+
+        let second = rx.recv().await.unwrap();
+        assert_eq!(second.batches_written, 2);
+        assert_eq!(
+            second.rows_written, 5,
+            "progress is cumulative, not per-batch"
+        );
+        assert!(second.bytes_written > first.bytes_written);
+    }
+
+    #[tokio::test]
+    async fn fan_out_write_emits_progress_per_sink() {
+        let batches = vec![test_batch(vec![1, 2, 3])];
+        let (tx, mut rx) = tokio::sync::broadcast::channel(8);
+
+        let engine = PipelineEngine::new(8);
+        let results = engine
+            .fan_out_write(
+                &batches,
+                vec![(
+                    "sink_a".to_string(),
+                    Box::new(RecordingSink::default()) as Box<dyn Sink>,
+                )],
+                Some(tx),
+            )
+            .await;
+        assert_eq!(results.len(), 1);
+        results[0].as_ref().expect("sink write succeeds");
+
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.partition_id, "sink_a");
+        assert_eq!(event.batches_written, 1);
+        assert_eq!(event.rows_written, 3);
+        assert!(event.bytes_written > 0);
     }
 }

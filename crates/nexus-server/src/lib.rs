@@ -5,13 +5,16 @@ mod connectors;
 mod crypto;
 mod error;
 mod pipeline_store;
+mod progress;
 mod runner;
 
 use auth::{require_role, JwtCodec, Role};
 use auth_store::AuthStore;
-use axum::extract::{Extension, FromRef, Path, State};
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{Extension, FromRef, Path, Query, State};
 use axum::http::StatusCode;
 use axum::middleware;
+use axum::response::Response;
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use checkpoint_store::CheckpointStore;
@@ -19,6 +22,7 @@ use crypto::SecretCipher;
 use error::ApiError;
 use nexus_core::{ConnectorDescriptor, ConnectorRegistry, PartitionStats, PipelineSpec};
 use pipeline_store::{PipelineStore, PipelineStoreError, PipelineSummary, RunRecord};
+use progress::ProgressHub;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
@@ -30,6 +34,7 @@ struct AppState {
     /// Encrypts connector secrets before `pipelines` persists them (CLAUDE.md §5).
     secrets: SecretCipher,
     pipelines: PipelineStore,
+    progress: ProgressHub,
 }
 
 impl From<PipelineStoreError> for ApiError {
@@ -114,6 +119,13 @@ fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/auth/login", post(login_handler))
+        // Not behind `require_role` — a browser's `WebSocket` API can't set
+        // an `Authorization` header, so this route takes the JWT as a query
+        // param and checks the role itself (see `progress_ws_handler`).
+        .route(
+            "/pipelines/{id}/runs/{run_id}/progress",
+            get(progress_ws_handler),
+        )
         .merge(execute_protected)
         .merge(write_protected)
         .merge(read_protected)
@@ -175,8 +187,12 @@ async fn run_pipeline_handler(
     // `POST /pipelines` — ad-hoc runs (body-only, no prior create) still
     // show up in `GET /pipelines/{id}/runs`, same as always-persisted ones.
     let run_id = state.pipelines.start_run(&spec.pipeline_id).await?;
+    let progress_tx = state.progress.start(run_id);
 
-    match runner::run_pipeline(&spec, &state.checkpoints).await {
+    let result = runner::run_pipeline(&spec, &state.checkpoints, Some(progress_tx)).await;
+    state.progress.finish(run_id);
+
+    match result {
         Ok(stats) => {
             if let Err(e) = state.pipelines.finish_run_success(run_id, &stats).await {
                 tracing::warn!(error = %e, "failed to record successful pipeline run");
@@ -259,6 +275,82 @@ async fn list_runs_handler(
     Ok(Json(state.pipelines.list_runs(&id).await?))
 }
 
+#[derive(Deserialize)]
+struct ProgressWsQuery {
+    token: String,
+}
+
+/// `/pipelines/{id}/runs/{run_id}/progress` — streams that run's
+/// `ProgressEvent`s as JSON text frames until the run finishes (server
+/// closes) or the client disconnects. `{id}` isn't used for the lookup
+/// (progress is keyed by `run_id` alone) — kept in the path purely so the
+/// URL reads as "this run, under this pipeline", matching `GET .../runs`.
+async fn progress_ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+    Path((_id, run_id)): Path<(String, i64)>,
+    Query(query): Query<ProgressWsQuery>,
+) -> Result<Response, ApiError> {
+    let rx = authorize_progress_subscription(&state, &query.token, run_id).await?;
+    Ok(ws.on_upgrade(move |socket| forward_progress(socket, rx)))
+}
+
+/// Split out from `progress_ws_handler` so it's callable directly from a
+/// test — a `WebSocketUpgrade` extractor requires a real hyper connection
+/// (`tower::ServiceExt::oneshot` doesn't provide one, so it always rejects
+/// with 426 regardless of what this function would have decided).
+async fn authorize_progress_subscription(
+    state: &AppState,
+    token: &str,
+    run_id: i64,
+) -> Result<tokio::sync::broadcast::Receiver<nexus_core::ProgressEvent>, ApiError> {
+    let claims = state.jwt.verify(token)?;
+    if claims.role < Role::Read {
+        return Err(ApiError::forbidden(format!(
+            "requires {:?} role or higher, caller has {:?}",
+            Role::Read,
+            claims.role
+        )));
+    }
+
+    state
+        .progress
+        .subscribe(run_id)
+        .ok_or_else(|| ApiError::not_found(format!("run {run_id} not found or already finished")))
+}
+
+async fn forward_progress(
+    mut socket: WebSocket,
+    mut rx: tokio::sync::broadcast::Receiver<nexus_core::ProgressEvent>,
+) {
+    loop {
+        tokio::select! {
+            event = rx.recv() => {
+                match event {
+                    Ok(event) => {
+                        let json = serde_json::to_string(&event)
+                            .expect("ProgressEvent always serializes");
+                        if socket.send(Message::Text(json.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    // A slow client missed some events — cumulative counts
+                    // mean the next one it does get is still consistent.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            incoming = socket.recv() => {
+                // No client->server protocol — any message or a closed
+                // connection both mean "stop forwarding".
+                if incoming.is_none() {
+                    break;
+                }
+            }
+        }
+    }
+}
+
 pub struct ServerConfig {
     pub checkpoint_database_url: String,
     pub auth_database_url: String,
@@ -293,6 +385,7 @@ pub async fn build_app(config: &ServerConfig) -> anyhow::Result<Router> {
         jwt,
         secrets,
         pipelines,
+        progress: ProgressHub::default(),
     }))
 }
 
@@ -353,6 +446,7 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use axum::response::IntoResponse;
     use tower::ServiceExt;
 
     async fn test_state() -> AppState {
@@ -367,6 +461,7 @@ mod tests {
             jwt: JwtCodec::new(b"test-secret", 3600),
             secrets: SecretCipher::from_hex_key(&"ab".repeat(32)).unwrap(),
             pipelines: PipelineStore::connect("sqlite::memory:").await.unwrap(),
+            progress: ProgressHub::default(),
         }
     }
 
@@ -881,5 +976,117 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("unsupported connector"));
+    }
+
+    #[tokio::test]
+    async fn progress_subscription_rejects_invalid_token() {
+        let state = test_state().await;
+        let err = authorize_progress_subscription(&state, "garbage", 1)
+            .await
+            .unwrap_err();
+        assert_eq!(err.into_response().status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn progress_subscription_404s_for_unknown_run() {
+        let state = test_state().await;
+        let token = bearer(&state, Role::Read);
+        let token = token.strip_prefix("Bearer ").unwrap();
+
+        let err = authorize_progress_subscription(&state, token, 999)
+            .await
+            .unwrap_err();
+        assert_eq!(err.into_response().status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn progress_subscription_succeeds_for_an_active_run() {
+        let state = test_state().await;
+        let token = bearer(&state, Role::Read);
+        let token = token.strip_prefix("Bearer ").unwrap();
+        let run_id = state.pipelines.start_run("p1").await.unwrap();
+        let tx = state.progress.start(run_id);
+
+        let mut rx = authorize_progress_subscription(&state, token, run_id)
+            .await
+            .unwrap();
+
+        tx.send(nexus_core::ProgressEvent {
+            partition_id: "p0".to_string(),
+            batches_written: 1,
+            rows_written: 10,
+            bytes_written: 100,
+        })
+        .unwrap();
+        assert_eq!(rx.recv().await.unwrap().rows_written, 10);
+    }
+
+    #[tokio::test]
+    async fn progress_subscription_404s_after_run_finishes() {
+        let state = test_state().await;
+        let token = bearer(&state, Role::Read);
+        let token = token.strip_prefix("Bearer ").unwrap();
+        let run_id = state.pipelines.start_run("p1").await.unwrap();
+        state.progress.start(run_id);
+        state.progress.finish(run_id);
+
+        let err = authorize_progress_subscription(&state, token, run_id)
+            .await
+            .unwrap_err();
+        assert_eq!(err.into_response().status(), StatusCode::NOT_FOUND);
+    }
+
+    /// The only test in this file that binds a real socket — everything else
+    /// goes through `tower::ServiceExt::oneshot`, which can't perform an
+    /// actual WebSocket upgrade (no real hyper connection backs it, see
+    /// `authorize_progress_subscription`'s doc comment). This proves the
+    /// wire-level mechanics end to end: real HTTP upgrade, real broadcast
+    /// forwarding, real JSON frames — without needing a real connector/ADBC
+    /// driver, since it seeds progress directly rather than running a pipeline.
+    #[tokio::test]
+    async fn progress_websocket_delivers_real_events_over_a_real_socket() {
+        use futures_util::StreamExt;
+        use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+        let state = test_state().await;
+        let token = bearer(&state, Role::Read);
+        let token = token.strip_prefix("Bearer ").unwrap().to_string();
+        let run_id = state.pipelines.start_run("p1").await.unwrap();
+        let tx = state.progress.start(run_id);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = router(state);
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let url = format!("ws://{addr}/pipelines/p1/runs/{run_id}/progress?token={token}");
+        let (mut ws, _response) = tokio_tungstenite::connect_async(url)
+            .await
+            .expect("real WebSocket handshake succeeds");
+
+        tx.send(nexus_core::ProgressEvent {
+            partition_id: "p0".to_string(),
+            batches_written: 1,
+            rows_written: 42,
+            bytes_written: 999,
+        })
+        .unwrap();
+
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next())
+            .await
+            .expect("received a message before timing out")
+            .expect("stream is not closed")
+            .expect("no transport error");
+        let WsMessage::Text(text) = msg else {
+            panic!("expected a text frame, got {msg:?}");
+        };
+        let event: nexus_core::ProgressEvent = serde_json::from_str(&text).unwrap();
+        assert_eq!(event.partition_id, "p0");
+        assert_eq!(event.rows_written, 42);
+        assert_eq!(event.bytes_written, 999);
+
+        ws.close(None).await.ok();
     }
 }

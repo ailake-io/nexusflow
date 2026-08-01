@@ -13,7 +13,10 @@ pub use cdc::{project_column, split_by_opcode, CdcSplit};
 pub use checkpoint::{CheckpointCursor, Opcode, OPCODE_COLUMN};
 pub use dag::{NodeSpec, PipelineSpec, TransformSpec};
 pub use error::NexusError;
-pub use pipeline::{PartitionHandle, PartitionStats, PipelineEngine, TransformPipeline};
+pub use pipeline::{
+    PartitionHandle, PartitionStats, PipelineEngine, ProgressEvent, ProgressSender,
+    TransformPipeline,
+};
 pub use record_batch_builder::RecordBatchBuilder;
 pub use registry::{ConnectorDescriptor, ConnectorRegistry};
 pub use sql::quote_identifier;
