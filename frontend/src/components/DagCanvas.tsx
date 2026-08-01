@@ -8,15 +8,28 @@ import {
   applyNodeChanges,
   applyEdgeChanges,
   useReactFlow,
-  type Node,
   type Edge,
   type OnConnect,
   type OnNodesChange,
   type OnEdgesChange,
+  type OnSelectionChangeFunc,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { ConnectorPalette } from '@/components/ConnectorPalette'
+import { dagNodeTypes } from '@/components/dag-nodes'
+import { NodeInspector } from '@/components/NodeInspector'
+import { PipelineIoPanel } from '@/components/PipelineIoPanel'
 import { useConnectors } from '@/hooks/useConnectors'
+import {
+  fromPipelineSpec,
+  toPipelineSpec,
+  type ConnectorNodeData,
+  type DagNode,
+  type DagNodeData,
+  type PipelineMeta,
+  type PipelineSpec,
+  type TransformNodeData,
+} from '@/lib/dag'
 
 let nextNodeId = 1
 
@@ -25,10 +38,12 @@ function CanvasInner() {
   const { screenToFlowPosition } = useReactFlow()
   const wrapperRef = useRef<HTMLDivElement>(null)
 
-  const [nodes, setNodes] = useState<Node[]>([])
+  const [nodes, setNodes] = useState<DagNode[]>([])
   const [edges, setEdges] = useState<Edge[]>([])
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [meta, setMeta] = useState<PipelineMeta>({ pipelineId: '' })
 
-  const onNodesChange: OnNodesChange = useCallback(
+  const onNodesChange: OnNodesChange<DagNode> = useCallback(
     (changes) => setNodes((current) => applyNodeChanges(changes, current)),
     [],
   )
@@ -40,6 +55,9 @@ function CanvasInner() {
     (connection) => setEdges((current) => addEdge(connection, current)),
     [],
   )
+  const onSelectionChange: OnSelectionChangeFunc = useCallback(({ nodes: selected }) => {
+    setSelectedId(selected[0]?.id ?? null)
+  }, [])
 
   const onDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
     event.preventDefault()
@@ -54,32 +72,95 @@ function CanvasInner() {
 
       const position = screenToFlowPosition({ x: event.clientX, y: event.clientY })
       const id = `node-${nextNodeId++}`
-      const newNode: Node = {
+      const newNode: DagNode = {
         id,
+        type: 'connector',
         position,
-        data: { label: connector, connector },
+        data: { kind: 'connector', connector, role: 'source', name: '', config: '{}' },
       }
       setNodes((current) => [...current, newNode])
     },
     [screenToFlowPosition],
   )
 
+  const addTransformNode = useCallback(() => {
+    const id = `node-${nextNodeId++}`
+    setNodes((current) => [
+      ...current,
+      {
+        id,
+        type: 'transform',
+        position: { x: 200, y: 200 },
+        data: { kind: 'transform', sql: '' },
+      },
+    ])
+  }, [])
+
+  const updateNodeData = useCallback(
+    (id: string, patch: Partial<ConnectorNodeData> | Partial<TransformNodeData>) => {
+      setNodes((current) =>
+        current.map((n) =>
+          n.id === id ? { ...n, data: { ...n.data, ...patch } as DagNodeData } : n,
+        ),
+      )
+    },
+    [],
+  )
+
+  const handleExport = useCallback(() => {
+    const spec = toPipelineSpec(nodes, meta)
+    return JSON.stringify(spec, null, 2)
+  }, [nodes, meta])
+
+  const handleImport = useCallback((json: string) => {
+    const spec = JSON.parse(json) as PipelineSpec
+    const { nodes: importedNodes, edges: importedEdges } = fromPipelineSpec(spec)
+    setNodes(importedNodes)
+    setEdges(importedEdges)
+    setSelectedId(null)
+    setMeta({
+      pipelineId: spec.pipeline_id,
+      channelCapacity: spec.channel_capacity,
+      partitions: spec.partitions,
+    })
+  }, [])
+
+  const selectedNode = nodes.find((n) => n.id === selectedId) ?? null
+
   return (
-    <div className="flex h-screen w-screen">
-      <ConnectorPalette connectors={connectors} loading={loading} error={error} />
-      <div ref={wrapperRef} className="flex-1" onDragOver={onDragOver} onDrop={onDrop}>
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          onNodesChange={onNodesChange}
-          onEdgesChange={onEdgesChange}
-          onConnect={onConnect}
-          fitView
-        >
-          <Background />
-          <Controls />
-        </ReactFlow>
+    <div className="flex h-screen w-screen flex-col">
+      <PipelineIoPanel
+        meta={meta}
+        onMetaChange={setMeta}
+        onExport={handleExport}
+        onImport={handleImport}
+      />
+      <div className="flex flex-1 overflow-hidden">
+        <ConnectorPalette connectors={connectors} loading={loading} error={error} />
+        <div ref={wrapperRef} className="flex-1" onDragOver={onDragOver} onDrop={onDrop}>
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            nodeTypes={dagNodeTypes}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onConnect={onConnect}
+            onSelectionChange={onSelectionChange}
+            fitView
+          >
+            <Background />
+            <Controls />
+          </ReactFlow>
+        </div>
+        {selectedNode && <NodeInspector node={selectedNode} onChange={updateNodeData} />}
       </div>
+      <button
+        type="button"
+        onClick={addTransformNode}
+        className="absolute bottom-4 left-64 rounded-md border bg-card px-3 py-1.5 text-sm shadow-sm hover:bg-muted"
+      >
+        + Transform
+      </button>
     </div>
   )
 }
