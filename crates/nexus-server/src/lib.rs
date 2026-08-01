@@ -4,18 +4,21 @@ mod checkpoint_store;
 mod connectors;
 mod crypto;
 mod error;
+mod pipeline_store;
 mod runner;
 
 use auth::{require_role, JwtCodec, Role};
 use auth_store::AuthStore;
 use axum::extract::{Extension, FromRef, Path, State};
+use axum::http::StatusCode;
 use axum::middleware;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use checkpoint_store::CheckpointStore;
 use crypto::SecretCipher;
 use error::ApiError;
 use nexus_core::{ConnectorDescriptor, ConnectorRegistry, PartitionStats, PipelineSpec};
+use pipeline_store::{PipelineStore, PipelineStoreError, PipelineSummary, RunRecord};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
@@ -24,10 +27,24 @@ struct AppState {
     checkpoints: CheckpointStore,
     auth_store: AuthStore,
     jwt: JwtCodec,
-    /// Encrypts connector secrets before the pipeline-CRUD layer (Marco 7,
-    /// task #8) persists them — not read by any route yet, wired in ahead
-    /// of that so #8 only has to extract it, not thread it through.
+    /// Encrypts connector secrets before `pipelines` persists them (CLAUDE.md §5).
     secrets: SecretCipher,
+    pipelines: PipelineStore,
+}
+
+impl From<PipelineStoreError> for ApiError {
+    fn from(err: PipelineStoreError) -> Self {
+        match err {
+            PipelineStoreError::AlreadyExists(id) => {
+                ApiError::conflict(format!("pipeline {id:?} already exists"))
+            }
+            PipelineStoreError::NotFound(id) => {
+                ApiError::not_found(format!("pipeline {id:?} not found"))
+            }
+            PipelineStoreError::Corrupt(msg) => ApiError::internal(msg),
+            PipelineStoreError::Sqlx(e) => ApiError::internal(e),
+        }
+    }
 }
 
 /// Lets `Claims`/`require_role` (defined generically over any state `S`
@@ -65,10 +82,29 @@ fn router(state: AppState) -> Router {
         ))
         .layer(Extension(Role::Execute));
 
+    // Creating/editing/deleting a pipeline definition needs `Write`;
+    // running one (above) only needs `Execute` — matches the existing
+    // Read < Execute < Write < Admin hierarchy (ARCHITECTURE.md §10).
+    let write_protected = Router::new()
+        .route("/pipelines", post(create_pipeline_handler))
+        .route(
+            "/pipelines/{id}",
+            put(update_pipeline_handler).delete(delete_pipeline_handler),
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_role::<AppState>,
+        ))
+        .layer(Extension(Role::Write));
+
     // The connector catalog (Marco 8: canvas nodes come from here, never
-    // hardcoded in the frontend — ARCHITECTURE.md §3) only needs `Read`.
+    // hardcoded in the frontend — ARCHITECTURE.md §3) and reading pipeline
+    // definitions/run history only need `Read`.
     let read_protected = Router::new()
         .route("/connectors", get(list_connectors_handler))
+        .route("/pipelines", get(list_pipelines_handler))
+        .route("/pipelines/{id}", get(get_pipeline_handler))
+        .route("/pipelines/{id}/runs", get(list_runs_handler))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_role::<AppState>,
@@ -79,6 +115,7 @@ fn router(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/auth/login", post(login_handler))
         .merge(execute_protected)
+        .merge(write_protected)
         .merge(read_protected)
         .with_state(state)
 }
@@ -134,16 +171,98 @@ async fn run_pipeline_handler(
     spec.validate()
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
 
-    let stats = runner::run_pipeline(&spec, &state.checkpoints)
-        .await
-        .map_err(ApiError::internal)?;
+    // Recorded regardless of whether `id` was ever persisted via
+    // `POST /pipelines` — ad-hoc runs (body-only, no prior create) still
+    // show up in `GET /pipelines/{id}/runs`, same as always-persisted ones.
+    let run_id = state.pipelines.start_run(&spec.pipeline_id).await?;
 
-    Ok(Json(stats))
+    match runner::run_pipeline(&spec, &state.checkpoints).await {
+        Ok(stats) => {
+            if let Err(e) = state.pipelines.finish_run_success(run_id, &stats).await {
+                tracing::warn!(error = %e, "failed to record successful pipeline run");
+            }
+            Ok(Json(stats))
+        }
+        Err(e) => {
+            if let Err(record_err) = state
+                .pipelines
+                .finish_run_failure(run_id, &e.to_string())
+                .await
+            {
+                tracing::warn!(error = %record_err, "failed to record failed pipeline run");
+            }
+            Err(ApiError::internal(e))
+        }
+    }
+}
+
+async fn create_pipeline_handler(
+    State(state): State<AppState>,
+    Json(spec): Json<PipelineSpec>,
+) -> Result<(StatusCode, Json<PipelineSummary>), ApiError> {
+    spec.validate()
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    state.pipelines.create(&spec, &state.secrets).await?;
+    let summary = state
+        .pipelines
+        .get_summary(&spec.pipeline_id, &state.secrets)
+        .await?;
+    Ok((StatusCode::CREATED, Json(summary)))
+}
+
+async fn list_pipelines_handler(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<PipelineSummary>>, ApiError> {
+    Ok(Json(state.pipelines.list_summaries(&state.secrets).await?))
+}
+
+async fn get_pipeline_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<PipelineSummary>, ApiError> {
+    Ok(Json(
+        state.pipelines.get_summary(&id, &state.secrets).await?,
+    ))
+}
+
+async fn update_pipeline_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(spec): Json<PipelineSpec>,
+) -> Result<Json<PipelineSummary>, ApiError> {
+    if spec.pipeline_id != id {
+        return Err(ApiError::bad_request(format!(
+            "path id {id:?} does not match body.pipeline_id {:?}",
+            spec.pipeline_id
+        )));
+    }
+    spec.validate()
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    state.pipelines.update(&id, &spec, &state.secrets).await?;
+    Ok(Json(
+        state.pipelines.get_summary(&id, &state.secrets).await?,
+    ))
+}
+
+async fn delete_pipeline_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    state.pipelines.delete(&id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn list_runs_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<RunRecord>>, ApiError> {
+    Ok(Json(state.pipelines.list_runs(&id).await?))
 }
 
 pub struct ServerConfig {
     pub checkpoint_database_url: String,
     pub auth_database_url: String,
+    pub pipelines_database_url: String,
     /// Never hardcoded — comes from `NEXUS_JWT_SECRET` (ARCHITECTURE.md §10).
     pub jwt_secret: String,
     pub jwt_ttl_seconds: u64,
@@ -161,6 +280,7 @@ pub struct ServerConfig {
 pub async fn build_app(config: &ServerConfig) -> anyhow::Result<Router> {
     let checkpoints = CheckpointStore::connect(&config.checkpoint_database_url).await?;
     let auth_store = AuthStore::connect(&config.auth_database_url).await?;
+    let pipelines = PipelineStore::connect(&config.pipelines_database_url).await?;
     if let Some((username, password)) = &config.bootstrap_admin {
         auth_store.seed_admin_if_empty(username, password).await?;
     }
@@ -172,6 +292,7 @@ pub async fn build_app(config: &ServerConfig) -> anyhow::Result<Router> {
         auth_store,
         jwt,
         secrets,
+        pipelines,
     }))
 }
 
@@ -183,6 +304,8 @@ pub async fn run() -> anyhow::Result<()> {
         std::env::var("NEXUS_CHECKPOINT_DB").unwrap_or_else(|_| "sqlite://nexusflow.db".into());
     let auth_database_url =
         std::env::var("NEXUS_AUTH_DB").unwrap_or_else(|_| "sqlite://nexusflow-auth.db".into());
+    let pipelines_database_url = std::env::var("NEXUS_PIPELINES_DB")
+        .unwrap_or_else(|_| "sqlite://nexusflow-pipelines.db".into());
     let jwt_secret = std::env::var("NEXUS_JWT_SECRET")
         .map_err(|_| anyhow::anyhow!("NEXUS_JWT_SECRET must be set (ARCHITECTURE.md §10)"))?;
     let encryption_key_hex = std::env::var("NEXUS_ENCRYPTION_KEY").map_err(|_| {
@@ -208,6 +331,7 @@ pub async fn run() -> anyhow::Result<()> {
     let app = build_app(&ServerConfig {
         checkpoint_database_url: database_url,
         auth_database_url,
+        pipelines_database_url,
         jwt_secret,
         jwt_ttl_seconds: 3600,
         bootstrap_admin,
@@ -242,6 +366,7 @@ mod tests {
             auth_store,
             jwt: JwtCodec::new(b"test-secret", 3600),
             secrets: SecretCipher::from_hex_key(&"ab".repeat(32)).unwrap(),
+            pipelines: PipelineStore::connect("sqlite::memory:").await.unwrap(),
         }
     }
 
@@ -464,5 +589,297 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    fn json_request(
+        method: &str,
+        uri: &str,
+        token: &str,
+        body: serde_json::Value,
+    ) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .header("authorization", token)
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    async fn body_json(response: axum::response::Response) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    fn sample_pipeline(id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "pipeline_id": id,
+            "sources": [{"connector": "postgres", "config": {"uri": "postgres://user:pw@host/db"}}],
+            "sinks": [{"connector": "sqlite", "config": {"path": "/tmp/out.db"}}]
+        })
+    }
+
+    #[tokio::test]
+    async fn create_pipeline_requires_write_role() {
+        let state = test_state().await;
+        let token = bearer(&state, Role::Execute);
+        let app = router(state);
+
+        let response = app
+            .oneshot(json_request(
+                "POST",
+                "/pipelines",
+                &token,
+                sample_pipeline("p1"),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn create_pipeline_persists_and_masks_config() {
+        let state = test_state().await;
+        let write_token = bearer(&state, Role::Write);
+        let read_token = bearer(&state, Role::Read);
+        let app = router(state);
+
+        let create = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/pipelines",
+                &write_token,
+                sample_pipeline("p1"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(create.status(), StatusCode::CREATED);
+
+        let get = app
+            .oneshot(
+                Request::builder()
+                    .uri("/pipelines/p1")
+                    .header("authorization", read_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(get.status(), StatusCode::OK);
+
+        let summary = body_json(get).await;
+        assert_eq!(summary["pipeline_id"], "p1");
+        assert_eq!(summary["sources"][0]["connector"], "postgres");
+        assert!(
+            summary["sources"][0].get("config").is_none(),
+            "connector config (where secrets live) must never appear in a pipeline summary"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_duplicate_pipeline_id_conflicts() {
+        let state = test_state().await;
+        let token = bearer(&state, Role::Write);
+        let app = router(state);
+
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                "/pipelines",
+                &token,
+                sample_pipeline("p1"),
+            ))
+            .await
+            .unwrap();
+        let response = app
+            .oneshot(json_request(
+                "POST",
+                "/pipelines",
+                &token,
+                sample_pipeline("p1"),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn list_pipelines_returns_created_ones() {
+        let state = test_state().await;
+        let write_token = bearer(&state, Role::Write);
+        let read_token = bearer(&state, Role::Read);
+        let app = router(state);
+
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                "/pipelines",
+                &write_token,
+                sample_pipeline("p1"),
+            ))
+            .await
+            .unwrap();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/pipelines")
+                    .header("authorization", read_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let list = body_json(response).await;
+        assert_eq!(list.as_array().unwrap().len(), 1);
+        assert_eq!(list[0]["pipeline_id"], "p1");
+    }
+
+    #[tokio::test]
+    async fn update_pipeline_changes_stored_spec() {
+        let state = test_state().await;
+        let write_token = bearer(&state, Role::Write);
+        let app = router(state);
+
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                "/pipelines",
+                &write_token,
+                sample_pipeline("p1"),
+            ))
+            .await
+            .unwrap();
+
+        let mut updated = sample_pipeline("p1");
+        updated["sinks"][0]["connector"] = serde_json::json!("postgres");
+        let response = app
+            .clone()
+            .oneshot(json_request("PUT", "/pipelines/p1", &write_token, updated))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let summary = body_json(response).await;
+        assert_eq!(summary["sinks"][0]["connector"], "postgres");
+    }
+
+    #[tokio::test]
+    async fn update_rejects_path_body_id_mismatch() {
+        let state = test_state().await;
+        let token = bearer(&state, Role::Write);
+        let app = router(state);
+
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                "/pipelines",
+                &token,
+                sample_pipeline("p1"),
+            ))
+            .await
+            .unwrap();
+
+        let response = app
+            .oneshot(json_request(
+                "PUT",
+                "/pipelines/p1",
+                &token,
+                sample_pipeline("different-id"),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn delete_pipeline_then_get_returns_404() {
+        let state = test_state().await;
+        let write_token = bearer(&state, Role::Write);
+        let app = router(state);
+
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                "/pipelines",
+                &write_token,
+                sample_pipeline("p1"),
+            ))
+            .await
+            .unwrap();
+
+        let delete = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/pipelines/p1")
+                    .header("authorization", &write_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(delete.status(), StatusCode::NO_CONTENT);
+
+        let get = app
+            .oneshot(
+                Request::builder()
+                    .uri("/pipelines/p1")
+                    .header("authorization", write_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(get.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn run_records_failed_run_in_history() {
+        let state = test_state().await;
+        let token = bearer(&state, Role::Execute);
+        let app = router(state);
+
+        let body = serde_json::json!({
+            "pipeline_id": "p1",
+            "sources": [{"connector": "mongodb", "config": {}}],
+            "sinks": [{"connector": "postgres", "config": {}}]
+        });
+        let run = app
+            .clone()
+            .oneshot(json_request("POST", "/pipelines/p1/run", &token, body))
+            .await
+            .unwrap();
+        assert_eq!(run.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let runs = app
+            .oneshot(
+                Request::builder()
+                    .uri("/pipelines/p1/runs")
+                    .header("authorization", token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(runs.status(), StatusCode::OK);
+
+        let runs_body = body_json(runs).await;
+        let runs_array = runs_body.as_array().unwrap();
+        assert_eq!(runs_array.len(), 1);
+        assert_eq!(runs_array[0]["status"], "failed");
+        assert!(runs_array[0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("unsupported connector"));
     }
 }

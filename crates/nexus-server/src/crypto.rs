@@ -42,10 +42,6 @@ impl SecretCipher {
 
     /// Returns `hex(nonce || ciphertext)` — a fresh random nonce every call,
     /// so encrypting the same plaintext twice yields different output.
-    // Not called outside tests yet — the pipeline-CRUD layer (Marco 7, task
-    // #8, next in IMPLEMENTATION_PLAN.md) is what will call this before
-    // persisting a connector's config. Kept ready rather than built twice.
-    #[allow(dead_code)]
     pub fn encrypt(&self, plaintext: &str) -> String {
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
         let ciphertext = self
@@ -57,7 +53,6 @@ impl SecretCipher {
         hex::encode(out)
     }
 
-    #[allow(dead_code)]
     pub fn decrypt(&self, encoded: &str) -> Result<String, CryptoError> {
         let raw = hex::decode(encoded).map_err(|_| CryptoError::Decrypt)?;
         if raw.len() < NONCE_LEN {

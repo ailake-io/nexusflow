@@ -77,6 +77,7 @@ fn test_server_config(checkpoint_database_url: String) -> ServerConfig {
     ServerConfig {
         checkpoint_database_url,
         auth_database_url: "sqlite::memory:".to_string(),
+        pipelines_database_url: "sqlite::memory:".to_string(),
         jwt_secret: "test-secret".to_string(),
         jwt_ttl_seconds: 3600,
         bootstrap_admin: Some(("admin".to_string(), "test-password".to_string())),
