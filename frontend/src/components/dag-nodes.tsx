@@ -31,7 +31,23 @@ export function TransformNodeView({ selected }: NodeProps<DagNode>) {
   )
 }
 
+export function DbtNodeView({ data, selected }: NodeProps<DagNode>) {
+  if (data.kind !== 'dbt') return null
+  return (
+    <div
+      className={`rounded-md border bg-card px-3 py-2 text-sm shadow-sm ${selected ? 'border-primary' : ''}`}
+    >
+      <Handle type="target" position={Position.Left} />
+      <div className="font-medium">dbt {data.command}</div>
+      <div className="text-xs text-muted-foreground">
+        {data.select || data.projectDir || 'no project set'}
+      </div>
+    </div>
+  )
+}
+
 export const dagNodeTypes = {
   connector: ConnectorNodeView,
   transform: TransformNodeView,
+  dbt: DbtNodeView,
 }

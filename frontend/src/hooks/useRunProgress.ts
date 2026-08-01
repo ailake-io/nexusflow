@@ -3,6 +3,7 @@ import {
   listRuns,
   progressSocketUrl,
   runPipeline,
+  type DbtRunSummary,
   type ProgressEvent,
   type RunRecord,
 } from '@/lib/api'
@@ -20,6 +21,7 @@ interface UseRunProgressResult {
   runId: number | null
   partitions: Record<string, PartitionProgress>
   error: string | null
+  dbtSummary: DbtRunSummary | null
   run: (token: string, spec: PipelineSpec) => void
 }
 
@@ -41,12 +43,14 @@ export function useRunProgress(): UseRunProgressResult {
   const [runId, setRunId] = useState<number | null>(null)
   const [partitions, setPartitions] = useState<Record<string, PartitionProgress>>({})
   const [error, setError] = useState<string | null>(null)
+  const [dbtSummary, setDbtSummary] = useState<DbtRunSummary | null>(null)
   const lastSample = useRef<Record<string, { event: ProgressEvent; at: number }>>({})
   const wsRef = useRef<WebSocket | null>(null)
 
   const applyFinalRecord = useCallback((record: RunRecord) => {
     setStatus(record.status === 'success' ? 'success' : 'failed')
     setError(record.error)
+    setDbtSummary(record.dbt_summary)
   }, [])
 
   const connectSocket = useCallback(
@@ -92,6 +96,7 @@ export function useRunProgress(): UseRunProgressResult {
       setStatus('starting')
       setPartitions({})
       setError(null)
+      setDbtSummary(null)
       setRunId(null)
       lastSample.current = {}
       wsRef.current?.close()
@@ -129,5 +134,5 @@ export function useRunProgress(): UseRunProgressResult {
     [applyFinalRecord, connectSocket],
   )
 
-  return { status, runId, partitions, error, run }
+  return { status, runId, partitions, error, dbtSummary, run }
 }

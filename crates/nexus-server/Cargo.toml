@@ -4,6 +4,16 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+# ELT mode (Marco 10, CLAUDE.md §4.4 "dbt é opcional") — shells out to the
+# `dbt` CLI via tokio::process::Command, not a Rust dependency, so the only
+# thing this feature gates is tokio's own "process" sub-feature plus the
+# code path in dbt.rs. Without it, PipelineSpec.dbt still deserializes fine
+# (it's just data), but a spec that sets it gets a clear "not compiled in"
+# error instead of silently doing nothing.
+dbt = ["tokio/process"]
+
 [dependencies]
 aes-gcm = "0.10.3"
 anyhow = "1.0.104"
@@ -71,6 +81,7 @@ async-trait = "0.1.91"
 futures = "0.3.33"
 futures-util = "0.3.33"
 sqlx = { version = "0.9.0", default-features = false, features = ["postgres", "runtime-tokio", "sqlite"] }
+tempfile = "3.27.0"
 testcontainers = "0.27.3"
 testcontainers-modules = { version = "0.15.0", features = ["postgres"] }
 tokio-tungstenite = "0.29.0"

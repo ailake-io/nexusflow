@@ -45,6 +45,9 @@ pub struct RunRecord {
     pub status: String,
     pub error: Option<String>,
     pub stats: Option<serde_json::Value>,
+    /// dbt outcome summary (Marco 10 task #26's UI panel) — `None` when the
+    /// pipeline has no `dbt` step, or that build lacks the "dbt" feature.
+    pub dbt_summary: Option<serde_json::Value>,
 }
 
 /// Persists `PipelineSpec`s (encrypted at rest, see `crypto.rs`) and the
@@ -82,7 +85,8 @@ impl PipelineStore {
                 finished_at TEXT,
                 status TEXT NOT NULL,
                 error TEXT,
-                stats_json TEXT
+                stats_json TEXT,
+                dbt_summary_json TEXT
             )
             "#,
         )
@@ -194,14 +198,20 @@ impl PipelineStore {
         &self,
         run_id: i64,
         stats: &[nexus_core::PartitionStats],
+        dbt_summary: Option<&serde_json::Value>,
     ) -> Result<(), PipelineStoreError> {
         let stats_json =
             serde_json::to_string(stats).map_err(|e| PipelineStoreError::Corrupt(e.to_string()))?;
+        let dbt_summary_json = dbt_summary
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| PipelineStoreError::Corrupt(e.to_string()))?;
         sqlx::query(
             "UPDATE pipeline_runs SET finished_at = datetime('now'), status = 'success', \
-             stats_json = ? WHERE id = ?",
+             stats_json = ?, dbt_summary_json = ? WHERE id = ?",
         )
         .bind(&stats_json)
+        .bind(&dbt_summary_json)
         .bind(run_id)
         .execute(&self.pool)
         .await?;
@@ -233,10 +243,11 @@ impl PipelineStore {
             String,
             Option<String>,
             Option<String>,
+            Option<String>,
         );
         let rows: Vec<RunRow> = sqlx::query_as(
-            "SELECT id, pipeline_id, started_at, finished_at, status, error, stats_json \
-                 FROM pipeline_runs WHERE pipeline_id = ? ORDER BY started_at DESC",
+            "SELECT id, pipeline_id, started_at, finished_at, status, error, stats_json, \
+                 dbt_summary_json FROM pipeline_runs WHERE pipeline_id = ? ORDER BY started_at DESC",
         )
         .bind(pipeline_id)
         .fetch_all(&self.pool)
@@ -244,8 +255,23 @@ impl PipelineStore {
 
         rows.into_iter()
             .map(
-                |(id, pipeline_id, started_at, finished_at, status, error, stats_json)| {
+                |(
+                    id,
+                    pipeline_id,
+                    started_at,
+                    finished_at,
+                    status,
+                    error,
+                    stats_json,
+                    dbt_summary_json,
+                )| {
                     let stats = stats_json
+                        .map(|s| {
+                            serde_json::from_str(&s)
+                                .map_err(|e| PipelineStoreError::Corrupt(e.to_string()))
+                        })
+                        .transpose()?;
+                    let dbt_summary = dbt_summary_json
                         .map(|s| {
                             serde_json::from_str(&s)
                                 .map_err(|e| PipelineStoreError::Corrupt(e.to_string()))
@@ -259,6 +285,7 @@ impl PipelineStore {
                         status,
                         error,
                         stats,
+                        dbt_summary,
                     })
                 },
             )
@@ -321,6 +348,7 @@ mod tests {
             }],
             channel_capacity: 100,
             partitions: 1,
+            dbt: None,
         }
     }
 
@@ -444,12 +472,35 @@ mod tests {
             batches_written: 3,
             rows_written: 100,
         }];
-        store.finish_run_success(run_id, &stats).await.unwrap();
+        store
+            .finish_run_success(run_id, &stats, None)
+            .await
+            .unwrap();
 
         let runs = store.list_runs("p1").await.unwrap();
         assert_eq!(runs[0].status, "success");
         assert!(runs[0].finished_at.is_some());
         assert_eq!(runs[0].stats.as_ref().unwrap()[0]["rows_written"], 100);
+    }
+
+    #[tokio::test]
+    async fn run_lifecycle_records_dbt_summary_when_present() {
+        let store = PipelineStore::connect("sqlite::memory:").await.unwrap();
+        let run_id = store.start_run("p1").await.unwrap();
+
+        let dbt_summary = serde_json::json!({
+            "command": "build",
+            "models_total": 2,
+            "tests_total": 3,
+            "tests_passed": 2,
+        });
+        store
+            .finish_run_success(run_id, &[], Some(&dbt_summary))
+            .await
+            .unwrap();
+
+        let runs = store.list_runs("p1").await.unwrap();
+        assert_eq!(runs[0].dbt_summary.as_ref().unwrap()["tests_passed"], 2);
     }
 
     #[tokio::test]

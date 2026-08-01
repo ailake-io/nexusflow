@@ -3305,6 +3305,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "tempfile",
  "testcontainers",
  "testcontainers-modules",
  "thiserror 2.0.19",
