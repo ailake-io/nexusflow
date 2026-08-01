@@ -145,7 +145,7 @@ function CanvasInner() {
   const selectedNode = nodes.find((n) => n.id === selectedId) ?? null
 
   return (
-    <div className="flex h-screen w-screen flex-col">
+    <div className="flex h-full w-full flex-col">
       <PipelineIoPanel
         meta={meta}
         onMetaChange={setMeta}
