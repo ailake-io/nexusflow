@@ -1,4 +1,5 @@
 use crate::traits::ConnectorCapability;
+use serde::Serialize;
 
 // Re-exported so downstream connector crates don't need their own direct
 // `inventory` dependency just to call `submit_connector!`.
@@ -7,7 +8,9 @@ pub use inventory;
 /// Metadata a connector crate publishes about itself. Each connector crate calls
 /// `nexus_core::registry::submit_connector!(...)` in its own lib.rs — nexus-server
 /// never hardcodes a connector list, it just iterates the registry.
-/// See ARCHITECTURE.md §3.
+/// See ARCHITECTURE.md §3. `Serialize` so `nexus-server` can expose this
+/// directly as the frontend's connector catalog (Marco 8) with no separate DTO.
+#[derive(Serialize)]
 pub struct ConnectorDescriptor {
     pub name: &'static str,
     pub capability: ConnectorCapability,

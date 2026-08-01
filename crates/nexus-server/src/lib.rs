@@ -13,7 +13,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use checkpoint_store::CheckpointStore;
 use error::ApiError;
-use nexus_core::{PartitionStats, PipelineSpec};
+use nexus_core::{ConnectorDescriptor, ConnectorRegistry, PartitionStats, PipelineSpec};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
@@ -53,15 +53,34 @@ fn router(state: AppState) -> Router {
         ))
         .layer(Extension(Role::Execute));
 
+    // The connector catalog (Marco 8: canvas nodes come from here, never
+    // hardcoded in the frontend — ARCHITECTURE.md §3) only needs `Read`.
+    let read_protected = Router::new()
+        .route("/connectors", get(list_connectors_handler))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_role::<AppState>,
+        ))
+        .layer(Extension(Role::Read));
+
     Router::new()
         .route("/health", get(health))
         .route("/auth/login", post(login_handler))
         .merge(execute_protected)
+        .merge(read_protected)
         .with_state(state)
 }
 
 async fn health() -> &'static str {
     "ok"
+}
+
+/// Dynamic connector catalog for the canvas (Marco 8) — every connector
+/// crate linked into this binary registers itself via `submit_connector!`
+/// (ARCHITECTURE.md §3), so this list reflects what's actually usable, not
+/// a hardcoded frontend assumption.
+async fn list_connectors_handler() -> Json<Vec<&'static ConnectorDescriptor>> {
+    Json(ConnectorRegistry::all().collect())
 }
 
 #[derive(Deserialize)]
@@ -219,6 +238,58 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn connectors_catalog_requires_at_least_read_role() {
+        let app = router(test_state().await);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/connectors")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn connectors_catalog_lists_linked_connectors() {
+        let state = test_state().await;
+        let token = bearer(&state, Role::Read);
+        let app = router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/connectors")
+                    .header("authorization", token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let names: Vec<&str> = body
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["name"].as_str().unwrap())
+            .collect();
+        // nexus-server only links postgres/sqlite today — the point of this
+        // test is that the list comes from the registry, not a hardcoded
+        // constant, so it'll grow the day another connector is linked in.
+        assert!(names.contains(&"postgres"));
+        assert!(names.contains(&"sqlite"));
     }
 
     #[tokio::test]
