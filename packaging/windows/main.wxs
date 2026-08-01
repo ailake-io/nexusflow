@@ -1,0 +1,89 @@
+<?xml version='1.0' encoding='windows-1252'?>
+<!--
+  WiX Toolset v3 source for nexusflow.msi. NOT validated: no Windows
+  toolchain in this dev sandbox (see IMPLEMENTATION_PLAN.md Marco 11).
+  Intended to be built with cargo wix (see volks73/cargo-wix on GitHub) from
+  a Windows host, after installing the frontend's npm dependencies, running
+  its production build, then a release cargo build with the embed-ui
+  feature enabled (see the root Cargo.toml's [features] section).
+
+  Regenerate the two Product/Package Ids below (uuidgen, or WiX's own
+  candle preprocessor with the WixUtilExtension) before a real release;
+  the placeholders here are stable only for local iteration, not for
+  upgrade in place logic.
+
+  ADBC drivers (libadbc_driver_postgresql.dll / libadbc_driver_sqlite.dll)
+  are NOT included here yet: scripts/build-adbc-postgresql-driver.sh and
+  build-adbc-sqlite-driver.sh only target Linux/macOS cmake shared-lib
+  output (.so); a Windows build of those same ADBC C++ sources (MSVC plus
+  vcpkg libpq) is a separate, currently unwritten step. Until that exists,
+  this installer only ships the server binary; the Postgres/SQLite
+  connectors won't have a driver to dlopen on Windows.
+-->
+<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+  <Product
+    Id='*'
+    Name='NexusFlow'
+    UpgradeCode='B6C1D8E4-6E5B-4B7A-9C3F-9E9F6C6E9B01'
+    Manufacturer='NexusFlow'
+    Language='1033'
+    Codepage='1252'
+    Version='$(var.Version)'>
+
+    <Package
+      Id='*'
+      Keywords='Installer'
+      Description='Universal Rust data &amp; vector ETL/lakehouse framework'
+      Manufacturer='NexusFlow'
+      InstallerVersion='450'
+      Languages='1033'
+      Compressed='yes'
+      InstallScope='perMachine'
+      SummaryCodepage='1252' />
+
+    <MajorUpgrade
+      Schedule='afterInstallInitialize'
+      DowngradeErrorMessage='A newer version of NexusFlow is already installed.' />
+
+    <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1' />
+    <Property Id='DiskPrompt' Value='NexusFlow Installation' />
+
+    <Directory Id='TARGETDIR' Name='SourceDir'>
+      <Directory Id='ProgramFiles64Folder'>
+        <Directory Id='APPLICATIONFOLDER' Name='NexusFlow'>
+          <Component Id='ServerBinary' Guid='*'>
+            <File
+              Id='nexusflow.exe'
+              Source='target\release\nexusflow.exe'
+              KeyPath='yes' />
+          </Component>
+        </Directory>
+      </Directory>
+      <Directory Id='ProgramMenuFolder'>
+        <Directory Id='ApplicationProgramsFolder' Name='NexusFlow'>
+          <Component Id='ApplicationShortcut' Guid='*'>
+            <Shortcut
+              Id='ApplicationStartMenuShortcut'
+              Name='NexusFlow'
+              Description='Starts the NexusFlow server (http://localhost:8080)'
+              Target='[APPLICATIONFOLDER]nexusflow.exe'
+              WorkingDirectory='APPLICATIONFOLDER' />
+            <RemoveFolder Id='ApplicationProgramsFolder' On='uninstall' />
+            <RegistryValue
+              Root='HKCU'
+              Key='Software\NexusFlow'
+              Name='installed'
+              Type='integer'
+              Value='1'
+              KeyPath='yes' />
+          </Component>
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <Feature Id='MainProgram' Title='NexusFlow' Level='1'>
+      <ComponentRef Id='ServerBinary' />
+      <ComponentRef Id='ApplicationShortcut' />
+    </Feature>
+  </Product>
+</Wix>
