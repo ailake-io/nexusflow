@@ -17,7 +17,7 @@ Ver `CLAUDE.md §8` pra lista completa. Resumo:
 
 ## Workflow
 
-1. Fork/branch a partir de `main`.
+1. Fork/branch a partir de `develop` (branch de trabalho ativo — `main` ainda não existe neste repo).
 2. `cargo fmt` + `cargo clippy --all-targets --all-features -- -D warnings` antes de commitar.
 3. `cargo test --workspace` local passando (rodando de dentro de `crates/nexus-connectors`, use o mesmo comando ali — é o workspace aninhado daquele crate, não o raiz; da raiz do repo, `-p nexus-core -p nexus-ai -p nexus-server` é o que o CI usa, ver a nota de workspace abaixo).
 4. Commit message: formato conciso, foco no *porquê* (não repita o diff na mensagem).

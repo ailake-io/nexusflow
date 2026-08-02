@@ -2,7 +2,7 @@
 # Installs nexusflow (Linux x86_64/arm64, macOS x86_64/arm64) without a
 # package manager — same pattern as rustup/dbt-fusion's installers.
 #
-#   curl -fsSL https://raw.githubusercontent.com/ailake-io/nexusflow/main/scripts/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/ailake-io/nexusflow/develop/scripts/install.sh | sh
 #
 # Downloads a release tarball built by .github/workflows/release.yml
 # (nexusflow-<os>-<arch>.tar.gz: the release binary built with
