@@ -104,7 +104,7 @@ cargo build --release -p nexusflow --features embed-ui,connectors-all
 1. Abra `http://localhost:8080` — a UI é servida pelo próprio binário (`embed-ui`).
 2. Login com o usuário Admin bootstrapado (`NEXUS_ADMIN_USERNAME`/`NEXUS_ADMIN_PASSWORD`).
 3. No canvas, arraste um node de source e um de sink da lista de conectores (vem de `GET /connectors`, dinâmica).
-4. Preencha a config de cada node no painel lateral (nunca fica em plain text depois de salvo — criptografado com `NEXUS_ENCRYPTION_KEY`).
+4. Preencha a config de cada node no painel lateral — campos de formulário reais (texto, número, enum, listas), gerados a partir do schema que cada conector expõe, não um JSON pra escrever à mão. Nunca fica em plain text depois de salvo — criptografado com `NEXUS_ENCRYPTION_KEY`.
 5. Opcional: adicione um node de transform (SQL via DataFusion) entre source e sink, ou um node `dbt` depois do(s) sink(s) pra rodar ELT pós-carga.
 6. Rode o pipeline e acompanhe linhas/s, MB/s e logs em tempo real no painel de execução (WebSocket).
 
