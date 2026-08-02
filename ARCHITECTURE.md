@@ -118,3 +118,12 @@ Chunking e embedding são etapas **puras** (sem I/O) para ficarem testáveis sem
 ## 11. Distribuição de conectores enterprise
 
 Ver [`LICENSING.md`](./LICENSING.md) §2. Tecnicamente: `nexus-server` carrega conectores enterprise como plugin via feature flag `enterprise` compilado num binário separado, validando license key (JWT) antes de expor o node no catálogo do canvas.
+
+## 12. Agendamento automático (scheduler) e gestão de pipelines
+
+- `PipelineSpec.schedule` (opcional) guarda uma expressão cron — 5 campos Unix (`min hora dia mês dia-da-semana`) ou 6 campos Quartz (com segundos); `nexus_core::parse_cron_expression` normaliza a forma de 5 campos prependando `"0 "`. Sem `schedule`, o pipeline só roda via `POST /pipelines/{id}/run` manual, comportamento idêntico a antes dessa feature existir.
+- `nexus-server::scheduler` roda como um `tokio::spawn` separado, iniciado só em `run()` (nunca em `build_app`, pra não competir com asserts dos testes de integração). Faz *poll* a cada 30s: lista todos os pipelines, filtra os que têm `schedule`, calcula o próximo disparo a partir de uma âncora (`started_at` do último run, ou `created_at` se nunca rodou) e dispara via o mesmo `execute_pipeline` usado pelo endpoint manual — histórico, alertas e dbt se comportam de forma idêntica entre run manual e agendado.
+- Proteção contra sobreposição: se o run mais recente do pipeline ainda não tem `finished_at`, o tick pula esse pipeline (não empilha disparos num pipeline lento).
+- `schedule` persiste dentro do `spec_ciphertext` já existente (mesma criptografia AES-256-GCM do resto do spec) — não precisou de coluna nova nem migração.
+- Gestão completa a partir do Canvas: **Save** (`POST`/`PUT /pipelines/{id}`, cria ou atualiza), **Edit** (recarrega o spec completo — configs de conector inclusas — via `GET /pipelines/{id}/spec`, uma rota nova protegida por role `Write`, não `Read`) e **Delete** (`DELETE /pipelines/{id}`, já existente). A rota `/spec` é a única exceção deliberada ao contrato do §10 de nunca devolver config de conector puro pela API (`GET /pipelines`/`GET /pipelines/{id}` continuam mascarados) — é simétrica a criar/editar: só quem já tem permissão de digitar o segredo recebe ele de volta.
+- `PipelineSummary` expõe `last_run_status`/`last_run_at` (via `LEFT JOIN` com a run mais recente de `pipeline_runs`), consumido pela aba "Status" do frontend — um flag por pipeline (verde=sucesso, amarelo=em execução, vermelho=falha, cinza=nunca rodou).

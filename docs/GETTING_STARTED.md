@@ -106,7 +106,9 @@ cargo build --release -p nexusflow --features embed-ui,connectors-all
 3. No canvas, arraste um node de source e um de sink da lista de conectores (vem de `GET /connectors`, dinâmica).
 4. Preencha a config de cada node no painel lateral — campos de formulário reais (texto, número, enum, listas), gerados a partir do schema que cada conector expõe, não um JSON pra escrever à mão. Nunca fica em plain text depois de salvo — criptografado com `NEXUS_ENCRYPTION_KEY`.
 5. Opcional: adicione um node de transform (SQL via DataFusion) entre source e sink, ou um node `dbt` depois do(s) sink(s) pra rodar ELT pós-carga.
-6. Rode o pipeline e acompanhe linhas/s, MB/s e logs em tempo real no painel de execução (WebSocket).
+6. Clique **Save** pra persistir o pipeline (cria na primeira vez, atualiza nas seguintes) — sem isso ele só existe nessa aba do navegador e o scheduler (próximo item) não tem o que agendar. Opcional: preencha o campo **schedule** (cron) pra rodar automaticamente, sem precisar clicar Run de novo.
+7. Rode manualmente e acompanhe linhas/s, MB/s e logs em tempo real no painel de execução (WebSocket), ou deixe o schedule disparar sozinho.
+8. Na aba **Pipelines**: veja tudo que já foi salvo, clique **Edit** pra recarregar um pipeline de volta no canvas (inclusive configs de conector) ou **Delete** pra remover. Na aba **Status**: visão rápida de todos os pipelines com um flag por linha — verde (sucesso), amarelo (em execução), vermelho (falha), cinza (nunca rodou).
 
 ### Via API direto
 
@@ -119,25 +121,34 @@ TOKEN=$(curl -s -X POST http://localhost:8080/auth/login \
 # catálogo de conectores disponíveis nesse binário
 curl -s http://localhost:8080/connectors -H "authorization: Bearer $TOKEN"
 
-# criar um pipeline
+# criar um pipeline (schedule é opcional — sem ele só roda via /run manual)
 curl -s -X POST http://localhost:8080/pipelines \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{
     "pipeline_id": "meu-pipeline",
     "sources": [{"connector": "postgres", "config": {"uri": "postgres://user:pw@host/db"}}],
-    "sinks": [{"connector": "sqlite", "config": {"path": "/tmp/out.db"}}]
+    "sinks": [{"connector": "sqlite", "config": {"path": "/tmp/out.db"}}],
+    "schedule": "0 */6 * * *"
   }'
 
-# rodar
+# atualizar (mesmo body, PUT em vez de POST)
+curl -s -X PUT http://localhost:8080/pipelines/meu-pipeline \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"pipeline_id": "meu-pipeline", "sources": [...], "sinks": [...], "schedule": "0 */6 * * *"}'
+
+# rodar manualmente (o scheduler acima dispara sozinho, esse endpoint é só pra forçar fora do horário)
 curl -s -X POST http://localhost:8080/pipelines/meu-pipeline/run \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{"pipeline_id": "meu-pipeline"}'
 
-# histórico de execuções
+# histórico de execuções (inclui as disparadas pelo scheduler, indistinguíveis de um run manual)
 curl -s http://localhost:8080/pipelines/meu-pipeline/runs -H "authorization: Bearer $TOKEN"
+
+# spec completo, configs de conector inclusas — só pra recarregar/editar, exige Write
+curl -s http://localhost:8080/pipelines/meu-pipeline/spec -H "authorization: Bearer $TOKEN"
 ```
 
-Papéis RBAC (`Read < Execute < Write < Admin`): criar/editar pipeline exige `Write`; rodar exige `Execute`; listar catálogo/histórico exige `Read`.
+Papéis RBAC (`Read < Execute < Write < Admin`): criar/editar pipeline (`POST`/`PUT`/`DELETE /pipelines`, e `GET /pipelines/{id}/spec`) exige `Write`; rodar exige `Execute`; listar catálogo/histórico/resumo (`GET /pipelines`) exige `Read`.
 
 ## 5. ELT com dbt (opcional)
 
