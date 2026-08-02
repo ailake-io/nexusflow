@@ -22,6 +22,24 @@ license.workspace = true
 # the root binary has no code of its own to gate, just needs the flag to
 # reach the crate that does.
 dbt = ["nexus-server/dbt"]
+# Forwards nexus-server's per-connector features (see that crate's own
+# Cargo.toml for why each one exists) so `cargo build -p nexusflow
+# --features X` reaches the crate that actually declares X.
+connectors-all = ["nexus-server/connectors-all"]
+mongodb = ["nexus-server/mongodb"]
+kafka = ["nexus-server/kafka"]
+rest = ["nexus-server/rest"]
+odbc = ["nexus-server/odbc"]
+milvus = ["nexus-server/milvus"]
+qdrant = ["nexus-server/qdrant"]
+lancedb = ["nexus-server/lancedb"]
+pgvector = ["nexus-server/pgvector"]
+pinecone = ["nexus-server/pinecone"]
+chromadb = ["nexus-server/chromadb"]
+deltalake = ["nexus-server/deltalake"]
+iceberg = ["nexus-server/iceberg"]
+parquet = ["nexus-server/parquet"]
+ailake = ["nexus-server/ailake"]
 
 [dependencies]
 anyhow = "1.0.104"
