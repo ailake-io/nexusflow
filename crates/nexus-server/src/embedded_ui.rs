@@ -16,7 +16,8 @@ struct Assets;
 /// `/pipelines/foo`) still hands the SPA its shell instead of 404ing.
 pub async fn handler(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
-    serve(path).unwrap_or_else(|| serve("index.html").unwrap_or(StatusCode::NOT_FOUND.into_response()))
+    serve(path)
+        .unwrap_or_else(|| serve("index.html").unwrap_or(StatusCode::NOT_FOUND.into_response()))
 }
 
 fn serve(path: &str) -> Option<Response> {
