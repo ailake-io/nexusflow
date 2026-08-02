@@ -20,10 +20,18 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  # Self-hosted, not ubuntu-latest: --all-features now includes
+  # connectors-all (mongodb/kafka/milvus/lancedb/... all linked into
+  # nexus-server, not just the nested crates/nexus-connectors workspace —
+  # see the connector-wiring commit), which pulls the exact same
+  # heavy dep trees (Lance/DataFusion, tonic+prost, the full mongodb
+  # driver) that made the `connectors` job below move to self-hosted in the
+  # first place (see 052e26c). Root-workspace jobs now share that same
+  # rationale, so they join the same machine and the same sequential chain.
   clippy:
     name: clippy
     needs: fmt
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -54,10 +62,12 @@ jobs:
       - run: npm run build
       - run: npm run lint
 
+  # Self-hosted for the same reason as clippy above: --all-features now
+  # covers connectors-all too.
   test:
     name: test
     needs: clippy
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -66,11 +76,11 @@ jobs:
       # nexus-connector-postgres/nexus-connector-sqlite need the real ADBC
       # drivers at test runtime (C++ implementations, not crates.io packages —
       # see scripts/build-adbc-*-driver.sh). Integration tests also need a
-      # live Postgres via testcontainers, which GitHub-hosted runners can do
-      # out of the box (Docker daemon is preinstalled).
-      - name: Install native build deps for the ADBC drivers
-        run: sudo apt-get update && sudo apt-get install -y cmake pkg-config libpq-dev libsqlite3-dev libfmt-dev
-
+      # live Postgres via testcontainers (the self-hosted host has Docker,
+      # same as the connectors job below relies on). cmake/pkg-config/
+      # libpq-dev/libsqlite3-dev/libfmt-dev are assumed already present on
+      # this host, same posture as the connectors job's own comment below —
+      # no sudo apt-get here (runner service has no interactive sudo).
       - name: Cache built ADBC drivers
         id: adbc-cache
         uses: actions/cache@v4
@@ -91,10 +101,13 @@ jobs:
         run: cargo test --workspace --all-features
 
   # crates/nexus-connectors is its own Cargo workspace (crate-per-connector,
-  # see CLAUDE.md §3/§8.5) — none of the jobs above touch it, since only
-  # connectors nexus-server actually imports (postgres/sqlite) get pulled
-  # into the root workspace graph. This job is the only place rest/mongodb/
-  # kafka/odbc get built, linted and tested at all.
+  # see CLAUDE.md §3/§8.5) — the jobs above don't touch this directory, but
+  # every connector crate in it IS now also pulled into the root workspace
+  # graph via nexus-server's per-connector features (clippy/test above cover
+  # them there too, under connectors-all). This job separately checks that
+  # every connector crate still compiles/lints/tests standalone within its
+  # own nested workspace (its own `cargo check --workspace` with no
+  # features), independent of whatever subset nexus-server happens to link.
   connectors:
     name: connectors
     needs: test
