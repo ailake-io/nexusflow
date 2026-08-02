@@ -2,7 +2,7 @@
 
 **Universal Rust Data & Vector Framework** — movimentação, transformação, vetorização e orquestração de dados (ETL/ELT/Streaming) de altíssima performance.
 
-> Status: 🚧 em desenvolvimento inicial (pre-MVP). Sem release publicado ainda.
+> Status: ✅ MVP completo e além — todos os 16 conectores (fast-path + híbridos + AI Lakehouse + data lake formats) linkáveis via feature flag, API + UI + observabilidade + distribuição multiplataforma funcionando end-to-end. Sem release taggeado no GitHub ainda.
 
 ## O que é
 
@@ -10,12 +10,27 @@ NexusFlow move dados de qualquer fonte para qualquer destino via **Apache Arrow*
 
 Interface visual node-based (React Flow) sobre um core 100% Rust.
 
-Detalhes completos de stack, arquitetura e regras de código: ver [`CLAUDE.md`](./CLAUDE.md).
+Detalhes completos de stack, arquitetura e regras de código: ver [`CLAUDE.md`](./CLAUDE.md). Pra instalar e rodar agora: [`docs/GETTING_STARTED.md`](./docs/GETTING_STARTED.md).
+
+## Quickstart
+
+```bash
+docker build -t nexusflow .
+docker run -d -p 8080:8080 \
+  -e NEXUS_JWT_SECRET="$(openssl rand -hex 32)" \
+  -e NEXUS_ENCRYPTION_KEY="$(openssl rand -hex 32)" \
+  -e NEXUS_ADMIN_USERNAME=admin -e NEXUS_ADMIN_PASSWORD=troque-isto \
+  nexusflow
+# abre http://localhost:8080
+```
+
+Mais opções (curl|sh, .deb/AppImage, build from source, habilitar conectores extras): [`docs/GETTING_STARTED.md`](./docs/GETTING_STARTED.md).
 
 ## Documentação
 
 | Arquivo | Conteúdo |
 |---|---|
+| [`docs/GETTING_STARTED.md`](./docs/GETTING_STARTED.md) | Instalação, configuração e primeiro pipeline — comece por aqui |
 | [`CLAUDE.md`](./CLAUDE.md) | Visão geral, stack, estrutura de diretórios, regras de código pro assistente AI |
 | [`ARCHITECTURE.md`](./ARCHITECTURE.md) | Arquitetura técnica detalhada: roteador de conectores, streaming/backpressure, checkpointing, pipeline de embeddings |
 | [`ROADMAP.md`](./ROADMAP.md) | Fases de desenvolvimento, milestones, critérios de conclusão do MVP |

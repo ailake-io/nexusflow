@@ -1,0 +1,159 @@
+# Primeiros passos com o NexusFlow
+
+Guia prático de instalação e uso — do zero até rodar seu primeiro pipeline. Para arquitetura interna, ver [`ARCHITECTURE.md`](../ARCHITECTURE.md); para a stack completa, [`CLAUDE.md`](../CLAUDE.md).
+
+## 1. Instalação
+
+Escolha uma das opções abaixo. Todas sobem o mesmo binário: um único processo servindo API REST + WebSocket + UI web em `http://localhost:8080`.
+
+### Docker (mais simples)
+
+```bash
+docker build -t nexusflow .
+docker run -d --name nexusflow -p 8080:8080 \
+  -e NEXUS_JWT_SECRET="$(openssl rand -hex 32)" \
+  -e NEXUS_ENCRYPTION_KEY="$(openssl rand -hex 32)" \
+  -e NEXUS_ADMIN_USERNAME=admin \
+  -e NEXUS_ADMIN_PASSWORD="troque-isto" \
+  nexusflow
+```
+
+Com conectores extras (imagem por padrão só liga postgres/sqlite, igual ao binário nativo — ver seção 2 abaixo):
+
+```bash
+docker build --build-arg FEATURES=embed-ui,connectors-all -t nexusflow:full .
+```
+
+Não validado como build Docker completo nesta sessão (cada conector foi validado via `cargo build` direto, não através do Dockerfile) — se faltar alguma lib no runtime (ex. `zlib1g` pro rdkafka do kafka), adicione no `apt-get install` do estágio `runtime` do `Dockerfile`.
+
+Perfil com base CUDA (`--gpus all`) — hoje é só a mesma imagem numa base `nvidia/cuda`; aceleração de GPU real ainda não está implementada no pipeline de embeddings (ver `crates/nexus-ai/Cargo.toml`):
+
+```bash
+docker build --build-arg RUNTIME_IMAGE=nvidia/cuda:12.4.1-runtime-ubuntu22.04 -t nexusflow:cuda .
+docker run --gpus all -d -p 8080:8080 -e NEXUS_JWT_SECRET=... -e NEXUS_ENCRYPTION_KEY=... nexusflow:cuda
+```
+
+### Script de instalação (Linux/macOS)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ailake-io/nexusflow/main/scripts/install.sh | sh
+```
+
+Baixa o binário + drivers ADBC pra `~/.local/share/nexusflow` e cria `~/.local/bin/nexusflow`. Precisa de um [release](https://github.com/ailake-io/nexusflow/releases) publicado — ver `.github/workflows/release.yml`.
+
+### Pacotes nativos (Linux)
+
+```bash
+./scripts/package-deb.sh        # nexusflow_<versão>_amd64.deb
+./scripts/package-appimage.sh   # NexusFlow-<versão>-x86_64.AppImage
+./scripts/package-rpm.sh        # precisa de rpmbuild instalado
+```
+
+Windows (`.msi`/winget) e macOS (Homebrew/`.dmg`) têm specs em `packaging/windows/` e `packaging/macos/`, mas ainda não foram validados em máquina real — ver os comentários em cada arquivo.
+
+### Build a partir do source
+
+```bash
+npm --prefix frontend ci && npm --prefix frontend run build
+cargo build --release -p nexusflow --features embed-ui
+./scripts/build-adbc-postgresql-driver.sh
+./scripts/build-adbc-sqlite-driver.sh
+
+export ADBC_DRIVER_POSTGRESQL_PATH="$(pwd)/target/adbc/libadbc_driver_postgresql.so"
+export ADBC_DRIVER_SQLITE_PATH="$(pwd)/target/adbc/libadbc_driver_sqlite.so"
+export NEXUS_JWT_SECRET="$(openssl rand -hex 32)"
+export NEXUS_ENCRYPTION_KEY="$(openssl rand -hex 32)"
+export NEXUS_ADMIN_USERNAME=admin
+export NEXUS_ADMIN_PASSWORD="troque-isto"
+
+./target/release/nexusflow
+```
+
+`--features embed-ui` exige que `frontend/dist` já exista (o `#[derive(RustEmbed)]` lê a pasta em tempo de compilação) — por isso o `npm run build` vem antes do `cargo build`.
+
+## 2. Habilitando conectores
+
+Por padrão o binário só liga `postgres` e `sqlite`. Os outros 14 conectores (mongodb, kafka, rest, odbc, milvus, qdrant, lancedb, pgvector, pinecone, chromadb, deltalake, iceberg, parquet, ailake) são features Cargo opcionais — cada um só entra no binário se for pedido:
+
+```bash
+# um conector específico
+cargo build --release -p nexusflow --features embed-ui,pgvector
+
+# todos de uma vez
+cargo build --release -p nexusflow --features embed-ui,connectors-all
+```
+
+`kafka` e `odbc` precisam de dependência nativa (`librdkafka` / unixODBC vendorizado) e compilam mais devagar; `milvus`/`lancedb` precisam de `protoc` no PATH. O catálogo servido em `GET /connectors` reflete exatamente o que foi compilado — a UI nunca mostra um conector que não está linkado no binário.
+
+## 3. Variáveis de ambiente
+
+| Variável | Obrigatória? | Padrão | Descrição |
+|---|---|---|---|
+| `NEXUS_JWT_SECRET` | sim | — | Segredo pra assinar/validar JWT. Sem ela o processo não sobe. |
+| `NEXUS_ENCRYPTION_KEY` | sim | — | 64 caracteres hex (32 bytes) — chave AES-256-GCM que criptografa credenciais de conector em repouso. Gere com `openssl rand -hex 32`. |
+| `NEXUS_CHECKPOINT_DB` | não | `sqlite://nexusflow.db` | Onde ficam os checkpoints de pipeline (retomada por partição). |
+| `NEXUS_AUTH_DB` | não | `sqlite://nexusflow-auth.db` | Usuários e papéis (RBAC). |
+| `NEXUS_PIPELINES_DB` | não | `sqlite://nexusflow-pipelines.db` | Definições de pipeline e histórico de execuções. |
+| `NEXUS_ADMIN_USERNAME` / `NEXUS_ADMIN_PASSWORD` | não | — | Se as duas estiverem setadas e a tabela de usuários estiver vazia, cria a conta Admin inicial (idempotente — não roda de novo depois). |
+| `NEXUS_SLACK_WEBHOOK_URL` | não | — | Sem ela, falhas de pipeline não disparam alerta no Slack. |
+| `NEXUS_OTLP_ENDPOINT` | não | — | Endpoint OTLP/HTTP pra exportar traces. Sem ela, traces ficam só como log JSON local; métricas Prometheus em `/metrics` funcionam de qualquer jeito. |
+| `ADBC_DRIVER_POSTGRESQL_PATH` / `ADBC_DRIVER_SQLITE_PATH` | sim (se usar postgres/sqlite) | — | Caminho pro `.so`/`.dylib` do driver ADBC — não existe distribuição via crates.io, tem que buildar com `scripts/build-adbc-*-driver.sh`. |
+
+## 4. Primeiro acesso
+
+1. Abra `http://localhost:8080` — a UI é servida pelo próprio binário (`embed-ui`).
+2. Login com o usuário Admin bootstrapado (`NEXUS_ADMIN_USERNAME`/`NEXUS_ADMIN_PASSWORD`).
+3. No canvas, arraste um node de source e um de sink da lista de conectores (vem de `GET /connectors`, dinâmica).
+4. Preencha a config de cada node no painel lateral (nunca fica em plain text depois de salvo — criptografado com `NEXUS_ENCRYPTION_KEY`).
+5. Opcional: adicione um node de transform (SQL via DataFusion) entre source e sink, ou um node `dbt` depois do(s) sink(s) pra rodar ELT pós-carga.
+6. Rode o pipeline e acompanhe linhas/s, MB/s e logs em tempo real no painel de execução (WebSocket).
+
+### Via API direto
+
+```bash
+# login
+TOKEN=$(curl -s -X POST http://localhost:8080/auth/login \
+  -H 'content-type: application/json' \
+  -d '{"username":"admin","password":"troque-isto"}' | jq -r .token)
+
+# catálogo de conectores disponíveis nesse binário
+curl -s http://localhost:8080/connectors -H "authorization: Bearer $TOKEN"
+
+# criar um pipeline
+curl -s -X POST http://localhost:8080/pipelines \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{
+    "pipeline_id": "meu-pipeline",
+    "sources": [{"connector": "postgres", "config": {"uri": "postgres://user:pw@host/db"}}],
+    "sinks": [{"connector": "sqlite", "config": {"path": "/tmp/out.db"}}]
+  }'
+
+# rodar
+curl -s -X POST http://localhost:8080/pipelines/meu-pipeline/run \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"pipeline_id": "meu-pipeline"}'
+
+# histórico de execuções
+curl -s http://localhost:8080/pipelines/meu-pipeline/runs -H "authorization: Bearer $TOKEN"
+```
+
+Papéis RBAC (`Read < Execute < Write < Admin`): criar/editar pipeline exige `Write`; rodar exige `Execute`; listar catálogo/histórico exige `Read`.
+
+## 5. ELT com dbt (opcional)
+
+Precisa do build com a feature `dbt` (`cargo build --features embed-ui,dbt`) e do CLI `dbt` (dbt-fusion) no `PATH` do processo em runtime — não é instalado automaticamente. Um pipeline com um node `dbt` roda `dbt run`/`build`/`test` contra o warehouse de destino **depois** que a carga bruta termina (ELT clássico, não transforma os `RecordBatch` do pipeline em si). Resultado (models/tests passados, lineage) aparece no histórico da execução e no painel da UI.
+
+## 6. Observabilidade
+
+- `GET /health` — liveness, sem auth.
+- `GET /metrics` — Prometheus, sem auth (segurança via segmentação de rede, não token — scrapers não carregam JWT).
+- Logs estruturados em JSON no stdout; setar `NEXUS_OTLP_ENDPOINT` pra exportar traces também.
+
+## Leitura relacionada
+
+| Arquivo | Conteúdo |
+|---|---|
+| [`ARCHITECTURE.md`](../ARCHITECTURE.md) | Roteador de conectores, streaming/backpressure, checkpointing |
+| [`IMPLEMENTATION_PLAN.md`](../IMPLEMENTATION_PLAN.md) | Detalhamento marco a marco |
+| [`ROADMAP.md`](../ROADMAP.md) | Fases e critério de "pronto" |
+| [`CONTRIBUTING.md`](../CONTRIBUTING.md) | Como contribuir |

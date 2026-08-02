@@ -15,6 +15,15 @@
 # second Dockerfile to maintain in sync.
 
 ARG RUNTIME_IMAGE=debian:bookworm-slim
+# `docker build --build-arg FEATURES=embed-ui,connectors-all .` links every
+# optional connector (nexus-server/Cargo.toml) into the binary — default
+# stays embed-ui only, same size/behavior as before this arg existed. NOT
+# validated as a full docker build in this repo yet (each of the 14 extra
+# connectors was validated via plain `cargo build`, not through this
+# Dockerfile specifically) — kafka's rdkafka may need `zlib1g` added to the
+# runtime stage's apt-get line below if you hit a missing-.so at container
+# start.
+ARG FEATURES=embed-ui
 
 FROM node:22-slim AS frontend
 WORKDIR /src/frontend
@@ -37,7 +46,16 @@ RUN scripts/build-adbc-postgresql-driver.sh /out \
  && scripts/build-adbc-sqlite-driver.sh /out
 
 FROM rust:1-slim-bookworm AS builder
-RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev \
+ARG FEATURES
+# pkg-config/libssl-dev cover the default (embed-ui) build. The rest only
+# matter if FEATURES pulls in the heavier connectors (see nexus-server/
+# Cargo.toml's per-connector features): cmake+make for odbc's vendored
+# unixODBC build, protobuf-compiler for milvus/lancedb's tonic/prost
+# codegen, libsqlite3-dev for iceberg's sqlx "sqlite" feature — kept
+# unconditional since this whole stage is discarded after the build (see
+# the `runtime` stage below), so it costs build time, not final image size.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      pkg-config libssl-dev cmake make protobuf-compiler libsqlite3-dev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY . .
@@ -45,7 +63,7 @@ COPY . .
 # directory at *compile* time — must exist before `cargo build` runs, same
 # requirement CI's clippy/test jobs have (see ci.yml).
 COPY --from=frontend /src/frontend/dist ./frontend/dist
-RUN cargo build --release -p nexusflow --features embed-ui
+RUN cargo build --release -p nexusflow --features "${FEATURES}"
 
 FROM ${RUNTIME_IMAGE} AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
