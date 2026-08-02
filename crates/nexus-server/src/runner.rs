@@ -142,7 +142,7 @@ async fn run_transform_pipeline(
 
     let mut sinks = Vec::with_capacity(spec.sinks.len());
     for (i, node) in spec.sinks.iter().enumerate() {
-        let (name, sink) = build_sink(node, i, &columns)?;
+        let (name, sink) = build_sink(node, i, &columns).await?;
         if done.contains(&name) {
             continue; // already committed in a prior run of this pipeline_id
         }

@@ -20,12 +20,14 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
-  # Self-hosted, not ubuntu-latest: --all-features (embed-ui + nexus-ai's
-  # `cpu` feature: ort/hf-hub/tokenizers, on top of the usual
-  # datafusion/arrow weight) ran ubuntu-latest out of its ~14GB disk cap
-  # mid-link ("ld terminated with signal 7 [Bus error]", 39MB free) — same
-  # root cause as the `connectors` job below (052e26c), just hitting the
-  # root workspace directly this time instead of only the nested one.
+  # Self-hosted, not ubuntu-latest: --all-features now covers embed-ui,
+  # nexus-ai's `cpu` feature (ort/hf-hub/tokenizers) and connectors-all
+  # (mongodb/kafka/milvus/lancedb/... all linked into nexus-server, not
+  # just the nested crates/nexus-connectors workspace) — this combination
+  # already ran ubuntu-latest out of its ~14GB disk cap mid-link ("ld
+  # terminated with signal 7 [Bus error]", 39MB free). Same root cause the
+  # `connectors` job below already solved by moving to self-hosted
+  # (052e26c); root-workspace jobs now share that same rationale.
   clippy:
     name: clippy
     needs: fmt
@@ -159,10 +161,13 @@ jobs:
         run: cargo test --workspace --all-features
 
   # crates/nexus-connectors is its own Cargo workspace (crate-per-connector,
-  # see CLAUDE.md §3/§8.5) — none of the jobs above touch it, since only
-  # connectors nexus-server actually imports (postgres/sqlite) get pulled
-  # into the root workspace graph. This job is the only place rest/mongodb/
-  # kafka/odbc get built, linted and tested at all.
+  # see CLAUDE.md §3/§8.5) — the jobs above don't touch this directory, but
+  # every connector crate in it IS now also pulled into the root workspace
+  # graph via nexus-server's per-connector features (clippy/test above cover
+  # them there too, under connectors-all). This job separately checks that
+  # every connector crate still compiles/lints/tests standalone within its
+  # own nested workspace (its own `cargo check --workspace` with no
+  # features), independent of whatever subset nexus-server happens to link.
   connectors:
     name: connectors
     needs: test

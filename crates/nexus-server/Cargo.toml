@@ -24,6 +24,41 @@ dbt = ["tokio/process"]
 # `cargo build --features embed-ui`, to get the real single binary.
 embed-ui = ["dep:rust-embed"]
 
+# Each connector under crates/nexus-connectors/ is its own crate, gated
+# behind its own Cargo feature (ARCHITECTURE.md §3/CLAUDE.md §3: "compile
+# time, tamanho de binário e a fronteira OSS/enterprise exigem que cada
+# conector possa ser incluído/excluído do build independentemente"). Being
+# linked in is *also* what makes a connector appear in GET /connectors —
+# nexus_core::ConnectorRegistry is populated by each crate's own
+# `submit_connector!` call at static-init time (see connectors.rs), which
+# only runs if the crate is actually part of this binary.
+#
+# kafka/odbc forward their own inner Cargo feature ("consumer"/"legacy")
+# because those two crates keep their native-linkage code (rdkafka /
+# vendored unixODBC) behind an additional feature of their own — without
+# forwarding it, the crate would compile but its `submit_connector!` call
+# is itself `#[cfg]`-gated behind that inner feature, so it'd silently
+# never show up in the catalog (see each crate's own src/lib.rs).
+connectors-all = [
+    "mongodb", "kafka", "rest", "odbc", "milvus", "qdrant", "lancedb",
+    "pgvector", "pinecone", "chromadb", "deltalake", "iceberg", "parquet",
+    "ailake",
+]
+mongodb = ["dep:nexus-connector-mongodb"]
+kafka = ["dep:nexus-connector-kafka", "nexus-connector-kafka/consumer"]
+rest = ["dep:nexus-connector-rest"]
+odbc = ["dep:nexus-connector-odbc", "nexus-connector-odbc/legacy"]
+milvus = ["dep:nexus-connector-milvus"]
+qdrant = ["dep:nexus-connector-qdrant"]
+lancedb = ["dep:nexus-connector-lancedb"]
+pgvector = ["dep:nexus-connector-pgvector"]
+pinecone = ["dep:nexus-connector-pinecone"]
+chromadb = ["dep:nexus-connector-chromadb"]
+deltalake = ["dep:nexus-connector-deltalake"]
+iceberg = ["dep:nexus-connector-iceberg"]
+parquet = ["dep:nexus-connector-parquet"]
+ailake = ["dep:nexus-connector-ailake"]
+
 [dependencies]
 aes-gcm = "0.10.3"
 anyhow = "1.0.104"
@@ -42,6 +77,20 @@ jsonwebtoken = { version = "11.0.0", default-features = false, features = ["rust
 rand_core = { version = "0.6.4", features = ["getrandom"] }
 nexus-connector-postgres = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-postgres" }
 nexus-connector-sqlite = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-sqlite" }
+nexus-connector-mongodb = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-mongodb", optional = true }
+nexus-connector-kafka = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-kafka", optional = true }
+nexus-connector-rest = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-rest", optional = true }
+nexus-connector-odbc = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-odbc", optional = true }
+nexus-connector-milvus = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-milvus", optional = true }
+nexus-connector-qdrant = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-qdrant", optional = true }
+nexus-connector-lancedb = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-lancedb", optional = true }
+nexus-connector-pgvector = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-pgvector", optional = true }
+nexus-connector-pinecone = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-pinecone", optional = true }
+nexus-connector-chromadb = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-chromadb", optional = true }
+nexus-connector-deltalake = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-deltalake", optional = true }
+nexus-connector-iceberg = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-iceberg", optional = true }
+nexus-connector-parquet = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-parquet", optional = true }
+nexus-connector-ailake = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-ailake", optional = true }
 nexus-core = { version = "0.1.0", path = "../nexus-core" }
 hex = "0.4.3"
 reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls"] }
