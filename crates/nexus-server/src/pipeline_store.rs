@@ -217,16 +217,18 @@ impl PipelineStore {
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter()
-            .map(|(ciphertext, created_at, updated_at, last_run_status, last_run_at)| {
-                let spec = decode_spec(&ciphertext, cipher)?;
-                Ok(summarize(
-                    spec,
-                    created_at,
-                    updated_at,
-                    last_run_status,
-                    last_run_at,
-                ))
-            })
+            .map(
+                |(ciphertext, created_at, updated_at, last_run_status, last_run_at)| {
+                    let spec = decode_spec(&ciphertext, cipher)?;
+                    Ok(summarize(
+                        spec,
+                        created_at,
+                        updated_at,
+                        last_run_status,
+                        last_run_at,
+                    ))
+                },
+            )
             .collect()
     }
 
