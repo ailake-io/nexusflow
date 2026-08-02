@@ -16,6 +16,11 @@ pub enum PipelineStoreError {
     Sqlx(#[from] sqlx::Error),
 }
 
+/// (spec_ciphertext, created_at, updated_at, last_run status, last_run started_at)
+/// — the row shape shared by `get_summary`'s and `list_summaries`' LEFT JOIN
+/// against the most recent `pipeline_runs` row per pipeline.
+type SummaryRow = (String, String, String, Option<String>, Option<String>);
+
 #[derive(Serialize)]
 pub struct NodeSummary {
     pub connector: String,
@@ -163,7 +168,7 @@ impl PipelineStore {
         id: &str,
         cipher: &SecretCipher,
     ) -> Result<PipelineSummary, PipelineStoreError> {
-        let row: Option<(String, String, String, Option<String>, Option<String>)> = sqlx::query_as(
+        let row: Option<SummaryRow> = sqlx::query_as(
             "SELECT p.spec_ciphertext, p.created_at, p.updated_at, r.status, r.started_at \
              FROM pipelines p LEFT JOIN pipeline_runs r ON r.id = ( \
                  SELECT id FROM pipeline_runs WHERE pipeline_id = p.id \
@@ -207,7 +212,7 @@ impl PipelineStore {
         &self,
         cipher: &SecretCipher,
     ) -> Result<Vec<PipelineSummary>, PipelineStoreError> {
-        let rows: Vec<(String, String, String, Option<String>, Option<String>)> = sqlx::query_as(
+        let rows: Vec<SummaryRow> = sqlx::query_as(
             "SELECT p.spec_ciphertext, p.created_at, p.updated_at, r.status, r.started_at \
              FROM pipelines p LEFT JOIN pipeline_runs r ON r.id = ( \
                  SELECT id FROM pipeline_runs WHERE pipeline_id = p.id \
