@@ -36,7 +36,7 @@ docker run --gpus all -d -p 8080:8080 -e NEXUS_JWT_SECRET=... -e NEXUS_ENCRYPTIO
 ### Script de instalação (Linux/macOS)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ailake-io/nexusflow/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/ailake-io/nexusflow/develop/scripts/install.sh | sh
 ```
 
 Baixa o binário + drivers ADBC pra `~/.local/share/nexusflow` e cria `~/.local/bin/nexusflow`. Precisa de um [release](https://github.com/ailake-io/nexusflow/releases) publicado — ver `.github/workflows/release.yml`.
