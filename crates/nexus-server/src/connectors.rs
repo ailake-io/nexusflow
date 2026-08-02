@@ -2,34 +2,34 @@ use nexus_connector_postgres::{PostgresConnectorConfig, PostgresSink, PostgresSo
 use nexus_connector_sqlite::{SqliteConnectorConfig, SqliteSink, SqliteSource};
 use nexus_core::{NodeSpec, Sink, Source};
 
-#[cfg(feature = "mongodb")]
-use nexus_connector_mongodb::{MongoConnectorConfig, MongoSink, MongoSource};
-#[cfg(feature = "kafka")]
-use nexus_connector_kafka::{KafkaConnectorConfig, KafkaSource};
-#[cfg(feature = "rest")]
-use nexus_connector_rest::{RestConnectorConfig, RestSource};
-#[cfg(feature = "odbc")]
-use nexus_connector_odbc::{OdbcConnectorConfig, OdbcSink, OdbcSource};
-#[cfg(feature = "milvus")]
-use nexus_connector_milvus::{MilvusConnectorConfig, MilvusSink};
-#[cfg(feature = "qdrant")]
-use nexus_connector_qdrant::{QdrantConnectorConfig, QdrantSink};
-#[cfg(feature = "lancedb")]
-use nexus_connector_lancedb::{LanceDbConnectorConfig, LanceDbSink};
-#[cfg(feature = "pgvector")]
-use nexus_connector_pgvector::{PgVectorConnectorConfig, PgVectorSink};
-#[cfg(feature = "pinecone")]
-use nexus_connector_pinecone::{PineconeConnectorConfig, PineconeSink};
+#[cfg(feature = "ailake")]
+use nexus_connector_ailake::{AilakeConnectorConfig, AilakeSink, AilakeSource};
 #[cfg(feature = "chromadb")]
 use nexus_connector_chromadb::{ChromaConnectorConfig, ChromaSink};
 #[cfg(feature = "deltalake")]
 use nexus_connector_deltalake::{DeltaConnectorConfig, DeltaSink, DeltaSource};
 #[cfg(feature = "iceberg")]
 use nexus_connector_iceberg::{IcebergConnectorConfig, IcebergSink, IcebergSource};
+#[cfg(feature = "kafka")]
+use nexus_connector_kafka::{KafkaConnectorConfig, KafkaSource};
+#[cfg(feature = "lancedb")]
+use nexus_connector_lancedb::{LanceDbConnectorConfig, LanceDbSink};
+#[cfg(feature = "milvus")]
+use nexus_connector_milvus::{MilvusConnectorConfig, MilvusSink};
+#[cfg(feature = "mongodb")]
+use nexus_connector_mongodb::{MongoConnectorConfig, MongoSink, MongoSource};
+#[cfg(feature = "odbc")]
+use nexus_connector_odbc::{OdbcConnectorConfig, OdbcSink, OdbcSource};
 #[cfg(feature = "parquet")]
 use nexus_connector_parquet::{ParquetConnectorConfig, ParquetSink, ParquetSource};
-#[cfg(feature = "ailake")]
-use nexus_connector_ailake::{AilakeConnectorConfig, AilakeSink, AilakeSource};
+#[cfg(feature = "pgvector")]
+use nexus_connector_pgvector::{PgVectorConnectorConfig, PgVectorSink};
+#[cfg(feature = "pinecone")]
+use nexus_connector_pinecone::{PineconeConnectorConfig, PineconeSink};
+#[cfg(feature = "qdrant")]
+use nexus_connector_qdrant::{QdrantConnectorConfig, QdrantSink};
+#[cfg(feature = "rest")]
+use nexus_connector_rest::{RestConnectorConfig, RestSource};
 
 /// The only place that knows which connector names exist and how to build
 /// them — `nexus-core`/`PipelineEngine` never hardcode a connector list, see
