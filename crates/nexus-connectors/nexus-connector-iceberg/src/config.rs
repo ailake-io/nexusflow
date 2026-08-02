@@ -6,7 +6,7 @@ use serde::Deserialize;
 /// it). Defaults to V2, the still-most-widely-supported spec version;
 /// pick V3 explicitly to get V3-only features as they land upstream (row
 /// lineage, deletion vectors, etc.).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum IcebergFormatVersion {
     #[default]
@@ -20,7 +20,7 @@ pub enum IcebergFormatVersion {
 /// path where data files are written. Both embedded — no external metastore
 /// or object store server required, same shape as the other Marco 6/AI-Lake
 /// connectors.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct IcebergConnectorConfig {
     pub catalog_uri: String,
     pub warehouse_location: String,

@@ -4,7 +4,7 @@ use serde::Deserialize;
 /// operate). Talks to ChromaDB's v2 REST API (`/api/v1` is deprecated).
 /// Collection must already exist. See ARCHITECTURE.md §4.3/§8,
 /// IMPLEMENTATION_PLAN.md Marco 5.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct ChromaConnectorConfig {
     pub host: String,
     #[serde(default = "default_tenant")]

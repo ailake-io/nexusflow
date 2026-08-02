@@ -10,4 +10,8 @@ pub use config::{IcebergConnectorConfig, IcebergFormatVersion};
 pub use sink::IcebergSink;
 pub use source::IcebergSource;
 
-nexus_core::submit_connector!("iceberg", nexus_core::ConnectorCapability::Bridged);
+nexus_core::submit_connector!(
+    "iceberg",
+    nexus_core::ConnectorCapability::Bridged,
+    IcebergConnectorConfig
+);

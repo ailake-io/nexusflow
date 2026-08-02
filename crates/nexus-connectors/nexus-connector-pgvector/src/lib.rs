@@ -12,4 +12,8 @@ mod sql;
 pub use config::PgVectorConnectorConfig;
 pub use sink::PgVectorSink;
 
-nexus_core::submit_connector!("pgvector", nexus_core::ConnectorCapability::Bridged);
+nexus_core::submit_connector!(
+    "pgvector",
+    nexus_core::ConnectorCapability::Bridged,
+    PgVectorConnectorConfig
+);

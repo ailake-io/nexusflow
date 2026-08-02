@@ -2,7 +2,7 @@ use serde::Deserialize;
 
 /// pgvector sink config — the AI Lakehouse destination for Marco 5
 /// (chunk → embedding → pgvector). See ARCHITECTURE.md §4.3/§8.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct PgVectorConnectorConfig {
     pub uri: String,
     pub table: String,

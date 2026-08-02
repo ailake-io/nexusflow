@@ -13,4 +13,8 @@ pub use config::AilakeConnectorConfig;
 pub use sink::AilakeSink;
 pub use source::AilakeSource;
 
-nexus_core::submit_connector!("ailake", nexus_core::ConnectorCapability::Bridged);
+nexus_core::submit_connector!(
+    "ailake",
+    nexus_core::ConnectorCapability::Bridged,
+    AilakeConnectorConfig
+);

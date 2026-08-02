@@ -7,4 +7,8 @@ mod sink;
 pub use config::MilvusConnectorConfig;
 pub use sink::MilvusSink;
 
-nexus_core::submit_connector!("milvus", nexus_core::ConnectorCapability::Bridged);
+nexus_core::submit_connector!(
+    "milvus",
+    nexus_core::ConnectorCapability::Bridged,
+    MilvusConnectorConfig
+);

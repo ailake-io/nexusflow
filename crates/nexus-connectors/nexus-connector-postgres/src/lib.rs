@@ -18,4 +18,8 @@ pub use introspect::{primary_key_bounds, table_schema};
 pub use sink::PostgresSink;
 pub use source::{split_into_partitions, PartitionRange, PostgresSource};
 
-nexus_core::submit_connector!("postgres", nexus_core::ConnectorCapability::AdbcNative);
+nexus_core::submit_connector!(
+    "postgres",
+    nexus_core::ConnectorCapability::AdbcNative,
+    PostgresConnectorConfig
+);

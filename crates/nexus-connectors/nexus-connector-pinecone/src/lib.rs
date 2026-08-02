@@ -8,4 +8,8 @@ mod sink;
 pub use config::PineconeConnectorConfig;
 pub use sink::PineconeSink;
 
-nexus_core::submit_connector!("pinecone", nexus_core::ConnectorCapability::Bridged);
+nexus_core::submit_connector!(
+    "pinecone",
+    nexus_core::ConnectorCapability::Bridged,
+    PineconeConnectorConfig
+);

@@ -7,4 +7,8 @@ mod sink;
 pub use config::LanceDbConnectorConfig;
 pub use sink::LanceDbSink;
 
-nexus_core::submit_connector!("lancedb", nexus_core::ConnectorCapability::Bridged);
+nexus_core::submit_connector!(
+    "lancedb",
+    nexus_core::ConnectorCapability::Bridged,
+    LanceDbConnectorConfig
+);

@@ -11,6 +11,7 @@ async-trait = "0.1.91"
 milvus-sdk-rust = "0.1.0"
 nexus-core = { version = "0.1.0", path = "../../nexus-core" }
 serde = { version = "1.0.229", features = ["derive"] }
+schemars = "1.2.2"
 tokio = { version = "1.53.1", features = ["rt"] }
 
 [dev-dependencies]

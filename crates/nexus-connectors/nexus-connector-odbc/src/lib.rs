@@ -26,4 +26,8 @@ pub use sql::{
 };
 
 #[cfg(feature = "legacy")]
-nexus_core::submit_connector!("odbc", nexus_core::ConnectorCapability::Bridged);
+nexus_core::submit_connector!(
+    "odbc",
+    nexus_core::ConnectorCapability::Bridged,
+    OdbcConnectorConfig
+);

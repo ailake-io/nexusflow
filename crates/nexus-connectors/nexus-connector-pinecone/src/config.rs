@@ -6,7 +6,7 @@ use serde::Deserialize;
 /// (no real end-to-end integration test, unlike the other 5 vector sinks —
 /// user decision 2026-07-31). See ARCHITECTURE.md §4.3/§8,
 /// IMPLEMENTATION_PLAN.md Marco 5.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct PineconeConnectorConfig {
     /// Index-specific data-plane host, e.g.
     /// `https://my-index-xxxx.svc.us-east1-aws.pinecone.io` (from Pinecone's

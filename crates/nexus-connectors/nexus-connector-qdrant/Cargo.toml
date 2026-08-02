@@ -11,6 +11,7 @@ async-trait = "0.1.91"
 nexus-core = { version = "0.1.0", path = "../../nexus-core" }
 qdrant-client = { version = "1.15.0", default-features = false, features = ["serde"] }
 serde = { version = "1.0.229", features = ["derive"] }
+schemars = "1.2.2"
 serde_json = "1.0.151"
 
 [dev-dependencies]

@@ -10,4 +10,8 @@ mod source;
 pub use config::{RestConnectorConfig, RestDataType, RestFieldSpec, RestPagination};
 pub use source::RestSource;
 
-nexus_core::submit_connector!("rest", nexus_core::ConnectorCapability::Bridged);
+nexus_core::submit_connector!(
+    "rest",
+    nexus_core::ConnectorCapability::Bridged,
+    RestConnectorConfig
+);
