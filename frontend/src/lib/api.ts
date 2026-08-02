@@ -1,3 +1,5 @@
+import type { PipelineSpec } from '@/lib/dag'
+
 /** Matches nexus-core::ConnectorCapability (ARCHITECTURE.md §3). */
 export type ConnectorCapability = 'adbc_native' | 'arrow_flight' | 'bridged'
 
@@ -148,10 +150,51 @@ export interface PipelineSummary {
   has_transform: boolean
   created_at: string
   updated_at: string
+  /** Cron expression, if this pipeline has an automatic schedule — `null`
+   * means it only runs when explicitly triggered. */
+  schedule: string | null
+  /** Status of the most recent run ("running" / "success" / "failed"),
+   * `null` if it has never run. */
+  last_run_status: 'running' | 'success' | 'failed' | null
+  last_run_at: string | null
 }
 
 export function listPipelines(token: string): Promise<PipelineSummary[]> {
   return request<PipelineSummary[]>('/pipelines', {}, token)
+}
+
+/** POST /pipelines — fails with a 409 ApiError if pipeline_id already exists
+ * (use updatePipeline instead in that case). */
+export function createPipeline(
+  token: string,
+  spec: { pipeline_id: string },
+): Promise<PipelineSummary> {
+  return request<PipelineSummary>(
+    '/pipelines',
+    { method: 'POST', body: JSON.stringify(spec) },
+    token,
+  )
+}
+
+/** PUT /pipelines/{id} — fails with a 404 ApiError if it doesn't exist yet
+ * (use createPipeline instead in that case). */
+export function updatePipeline(
+  token: string,
+  spec: { pipeline_id: string },
+): Promise<PipelineSummary> {
+  return request<PipelineSummary>(
+    `/pipelines/${encodeURIComponent(spec.pipeline_id)}`,
+    { method: 'PUT', body: JSON.stringify(spec) },
+    token,
+  )
+}
+
+/** GET /pipelines/{id}/spec — full spec, connector configs (secrets) included.
+ * Requires Write role; used only to reload a saved pipeline onto the canvas
+ * for editing. Never render this response's node configs anywhere but the
+ * canvas inspector. */
+export function getPipelineSpec(token: string, pipelineId: string): Promise<PipelineSpec> {
+  return request<PipelineSpec>(`/pipelines/${encodeURIComponent(pipelineId)}/spec`, {}, token)
 }
 
 export function deletePipeline(token: string, pipelineId: string): Promise<void> {

@@ -93,6 +93,12 @@ nexus-connector-parquet = { version = "0.1.0", path = "../nexus-connectors/nexus
 nexus-connector-ailake = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-ailake", optional = true }
 nexus-core = { version = "0.1.0", path = "../nexus-core" }
 hex = "0.4.3"
+# Pipeline scheduler (background cron polling, see scheduler.rs) — matches
+# nexus-core's own cron/chrono versions (parse_cron_expression's return
+# type is nexus-core's re-exported `cron::Schedule`, so this has to stay
+# the same crate, not just a compatible one).
+chrono = { version = "0.4.45", features = ["serde"] }
+cron = "0.17.0"
 reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"

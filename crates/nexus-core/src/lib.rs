@@ -5,6 +5,7 @@ pub mod error;
 pub mod pipeline;
 pub mod record_batch_builder;
 pub mod registry;
+pub mod schedule;
 pub mod sql;
 pub mod traits;
 pub mod transform;
@@ -19,6 +20,7 @@ pub use pipeline::{
 };
 pub use record_batch_builder::RecordBatchBuilder;
 pub use registry::{ConnectorDescriptor, ConnectorRegistry};
+pub use schedule::parse_cron_expression;
 pub use sql::quote_identifier;
 pub use traits::{ConnectorCapability, Sink, Source, Transform};
 pub use transform::DataFusionTransform;

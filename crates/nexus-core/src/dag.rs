@@ -77,6 +77,13 @@ pub struct PipelineSpec {
     /// step", the same as before this field existed.
     #[serde(default)]
     pub dbt: Option<DbtConfig>,
+    /// Cron expression controlling automatic runs — see
+    /// `schedule::parse_cron_expression` for the accepted formats. `None`
+    /// (the default) means no automatic schedule: the pipeline only runs
+    /// when explicitly triggered via `POST /pipelines/{id}/run`, same as
+    /// before this field existed.
+    #[serde(default)]
+    pub schedule: Option<String>,
 }
 
 fn default_channel_capacity() -> usize {
@@ -149,6 +156,10 @@ impl PipelineSpec {
         }
         if self.partitions == 0 {
             return Err(NexusError::Schema("partitions must be > 0".into()));
+        }
+        if let Some(expr) = &self.schedule {
+            crate::schedule::parse_cron_expression(expr)
+                .map_err(|e| NexusError::Schema(format!("invalid schedule: {e}")))?;
         }
         Ok(())
     }

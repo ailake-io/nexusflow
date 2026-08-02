@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { listPipelines, type PipelineSummary } from '@/lib/api'
-import { useAuth } from '@/lib/auth'
+import { useAuth } from '@/lib/auth-context'
 
 interface UsePipelinesResult {
   pipelines: PipelineSummary[]

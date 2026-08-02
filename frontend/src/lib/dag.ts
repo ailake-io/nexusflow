@@ -42,6 +42,10 @@ export interface PipelineSpec {
   channel_capacity?: number
   partitions?: number
   dbt?: DbtConfig
+  /** Cron expression (5-field Unix or 6-field Quartz) — automatic runs via
+   * the server's scheduler. Unset means the pipeline only runs when
+   * explicitly triggered. */
+  schedule?: string
 }
 
 export type ConnectorRole = 'source' | 'sink'
@@ -91,6 +95,7 @@ export interface PipelineMeta {
   pipelineId: string
   channelCapacity?: number
   partitions?: number
+  schedule?: string
 }
 
 /**
@@ -159,6 +164,7 @@ export function toPipelineSpec(nodes: DagNode[], meta: PipelineMeta): PipelineSp
   if (dbt) spec.dbt = dbt
   if (meta.channelCapacity !== undefined) spec.channel_capacity = meta.channelCapacity
   if (meta.partitions !== undefined) spec.partitions = meta.partitions
+  if (meta.schedule?.trim()) spec.schedule = meta.schedule.trim()
   return spec
 }
 

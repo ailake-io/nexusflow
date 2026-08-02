@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type DragEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type DragEvent } from 'react'
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -16,11 +16,12 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { ConnectorPalette } from '@/components/ConnectorPalette'
-import { dagNodeTypes } from '@/components/dag-nodes'
+import { dagNodeTypes } from '@/components/dag-node-types'
 import { ExecutionPanel } from '@/components/ExecutionPanel'
 import { NodeInspector } from '@/components/NodeInspector'
 import { PipelineIoPanel } from '@/components/PipelineIoPanel'
-import { useAuth } from '@/lib/auth'
+import { ApiError, createPipeline, updatePipeline } from '@/lib/api'
+import { useAuth } from '@/lib/auth-context'
 import { useConnectors } from '@/hooks/useConnectors'
 import { useRunProgress } from '@/hooks/useRunProgress'
 import {
@@ -37,7 +38,12 @@ import {
 
 let nextNodeId = 1
 
-function CanvasInner() {
+interface CanvasInnerProps {
+  pipelineToLoad?: PipelineSpec | null
+  onPipelineLoaded?: () => void
+}
+
+function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
   const { connectors, loading, error } = useConnectors()
   const { screenToFlowPosition } = useReactFlow()
   const wrapperRef = useRef<HTMLDivElement>(null)
@@ -49,6 +55,7 @@ function CanvasInner() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [meta, setMeta] = useState<PipelineMeta>({ pipelineId: '' })
   const [runTriggerError, setRunTriggerError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
 
   const onNodesChange: OnNodesChange<DagNode> = useCallback(
     (changes) => setNodes((current) => applyNodeChanges(changes, current)),
@@ -146,8 +153,26 @@ function CanvasInner() {
     }
   }, [nodes, meta, token, execution])
 
-  const handleImport = useCallback((json: string) => {
-    const spec = JSON.parse(json) as PipelineSpec
+  const handleSave = useCallback(async () => {
+    if (!token) throw new Error('not logged in')
+    const spec = toPipelineSpec(nodes, meta)
+    setSaving(true)
+    try {
+      try {
+        await createPipeline(token, spec)
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 409) {
+          await updatePipeline(token, spec)
+        } else {
+          throw err
+        }
+      }
+    } finally {
+      setSaving(false)
+    }
+  }, [nodes, meta, token])
+
+  const loadSpec = useCallback((spec: PipelineSpec) => {
     const { nodes: importedNodes, edges: importedEdges } = fromPipelineSpec(spec)
     setNodes(importedNodes)
     setEdges(importedEdges)
@@ -156,8 +181,23 @@ function CanvasInner() {
       pipelineId: spec.pipeline_id,
       channelCapacity: spec.channel_capacity,
       partitions: spec.partitions,
+      schedule: spec.schedule,
     })
   }, [])
+
+  const handleImport = useCallback(
+    (json: string) => loadSpec(JSON.parse(json) as PipelineSpec),
+    [loadSpec],
+  )
+
+  // Loads a saved pipeline (fetched via GET /pipelines/{id}/spec from
+  // PipelinesList's Edit button) onto the canvas — same code path as
+  // pasting/loading JSON manually.
+  useEffect(() => {
+    if (!pipelineToLoad) return
+    loadSpec(pipelineToLoad)
+    onPipelineLoaded?.()
+  }, [pipelineToLoad, loadSpec, onPipelineLoaded])
 
   const selectedNode = nodes.find((n) => n.id === selectedId) ?? null
 
@@ -169,7 +209,9 @@ function CanvasInner() {
         onExport={handleExport}
         onImport={handleImport}
         onRun={handleRun}
+        onSave={handleSave}
         running={execution.status === 'starting' || execution.status === 'running'}
+        saving={saving}
       />
       {runTriggerError && (
         <p className="border-b bg-card px-3 py-1 text-sm text-destructive">{runTriggerError}</p>
@@ -224,10 +266,10 @@ function CanvasInner() {
 
 /** `useReactFlow` (for drag-and-drop coordinate conversion) needs a provider
  * above it — kept here so callers of `DagCanvas` don't need to know that. */
-export function DagCanvas() {
+export function DagCanvas(props: CanvasInnerProps) {
   return (
     <ReactFlowProvider>
-      <CanvasInner />
+      <CanvasInner {...props} />
     </ReactFlowProvider>
   )
 }
