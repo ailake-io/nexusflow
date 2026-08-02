@@ -43,6 +43,46 @@ jobs:
         working-directory: frontend
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+  # Marco 11's done criterion, checked for real rather than just documented:
+  # "docker run sobe binário único servindo UI em localhost:8080, sem
+  # dependência externa além do container." Independent job (no `needs:`) —
+  # builds its own image from scratch (frontend -> ADBC drivers -> release
+  # binary w/ embed-ui -> runtime, see ../../Dockerfile), so it doesn't
+  # share any state with the fmt/clippy/test chain above.
+  docker-image:
+    name: docker-image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: nexusflow:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Boot the image and hit the embedded UI
+        run: |
+          docker run -d --name nexusflow-ci -p 8080:8080 \
+            -e NEXUS_JWT_SECRET=ci-secret \
+            -e NEXUS_ENCRYPTION_KEY=$(printf 'ab%.0s' {1..32}) \
+            -e NEXUS_CHECKPOINT_DB=sqlite::memory: \
+            -e NEXUS_AUTH_DB=sqlite::memory: \
+            -e NEXUS_PIPELINES_DB=sqlite::memory: \
+            nexusflow:ci
+          for i in $(seq 1 20); do
+            curl -sf http://localhost:8080/health && break
+            sleep 1
+          done
+          status=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/)
+          health=$(curl -sf http://localhost:8080/health)
+          docker logs nexusflow-ci
+          docker rm -f nexusflow-ci
+          [ "$status" = "200" ] || { echo "GET / returned $status, expected 200"; exit 1; }
+          [ "$health" = "ok" ] || { echo "GET /health returned '$health', expected ok"; exit 1; }
+
   # frontend/ (Marco 8) doesn't touch the Rust workspace or the self-hosted
   # runner — no `needs:`, runs independently on GitHub-hosted infra instead
   # of joining the fmt -> clippy -> test -> connectors chain (that chain is
