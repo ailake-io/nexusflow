@@ -20,10 +20,16 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  # Self-hosted, not ubuntu-latest: --all-features (embed-ui + nexus-ai's
+  # `cpu` feature: ort/hf-hub/tokenizers, on top of the usual
+  # datafusion/arrow weight) ran ubuntu-latest out of its ~14GB disk cap
+  # mid-link ("ld terminated with signal 7 [Bus error]", 39MB free) — same
+  # root cause as the `connectors` job below (052e26c), just hitting the
+  # root workspace directly this time instead of only the nested one.
   clippy:
     name: clippy
     needs: fmt
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -105,10 +111,11 @@ jobs:
       - run: npm run build
       - run: npm run lint
 
+  # Self-hosted for the same reason as clippy above.
   test:
     name: test
     needs: clippy
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -117,11 +124,11 @@ jobs:
       # nexus-connector-postgres/nexus-connector-sqlite need the real ADBC
       # drivers at test runtime (C++ implementations, not crates.io packages —
       # see scripts/build-adbc-*-driver.sh). Integration tests also need a
-      # live Postgres via testcontainers, which GitHub-hosted runners can do
-      # out of the box (Docker daemon is preinstalled).
-      - name: Install native build deps for the ADBC drivers
-        run: sudo apt-get update && sudo apt-get install -y cmake pkg-config libpq-dev libsqlite3-dev libfmt-dev
-
+      # live Postgres via testcontainers (self-hosted has Docker, same as
+      # the connectors job below relies on). cmake/pkg-config/libpq-dev/
+      # libsqlite3-dev/libfmt-dev are assumed already present on this host,
+      # same posture as the connectors job's own comment below — no sudo
+      # apt-get here (runner service has no interactive sudo).
       - name: Cache built ADBC drivers
         id: adbc-cache
         uses: actions/cache@v4
