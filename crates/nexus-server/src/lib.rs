@@ -11,6 +11,7 @@ mod error;
 mod pipeline_store;
 mod progress;
 mod runner;
+mod scheduler;
 pub mod telemetry;
 
 use alerts::AlertNotifier;
@@ -103,6 +104,13 @@ fn router(state: AppState) -> Router {
             "/pipelines/{id}",
             put(update_pipeline_handler).delete(delete_pipeline_handler),
         )
+        // Full spec (connector configs, secrets included) for reloading a
+        // saved pipeline back onto the canvas to edit it. Gated behind
+        // `Write` (not `Read`) because it's symmetric to create/update: only
+        // a caller already trusted to type/submit connector secrets gets
+        // them back. `get_pipeline_handler` above stays masked for anyone
+        // with only `Read` (Marco 8 task #17).
+        .route("/pipelines/{id}/spec", get(get_pipeline_spec_handler))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_role::<AppState>,
@@ -227,7 +235,7 @@ async fn login_handler(
     Ok(Json(LoginResponse { token }))
 }
 
-#[tracing::instrument(skip(state, spec), fields(pipeline_id = %id, run_id))]
+#[tracing::instrument(skip(state, spec), fields(pipeline_id = %id))]
 async fn run_pipeline_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -242,14 +250,31 @@ async fn run_pipeline_handler(
     spec.validate()
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
 
-    // Recorded regardless of whether `id` was ever persisted via
-    // `POST /pipelines` — ad-hoc runs (body-only, no prior create) still
-    // show up in `GET /pipelines/{id}/runs`, same as always-persisted ones.
+    let stats = execute_pipeline(&state, &spec)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(stats))
+}
+
+/// Runs a pipeline end to end and records the outcome — shared by the
+/// manual `POST /pipelines/{id}/run` handler above and `scheduler.rs`'s
+/// cron-triggered runs, so a scheduled run gets exactly the same history/
+/// dbt/alerting behavior as a manually-triggered one, not a second
+/// slightly-different code path.
+#[tracing::instrument(skip(state, spec), fields(pipeline_id = %spec.pipeline_id, run_id))]
+async fn execute_pipeline(
+    state: &AppState,
+    spec: &PipelineSpec,
+) -> anyhow::Result<Vec<PartitionStats>> {
+    // Recorded regardless of whether `spec.pipeline_id` was ever persisted
+    // via `POST /pipelines` — ad-hoc runs (body-only, no prior create)
+    // still show up in `GET /pipelines/{id}/runs`, same as always-persisted
+    // ones.
     let run_id = state.pipelines.start_run(&spec.pipeline_id).await?;
     tracing::Span::current().record("run_id", run_id);
     let progress_tx = state.progress.start(run_id);
 
-    let result = runner::run_pipeline(&spec, &state.checkpoints, Some(progress_tx)).await;
+    let result = runner::run_pipeline(spec, &state.checkpoints, Some(progress_tx)).await;
     state.progress.finish(run_id);
 
     match result {
@@ -266,8 +291,8 @@ async fn run_pipeline_handler(
                         dbt_summary = outcome.summary_json();
                     }
                     Err(e) => {
-                        record_run_failure(&state, run_id, &spec.pipeline_id, &e).await;
-                        return Err(ApiError::internal(e));
+                        record_run_failure(state, run_id, &spec.pipeline_id, &e).await;
+                        return Err(e);
                     }
                 }
             }
@@ -278,11 +303,11 @@ async fn run_pipeline_handler(
             {
                 tracing::warn!(error = %e, "failed to record successful pipeline run");
             }
-            Ok(Json(stats))
+            Ok(stats)
         }
         Err(e) => {
-            record_run_failure(&state, run_id, &spec.pipeline_id, &e).await;
-            Err(ApiError::internal(e))
+            record_run_failure(state, run_id, &spec.pipeline_id, &e).await;
+            Err(e)
         }
     }
 }
@@ -332,6 +357,13 @@ async fn get_pipeline_handler(
     Ok(Json(
         state.pipelines.get_summary(&id, &state.secrets).await?,
     ))
+}
+
+async fn get_pipeline_spec_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<PipelineSpec>, ApiError> {
+    Ok(Json(state.pipelines.get_spec(&id, &state.secrets).await?))
 }
 
 async fn update_pipeline_handler(
@@ -462,10 +494,7 @@ pub struct ServerConfig {
     pub slack_webhook_url: Option<String>,
 }
 
-/// Builds the app without binding a socket — the entrypoint integration
-/// tests use (via `tower::ServiceExt::oneshot`) to drive real pipeline runs
-/// against a testcontainers Postgres. See IMPLEMENTATION_PLAN.md Marco 1.
-pub async fn build_app(config: &ServerConfig) -> anyhow::Result<Router> {
+async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
     let checkpoints = CheckpointStore::connect(&config.checkpoint_database_url).await?;
     let auth_store = AuthStore::connect(&config.auth_database_url).await?;
     let pipelines = PipelineStore::connect(&config.pipelines_database_url).await?;
@@ -475,7 +504,7 @@ pub async fn build_app(config: &ServerConfig) -> anyhow::Result<Router> {
     let jwt = JwtCodec::new(config.jwt_secret.as_bytes(), config.jwt_ttl_seconds);
     let secrets = SecretCipher::from_hex_key(&config.encryption_key_hex)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    Ok(router(AppState {
+    Ok(AppState {
         checkpoints,
         auth_store,
         jwt,
@@ -483,7 +512,19 @@ pub async fn build_app(config: &ServerConfig) -> anyhow::Result<Router> {
         pipelines,
         progress: ProgressHub::default(),
         alerts: AlertNotifier::new(config.slack_webhook_url.clone()),
-    }))
+    })
+}
+
+/// Builds the app without binding a socket — the entrypoint integration
+/// tests use (via `tower::ServiceExt::oneshot`) to drive real pipeline runs
+/// against a testcontainers Postgres. See IMPLEMENTATION_PLAN.md Marco 1.
+/// Deliberately does *not* spawn `scheduler::spawn` — tests built on this
+/// don't want an extra background task ticking against their (often
+/// in-memory, per-test) `PipelineStore`; `run()` is the only real boot path
+/// that starts the scheduler.
+pub async fn build_app(config: &ServerConfig) -> anyhow::Result<Router> {
+    let state = build_state(config).await?;
+    Ok(router(state))
 }
 
 /// Boots the server. This is the only orchestration entrypoint — `src/main.rs`
@@ -524,7 +565,7 @@ pub async fn run() -> anyhow::Result<()> {
         );
     }
 
-    let app = build_app(&ServerConfig {
+    let state = build_state(&ServerConfig {
         checkpoint_database_url: database_url,
         auth_database_url,
         pipelines_database_url,
@@ -535,6 +576,13 @@ pub async fn run() -> anyhow::Result<()> {
         slack_webhook_url,
     })
     .await?;
+
+    // Cron-based automatic pipeline triggering (see scheduler.rs) — only
+    // started on the real boot path, not by `build_app` (tests don't want
+    // it racing their own assertions).
+    scheduler::spawn(state.clone());
+
+    let app = router(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
     tracing::info!(%addr, "nexus-server listening");

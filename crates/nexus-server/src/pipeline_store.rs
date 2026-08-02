@@ -16,6 +16,11 @@ pub enum PipelineStoreError {
     Sqlx(#[from] sqlx::Error),
 }
 
+/// (spec_ciphertext, created_at, updated_at, last_run status, last_run started_at)
+/// — the row shape shared by `get_summary`'s and `list_summaries`' LEFT JOIN
+/// against the most recent `pipeline_runs` row per pipeline.
+type SummaryRow = (String, String, String, Option<String>, Option<String>);
+
 #[derive(Serialize)]
 pub struct NodeSummary {
     pub connector: String,
@@ -34,6 +39,15 @@ pub struct PipelineSummary {
     pub has_transform: bool,
     pub created_at: String,
     pub updated_at: String,
+    /// Cron expression, if this pipeline has an automatic schedule (see
+    /// `scheduler.rs`) — `None` means it only runs when explicitly
+    /// triggered via `POST /pipelines/{id}/run`.
+    pub schedule: Option<String>,
+    /// Status of the most recent run ("running" / "success" / "failed"),
+    /// `None` if it has never run — lets the Pipelines list show at a
+    /// glance which scheduled/manual runs are healthy.
+    pub last_run_status: Option<String>,
+    pub last_run_at: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -154,32 +168,72 @@ impl PipelineStore {
         id: &str,
         cipher: &SecretCipher,
     ) -> Result<PipelineSummary, PipelineStoreError> {
-        let row: Option<(String, String, String)> = sqlx::query_as(
-            "SELECT spec_ciphertext, created_at, updated_at FROM pipelines WHERE id = ?",
+        let row: Option<SummaryRow> = sqlx::query_as(
+            "SELECT p.spec_ciphertext, p.created_at, p.updated_at, r.status, r.started_at \
+             FROM pipelines p LEFT JOIN pipeline_runs r ON r.id = ( \
+                 SELECT id FROM pipeline_runs WHERE pipeline_id = p.id \
+                 ORDER BY started_at DESC LIMIT 1 \
+             ) WHERE p.id = ?",
         )
         .bind(id)
         .fetch_optional(&self.pool)
         .await?;
-        let (ciphertext, created_at, updated_at) =
+        let (ciphertext, created_at, updated_at, last_run_status, last_run_at) =
             row.ok_or_else(|| PipelineStoreError::NotFound(id.to_string()))?;
         let spec = decode_spec(&ciphertext, cipher)?;
-        Ok(summarize(spec, created_at, updated_at))
+        Ok(summarize(
+            spec,
+            created_at,
+            updated_at,
+            last_run_status,
+            last_run_at,
+        ))
+    }
+
+    /// Full decrypted spec, config blobs and all — for internal use only
+    /// (the scheduler needs the real connector configs to actually run a
+    /// pipeline). Never expose this over the API; `get_summary` is what
+    /// `GET /pipelines/{id}` uses instead.
+    pub async fn get_spec(
+        &self,
+        id: &str,
+        cipher: &SecretCipher,
+    ) -> Result<PipelineSpec, PipelineStoreError> {
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT spec_ciphertext FROM pipelines WHERE id = ?")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?;
+        let (ciphertext,) = row.ok_or_else(|| PipelineStoreError::NotFound(id.to_string()))?;
+        decode_spec(&ciphertext, cipher)
     }
 
     pub async fn list_summaries(
         &self,
         cipher: &SecretCipher,
     ) -> Result<Vec<PipelineSummary>, PipelineStoreError> {
-        let rows: Vec<(String, String, String)> = sqlx::query_as(
-            "SELECT spec_ciphertext, created_at, updated_at FROM pipelines ORDER BY created_at",
+        let rows: Vec<SummaryRow> = sqlx::query_as(
+            "SELECT p.spec_ciphertext, p.created_at, p.updated_at, r.status, r.started_at \
+             FROM pipelines p LEFT JOIN pipeline_runs r ON r.id = ( \
+                 SELECT id FROM pipeline_runs WHERE pipeline_id = p.id \
+                 ORDER BY started_at DESC LIMIT 1 \
+             ) ORDER BY p.created_at",
         )
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter()
-            .map(|(ciphertext, created_at, updated_at)| {
-                let spec = decode_spec(&ciphertext, cipher)?;
-                Ok(summarize(spec, created_at, updated_at))
-            })
+            .map(
+                |(ciphertext, created_at, updated_at, last_run_status, last_run_at)| {
+                    let spec = decode_spec(&ciphertext, cipher)?;
+                    Ok(summarize(
+                        spec,
+                        created_at,
+                        updated_at,
+                        last_run_status,
+                        last_run_at,
+                    ))
+                },
+            )
             .collect()
     }
 
@@ -308,18 +362,27 @@ fn decode_spec(
     serde_json::from_str(&json).map_err(|e| PipelineStoreError::Corrupt(e.to_string()))
 }
 
-fn summarize(spec: PipelineSpec, created_at: String, updated_at: String) -> PipelineSummary {
+fn summarize(
+    spec: PipelineSpec,
+    created_at: String,
+    updated_at: String,
+    last_run_status: Option<String>,
+    last_run_at: Option<String>,
+) -> PipelineSummary {
     let to_summary = |n: nexus_core::NodeSpec| NodeSummary {
         connector: n.connector,
         name: n.name,
     };
     PipelineSummary {
         pipeline_id: spec.pipeline_id,
+        has_transform: spec.transform.is_some(),
+        schedule: spec.schedule,
         sources: spec.sources.into_iter().map(to_summary).collect(),
         sinks: spec.sinks.into_iter().map(to_summary).collect(),
-        has_transform: spec.transform.is_some(),
         created_at,
         updated_at,
+        last_run_status,
+        last_run_at,
     }
 }
 
@@ -349,6 +412,7 @@ mod tests {
             channel_capacity: 100,
             partitions: 1,
             dbt: None,
+            schedule: None,
         }
     }
 

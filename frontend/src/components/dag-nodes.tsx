@@ -45,9 +45,3 @@ export function DbtNodeView({ data, selected }: NodeProps<DagNode>) {
     </div>
   )
 }
-
-export const dagNodeTypes = {
-  connector: ConnectorNodeView,
-  transform: TransformNodeView,
-  dbt: DbtNodeView,
-}

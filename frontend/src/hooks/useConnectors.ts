@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { listConnectors, type ConnectorDescriptor } from '@/lib/api'
-import { useAuth } from '@/lib/auth'
+import { useAuth } from '@/lib/auth-context'
 
 interface UseConnectorsResult {
   connectors: ConnectorDescriptor[]

@@ -1,15 +1,8 @@
-import { createContext, use, useCallback, useState, type ReactNode } from 'react'
+import { useCallback, useState, type ReactNode } from 'react'
 import { login as apiLogin } from '@/lib/api'
+import { AuthContext } from '@/lib/auth-context'
 
 const STORAGE_KEY = 'nexusflow.token'
-
-interface AuthContextValue {
-  token: string | null
-  login: (username: string, password: string) => Promise<void>
-  logout: () => void
-}
-
-const AuthContext = createContext<AuthContextValue | null>(null)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   // sessionStorage, not localStorage — a JWT is a bearer credential, no
@@ -29,10 +22,4 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   return <AuthContext value={{ token, login, logout }}>{children}</AuthContext>
-}
-
-export function useAuth(): AuthContextValue {
-  const ctx = use(AuthContext)
-  if (!ctx) throw new Error('useAuth must be used within AuthProvider')
-  return ctx
 }
