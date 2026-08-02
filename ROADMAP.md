@@ -4,6 +4,18 @@ Ordem por dependência técnica, não por prioridade de negócio isolada. Cada f
 
 > Detalhamento de engenharia (arquivos/crates concretos, critério de "pronto" por marco): ver [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md).
 
+## ⚠️ Pendências ativas (não esquecer)
+
+Consolidado dos itens que ficaram faltando/incompletos ao longo das fases abaixo — checar aqui antes de assumir que algo já está pronto.
+
+1. **Fase 12 — Enterprise connectors**: nada implementado ainda. Repo separado, mecanismo de license key (JWT), definir primeiro conector pago.
+2. **Marco 13 do `IMPLEMENTATION_PLAN.md` — CDC nativo sem Kafka/Debezium**: condicional, não agendado. Só entra se o overhead de operar Debezium+Kafka virar bloqueador real de adoção confirmado (não é especulativo). Parser de WAL nativo do Postgres, resume por LSN em vez de offset Kafka.
+3. **`nexus-ai`: só a feature `cpu` existe** — `cuda`/`metal`/`api` (aceleração de embeddings) não implementados. O perfil `cuda` do Docker já tem a infra de runtime pronta (base image + `--gpus all`), mas não acelera nada até isso ser feito.
+4. **Alertas: só Slack implementado** — MS Teams, PagerDuty, Email e Webhook genérico ainda faltam (ver `CLAUDE.md §6`).
+5. **Windows (`.msi`/winget) e macOS (Homebrew/`.dmg`): specs escritos em `packaging/`, nunca validados em máquina real** (sandbox de dev é Linux). Falta também um build script dos drivers ADBC pra Windows (`.dll`) e macOS (`.dylib`) — os scripts atuais (`scripts/build-adbc-*.sh`) só geram `.so`.
+6. **`.rpm` nunca testado** — `scripts/package-rpm.sh` está escrito mas o sandbox não tem `rpmbuild` instalado pra validar.
+7. Ver também a seção **Débitos conhecidos** no fim deste arquivo (secrets sem KMS, RBAC sem escopo por recurso, versões de dependência pinadas).
+
 ## Fase 0 — Fundação (workspace) ✅
 - [x] `Cargo.toml` workspace + crates vazios: `nexus-core`, `nexus-ai`, `nexus-server`, e `crates/nexus-connectors/` já como workspace de sub-crates (não crate único) — ver `CLAUDE.md §3` e `ARCHITECTURE.md §3`
 - [x] Traits base (`Source`, `Sink`, `Transform`) em `nexus-core`
