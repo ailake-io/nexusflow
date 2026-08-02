@@ -6,15 +6,31 @@ import type {
   DbtNodeData,
   TransformNodeData,
 } from '@/lib/dag'
+import type { ConnectorDescriptor } from '@/lib/api'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { SchemaForm } from '@/components/SchemaForm'
 
 interface NodeInspectorProps {
   node: DagNode
+  connectors: ConnectorDescriptor[]
   onChange: (
     id: string,
     data: Partial<ConnectorNodeData> | Partial<TransformNodeData> | Partial<DbtNodeData>,
   ) => void
+}
+
+/** `data.config` is freely-typed JSON text (edited via textarea when no
+ * schema is available) — SchemaForm needs an object to bind fields onto,
+ * so an unparseable or empty string just starts the form from scratch. */
+function parseConfig(raw: string): Record<string, unknown> {
+  if (!raw.trim()) return {}
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : {}
+  } catch {
+    return {}
+  }
 }
 
 /**
@@ -22,9 +38,13 @@ interface NodeInspectorProps {
  * fields that end up in PipelineSpec/NodeSpec JSON (role/name/config or
  * transform SQL). See lib/dag.ts for the schema these map onto.
  */
-export function NodeInspector({ node, onChange }: NodeInspectorProps) {
+export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps) {
   const data = node.data
   if (data.kind === 'connector') {
+    const descriptor = connectors.find((c) => c.name === data.connector)
+    const schema = descriptor?.config_schema
+    const hasFormSchema = Boolean(schema?.properties && Object.keys(schema.properties).length > 0)
+
     return (
       <aside className="w-72 shrink-0 border-l bg-card p-3">
         <h2 className="mb-3 text-sm font-medium text-muted-foreground">{data.connector}</h2>
@@ -51,17 +71,27 @@ export function NodeInspector({ node, onChange }: NodeInspectorProps) {
               className="mt-1"
             />
           </div>
-          <div>
-            <Label htmlFor="node-config">Config (JSON)</Label>
-            <textarea
-              id="node-config"
-              value={data.config}
-              onChange={(e) => onChange(node.id, { config: e.target.value })}
-              rows={10}
-              spellCheck={false}
-              className="mt-1 w-full rounded-lg border border-input bg-transparent p-2 font-mono text-xs"
+          {hasFormSchema && schema ? (
+            <SchemaForm
+              schema={schema}
+              defs={schema.$defs ?? {}}
+              idPrefix="node-config-"
+              value={parseConfig(data.config)}
+              onChange={(next) => onChange(node.id, { config: JSON.stringify(next, null, 2) })}
             />
-          </div>
+          ) : (
+            <div>
+              <Label htmlFor="node-config">Config (JSON)</Label>
+              <textarea
+                id="node-config"
+                value={data.config}
+                onChange={(e) => onChange(node.id, { config: e.target.value })}
+                rows={10}
+                spellCheck={false}
+                className="mt-1 w-full rounded-lg border border-input bg-transparent p-2 font-mono text-xs"
+              />
+            </div>
+          )}
         </div>
       </aside>
     )

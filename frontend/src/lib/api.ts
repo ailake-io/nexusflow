@@ -1,10 +1,32 @@
 /** Matches nexus-core::ConnectorCapability (ARCHITECTURE.md §3). */
 export type ConnectorCapability = 'adbc_native' | 'arrow_flight' | 'bridged'
 
-/** Matches nexus-core::ConnectorDescriptor, as returned by GET /connectors. */
+/**
+ * A JSON Schema node as `schemars` emits it for a connector's Config struct
+ * — only the subset of the spec SchemaForm.tsx actually renders. `$ref`
+ * points into the root schema's own `$defs` (schemars never nests `$defs`
+ * inside a sub-schema, only at the document root).
+ */
+export interface JsonSchemaNode {
+  type?: string
+  properties?: Record<string, JsonSchemaNode>
+  required?: string[]
+  enum?: string[]
+  items?: JsonSchemaNode
+  $ref?: string
+  description?: string
+  default?: unknown
+}
+
+export interface ConnectorConfigSchema extends JsonSchemaNode {
+  $defs?: Record<string, JsonSchemaNode>
+}
+
+/** Matches nexus-server::ConnectorCatalogEntry, as returned by GET /connectors. */
 export interface ConnectorDescriptor {
   name: string
   capability: ConnectorCapability
+  config_schema: ConnectorConfigSchema
 }
 
 export class ApiError extends Error {

@@ -4,7 +4,7 @@ use serde::Deserialize;
 /// than pgvector/qdrant/lancedb). The collection must already exist (created
 /// externally with the right schema) — the sink only writes. See
 /// ARCHITECTURE.md §4.3/§8, IMPLEMENTATION_PLAN.md Marco 5.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct MilvusConnectorConfig {
     pub url: String,
     pub collection: String,

@@ -13,6 +13,11 @@ chrono = { version = "0.4.45", features = ["serde"] }
 datafusion = { version = "54.1.0", default-features = false, features = ["sql"] }
 futures = "0.3.33"
 inventory = "0.3.24"
+# Generates the JSON Schema each connector publishes for its Config struct
+# (ConnectorDescriptor.config_schema) — the UI's canvas builds a real form
+# from this instead of a raw JSON textarea (see nexus-server's
+# list_connectors_handler and frontend/src/components/SchemaForm.tsx).
+schemars = "1.2.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 thiserror = "2.0.19"

@@ -11,4 +11,8 @@ pub use config::ParquetConnectorConfig;
 pub use sink::ParquetSink;
 pub use source::ParquetSource;
 
-nexus_core::submit_connector!("parquet", nexus_core::ConnectorCapability::Bridged);
+nexus_core::submit_connector!(
+    "parquet",
+    nexus_core::ConnectorCapability::Bridged,
+    ParquetConnectorConfig
+);

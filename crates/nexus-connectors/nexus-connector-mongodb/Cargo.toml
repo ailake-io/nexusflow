@@ -12,6 +12,7 @@ futures = "0.3.33"
 mongodb = { version = "3.8.0", default-features = false, features = ["compat-3-0-0", "rustls-tls", "dns-resolver"] }
 nexus-core = { version = "0.1.0", path = "../../nexus-core" }
 serde = { version = "1.0.229", features = ["derive"] }
+schemars = "1.2.2"
 serde_json = "1.0.151"
 
 [dev-dependencies]

@@ -10,4 +10,8 @@ pub use config::DeltaConnectorConfig;
 pub use sink::DeltaSink;
 pub use source::DeltaSource;
 
-nexus_core::submit_connector!("deltalake", nexus_core::ConnectorCapability::Bridged);
+nexus_core::submit_connector!(
+    "deltalake",
+    nexus_core::ConnectorCapability::Bridged,
+    DeltaConnectorConfig
+);

@@ -19,4 +19,8 @@ pub use payload::{build_schema, parse_payload};
 pub use source::KafkaSource;
 
 #[cfg(feature = "consumer")]
-nexus_core::submit_connector!("kafka", nexus_core::ConnectorCapability::Bridged);
+nexus_core::submit_connector!(
+    "kafka",
+    nexus_core::ConnectorCapability::Bridged,
+    KafkaConnectorConfig
+);

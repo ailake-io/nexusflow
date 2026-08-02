@@ -1,0 +1,231 @@
+import type { JsonSchemaNode } from '@/lib/api'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+
+// Loosely typed on purpose: this renders arbitrary JSON Schema shapes from
+// 16 different connector Config structs, whose actual TS shape isn't known
+// statically — the schema itself (not a TS type) drives what's valid here.
+type JsonValue = unknown
+type JsonObject = Record<string, unknown>
+
+function resolveRef(schema: JsonSchemaNode, defs: Record<string, JsonSchemaNode>): JsonSchemaNode {
+  if (!schema.$ref) return schema
+  const name = schema.$ref.replace('#/$defs/', '')
+  return defs[name] ?? schema
+}
+
+interface SchemaFormProps {
+  schema: JsonSchemaNode
+  defs: Record<string, JsonSchemaNode>
+  value: JsonObject
+  onChange: (value: JsonObject) => void
+  idPrefix: string
+}
+
+/**
+ * Renders real form fields from a connector's JSON Schema (see
+ * nexus-server's `list_connectors_handler` / nexus-core's `submit_connector!`
+ * macro) instead of a raw JSON textarea. Recurses into nested objects and
+ * array-of-object fields (e.g. mongodb's `fields: MongoFieldSpec[]`) — only
+ * handles the shapes `schemars` actually emits for our Config structs
+ * (string/integer/number/boolean, string enum, array, object, `$ref` into
+ * `$defs`), not the full JSON Schema spec.
+ */
+export function SchemaForm({ schema, defs, value, onChange, idPrefix }: SchemaFormProps) {
+  const properties = schema.properties ?? {}
+  const required = new Set(schema.required ?? [])
+
+  const setField = (key: string, fieldValue: JsonValue) => {
+    onChange({ ...value, [key]: fieldValue })
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      {Object.entries(properties).map(([key, rawFieldSchema]) => {
+        const fieldSchema = resolveRef(rawFieldSchema, defs)
+        const fieldId = `${idPrefix}${key}`
+        const label = `${key}${required.has(key) ? ' *' : ''}`
+
+        if (fieldSchema.enum) {
+          return (
+            <div key={key}>
+              <Label htmlFor={fieldId}>{label}</Label>
+              {fieldSchema.description && (
+                <p className="mt-0.5 text-xs text-muted-foreground">{fieldSchema.description}</p>
+              )}
+              <select
+                id={fieldId}
+                value={(value[key] as string) ?? ''}
+                onChange={(e) => setField(key, e.target.value)}
+                className="mt-1 flex h-8 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm"
+              >
+                <option value="" disabled>
+                  select...
+                </option>
+                {fieldSchema.enum.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )
+        }
+
+        if (fieldSchema.type === 'boolean') {
+          return (
+            <div key={key} className="flex items-center gap-2">
+              <input
+                id={fieldId}
+                type="checkbox"
+                checked={Boolean(value[key] ?? fieldSchema.default ?? false)}
+                onChange={(e) => setField(key, e.target.checked)}
+                className="h-4 w-4 rounded border-input"
+              />
+              <Label htmlFor={fieldId}>{label}</Label>
+            </div>
+          )
+        }
+
+        if (fieldSchema.type === 'integer' || fieldSchema.type === 'number') {
+          return (
+            <div key={key}>
+              <Label htmlFor={fieldId}>{label}</Label>
+              {fieldSchema.description && (
+                <p className="mt-0.5 text-xs text-muted-foreground">{fieldSchema.description}</p>
+              )}
+              <Input
+                id={fieldId}
+                type="number"
+                value={value[key] === undefined || value[key] === null ? '' : String(value[key])}
+                onChange={(e) => {
+                  const raw = e.target.value
+                  setField(key, raw === '' ? undefined : Number(raw))
+                }}
+                className="mt-1"
+              />
+            </div>
+          )
+        }
+
+        if (fieldSchema.type === 'array') {
+          return (
+            <ArrayField
+              key={key}
+              label={label}
+              description={fieldSchema.description}
+              itemSchema={fieldSchema.items ? resolveRef(fieldSchema.items, defs) : {}}
+              defs={defs}
+              items={(value[key] as JsonValue[]) ?? []}
+              onChange={(items) => setField(key, items)}
+            />
+          )
+        }
+
+        if (fieldSchema.type === 'object') {
+          return (
+            <fieldset key={key} className="rounded-lg border border-input p-2">
+              <legend className="px-1 text-xs text-muted-foreground">{label}</legend>
+              {fieldSchema.description && (
+                <p className="mb-1 text-xs text-muted-foreground">{fieldSchema.description}</p>
+              )}
+              <SchemaForm
+                schema={fieldSchema}
+                defs={defs}
+                value={(value[key] as JsonObject) ?? {}}
+                onChange={(nested) => setField(key, nested)}
+                idPrefix={`${key}-`}
+              />
+            </fieldset>
+          )
+        }
+
+        // Default: plain string field.
+        return (
+          <div key={key}>
+            <Label htmlFor={fieldId}>{label}</Label>
+            {fieldSchema.description && (
+              <p className="mt-0.5 text-xs text-muted-foreground">{fieldSchema.description}</p>
+            )}
+            <Input
+              id={fieldId}
+              value={(value[key] as string) ?? ''}
+              onChange={(e) => setField(key, e.target.value)}
+              className="mt-1"
+            />
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+interface ArrayFieldProps {
+  label: string
+  description?: string
+  itemSchema: JsonSchemaNode
+  defs: Record<string, JsonSchemaNode>
+  items: JsonValue[]
+  onChange: (items: JsonValue[]) => void
+}
+
+function ArrayField({ label, description, itemSchema, defs, items, onChange }: ArrayFieldProps) {
+  const isObjectItem = itemSchema.type === 'object'
+
+  const updateItem = (index: number, next: JsonValue) => {
+    const copy = [...items]
+    copy[index] = next
+    onChange(copy)
+  }
+
+  const removeItem = (index: number) => {
+    onChange(items.filter((_, i) => i !== index))
+  }
+
+  const addItem = () => {
+    onChange([...items, isObjectItem ? {} : ''])
+  }
+
+  return (
+    <fieldset className="rounded-lg border border-input p-2">
+      <legend className="px-1 text-xs text-muted-foreground">{label}</legend>
+      {description && <p className="mb-2 text-xs text-muted-foreground">{description}</p>}
+      <div className="flex flex-col gap-2">
+        {items.map((item, index) => (
+          <div key={index} className="flex items-start gap-2 rounded-md border border-input/50 p-2">
+            <div className="flex-1">
+              {isObjectItem ? (
+                <SchemaForm
+                  schema={itemSchema}
+                  defs={defs}
+                  value={(item as JsonObject) ?? {}}
+                  onChange={(next) => updateItem(index, next)}
+                  idPrefix={`item-${index}-`}
+                />
+              ) : (
+                <Input
+                  value={(item as string) ?? ''}
+                  onChange={(e) => updateItem(index, e.target.value)}
+                />
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => removeItem(index)}
+              className="text-xs text-destructive hover:underline"
+            >
+              remove
+            </button>
+          </div>
+        ))}
+      </div>
+      <button
+        type="button"
+        onClick={addItem}
+        className="mt-2 text-xs text-primary hover:underline"
+      >
+        + add
+      </button>
+    </fieldset>
+  )
+}

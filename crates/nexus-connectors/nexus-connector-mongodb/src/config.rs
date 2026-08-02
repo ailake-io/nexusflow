@@ -2,7 +2,7 @@ use serde::Deserialize;
 
 /// Static connector config resolved at node-configuration time (not runtime).
 /// Deserialized from the DAG node's raw `config` JSON — see ARCHITECTURE.md §3.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct MongoConnectorConfig {
     pub uri: String,
     pub database: String,
@@ -18,7 +18,7 @@ pub struct MongoConnectorConfig {
     pub batch_size: usize,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct MongoFieldSpec {
     pub name: String,
     pub data_type: MongoDataType,
@@ -26,7 +26,7 @@ pub struct MongoFieldSpec {
     pub nullable: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum MongoDataType {
     Int64,

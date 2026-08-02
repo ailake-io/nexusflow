@@ -17,4 +17,8 @@ pub use driver::DRIVER_PATH_ENV;
 pub use sink::SqliteSink;
 pub use source::SqliteSource;
 
-nexus_core::submit_connector!("sqlite", nexus_core::ConnectorCapability::AdbcNative);
+nexus_core::submit_connector!(
+    "sqlite",
+    nexus_core::ConnectorCapability::AdbcNative,
+    SqliteConnectorConfig
+);

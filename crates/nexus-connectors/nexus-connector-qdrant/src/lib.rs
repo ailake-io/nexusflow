@@ -8,4 +8,8 @@ mod sink;
 pub use config::QdrantConnectorConfig;
 pub use sink::QdrantSink;
 
-nexus_core::submit_connector!("qdrant", nexus_core::ConnectorCapability::Bridged);
+nexus_core::submit_connector!(
+    "qdrant",
+    nexus_core::ConnectorCapability::Bridged,
+    QdrantConnectorConfig
+);

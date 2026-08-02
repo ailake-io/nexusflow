@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 /// Static connector config resolved at node-configuration time (not runtime).
 /// Deserialized from the DAG node's raw `config` JSON — see ARCHITECTURE.md §3.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct RestConnectorConfig {
     pub base_url: String,
     #[serde(default)]
@@ -25,7 +25,7 @@ pub struct RestConnectorConfig {
     pub max_pages: usize,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct RestFieldSpec {
     pub name: String,
     pub data_type: RestDataType,
@@ -33,7 +33,7 @@ pub struct RestFieldSpec {
     pub nullable: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RestDataType {
     Int64,
@@ -42,7 +42,7 @@ pub enum RestDataType {
     Utf8,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RestPagination {
     #[default]

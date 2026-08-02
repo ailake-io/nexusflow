@@ -9,4 +9,8 @@ mod sink;
 pub use config::ChromaConnectorConfig;
 pub use sink::ChromaSink;
 
-nexus_core::submit_connector!("chromadb", nexus_core::ConnectorCapability::Bridged);
+nexus_core::submit_connector!(
+    "chromadb",
+    nexus_core::ConnectorCapability::Bridged,
+    ChromaConnectorConfig
+);

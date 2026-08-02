@@ -26,7 +26,7 @@ use axum::{Json, Router};
 use checkpoint_store::CheckpointStore;
 use crypto::SecretCipher;
 use error::ApiError;
-use nexus_core::{ConnectorDescriptor, ConnectorRegistry, PartitionStats, PipelineSpec};
+use nexus_core::{ConnectorRegistry, PartitionStats, PipelineSpec};
 use pipeline_store::{PipelineStore, PipelineStoreError, PipelineSummary, RunRecord};
 use progress::ProgressHub;
 use serde::{Deserialize, Serialize};
@@ -178,9 +178,28 @@ async fn metrics_handler() -> impl axum::response::IntoResponse {
 /// Dynamic connector catalog for the canvas (Marco 8) — every connector
 /// crate linked into this binary registers itself via `submit_connector!`
 /// (ARCHITECTURE.md §3), so this list reflects what's actually usable, not
-/// a hardcoded frontend assumption.
-async fn list_connectors_handler() -> Json<Vec<&'static ConnectorDescriptor>> {
-    Json(ConnectorRegistry::all().collect())
+/// a hardcoded frontend assumption. `config_schema` (JSON Schema for that
+/// connector's Config struct) lets the canvas render a real form instead of
+/// a raw JSON textarea — `ConnectorDescriptor` itself skips it in its own
+/// `Serialize` impl (a fn pointer isn't `Serialize`), so this DTO computes
+/// it once per response instead.
+#[derive(Serialize)]
+struct ConnectorCatalogEntry {
+    name: &'static str,
+    capability: nexus_core::ConnectorCapability,
+    config_schema: serde_json::Value,
+}
+
+async fn list_connectors_handler() -> Json<Vec<ConnectorCatalogEntry>> {
+    Json(
+        ConnectorRegistry::all()
+            .map(|d| ConnectorCatalogEntry {
+                name: d.name,
+                capability: d.capability,
+                config_schema: (d.config_schema)(),
+            })
+            .collect(),
+    )
 }
 
 #[derive(Deserialize)]

@@ -191,7 +191,9 @@ function CanvasInner() {
             <Controls />
           </ReactFlow>
         </div>
-        {selectedNode && <NodeInspector node={selectedNode} onChange={updateNodeData} />}
+        {selectedNode && (
+          <NodeInspector node={selectedNode} connectors={connectors} onChange={updateNodeData} />
+        )}
       </div>
       <ExecutionPanel
         status={execution.status}

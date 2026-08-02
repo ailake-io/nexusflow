@@ -12,4 +12,8 @@ pub use config::{MongoConnectorConfig, MongoDataType, MongoFieldSpec};
 pub use sink::MongoSink;
 pub use source::MongoSource;
 
-nexus_core::submit_connector!("mongodb", nexus_core::ConnectorCapability::Bridged);
+nexus_core::submit_connector!(
+    "mongodb",
+    nexus_core::ConnectorCapability::Bridged,
+    MongoConnectorConfig
+);

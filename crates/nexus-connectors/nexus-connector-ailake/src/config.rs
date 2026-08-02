@@ -7,7 +7,7 @@ use serde::Deserialize;
 /// `HadoopCatalog`+`LocalStore` backend, no server/container required (same
 /// embedded shape as LanceDB in Marco 5). `namespace`/`table` address one
 /// table within it.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct AilakeConnectorConfig {
     pub warehouse: String,
     pub namespace: String,

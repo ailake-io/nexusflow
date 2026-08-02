@@ -14,6 +14,7 @@ iceberg-catalog-sql = "0.10.0"
 nexus-core = { version = "0.1.0", path = "../../nexus-core" }
 parquet = "58.4.0"
 serde = { version = "1.0.229", features = ["derive"] }
+schemars = "1.2.2"
 # iceberg-catalog-sql only requires sqlx's "any" feature itself — the
 # concrete SQLite driver must come from somewhere in the build (Cargo
 # feature unification), so it's declared here directly. Matches the

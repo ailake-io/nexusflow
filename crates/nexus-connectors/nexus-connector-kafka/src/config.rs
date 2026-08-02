@@ -6,7 +6,7 @@ use serde::Deserialize;
 /// `envelope: Raw` is the basic consumer: each message's payload is decoded
 /// as JSON and projected onto `fields`. `envelope: Debezium` is the Marco 4
 /// CDC mode — see ARCHITECTURE.md §7 and `docs/cdc-reference/README.md`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct KafkaConnectorConfig {
     pub bootstrap_servers: String,
     pub topic: String,
@@ -39,7 +39,7 @@ pub struct KafkaConnectorConfig {
 }
 
 /// How to decode each Kafka message payload.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum KafkaEnvelope {
     /// Payload is the row itself, JSON-encoded.
@@ -51,7 +51,7 @@ pub enum KafkaEnvelope {
     Debezium,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct KafkaFieldSpec {
     pub name: String,
     pub data_type: KafkaDataType,
@@ -59,7 +59,7 @@ pub struct KafkaFieldSpec {
     pub nullable: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum KafkaDataType {
     Int64,
