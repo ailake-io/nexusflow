@@ -9,10 +9,19 @@ use serde::Deserialize;
 /// table within it.
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct AilakeConnectorConfig {
+    /// Local filesystem root for the AI-Lake warehouse — created if it
+    /// doesn't exist yet, no server/container required.
     pub warehouse: String,
+    /// Namespace (like a database/schema) within the warehouse.
     pub namespace: String,
+    /// Table name within `namespace` — created automatically on first
+    /// write if it doesn't exist yet.
     pub table: String,
+    /// Column used to upsert on write.
     pub primary_key: String,
+    /// Name of the `FixedSizeList<Float32>` column the embedding is
+    /// written to — indexed with HNSW automatically.
     pub embedding_column: String,
+    /// Vector size — must match the embedding column's actual length.
     pub dimension: u32,
 }

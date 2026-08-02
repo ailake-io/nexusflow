@@ -22,10 +22,21 @@ pub enum IcebergFormatVersion {
 /// connectors.
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct IcebergConnectorConfig {
+    /// SQLite URI backing the catalog metadata, e.g.
+    /// `"sqlite:///abs/path/catalog.db?mode=rwc"` — created automatically
+    /// if it doesn't exist yet (`mode=rwc`).
     pub catalog_uri: String,
+    /// Local `file://` path where Iceberg data files are written —
+    /// created automatically if it doesn't exist yet.
     pub warehouse_location: String,
+    /// Iceberg namespace (like a database/schema) — created automatically
+    /// if it doesn't exist yet.
     pub namespace: String,
+    /// Table name within `namespace` — created automatically on first
+    /// write if it doesn't exist yet, using `format_version`.
     pub table: String,
+    /// Format version for a newly-created table — ignored for a table
+    /// that already exists.
     #[serde(default)]
     pub format_version: IcebergFormatVersion,
 }

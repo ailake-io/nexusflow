@@ -5,9 +5,14 @@ use std::collections::HashMap;
 /// Deserialized from the DAG node's raw `config` JSON — see ARCHITECTURE.md §3.
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct RestConnectorConfig {
+    /// Scheme + host of the API, e.g. `"https://api.example.com"` — no
+    /// trailing slash needed.
     pub base_url: String,
+    /// Path appended to `base_url` for this request, e.g. `"/v1/items"`.
     #[serde(default)]
     pub path: String,
+    /// Extra HTTP headers sent with every request — this is where an API
+    /// key/bearer token goes (e.g. `{"Authorization": "Bearer ..."}`).
     #[serde(default)]
     pub headers: HashMap<String, String>,
     /// Explicit target schema — REST responses carry no schema of their own,
@@ -27,12 +32,18 @@ pub struct RestConnectorConfig {
 
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct RestFieldSpec {
+    /// JSON field name to project from each row object — supports dot
+    /// notation for nested fields (e.g. `"address.city"`).
     pub name: String,
+    /// Arrow type this field's value gets converted to.
     pub data_type: RestDataType,
+    /// Whether a missing/null value for this field is allowed.
     #[serde(default)]
     pub nullable: bool,
 }
 
+/// Arrow type a JSON field is projected onto — one of these four
+/// primitives, matched by name in the node config's `data_type`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RestDataType {
@@ -45,20 +56,27 @@ pub enum RestDataType {
 #[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RestPagination {
+    /// No pagination — one request, one page.
     #[default]
     None,
     /// `?{offset_param}=N&{limit_param}=limit`, advances by `limit` each
     /// page, stops once a page returns fewer rows than `limit`.
     Offset {
+        /// Query param name carrying the row offset, e.g. `"offset"`.
         offset_param: String,
+        /// Query param name carrying the page size, e.g. `"limit"`.
         limit_param: String,
+        /// Number of rows requested per page.
         limit: i64,
     },
     /// `?{cursor_param}={cursor}`, next cursor read from
     /// `next_cursor_path` in the response body, stops once that path is
     /// absent or null.
     Cursor {
+        /// Query param name carrying the cursor, e.g. `"cursor"`.
         cursor_param: String,
+        /// Dot-separated path to the next cursor value in the response
+        /// body, e.g. `"meta.next_cursor"`.
         next_cursor_path: String,
     },
 }

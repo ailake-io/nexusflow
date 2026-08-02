@@ -13,10 +13,17 @@ pub struct PineconeConnectorConfig {
     /// `describe_index` control-plane response — not built from `index` +
     /// `environment` here, that addressing scheme is deprecated).
     pub host: String,
+    /// Pinecone API key with write access to this index.
     pub api_key: String,
+    /// Column used as the Pinecone vector ID.
     pub primary_key: String,
+    /// Name of the `FixedSizeList<Float32>` column the embedding is
+    /// written to.
     pub embedding_column: String,
+    /// Vector size — must match the index's configured dimension.
     pub dimension: usize,
+    /// Pinecone namespace to write into within the index — omit to use
+    /// the default (unnamed) namespace.
     #[serde(default)]
     pub namespace: Option<String>,
 }
