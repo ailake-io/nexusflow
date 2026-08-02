@@ -19,13 +19,16 @@ Ver `CLAUDE.md §8` pra lista completa. Resumo:
 
 1. Fork/branch a partir de `main`.
 2. `cargo fmt` + `cargo clippy --all-targets --all-features -- -D warnings` antes de commitar.
-3. `cargo test --workspace` local passando.
+3. `cargo test --workspace` local passando (rodando de dentro de `crates/nexus-connectors`, use o mesmo comando ali — é o workspace aninhado daquele crate, não o raiz; da raiz do repo, `-p nexus-core -p nexus-ai -p nexus-server` é o que o CI usa, ver a nota de workspace abaixo).
 4. Commit message: formato conciso, foco no *porquê* (não repita o diff na mensagem).
 5. PR: descreva o que muda e por quê; linke issue se houver. CI precisa passar antes de review.
 
 ## Estrutura de crate novo
 
-Todo crate novo dentro de `crates/` segue o padrão do workspace (ver `CLAUDE.md §3`). Se for conector, adicione entrada correspondente na matriz de conectividade em `ARCHITECTURE.md §3` e indique `ConnectorCapability` (`AdbcNative` / `ArrowFlight` / `Bridged`).
+Todo crate novo dentro de `crates/` segue o padrão do workspace (ver `CLAUDE.md §3`). Se for conector:
+- Adicione entrada correspondente na matriz de conectividade em `ARCHITECTURE.md §3` e indique `ConnectorCapability` (`AdbcNative` / `ArrowFlight` / `Bridged`).
+- O Config struct precisa derivar `schemars::JsonSchema` (além de `Deserialize`) — o `submit_connector!` macro exige o tipo como 3º argumento, e é o que alimenta o formulário real no canvas (`ARCHITECTURE.md §3`, `SchemaForm.tsx`). Doc comments nos campos viram dica visível no formulário — escreva pensando em quem vai preencher, não só em quem vai ler o código.
+- Se for linkar o conector em `nexus-server` (feature própria em `crates/nexus-server/Cargo.toml`), lembre da pegadinha de workspace do Cargo descrita em `ARCHITECTURE.md §3`: testes de integração pesados/com container do seu crate de conector rodam nos jobs `connectors`/`connectors-heavy` do CI, não no `test` da raiz — não assuma que `cargo test --workspace` da raiz vai (ou deve) executá-los.
 
 ## Dúvidas de arquitetura
 

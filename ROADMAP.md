@@ -78,9 +78,12 @@ Ordem por dependência técnica, não por prioridade de negócio isolada. Cada f
 ## Fase 13 — Todos os conectores linkados no binário (fora do plano original)
 - [x] Os 14 conectores que só existiam no workspace aninhado `crates/nexus-connectors` agora também são feature opcional em `nexus-server` (`connectors-all`), aparecendo de verdade no catálogo `GET /connectors` — antes só postgres/sqlite estavam linkados no binário servido pra UI.
 
+## Fase 14 — Formulário de config por schema real (fora do plano original)
+- [x] Cada Config struct de conector deriva `schemars::JsonSchema`; `GET /connectors` expõe esse schema (`config_schema`). Canvas renderiza um formulário real (`SchemaForm.tsx`, recursivo: texto/número/boolean/enum/array-de-objeto) em vez de pedir JSON escrito à mão — descrições vêm dos doc comments do Rust. Ver `ARCHITECTURE.md §3`.
+
 ---
 
-**Critério de "MVP pronto"**: Fases 0–3 + 7 (parcial: auth básica) + 8 (canvas mínimo) funcionando end-to-end — mover dados de Postgres pra Postgres via canvas visual, com checkpoint por partição, retry e escrita idempotente. **Atingido e superado** — Fases 0–11 e 13 completas, só falta Fase 12 (enterprise, repo separado) e os itens condicionais/parciais marcados acima.
+**Critério de "MVP pronto"**: Fases 0–3 + 7 (parcial: auth básica) + 8 (canvas mínimo) funcionando end-to-end — mover dados de Postgres pra Postgres via canvas visual, com checkpoint por partição, retry e escrita idempotente. **Atingido e superado** — Fases 0–11, 13 e 14 completas, só falta Fase 12 (enterprise, repo separado) e os itens condicionais/parciais marcados acima.
 
 ## Débitos conhecidos (aceitos pro MVP, resolver antes de vender enterprise)
 
