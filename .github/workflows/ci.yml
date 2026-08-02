@@ -28,6 +28,15 @@ jobs:
   # terminated with signal 7 [Bus error]", 39MB free). Same root cause the
   # `connectors` job below already solved by moving to self-hosted
   # (052e26c); root-workspace jobs now share that same rationale.
+  #
+  # -p nexus-core -p nexus-ai -p nexus-server, not --workspace: `cargo
+  # metadata --no-deps` from the repo root shows every crate under
+  # crates/nexus-connectors as a package here too (a path dependency
+  # without an explicit `package.workspace` doesn't stay scoped to its own
+  # nested workspace once something in *this* workspace depends on it) —
+  # `--workspace` would silently also lint/build every connector crate a
+  # second time, redundant with the `connectors` job below which already
+  # owns that.
   clippy:
     name: clippy
     needs: fmt
@@ -49,7 +58,7 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci && npm run build
         working-directory: frontend
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo clippy -p nexus-core -p nexus-ai -p nexus-server --all-targets --all-features -- -D warnings
 
   # Marco 11's done criterion, checked for real rather than just documented:
   # "docker run sobe binário único servindo UI em localhost:8080, sem
@@ -158,7 +167,16 @@ jobs:
         env:
           ADBC_DRIVER_POSTGRESQL_PATH: ${{ github.workspace }}/target/adbc/libadbc_driver_postgresql.so
           ADBC_DRIVER_SQLITE_PATH: ${{ github.workspace }}/target/adbc/libadbc_driver_sqlite.so
-        run: cargo test --workspace --all-features
+        # -p nexus-core -p nexus-ai -p nexus-server, not --workspace: same
+        # reason as the clippy job's comment above. Concretely, this is
+        # what caused PR #6/#7's post-merge `test` run to fail here — with
+        # --workspace, this step was *also* running every connector crate's
+        # own heavy/flaky container-based integration tests (e.g. kafka's
+        # postgres_to_kafka_cdc_carries_correct_opcode_per_row, a 3-JVM
+        # Debezium test) a second time, racing the `connectors`/
+        # `connectors-heavy` jobs below for the same self-hosted machine's
+        # Docker/CPU and timing out.
+        run: cargo test -p nexus-core -p nexus-ai -p nexus-server --all-features
 
   # crates/nexus-connectors is its own Cargo workspace (crate-per-connector,
   # see CLAUDE.md §3/§8.5) — the jobs above don't touch this directory, but
