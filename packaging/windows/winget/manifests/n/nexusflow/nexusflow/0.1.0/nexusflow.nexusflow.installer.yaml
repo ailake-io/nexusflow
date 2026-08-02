@@ -1,0 +1,14 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+# NOT validated — see ../../nexusflow.nexusflow.yaml. InstallerUrl/Sha256 are
+# placeholders: fill in with the real published nexusflow.msi (built via
+# `cargo wix` from ../../main.wxs) once a release exists.
+PackageIdentifier: NexusFlow.NexusFlow
+PackageVersion: 0.1.0
+InstallerType: msi
+Scope: machine
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/ailake-io/nexusflow/releases/download/v0.1.0/nexusflow-0.1.0-x86_64.msi
+    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+ManifestType: installer
+ManifestVersion: 1.6.0

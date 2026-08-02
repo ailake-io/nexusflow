@@ -1,0 +1,93 @@
+name: Release
+
+# Builds nexusflow-<os>-<arch>.tar.gz for Linux/macOS x86_64+arm64 and
+# publishes them as GitHub Release assets — what scripts/install.sh
+# downloads. Each tarball is: the release binary (--features embed-ui) plus
+# the two ADBC driver libraries nexus-connector-postgres/-sqlite dlopen at
+# runtime (no crates.io distribution of those exists — see
+# nexus-connector-postgres/src/driver.rs, ARCHITECTURE.md §3).
+#
+# All four builds are native (no cross-compilation): GitHub's own
+# ubuntu-24.04-arm hosted runner covers linux/arm64 natively, same as
+# macos-14 (Apple Silicon) / macos-13 (Intel) do for the two macOS arches —
+# avoids cross-compiling the ADBC C++ sources for a foreign arch/libc, which
+# scripts/build-adbc-*-driver.sh isn't set up for.
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: linux
+            arch: x86_64
+            runner: ubuntu-latest
+          - os: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - os: macos
+            arch: x86_64
+            runner: macos-13
+          - os: macos
+            arch: arm64
+            runner: macos-14
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install native build deps for the ADBC drivers
+        if: matrix.os == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake pkg-config libpq-dev libsqlite3-dev libfmt-dev
+
+      - name: Install native build deps for the ADBC drivers (macOS)
+        if: matrix.os == 'macos'
+        run: brew install cmake pkg-config libpq sqlite fmt
+
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+
+      - run: ./scripts/build-adbc-postgresql-driver.sh target/adbc
+      - run: ./scripts/build-adbc-sqlite-driver.sh target/adbc
+
+      - run: cargo build --release -p nexusflow --features embed-ui
+
+      - name: Package tarball
+        run: |
+          lib_ext=so
+          [ "${{ matrix.os }}" = "macos" ] && lib_ext=dylib
+          stage="$(mktemp -d)"
+          cp target/release/nexusflow "$stage/nexusflow-bin"
+          cp "target/adbc/libadbc_driver_postgresql.$lib_ext" "$stage/"
+          cp "target/adbc/libadbc_driver_sqlite.$lib_ext" "$stage/"
+          tar -czf "nexusflow-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" -C "$stage" .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nexusflow-${{ matrix.os }}-${{ matrix.arch }}
+          path: nexusflow-${{ matrix.os }}-${{ matrix.arch }}.tar.gz
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.tar.gz
+          generate_release_notes: true
