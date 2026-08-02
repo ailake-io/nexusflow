@@ -1,4 +1,5 @@
 import type { JsonSchemaNode } from '@/lib/api'
+import { FieldHint } from '@/components/FieldHint'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 
@@ -30,6 +31,10 @@ interface SchemaFormProps {
  * handles the shapes `schemars` actually emits for our Config structs
  * (string/integer/number/boolean, string enum, array, object, `$ref` into
  * `$defs`), not the full JSON Schema spec.
+ *
+ * Each field's `description` (a Rust doc comment on the Config struct
+ * field) shows up behind a clickable "ⓘ" next to the label (`FieldHint`)
+ * instead of always-visible text — keeps a 10+ field form scannable.
  */
 export function SchemaForm({ schema, defs, value, onChange, idPrefix }: SchemaFormProps) {
   const properties = schema.properties ?? {}
@@ -49,10 +54,10 @@ export function SchemaForm({ schema, defs, value, onChange, idPrefix }: SchemaFo
         if (fieldSchema.enum) {
           return (
             <div key={key}>
-              <Label htmlFor={fieldId}>{label}</Label>
-              {fieldSchema.description && (
-                <p className="mt-0.5 text-xs text-muted-foreground">{fieldSchema.description}</p>
-              )}
+              <div className="flex items-center gap-1.5">
+                <Label htmlFor={fieldId}>{label}</Label>
+                {fieldSchema.description && <FieldHint text={fieldSchema.description} />}
+              </div>
               <select
                 id={fieldId}
                 value={(value[key] as string) ?? ''}
@@ -83,6 +88,7 @@ export function SchemaForm({ schema, defs, value, onChange, idPrefix }: SchemaFo
                 className="h-4 w-4 rounded border-input"
               />
               <Label htmlFor={fieldId}>{label}</Label>
+              {fieldSchema.description && <FieldHint text={fieldSchema.description} />}
             </div>
           )
         }
@@ -90,10 +96,10 @@ export function SchemaForm({ schema, defs, value, onChange, idPrefix }: SchemaFo
         if (fieldSchema.type === 'integer' || fieldSchema.type === 'number') {
           return (
             <div key={key}>
-              <Label htmlFor={fieldId}>{label}</Label>
-              {fieldSchema.description && (
-                <p className="mt-0.5 text-xs text-muted-foreground">{fieldSchema.description}</p>
-              )}
+              <div className="flex items-center gap-1.5">
+                <Label htmlFor={fieldId}>{label}</Label>
+                {fieldSchema.description && <FieldHint text={fieldSchema.description} />}
+              </div>
               <Input
                 id={fieldId}
                 type="number"
@@ -125,10 +131,10 @@ export function SchemaForm({ schema, defs, value, onChange, idPrefix }: SchemaFo
         if (fieldSchema.type === 'object') {
           return (
             <fieldset key={key} className="rounded-lg border border-input p-2">
-              <legend className="px-1 text-xs text-muted-foreground">{label}</legend>
-              {fieldSchema.description && (
-                <p className="mb-1 text-xs text-muted-foreground">{fieldSchema.description}</p>
-              )}
+              <legend className="flex items-center gap-1.5 px-1 text-xs text-muted-foreground">
+                {label}
+                {fieldSchema.description && <FieldHint text={fieldSchema.description} />}
+              </legend>
               <SchemaForm
                 schema={fieldSchema}
                 defs={defs}
@@ -143,10 +149,10 @@ export function SchemaForm({ schema, defs, value, onChange, idPrefix }: SchemaFo
         // Default: plain string field.
         return (
           <div key={key}>
-            <Label htmlFor={fieldId}>{label}</Label>
-            {fieldSchema.description && (
-              <p className="mt-0.5 text-xs text-muted-foreground">{fieldSchema.description}</p>
-            )}
+            <div className="flex items-center gap-1.5">
+              <Label htmlFor={fieldId}>{label}</Label>
+              {fieldSchema.description && <FieldHint text={fieldSchema.description} />}
+            </div>
             <Input
               id={fieldId}
               value={(value[key] as string) ?? ''}
@@ -188,8 +194,10 @@ function ArrayField({ label, description, itemSchema, defs, items, onChange }: A
 
   return (
     <fieldset className="rounded-lg border border-input p-2">
-      <legend className="px-1 text-xs text-muted-foreground">{label}</legend>
-      {description && <p className="mb-2 text-xs text-muted-foreground">{description}</p>}
+      <legend className="flex items-center gap-1.5 px-1 text-xs text-muted-foreground">
+        {label}
+        {description && <FieldHint text={description} />}
+      </legend>
       <div className="flex flex-col gap-2">
         {items.map((item, index) => (
           <div key={index} className="flex items-start gap-2 rounded-md border border-input/50 p-2">

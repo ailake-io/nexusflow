@@ -6,14 +6,24 @@ use serde::Deserialize;
 /// IMPLEMENTATION_PLAN.md Marco 5.
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct ChromaConnectorConfig {
+    /// ChromaDB server address, e.g. `"http://localhost:8000"`.
     pub host: String,
+    /// Tenant name — leave unset to use ChromaDB's default tenant.
     #[serde(default = "default_tenant")]
     pub tenant: String,
+    /// Database name within the tenant — leave unset to use ChromaDB's
+    /// default database.
     #[serde(default = "default_database")]
     pub database: String,
+    /// Name of an existing collection — must already be created on the
+    /// ChromaDB server; this sink only writes rows.
     pub collection: String,
+    /// Column used as the Chroma document ID.
     pub primary_key: String,
+    /// Name of the `FixedSizeList<Float32>` column the embedding is
+    /// written to.
     pub embedding_column: String,
+    /// Vector size — must match the collection's configured dimension.
     pub dimension: usize,
 }
 

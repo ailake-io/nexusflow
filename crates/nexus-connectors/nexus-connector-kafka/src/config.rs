@@ -8,8 +8,16 @@ use serde::Deserialize;
 /// CDC mode — see ARCHITECTURE.md §7 and `docs/cdc-reference/README.md`.
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct KafkaConnectorConfig {
+    /// Comma-separated `host:port` list of Kafka brokers to bootstrap from,
+    /// e.g. `"broker1:9092,broker2:9092"`.
     pub bootstrap_servers: String,
+    /// Topic to consume from. For `envelope: Debezium`, this is the
+    /// Kafka Connect-produced topic for the source table (typically
+    /// `{server}.{schema}.{table}`), not the table name itself.
     pub topic: String,
+    /// Consumer group id — controls offset tracking on the broker side;
+    /// reuse the same id across runs of the same pipeline to resume from
+    /// where the group last committed.
     pub group_id: String,
     /// Explicit target schema — a JSON message payload carries no fixed
     /// schema of its own, so the node config must say what to project each
@@ -53,12 +61,18 @@ pub enum KafkaEnvelope {
 
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct KafkaFieldSpec {
+    /// JSON field name to project from the decoded payload (from
+    /// `before`/`after` for `envelope: Debezium`).
     pub name: String,
+    /// Arrow type this field's value gets converted to.
     pub data_type: KafkaDataType,
+    /// Whether a missing/null value for this field is allowed.
     #[serde(default)]
     pub nullable: bool,
 }
 
+/// Arrow type a payload field is projected onto — one of these four
+/// primitives, matched by name in the node config's `data_type`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum KafkaDataType {
