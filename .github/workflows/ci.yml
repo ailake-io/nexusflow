@@ -20,14 +20,14 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
-  # Self-hosted, not ubuntu-latest: --all-features now includes
-  # connectors-all (mongodb/kafka/milvus/lancedb/... all linked into
-  # nexus-server, not just the nested crates/nexus-connectors workspace —
-  # see the connector-wiring commit), which pulls the exact same
-  # heavy dep trees (Lance/DataFusion, tonic+prost, the full mongodb
-  # driver) that made the `connectors` job below move to self-hosted in the
-  # first place (see 052e26c). Root-workspace jobs now share that same
-  # rationale, so they join the same machine and the same sequential chain.
+  # Self-hosted, not ubuntu-latest: --all-features now covers embed-ui,
+  # nexus-ai's `cpu` feature (ort/hf-hub/tokenizers) and connectors-all
+  # (mongodb/kafka/milvus/lancedb/... all linked into nexus-server, not
+  # just the nested crates/nexus-connectors workspace) — this combination
+  # already ran ubuntu-latest out of its ~14GB disk cap mid-link ("ld
+  # terminated with signal 7 [Bus error]", 39MB free). Same root cause the
+  # `connectors` job below already solved by moving to self-hosted
+  # (052e26c); root-workspace jobs now share that same rationale.
   clippy:
     name: clippy
     needs: fmt
@@ -38,7 +38,58 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+      # --all-features turns on nexus-server's embed-ui, whose
+      # #[derive(RustEmbed)] needs frontend/dist to exist at compile time
+      # (Marco 11) — build it for real rather than faking an empty dir, so
+      # this also catches an actually-broken frontend build.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci && npm run build
+        working-directory: frontend
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  # Marco 11's done criterion, checked for real rather than just documented:
+  # "docker run sobe binário único servindo UI em localhost:8080, sem
+  # dependência externa além do container." Independent job (no `needs:`) —
+  # builds its own image from scratch (frontend -> ADBC drivers -> release
+  # binary w/ embed-ui -> runtime, see ../../Dockerfile), so it doesn't
+  # share any state with the fmt/clippy/test chain above.
+  docker-image:
+    name: docker-image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: nexusflow:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Boot the image and hit the embedded UI
+        run: |
+          docker run -d --name nexusflow-ci -p 8080:8080 \
+            -e NEXUS_JWT_SECRET=ci-secret \
+            -e NEXUS_ENCRYPTION_KEY=$(printf 'ab%.0s' {1..32}) \
+            -e NEXUS_CHECKPOINT_DB=sqlite::memory: \
+            -e NEXUS_AUTH_DB=sqlite::memory: \
+            -e NEXUS_PIPELINES_DB=sqlite::memory: \
+            nexusflow:ci
+          for i in $(seq 1 20); do
+            curl -sf http://localhost:8080/health && break
+            sleep 1
+          done
+          status=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/)
+          health=$(curl -sf http://localhost:8080/health)
+          docker logs nexusflow-ci
+          docker rm -f nexusflow-ci
+          [ "$status" = "200" ] || { echo "GET / returned $status, expected 200"; exit 1; }
+          [ "$health" = "ok" ] || { echo "GET /health returned '$health', expected ok"; exit 1; }
 
   # frontend/ (Marco 8) doesn't touch the Rust workspace or the self-hosted
   # runner — no `needs:`, runs independently on GitHub-hosted infra instead
@@ -62,8 +113,7 @@ jobs:
       - run: npm run build
       - run: npm run lint
 
-  # Self-hosted for the same reason as clippy above: --all-features now
-  # covers connectors-all too.
+  # Self-hosted for the same reason as clippy above.
   test:
     name: test
     needs: clippy
@@ -76,11 +126,11 @@ jobs:
       # nexus-connector-postgres/nexus-connector-sqlite need the real ADBC
       # drivers at test runtime (C++ implementations, not crates.io packages —
       # see scripts/build-adbc-*-driver.sh). Integration tests also need a
-      # live Postgres via testcontainers (the self-hosted host has Docker,
-      # same as the connectors job below relies on). cmake/pkg-config/
-      # libpq-dev/libsqlite3-dev/libfmt-dev are assumed already present on
-      # this host, same posture as the connectors job's own comment below —
-      # no sudo apt-get here (runner service has no interactive sudo).
+      # live Postgres via testcontainers (self-hosted has Docker, same as
+      # the connectors job below relies on). cmake/pkg-config/libpq-dev/
+      # libsqlite3-dev/libfmt-dev are assumed already present on this host,
+      # same posture as the connectors job's own comment below — no sudo
+      # apt-get here (runner service has no interactive sudo).
       - name: Cache built ADBC drivers
         id: adbc-cache
         uses: actions/cache@v4
@@ -93,6 +143,16 @@ jobs:
         run: |
           ./scripts/build-adbc-postgresql-driver.sh
           ./scripts/build-adbc-sqlite-driver.sh
+
+      # Same reason as the clippy job: --all-features enables embed-ui,
+      # whose RustEmbed derive needs frontend/dist to exist at compile time.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci && npm run build
+        working-directory: frontend
 
       - name: Run tests
         env:

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=NexusFlow
+Comment=Universal Rust data & vector ETL/lakehouse framework
+Exec=nexusflow
+Icon=nexusflow
+Terminal=true
+Categories=Development;Database;

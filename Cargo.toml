@@ -22,6 +22,10 @@ license.workspace = true
 # the root binary has no code of its own to gate, just needs the flag to
 # reach the crate that does.
 dbt = ["nexus-server/dbt"]
+# Forwards to nexus-server's "embed-ui" feature (Marco 11, CLAUDE.md §7) —
+# single-binary deploy: `npm run build` in frontend/ then
+# `cargo build --release -p nexusflow --features embed-ui`.
+embed-ui = ["nexus-server/embed-ui"]
 # Forwards nexus-server's per-connector features (see that crate's own
 # Cargo.toml for why each one exists) so `cargo build -p nexusflow
 # --features X` reaches the crate that actually declares X.
