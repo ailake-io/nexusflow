@@ -39,7 +39,7 @@ docker run --gpus all -d -p 8080:8080 -e NEXUS_JWT_SECRET=... -e NEXUS_ENCRYPTIO
 curl -fsSL https://raw.githubusercontent.com/ailake-io/nexusflow/develop/scripts/install.sh | sh
 ```
 
-Baixa o binário + drivers ADBC pra `~/.local/share/nexusflow` e cria `~/.local/bin/nexusflow`. Precisa de um [release](https://github.com/ailake-io/nexusflow/releases) publicado — ver `.github/workflows/release.yml`.
+Baixa o binário + drivers ADBC pra `~/.local/share/nexusflow` e cria `~/.local/bin/nexusflow`. Precisa de um [release](https://github.com/ailake-io/nexusflow/releases) publicado — ver `.github/workflows/release.yml`. O binário do release já vem com **todos** os 16 conectores linkados (`embed-ui,connectors-all`, não só postgres/sqlite — ver seção 2 abaixo); pra `odbc`/`kafka` funcionarem, precisa de `unixodbc`/`libsasl2` no sistema (o instalador avisa no final se faltar).
 
 ### Pacotes nativos (Linux)
 
@@ -48,6 +48,8 @@ Baixa o binário + drivers ADBC pra `~/.local/share/nexusflow` e cria `~/.local/
 ./scripts/package-appimage.sh   # NexusFlow-<versão>-x86_64.AppImage
 ./scripts/package-rpm.sh        # precisa de rpmbuild instalado
 ```
+
+Mesma coisa: todos os conectores já vêm linkados; o `.deb` declara `unixodbc`/`libsasl2-2` como `Depends`, AppImage/rpm exigem essas libs já presentes no sistema alvo.
 
 Windows (`.msi`/winget) e macOS (Homebrew/`.dmg`) têm specs em `packaging/windows/` e `packaging/macos/`, mas ainda não foram validados em máquina real — ver os comentários em cada arquivo.
 
@@ -73,7 +75,9 @@ export NEXUS_ADMIN_PASSWORD="troque-isto"
 
 ## 2. Habilitando conectores
 
-Por padrão o binário só liga `postgres` e `sqlite`. Os outros 14 conectores (mongodb, kafka, rest, odbc, milvus, qdrant, lancedb, pgvector, pinecone, chromadb, deltalake, iceberg, parquet, ailake) são features Cargo opcionais — cada um só entra no binário se for pedido:
+Isso só se aplica a quem builda a partir do source (seção 1, "Build a partir do source") — os binários pré-buildados (script de instalação, `.deb`/AppImage/rpm, imagem Docker `:full`) já vêm com `connectors-all` ligado, ver seção 1.
+
+Por padrão um `cargo build` sem flags só liga `postgres` e `sqlite`. Os outros 14 conectores (mongodb, kafka, rest, odbc, milvus, qdrant, lancedb, pgvector, pinecone, chromadb, deltalake, iceberg, parquet, ailake) são features Cargo opcionais — cada um só entra no binário se for pedido:
 
 ```bash
 # um conector específico

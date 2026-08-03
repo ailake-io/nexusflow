@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds NexusFlow-<version>-x86_64.AppImage. Same prerequisites as
-# package-deb.sh (release binary w/ embed-ui + both ADBC driver .so's
+# package-deb.sh (release binary w/ embed-ui,connectors-all + both ADBC driver .so's
 # already built) plus `appimagetool` on PATH or at $APPIMAGETOOL — get it
 # from https://github.com/AppImage/appimagetool/releases (continuous build).
 #
