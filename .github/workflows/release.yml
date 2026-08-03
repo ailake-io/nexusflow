@@ -2,9 +2,11 @@ name: Release
 
 # Builds nexusflow-<os>-<arch>.tar.gz for Linux/macOS x86_64+arm64 and
 # publishes them as GitHub Release assets — what scripts/install.sh
-# downloads. Each tarball is: the release binary (--features embed-ui) plus
-# the two ADBC driver libraries nexus-connector-postgres/-sqlite dlopen at
-# runtime (no crates.io distribution of those exists — see
+# downloads. Each tarball is: the release binary (--features
+# embed-ui,connectors-all — every connector linked in, not just the two
+# always-on ones, so GET /connectors lists the full catalog out of the box)
+# plus the two ADBC driver libraries nexus-connector-postgres/-sqlite dlopen
+# at runtime (no crates.io distribution of those exists — see
 # nexus-connector-postgres/src/driver.rs, ARCHITECTURE.md §3).
 #
 # All four builds are native (no cross-compilation): GitHub's own
@@ -44,13 +46,23 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Install native build deps for the ADBC drivers
+      # unixodbc-dev/libsasl2-dev/libssl-dev/zlib1g-dev are here for
+      # connectors-all's two natively-linked connectors — nexus-connector-odbc
+      # (odbc-api needs a driver manager to build/link against, ARCHITECTURE.md
+      # §3) and nexus-connector-kafka (rdkafka's default "cmake-build" feature
+      # compiles vendored librdkafka from source, which auto-detects SASL/SSL/
+      # zlib and silently builds without those protocols if headers are
+      # missing — installed here so the shipped binary has them).
+      - name: Install native build deps for the ADBC drivers + connectors-all
         if: matrix.os == 'linux'
-        run: sudo apt-get update && sudo apt-get install -y cmake pkg-config libpq-dev libsqlite3-dev libfmt-dev
+        run: |
+          sudo apt-get update && sudo apt-get install -y \
+            cmake pkg-config libpq-dev libsqlite3-dev libfmt-dev \
+            unixodbc-dev libsasl2-dev libssl-dev zlib1g-dev
 
-      - name: Install native build deps for the ADBC drivers (macOS)
+      - name: Install native build deps for the ADBC drivers + connectors-all (macOS)
         if: matrix.os == 'macos'
-        run: brew install cmake pkg-config libpq sqlite fmt
+        run: brew install cmake pkg-config libpq sqlite fmt unixodbc
 
       - run: npm ci
         working-directory: frontend
@@ -60,7 +72,7 @@ jobs:
       - run: ./scripts/build-adbc-postgresql-driver.sh target/adbc
       - run: ./scripts/build-adbc-sqlite-driver.sh target/adbc
 
-      - run: cargo build --release -p nexusflow --features embed-ui
+      - run: cargo build --release -p nexusflow --features embed-ui,connectors-all
 
       - name: Package tarball
         run: |

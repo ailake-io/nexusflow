@@ -4,8 +4,13 @@
   toolchain in this dev sandbox (see IMPLEMENTATION_PLAN.md Marco 11).
   Intended to be built with cargo wix (see volks73/cargo-wix on GitHub) from
   a Windows host, after installing the frontend's npm dependencies, running
-  its production build, then a release cargo build with the embed-ui
-  feature enabled (see the root Cargo.toml's [features] section).
+  its production build, then a release cargo build with the
+  embed-ui,connectors-all features enabled (see the root Cargo.toml's
+  [features] section) — same feature set as .github/workflows/release.yml's
+  Linux/macOS builds, so GET /connectors matches across platforms. Unlike
+  those two, nexus-connector-odbc and nexus-connector-kafka's native deps
+  (unixODBC / SASL+SSL for librdkafka) have no MSVC/vcpkg setup written yet;
+  until that exists, a Windows build of connectors-all will fail to link.
 
   Regenerate the two Product/Package Ids below (uuidgen, or WiX's own
   candle preprocessor with the WixUtilExtension) before a real release;

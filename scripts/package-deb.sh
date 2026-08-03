@@ -6,7 +6,7 @@
 # only stages and packages already-built artifacts, it doesn't build Rust,
 # C++ or the frontend itself:
 #   npm --prefix frontend ci && npm --prefix frontend run build
-#   cargo build --release -p nexusflow --features embed-ui
+#   cargo build --release -p nexusflow --features embed-ui,connectors-all
 #   ./scripts/build-adbc-postgresql-driver.sh && ./scripts/build-adbc-sqlite-driver.sh
 #
 # Usage: ./scripts/package-deb.sh [OUT_DIR]
@@ -40,14 +40,18 @@ install -m 644 "$REPO_ROOT/frontend/public/favicon.svg" \
 
 # libpq5/libsqlite3-0 pull in the rest of libadbc_driver_postgresql.so's
 # transitive deps (libssl3, libgssapi-krb5-2, libldap-2.5-0, ...)
-# automatically via their own Depends — nothing else needs listing here
-# (confirmed via `ldd target/adbc/libadbc_driver_*.so`).
+# automatically via their own Depends (confirmed via
+# `ldd target/adbc/libadbc_driver_*.so`). unixodbc is nexus-connector-odbc's
+# runtime driver manager (odbc-api dlopens it, doesn't bundle it — connectors-all
+# is now compiled in, see release.yml); libsasl2-2 covers rdkafka's SASL auth
+# path, which its bundled librdkafka build links against dynamically even
+# though librdkafka itself is statically linked in.
 cat > "$STAGE/DEBIAN/control" <<EOF
 Package: nexusflow
 Version: $VERSION
 Architecture: $ARCH
 Maintainer: NexusFlow <noreply@ailake.io>
-Depends: libpq5, libsqlite3-0
+Depends: libpq5, libsqlite3-0, unixodbc, libsasl2-2
 Section: database
 Priority: optional
 Homepage: https://github.com/ailake-io/nexusflow

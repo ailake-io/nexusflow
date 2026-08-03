@@ -6,7 +6,7 @@
 #
 # Downloads a release tarball built by .github/workflows/release.yml
 # (nexusflow-<os>-<arch>.tar.gz: the release binary built with
-# --features embed-ui, plus the two ADBC driver libraries
+# --features embed-ui,connectors-all, plus the two ADBC driver libraries
 # nexus-connector-postgres/-sqlite dlopen at runtime — see
 # nexus-connector-postgres/src/driver.rs, ARCHITECTURE.md §3), then writes a
 # thin wrapper at $NEXUSFLOW_BIN_DIR/nexusflow that points
@@ -79,6 +79,8 @@ EOF
 chmod 755 "$BIN_DIR/nexusflow"
 
 echo "==> installed to $BIN_DIR/nexusflow"
+echo "==> note: the odbc/kafka connectors need unixODBC + libsasl2 on this machine"
+echo "    (Debian/Ubuntu: sudo apt-get install unixodbc libsasl2-2 | macOS: brew install unixodbc)"
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *) echo "==> $BIN_DIR is not on your PATH — add it, e.g.: export PATH=\"$BIN_DIR:\$PATH\"" ;;
