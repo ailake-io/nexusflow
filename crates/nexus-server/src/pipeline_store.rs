@@ -1,7 +1,7 @@
 use crate::crypto::SecretCipher;
 use nexus_core::PipelineSpec;
 use serde::Serialize;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use std::str::FromStr;
 
 #[derive(Debug, thiserror::Error)]
@@ -75,7 +75,21 @@ pub struct PipelineStore {
 impl PipelineStore {
     pub async fn connect(database_url: &str) -> anyhow::Result<Self> {
         let options = SqliteConnectOptions::from_str(database_url)?.create_if_missing(true);
-        let pool = SqlitePool::connect_with(options).await?;
+        // An in-memory SQLite database is private to its connection: with an
+        // unbounded pool, two concurrent acquires would open *separate*
+        // empty databases. Runs now execute in background supervisor tasks
+        // (POST /run returns 202 immediately), so a supervisor and a
+        // concurrent request can hold connections at the same time — cap
+        // the pool at one connection so every user of the store shares the
+        // same in-memory database.
+        let pool = if database_url.contains(":memory:") {
+            SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(options)
+                .await?
+        } else {
+            SqlitePool::connect_with(options).await?
+        };
 
         sqlx::query(
             r#"
@@ -286,6 +300,22 @@ impl PipelineStore {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Boot-time reaper: any run still marked 'running' when the process
+    /// starts belongs to a dead process — while it lives, a run's
+    /// supervisor task always records its terminal state (see lib.rs'
+    /// `execute_pipeline_run`). Left alone, such a row would make the
+    /// scheduler skip that pipeline forever (it never overlaps a run with
+    /// itself). Returns how many rows were reaped.
+    pub async fn fail_interrupted_runs(&self) -> Result<u64, PipelineStoreError> {
+        let result = sqlx::query(
+            "UPDATE pipeline_runs SET finished_at = datetime('now'), status = 'failed', \
+             error = 'server process ended before this run completed' WHERE status = 'running'",
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
     }
 
     pub async fn list_runs(&self, pipeline_id: &str) -> Result<Vec<RunRecord>, PipelineStoreError> {
@@ -579,6 +609,37 @@ mod tests {
         let runs = store.list_runs("p1").await.unwrap();
         assert_eq!(runs[0].status, "failed");
         assert_eq!(runs[0].error.as_deref(), Some("connector unreachable"));
+    }
+
+    #[tokio::test]
+    async fn interrupted_runs_are_reaped_as_failed() {
+        let store = PipelineStore::connect("sqlite::memory:").await.unwrap();
+        let stale_id = store.start_run("p1").await.unwrap();
+        let failed_id = store.start_run("p1").await.unwrap();
+        store.finish_run_failure(failed_id, "boom").await.unwrap();
+        let success_id = store.start_run("p1").await.unwrap();
+        store
+            .finish_run_success(success_id, &[], None)
+            .await
+            .unwrap();
+
+        let reaped = store.fail_interrupted_runs().await.unwrap();
+        assert_eq!(reaped, 1, "only the still-'running' row is reaped");
+
+        let runs = store.list_runs("p1").await.unwrap();
+        let stale = runs.iter().find(|r| r.id == stale_id).unwrap();
+        assert_eq!(stale.status, "failed");
+        assert!(stale.finished_at.is_some());
+        assert_eq!(
+            stale.error.as_deref(),
+            Some("server process ended before this run completed")
+        );
+
+        // Already-finished rows are untouched by the reaper.
+        let success = runs.iter().find(|r| r.id == success_id).unwrap();
+        assert_eq!(success.status, "success");
+        let failed = runs.iter().find(|r| r.id == failed_id).unwrap();
+        assert_eq!(failed.error.as_deref(), Some("boom"));
     }
 
     #[tokio::test]

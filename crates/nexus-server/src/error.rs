@@ -47,10 +47,14 @@ impl ApiError {
         }
     }
 
+    /// 500s never carry the underlying error's text: connector/sqlx errors
+    /// routinely embed connection URIs — credentials included — so the
+    /// detail goes to the server log and the client gets a generic message.
     pub fn internal(err: impl std::fmt::Display) -> Self {
+        tracing::error!(error = %err, "internal server error");
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: err.to_string(),
+            message: "internal server error".to_string(),
         }
     }
 }
@@ -58,5 +62,103 @@ impl ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         (self.status, Json(json!({ "error": self.message }))).into_response()
+    }
+}
+
+/// Maximum length of a sanitized error message — anything longer is
+/// truncated so a pathological error can't bloat the database or a Slack
+/// payload.
+const MAX_SANITIZED_LEN: usize = 500;
+
+/// Scrubs credentials out of an internal error message, making it safe to
+/// persist in `pipeline_runs.error` (readable over the API by any `Read`
+/// role) and to forward to Slack. The full, unsanitized error must still go
+/// to the server log — this is strictly for copies that leave the process.
+///
+/// Currently redacts URI userinfo (`postgres://user:pass@host/db` becomes
+/// `postgres://***@host/db`) and truncates anything pathologically long.
+pub(crate) fn sanitize_error(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw;
+    while let Some(scheme_end) = rest.find("://") {
+        let authority_start = scheme_end + 3;
+        let authority_end = rest[authority_start..]
+            .find(['/', ' ', '\t', '\n', '"', '\''])
+            .map(|i| authority_start + i)
+            .unwrap_or(rest.len());
+        let authority = &rest[authority_start..authority_end];
+        match authority.find('@') {
+            // `scheme://user:pass@host` -> `scheme://***@host` (the `@host`
+            // part is kept so the message still says *where* it failed).
+            Some(at) => {
+                out.push_str(&rest[..authority_start]);
+                out.push_str("***");
+                out.push_str(&authority[at..]);
+            }
+            None => out.push_str(&rest[..authority_end]),
+        }
+        rest = &rest[authority_end..];
+    }
+    out.push_str(rest);
+
+    if out.len() > MAX_SANITIZED_LEN {
+        let mut boundary = MAX_SANITIZED_LEN;
+        while !out.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        out.truncate(boundary);
+        out.push_str("…[truncated]");
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redacts_uri_userinfo() {
+        assert_eq!(
+            sanitize_error("connect failed: postgres://user:pw@db.internal:5432/app timeout"),
+            "connect failed: postgres://***@db.internal:5432/app timeout"
+        );
+    }
+
+    #[test]
+    fn redacts_multiple_uris_in_one_message() {
+        assert_eq!(
+            sanitize_error("src postgres://u:p@h1/db sink mongodb://u2:p2@h2/db"),
+            "src postgres://***@h1/db sink mongodb://***@h2/db"
+        );
+    }
+
+    #[test]
+    fn leaves_messages_without_credentials_untouched() {
+        let msg = "unsupported connector: got source=\"mongodb\"";
+        assert_eq!(sanitize_error(msg), msg);
+        // A URI without userinfo is not mangled.
+        assert_eq!(
+            sanitize_error("GET http://example.com/health failed"),
+            "GET http://example.com/health failed"
+        );
+    }
+
+    #[test]
+    fn truncates_pathologically_long_messages() {
+        let long = "x".repeat(5000);
+        let out = sanitize_error(&long);
+        assert!(out.len() <= MAX_SANITIZED_LEN + "…[truncated]".len());
+        assert!(out.ends_with("…[truncated]"));
+    }
+
+    #[tokio::test]
+    async fn internal_error_response_body_is_generic() {
+        let response = ApiError::internal("postgres://user:pw@host/db refused").into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"], "internal server error");
     }
 }

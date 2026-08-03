@@ -141,6 +141,8 @@ curl -s -X PUT http://localhost:8080/pipelines/meu-pipeline \
   -d '{"pipeline_id": "meu-pipeline", "sources": [...], "sinks": [...], "schedule": "0 */6 * * *"}'
 
 # rodar manualmente (o scheduler acima dispara sozinho, esse endpoint é só pra forçar fora do horário)
+# retorna 202 Accepted imediatamente com {"run_id": N} — a execução acontece em background;
+# acompanhe o progresso ao vivo no WebSocket /pipelines/{id}/runs/{run_id}/progress ou no histórico abaixo
 curl -s -X POST http://localhost:8080/pipelines/meu-pipeline/run \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{"pipeline_id": "meu-pipeline"}'

@@ -25,18 +25,17 @@ interface UseRunProgressResult {
   run: (token: string, spec: PipelineSpec) => void
 }
 
-const POLL_INTERVAL_MS = 250
-const POLL_TIMEOUT_MS = 15000
+const SETTLE_POLL_INTERVAL_MS = 250
+const SETTLE_POLL_MAX_ATTEMPTS = 20
 
 /**
  * Drives the "run + watch live progress" flow (Marco 8 task #16). The run
- * endpoint (POST /pipelines/{id}/run) only resolves once the whole pipeline
- * finishes, so the run's id — needed to open the progress WebSocket — has
- * to be discovered by polling GET /pipelines/{id}/runs concurrently rather
- * than awaited from the POST itself. This works because `start_run`
- * commits to the DB before the (possibly slow) connector work begins, so a
- * poll fired right after the POST sees the new "running" row while that
- * POST is still in flight on the server (ARCHITECTURE.md §8).
+ * endpoint (POST /pipelines/{id}/run) returns 202 Accepted with the new
+ * run's id as soon as the run row and its progress channel exist, so the
+ * WebSocket can connect immediately — no polling for the run id. The
+ * pipeline executes in a background task on the server; its terminal state
+ * is read back from GET /pipelines/{id}/runs once the socket closes
+ * (ARCHITECTURE.md §8).
  */
 export function useRunProgress(): UseRunProgressResult {
   const [status, setStatus] = useState<ExecutionStatus>('idle')
@@ -55,6 +54,22 @@ export function useRunProgress(): UseRunProgressResult {
 
   const connectSocket = useCallback(
     (token: string, pipelineId: string, id: number) => {
+      // Re-fetch the authoritative record once the socket closes instead of
+      // trusting the last progress event — a failure can happen between two
+      // events. The supervisor closes the progress channel *before* it
+      // writes the terminal state, so poll briefly until the record settles.
+      const settleFinalRecord = async (attempt: number) => {
+        const runs = await listRuns(token, pipelineId).catch(() => [] as RunRecord[])
+        const record = runs.find((r) => r.id === id)
+        if (record && record.finished_at) {
+          applyFinalRecord(record)
+        } else if (attempt < SETTLE_POLL_MAX_ATTEMPTS) {
+          setTimeout(() => void settleFinalRecord(attempt + 1), SETTLE_POLL_INTERVAL_MS)
+        }
+        // Still not settled after ~5s: leave the UI in 'running' — the runs
+        // list shows the authoritative state on the next page load.
+      }
+
       const ws = new WebSocket(progressSocketUrl(pipelineId, id, token))
       wsRef.current = ws
 
@@ -79,13 +94,7 @@ export function useRunProgress(): UseRunProgressResult {
       }
 
       ws.onclose = () => {
-        // The run finished (server closes once done) — re-fetch the
-        // authoritative record instead of trusting the last progress event,
-        // since a failure can happen between two progress events.
-        listRuns(token, pipelineId).then((runs) => {
-          const record = runs.find((r) => r.id === id)
-          if (record) applyFinalRecord(record)
-        })
+        void settleFinalRecord(0)
       }
     },
     [applyFinalRecord],
@@ -101,37 +110,19 @@ export function useRunProgress(): UseRunProgressResult {
       lastSample.current = {}
       wsRef.current?.close()
 
-      const baseline = await listRuns(token, spec.pipeline_id).catch(() => [] as RunRecord[])
-      const baselineMaxId = baseline.reduce((max, r) => Math.max(max, r.id), 0)
-
-      const runPromise = runPipeline(token, spec).catch((err: unknown) => {
-        // Validation-level failures (bad body, path/id mismatch) never
-        // reach start_run — no run row exists to poll for, so surface
-        // directly instead of polling until POLL_TIMEOUT_MS elapses.
+      try {
+        const { run_id } = await runPipeline(token, spec)
+        setRunId(run_id)
+        setStatus('running')
+        connectSocket(token, spec.pipeline_id, run_id)
+      } catch (err) {
+        // Validation-level failures (bad body, path/id mismatch) are
+        // rejected synchronously with 4xx before any run row exists.
         setStatus('failed')
         setError(err instanceof Error ? err.message : String(err))
-      })
-
-      const deadline = Date.now() + POLL_TIMEOUT_MS
-      const poll = async () => {
-        const runs = await listRuns(token, spec.pipeline_id).catch(() => [] as RunRecord[])
-        const latest = runs.find((r) => r.id > baselineMaxId)
-        if (!latest) {
-          if (Date.now() < deadline) setTimeout(poll, POLL_INTERVAL_MS)
-          return
-        }
-        setRunId(latest.id)
-        if (latest.status === 'running') {
-          setStatus('running')
-          connectSocket(token, spec.pipeline_id, latest.id)
-        } else {
-          applyFinalRecord(latest)
-        }
       }
-      void poll()
-      void runPromise
     },
-    [applyFinalRecord, connectSocket],
+    [connectSocket],
   )
 
   return { status, runId, partitions, error, dbtSummary, run }

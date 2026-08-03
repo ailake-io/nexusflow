@@ -150,10 +150,15 @@ impl PipelineEngine {
 
         let (reader_result, writer_result) = tokio::join!(reader, writer);
 
-        reader_result
-            .map_err(|e| NexusError::Connector(format!("reader task panicked: {e}")))??;
+        // Check the writer first: when the sink fails, the writer task holds
+        // the root cause while the reader only observes the channel closing
+        // and reports the secondary "writer side of channel closed early".
+        // Unwrapping the reader first would mask the real failure with that
+        // misleading message.
         let (batches_written, rows_written) = writer_result
             .map_err(|e| NexusError::Connector(format!("writer task panicked: {e}")))??;
+        reader_result
+            .map_err(|e| NexusError::Connector(format!("reader task panicked: {e}")))??;
 
         Ok(PartitionStats {
             partition_id,
@@ -389,6 +394,101 @@ mod tests {
             checkpoints.lock().unwrap().len(),
             1,
             "checkpoint committed once per partition, not per batch"
+        );
+    }
+
+    /// A sink whose first write fails — exercises the reader/writer error
+    /// precedence in `run_partition`.
+    struct FailingSink;
+
+    #[async_trait]
+    impl Sink for FailingSink {
+        async fn write_batch(&mut self, _batch: RecordBatch) -> Result<(), NexusError> {
+            Err(NexusError::Connector(
+                "sink exploded: connection refused".to_string(),
+            ))
+        }
+
+        async fn commit_checkpoint(&mut self, _cursor: CheckpointCursor) -> Result<(), NexusError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn run_partition_surfaces_sink_root_cause_over_secondary_reader_error() {
+        // Capacity 1 + several batches: the reader is blocked on `tx.send`
+        // when the sink fails, so it *will* produce the secondary "writer
+        // side of channel closed early" error — which must not mask the
+        // sink's root cause.
+        let source = VecSource {
+            schema: test_schema(),
+            batches: (0..8).map(|i| test_batch(vec![i])).collect(),
+        };
+
+        let engine = PipelineEngine::new(1);
+        let err = engine
+            .run_partition(
+                PartitionHandle {
+                    partition_id: "p0".to_string(),
+                    source: Box::new(source),
+                    sink: Box::new(FailingSink),
+                },
+                None,
+            )
+            .await
+            .expect_err("sink failure must propagate");
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("sink exploded"),
+            "sink root cause must win, got: {msg}"
+        );
+        assert!(
+            !msg.contains("writer side of channel closed early"),
+            "secondary reader error must not mask the sink failure, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_partition_surfaces_source_error_when_writer_is_fine() {
+        struct FailingSource {
+            schema: SchemaRef,
+        }
+
+        #[async_trait]
+        impl Source for FailingSource {
+            async fn read_batches(
+                &mut self,
+            ) -> Result<BoxStream<'_, Result<RecordBatch, NexusError>>, NexusError> {
+                Ok(Box::pin(stream::iter(vec![
+                    Ok(test_batch(vec![1])),
+                    Err(NexusError::Connector("source read failed".to_string())),
+                ])))
+            }
+
+            fn schema(&self) -> SchemaRef {
+                self.schema.clone()
+            }
+        }
+
+        let engine = PipelineEngine::new(1);
+        let err = engine
+            .run_partition(
+                PartitionHandle {
+                    partition_id: "p0".to_string(),
+                    source: Box::new(FailingSource {
+                        schema: test_schema(),
+                    }),
+                    sink: Box::new(RecordingSink::default()),
+                },
+                None,
+            )
+            .await
+            .expect_err("source failure must propagate");
+
+        assert!(
+            err.to_string().contains("source read failed"),
+            "reader root cause must surface when the writer did not fail, got: {err}"
         );
     }
 

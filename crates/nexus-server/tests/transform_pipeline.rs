@@ -76,6 +76,44 @@ async fn post_run(
     (status, body)
 }
 
+/// POST /run returns 202 as soon as the run is recorded — the pipeline
+/// executes in a background supervisor task, so the test polls the run
+/// history until the supervisor records the terminal state.
+async fn wait_for_run(app: &Router, pipeline_id: &str, run_id: i64, token: &str) -> Value {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    loop {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/pipelines/{pipeline_id}/runs"))
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let runs: Value = serde_json::from_slice(&bytes).unwrap();
+        if let Some(record) = runs
+            .as_array()
+            .and_then(|a| a.iter().find(|r| r["id"].as_i64() == Some(run_id)))
+        {
+            if record["finished_at"].is_string() {
+                return record.clone();
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "run {run_id} never reached a terminal state"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+}
+
 fn test_server_config(checkpoint_database_url: String) -> ServerConfig {
     ServerConfig {
         checkpoint_database_url,
@@ -166,10 +204,20 @@ async fn fans_in_two_postgres_sources_transforms_and_writes_to_sqlite() {
         .expect("app builds");
 
     let token = login(app.clone(), "admin", "test-password").await;
-    let (status, body) = post_run(app, "enrich-events", &spec, &token).await;
-    assert_eq!(status, StatusCode::OK, "pipeline run failed: {body:?}");
+    let (status, body) = post_run(app.clone(), "enrich-events", &spec, &token).await;
+    assert_eq!(
+        status,
+        StatusCode::ACCEPTED,
+        "run was not accepted: {body:?}"
+    );
+    let run_id = body["run_id"].as_i64().expect("202 body carries run_id");
+    let record = wait_for_run(&app, "enrich-events", run_id, &token).await;
+    assert_eq!(
+        record["status"], "success",
+        "pipeline run failed: {record:?}"
+    );
 
-    let stats = body.as_array().expect("array response");
+    let stats = record["stats"].as_array().expect("stats array");
     assert_eq!(stats.len(), 1, "one stats entry for the one sink");
     assert_eq!(stats[0]["rows_written"], 4, "amount > 10: ids 2,3,5,6");
 
@@ -198,10 +246,20 @@ async fn fans_in_two_postgres_sources_transforms_and_writes_to_sqlite() {
         .await
         .expect("app rebuilds");
     let token2 = login(app2.clone(), "admin", "test-password").await;
-    let (status2, body2) = post_run(app2, "enrich-events", &spec, &token2).await;
-    assert_eq!(status2, StatusCode::OK, "resume run failed: {body2:?}");
+    let (status2, body2) = post_run(app2.clone(), "enrich-events", &spec, &token2).await;
     assert_eq!(
-        body2.as_array().unwrap().len(),
+        status2,
+        StatusCode::ACCEPTED,
+        "resume run was not accepted: {body2:?}"
+    );
+    let run_id2 = body2["run_id"].as_i64().expect("202 body carries run_id");
+    let record2 = wait_for_run(&app2, "enrich-events", run_id2, &token2).await;
+    assert_eq!(
+        record2["status"], "success",
+        "resume run failed: {record2:?}"
+    );
+    assert_eq!(
+        record2["stats"].as_array().unwrap().len(),
         0,
         "sink already checkpointed, resume must skip it"
     );
