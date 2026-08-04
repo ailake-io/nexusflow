@@ -17,12 +17,10 @@
 ARG RUNTIME_IMAGE=debian:bookworm-slim
 # `docker build --build-arg FEATURES=embed-ui,connectors-all .` links every
 # optional connector (nexus-server/Cargo.toml) into the binary — default
-# stays embed-ui only, same size/behavior as before this arg existed. NOT
-# validated as a full docker build in this repo yet (each of the 14 extra
-# connectors was validated via plain `cargo build`, not through this
-# Dockerfile specifically) — kafka's rdkafka may need `zlib1g` added to the
-# runtime stage's apt-get line below if you hit a missing-.so at container
-# start.
+# stays embed-ui only, same size/behavior as before this arg existed. When
+# building with `kafka`/`connectors-all`, the builder stage needs g++ because
+# rdkafka-sys compiles librdkafka statically; the runtime stage may also need
+# `zlib1g` if you hit a missing-.so at container start.
 ARG FEATURES=embed-ui
 
 FROM node:22-slim AS frontend
@@ -59,7 +57,7 @@ ARG FEATURES
 # stage is discarded after the build (see the `runtime` stage below), so it
 # costs build time, not final image size.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      pkg-config libssl-dev cmake make protobuf-compiler libprotobuf-dev libsqlite3-dev \
+      pkg-config libssl-dev cmake make g++ zlib1g-dev protobuf-compiler libprotobuf-dev libsqlite3-dev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY . .
