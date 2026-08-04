@@ -25,6 +25,12 @@ pub struct KafkaSource {
     batch_size: usize,
     poll_timeout: Duration,
     max_messages: usize,
+    /// `true` when the consumer was manually assigned via `start_offsets`
+    /// instead of subscribed as a group member. In that mode Kafka does not
+    /// consider us a group member, so broker-side offset commits are not
+    /// possible (and not needed — the engine checkpoint is the source of
+    /// truth). See ARCHITECTURE.md §5.
+    manual_assignment: bool,
     /// Last consumed offset per partition — read after `read_batches` to
     /// build a `CheckpointCursor` per partition (resume via
     /// `start_offsets`), per ARCHITECTURE.md §5.
@@ -73,6 +79,7 @@ impl KafkaSource {
             batch_size: config.batch_size,
             poll_timeout: Duration::from_millis(config.poll_timeout_ms),
             max_messages: config.max_messages,
+            manual_assignment: !config.start_offsets.is_empty(),
             last_offsets: HashMap::new(),
         })
     }
@@ -87,7 +94,7 @@ impl KafkaSource {
     /// at the end of a successful `read_batches` call so the engine's
     /// checkpoint and Kafka's consumer group state stay aligned.
     fn commit_offsets(&self) -> Result<(), NexusError> {
-        if self.last_offsets.is_empty() {
+        if self.last_offsets.is_empty() || self.manual_assignment {
             return Ok(());
         }
         let mut tpl = TopicPartitionList::new();
