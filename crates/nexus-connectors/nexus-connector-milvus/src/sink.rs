@@ -8,7 +8,9 @@ use async_trait::async_trait;
 use milvus::client::Client;
 use milvus::data::FieldColumn;
 use milvus::schema::FieldSchema;
-use nexus_core::{project_column, split_by_opcode, CheckpointCursor, NexusError, Sink};
+use nexus_core::{
+    project_column, split_by_opcode, validate_identifier, CheckpointCursor, NexusError, Sink,
+};
 
 /// AI Lakehouse sink #4. The `milvus-sdk-rust` crate (0.1.0) has no native
 /// upsert, so an upsert is implemented as delete-then-insert on the primary
@@ -25,6 +27,10 @@ pub struct MilvusSink {
 
 impl MilvusSink {
     pub async fn connect(cfg: &MilvusConnectorConfig) -> Result<Self, NexusError> {
+        // `primary_key` is attacker-controlled (comes from the pipeline spec),
+        // so validate it before splicing it into any expression string.
+        validate_identifier(&cfg.primary_key)?;
+
         let client = Client::new(cfg.url.clone())
             .await
             .map_err(|e| NexusError::Connector(format!("milvus connect failed: {e}")))?;

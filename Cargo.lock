@@ -6959,6 +6959,7 @@ dependencies = [
  "dirs 5.0.1",
  "hf-hub",
  "ndarray 0.17.2",
+ "nexus-core",
  "ort",
  "thiserror 2.0.19",
  "tokenizers",
@@ -7146,6 +7147,7 @@ dependencies = [
  "serde",
  "tempfile",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -7283,10 +7285,12 @@ dependencies = [
  "axum 0.8.9",
  "chrono",
  "cron",
+ "dashmap",
  "futures",
  "futures-util",
  "hex",
  "jsonwebtoken",
+ "nexus-ai",
  "nexus-connector-ailake",
  "nexus-connector-chromadb",
  "nexus-connector-deltalake",

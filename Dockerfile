@@ -50,12 +50,16 @@ ARG FEATURES
 # pkg-config/libssl-dev cover the default (embed-ui) build. The rest only
 # matter if FEATURES pulls in the heavier connectors (see nexus-server/
 # Cargo.toml's per-connector features): cmake+make for odbc's vendored
-# unixODBC build, protobuf-compiler for milvus/lancedb's tonic/prost
-# codegen, libsqlite3-dev for iceberg's sqlx "sqlite" feature — kept
-# unconditional since this whole stage is discarded after the build (see
-# the `runtime` stage below), so it costs build time, not final image size.
+# unixODBC build, protobuf-compiler + libprotobuf-dev for milvus/lancedb's
+# tonic/prost codegen (libprotobuf-dev ships the google/protobuf/*.proto
+# well-known types that protoc needs to resolve `import "google/protobuf/
+# empty.proto"` — --no-install-recommends drops it otherwise since it's
+# only a Recommends of protobuf-compiler, not a Depends), libsqlite3-dev
+# for iceberg's sqlx "sqlite" feature — kept unconditional since this whole
+# stage is discarded after the build (see the `runtime` stage below), so it
+# costs build time, not final image size.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      pkg-config libssl-dev cmake make protobuf-compiler libsqlite3-dev \
+      pkg-config libssl-dev cmake make protobuf-compiler libprotobuf-dev libsqlite3-dev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY . .
@@ -67,14 +71,23 @@ RUN cargo build --release -p nexusflow --features "${FEATURES}"
 
 FROM ${RUNTIME_IMAGE} AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      libpq5 libsqlite3-0 ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+      libpq5 libsqlite3-0 ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -r -g 1000 nexusflow \
+    && useradd -r -u 1000 -g nexusflow nexusflow
+
 COPY --from=builder /src/target/release/nexusflow /usr/lib/nexusflow/nexusflow-bin
 COPY --from=adbc /out/libadbc_driver_postgresql.so /out/libadbc_driver_sqlite.so /usr/lib/nexusflow/
 COPY packaging/linux/nexusflow-wrapper.sh /usr/bin/nexusflow
-RUN chmod +x /usr/bin/nexusflow
+RUN chmod +x /usr/bin/nexusflow \
+    && chown -R nexusflow:nexusflow /usr/lib/nexusflow
 
+USER nexusflow
 EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -fsS http://localhost:8080/health || exit 1
+
 # NEXUS_JWT_SECRET / NEXUS_ENCRYPTION_KEY have no defaults on purpose (see
 # nexus-server/src/lib.rs's run()) — ARCHITECTURE.md §10 requires the
 # operator to supply both via `docker run -e`, never a baked-in default.

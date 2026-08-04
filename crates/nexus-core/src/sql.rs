@@ -9,6 +9,15 @@ use crate::error::NexusError;
 /// double-quote it (ANSI SQL identifier quoting, doubling any embedded `"`)
 /// so mixed-case names and reserved words round-trip correctly too.
 pub fn quote_identifier(name: &str) -> Result<String, NexusError> {
+    validate_identifier(name).map(|valid| format!("\"{}\"", valid.replace('"', "\"\"")))
+}
+
+/// Validates that `name` is a safe identifier and returns it unchanged.
+///
+/// Sinks that build their own predicate syntax (LanceDB, Milvus, etc.) can
+/// use this to reject attacker-controlled column names without being forced
+/// into ANSI double-quote quoting, which those engines may not accept.
+pub fn validate_identifier(name: &str) -> Result<&str, NexusError> {
     let valid = !name.is_empty()
         && name.len() <= 128
         && name
@@ -23,7 +32,7 @@ pub fn quote_identifier(name: &str) -> Result<String, NexusError> {
         )));
     }
 
-    Ok(format!("\"{}\"", name.replace('"', "\"\"")))
+    Ok(name)
 }
 
 #[cfg(test)]
@@ -48,6 +57,15 @@ mod tests {
         assert!(quote_identifier("events;").is_err());
         assert!(quote_identifier("public.events").is_err());
         assert!(quote_identifier("1events").is_err());
+    }
+
+    #[test]
+    fn validate_identifier_rejects_injection_and_returns_original_name() {
+        assert_eq!(validate_identifier("events").unwrap(), "events");
+        assert_eq!(validate_identifier("_id").unwrap(), "_id");
+        assert!(validate_identifier("events; DROP TABLE users; --").is_err());
+        assert!(validate_identifier("events\" OR \"1\"=\"1").is_err());
+        assert!(validate_identifier("").is_err());
     }
 
     #[test]

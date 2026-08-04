@@ -5,7 +5,7 @@ use arrow_schema::{
     SchemaRef as ArrowSchemaRef,
 };
 use deltalake::{DataType as DeltaDataType, PrimitiveType, StructField, StructType};
-use nexus_core::NexusError;
+use nexus_core::{quote_identifier, NexusError};
 use std::sync::Arc;
 
 /// Reads `column_name` as primary-key strings — both `Int64` and `Utf8`
@@ -42,6 +42,11 @@ pub fn in_predicate(
     column_name: &str,
     values: &[String],
 ) -> Result<String, NexusError> {
+    // `column_name` comes from the pipeline spec (attacker-controlled), so it
+    // must be validated/quoted before it touches SQL text. The values are
+    // string literals and get escaped separately below.
+    let quoted_column = quote_identifier(column_name)?;
+
     let idx = batch
         .schema()
         .index_of(column_name)
@@ -55,7 +60,7 @@ pub fn in_predicate(
     } else {
         values.to_vec()
     };
-    Ok(format!("{column_name} IN ({})", rendered.join(", ")))
+    Ok(format!("{quoted_column} IN ({})", rendered.join(", ")))
 }
 
 /// Maps an Arrow schema to Delta's `StructField`s for `CreateBuilder::with_columns` —
@@ -241,7 +246,7 @@ mod tests {
         let batch =
             RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![1]))]).unwrap();
         let pred = in_predicate(&batch, "id", &["1".to_string(), "2".to_string()]).unwrap();
-        assert_eq!(pred, "id IN (1, 2)");
+        assert_eq!(pred, "\"id\" IN (1, 2)");
 
         let schema = Arc::new(Schema::new(vec![Field::new(
             "id",
@@ -251,7 +256,20 @@ mod tests {
         let batch =
             RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(vec!["a"]))]).unwrap();
         let pred = in_predicate(&batch, "id", &["a".to_string(), "b".to_string()]).unwrap();
-        assert_eq!(pred, "id IN ('a', 'b')");
+        assert_eq!(pred, "\"id\" IN ('a', 'b')");
+    }
+
+    #[test]
+    fn in_predicate_rejects_malicious_column_name() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "id",
+            ArrowDataType::Int64,
+            false,
+        )]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![1]))]).unwrap();
+        assert!(in_predicate(&batch, "id; DROP TABLE t; --", &["1".to_string()]).is_err());
+        assert!(in_predicate(&batch, "id\" OR \"1\"=\"1", &["1".to_string()]).is_err());
     }
 
     #[test]

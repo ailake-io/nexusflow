@@ -439,6 +439,7 @@ mod tests {
                 connector: "sqlite".to_string(),
                 config: serde_json::json!({"path": "/tmp/out.db"}),
             }],
+            embedding: None,
             channel_capacity: 100,
             partitions: 1,
             dbt: None,

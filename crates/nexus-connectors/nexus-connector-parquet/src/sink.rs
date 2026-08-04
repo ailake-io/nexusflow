@@ -52,22 +52,43 @@ impl ParquetSink {
     }
 
     fn write_all(&self, schema: SchemaRef, row_groups: &[RecordBatch]) -> Result<(), NexusError> {
-        let file = File::create(&self.path)
-            .map_err(|e| NexusError::Connector(format!("parquet create failed: {e}")))?;
-        let mut writer = ArrowWriter::try_new(file, schema, None)
-            .map_err(|e| NexusError::Connector(format!("parquet writer init failed: {e}")))?;
-        for batch in row_groups {
-            if batch.num_rows() == 0 {
-                continue;
+        // Write to a temp file and atomically rename into place. Parquet has no
+        // in-place update/delete, so a crash mid-rewrite must never leave the
+        // original file truncated.
+        let temp_path = self
+            .path
+            .with_extension(format!("tmp.{}", uuid::Uuid::new_v4()));
+
+        let write_result: Result<(), NexusError> = (|| {
+            let file = File::create(&temp_path)
+                .map_err(|e| NexusError::Connector(format!("parquet create failed: {e}")))?;
+            let mut writer = ArrowWriter::try_new(file, schema, None)
+                .map_err(|e| NexusError::Connector(format!("parquet writer init failed: {e}")))?;
+            for batch in row_groups {
+                if batch.num_rows() == 0 {
+                    continue;
+                }
+                writer
+                    .write(batch)
+                    .map_err(|e| NexusError::Connector(format!("parquet write failed: {e}")))?;
             }
             writer
-                .write(batch)
-                .map_err(|e| NexusError::Connector(format!("parquet write failed: {e}")))?;
+                .close()
+                .map_err(|e| NexusError::Connector(format!("parquet close failed: {e}")))?;
+            Ok(())
+        })();
+
+        match write_result {
+            Ok(()) => {
+                std::fs::rename(&temp_path, &self.path)
+                    .map_err(|e| NexusError::Connector(format!("parquet rename failed: {e}")))?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&temp_path);
+                Err(e)
+            }
         }
-        writer
-            .close()
-            .map_err(|e| NexusError::Connector(format!("parquet close failed: {e}")))?;
-        Ok(())
     }
 
     fn apply(&self, upserts: RecordBatch, deletes: &RecordBatch) -> Result<(), NexusError> {

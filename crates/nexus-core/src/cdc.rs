@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 /// `upserts` (I/U rows) and `deletes` (D rows), both with the opcode column
 /// stripped so they match the caller's normal data schema/column count.
+#[derive(Debug)]
 pub struct CdcSplit {
     pub upserts: RecordBatch,
     pub deletes: RecordBatch,
@@ -50,11 +51,19 @@ pub fn split_by_opcode(batch: &RecordBatch) -> Result<Option<CdcSplit>, NexusErr
     let data_batch = RecordBatch::try_new(data_schema, data_columns)
         .map_err(|e| NexusError::Schema(e.to_string()))?;
 
+    // A null opcode is ambiguous (not insert/update/delete) and masks corrupt
+    // CDC data — fail loudly instead of silently dropping the row.
+    if (0..opcode_col.len()).any(|i| opcode_col.is_null(i)) {
+        return Err(NexusError::Schema(format!(
+            "{OPCODE_COLUMN} cannot be null"
+        )));
+    }
+
     let is_delete: BooleanArray = (0..opcode_col.len())
-        .map(|i| (!opcode_col.is_null(i)).then(|| opcode_col.value(i) == Opcode::Delete.as_str()))
+        .map(|i| Some(opcode_col.value(i) == Opcode::Delete.as_str()))
         .collect();
     let is_upsert: BooleanArray = (0..opcode_col.len())
-        .map(|i| (!opcode_col.is_null(i)).then(|| opcode_col.value(i) != Opcode::Delete.as_str()))
+        .map(|i| Some(opcode_col.value(i) != Opcode::Delete.as_str()))
         .collect();
 
     let deletes = filter_record_batch(&data_batch, &is_delete)
@@ -136,5 +145,24 @@ mod tests {
             .downcast_ref::<Int64Array>()
             .unwrap();
         assert_eq!(delete_ids.values(), &[3, 4]);
+    }
+
+    #[test]
+    fn rejects_null_opcode() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new(OPCODE_COLUMN, DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(vec![1])),
+                Arc::new(StringArray::from(vec![None::<&str>])),
+            ],
+        )
+        .unwrap();
+        let err = split_by_opcode(&batch).expect_err("null opcode must fail");
+        assert!(matches!(err, NexusError::Schema(_)));
+        assert!(err.to_string().contains("cannot be null"));
     }
 }

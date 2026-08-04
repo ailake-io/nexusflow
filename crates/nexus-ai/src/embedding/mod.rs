@@ -8,8 +8,12 @@
 
 mod inference;
 mod model;
+#[cfg(feature = "cpu")]
+mod pipeline;
 
 pub use inference::{
     append_embedding_column, EmbeddingError, EmbeddingModel, EmbeddingModelConfig,
 };
 pub use model::{resolve_model_path, ModelConfig, ModelError};
+#[cfg(feature = "cpu")]
+pub use pipeline::apply_embedding;

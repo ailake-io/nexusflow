@@ -2,7 +2,9 @@ use crate::config::LanceDbConnectorConfig;
 use arrow_array::{Array, Int64Array, RecordBatch, RecordBatchIterator, RecordBatchReader};
 use async_trait::async_trait;
 use lancedb::connection::Connection;
-use nexus_core::{project_column, split_by_opcode, CheckpointCursor, NexusError, Sink};
+use nexus_core::{
+    project_column, split_by_opcode, validate_identifier, CheckpointCursor, NexusError, Sink,
+};
 
 /// AI Lakehouse sink #3. LanceDB is Arrow-native — batches are handed over
 /// with no JSON row conversion, unlike the other bridging sinks. Table
@@ -18,6 +20,10 @@ pub struct LanceDbSink {
 
 impl LanceDbSink {
     pub async fn connect(cfg: &LanceDbConnectorConfig) -> Result<Self, NexusError> {
+        // `primary_key` is attacker-controlled (comes from the pipeline spec),
+        // so validate it before splicing it into any predicate string.
+        validate_identifier(&cfg.primary_key)?;
+
         let connection = lancedb::connect(&cfg.uri)
             .execute()
             .await

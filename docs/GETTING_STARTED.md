@@ -89,6 +89,39 @@ cargo build --release -p nexusflow --features embed-ui,connectors-all
 
 `kafka` e `odbc` precisam de dependência nativa (`librdkafka` / unixODBC vendorizado) e compilam mais devagar; `milvus`/`lancedb` precisam de `protoc` no PATH. O catálogo servido em `GET /connectors` reflete exatamente o que foi compilado — a UI nunca mostra um conector que não está linkado no binário.
 
+### Embeddings (chunking + ONNX)
+
+Para gerar embeddings no pipeline, adicione um nó `embedding` ao spec — ele roda **antes** do transform SQL, expandindo cada linha da source em chunks e adicionando uma coluna `FixedSizeList<Float32>` com os vetores:
+
+```json
+{
+  "pipeline_id": "rag-pipeline",
+  "sources": [{"connector": "postgres", "config": {"table": "docs"}}],
+  "transform": {"sql": "SELECT id, chunk_text, embedding FROM source0"},
+  "sinks": [{"connector": "lancedb", "config": {"uri": "/tmp/vectors", "table": "docs", "primary_key": "id", "embedding_column": "embedding", "dimension": 384}}],
+  "embedding": {
+    "source_column": "body",
+    "output_column": "embedding",
+    "dimension": 384,
+    "model": {
+      "repo": "sentence-transformers/all-MiniLM-L6-v2",
+      "filename": "model.onnx",
+      "tokenizer_filename": "tokenizer.json",
+      "max_length": 128
+    },
+    "chunking": {"strategy": "fixed_window", "chunk_size": 256, "overlap": 32}
+  }
+}
+```
+
+A feature Cargo `embeddings` (incluída em `connectors-all`) liga o crate `nexus-ai` e suas dependências ONNX/HF Hub. Sem ela, um spec com `embedding` retorna erro claro.
+
+### Limitações conhecidas de sinks
+
+- **Iceberg** — o sink é *append-only* na versão atual do `iceberg-rust` (0.10.0): não há commit de *equality-delete*/`upsert` na API pública. Reexecuções de pipeline/partição duplicarão linhas até que essa capacidade chegue. CDC deletes são rejeitados explicitamente com erro claro.
+- **Parquet** — implementa CDC upsert/delete como reescrita completa do arquivo; é correto, mas `O(tamanho da tabela)` por batch. A reescrita usa arquivo temporário + `rename` atômico para evitar perda do arquivo original em caso de crash.
+- **Kafka source** — `enable.auto.commit` está desligado; offsets são commitados manualmente ao final de cada `read_batches`, alinhados com o checkpoint do pipeline.
+
 ## 3. Variáveis de ambiente
 
 | Variável | Obrigatória? | Padrão | Descrição |
@@ -109,7 +142,7 @@ cargo build --release -p nexusflow --features embed-ui,connectors-all
 2. Login com o usuário Admin bootstrapado (`NEXUS_ADMIN_USERNAME`/`NEXUS_ADMIN_PASSWORD`).
 3. No canvas, arraste um node de source e um de sink da lista de conectores (vem de `GET /connectors`, dinâmica).
 4. Preencha a config de cada node no painel lateral — campos de formulário reais (texto, número, enum, listas), gerados a partir do schema que cada conector expõe, não um JSON pra escrever à mão. Nunca fica em plain text depois de salvo — criptografado com `NEXUS_ENCRYPTION_KEY`.
-5. Opcional: adicione um node de transform (SQL via DataFusion) entre source e sink, ou um node `dbt` depois do(s) sink(s) pra rodar ELT pós-carga.
+5. Opcional: adicione um node de transform (SQL via DataFusion) entre source e sink, ou um node `dbt` depois do(s) sink(s) pra rodar ELT pós-carga. **Sem transform, o runner só suporta `postgres → postgres`; cross-connector ou outros conectores exigem um nó transform.**
 6. Clique **Save** pra persistir o pipeline (cria na primeira vez, atualiza nas seguintes) — sem isso ele só existe nessa aba do navegador e o scheduler (próximo item) não tem o que agendar. Opcional: preencha o campo **schedule** (cron) pra rodar automaticamente, sem precisar clicar Run de novo.
 7. Rode manualmente e acompanhe linhas/s, MB/s e logs em tempo real no painel de execução (WebSocket), ou deixe o schedule disparar sozinho.
 8. Na aba **Pipelines**: veja tudo que já foi salvo, clique **Edit** pra recarregar um pipeline de volta no canvas (inclusive configs de conector) ou **Delete** pra remover. Na aba **Status**: visão rápida de todos os pipelines com um flag por linha — verde (sucesso), amarelo (em execução), vermelho (falha), cinza (nunca rodou).
@@ -126,13 +159,25 @@ TOKEN=$(curl -s -X POST http://localhost:8080/auth/login \
 curl -s http://localhost:8080/connectors -H "authorization: Bearer $TOKEN"
 
 # criar um pipeline (schedule é opcional — sem ele só roda via /run manual)
+# NOTA: sem nó transform, apenas postgres → postgres é suportado.
+# Cross-connector ou outros conectores exigem um nó transform (exemplo abaixo).
 curl -s -X POST http://localhost:8080/pipelines \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{
     "pipeline_id": "meu-pipeline",
-    "sources": [{"connector": "postgres", "config": {"uri": "postgres://user:pw@host/db"}}],
-    "sinks": [{"connector": "sqlite", "config": {"path": "/tmp/out.db"}}],
+    "sources": [{"connector": "postgres", "config": {"uri": "postgres://user:pw@host/db", "table": "events"}}],
+    "sinks": [{"connector": "postgres", "config": {"uri": "postgres://user:pw@host/db", "table": "events_copy"}}],
     "schedule": "0 */6 * * *"
+  }'
+
+# exemplo cross-connector (postgres → sqlite) — exige um nó transform
+curl -s -X POST http://localhost:8080/pipelines \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{
+    "pipeline_id": "meu-pipeline-sqlite",
+    "sources": [{"connector": "postgres", "config": {"uri": "postgres://user:pw@host/db", "table": "events"}}],
+    "transform": {"sql": "SELECT * FROM events"},
+    "sinks": [{"connector": "sqlite", "config": {"path": "/tmp/out.db", "table": "events"}}]
   }'
 
 # atualizar (mesmo body, PUT em vez de POST)

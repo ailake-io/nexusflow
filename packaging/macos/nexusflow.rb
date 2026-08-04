@@ -16,6 +16,8 @@ class Nexusflow < Formula
   desc "Universal Rust data & vector ETL/lakehouse framework"
   homepage "https://github.com/ailake-io/nexusflow"
   url "https://github.com/ailake-io/nexusflow/archive/refs/tags/v0.1.0.tar.gz"
+  # sha256 must be updated by the release workflow or maintainer:
+  # curl -L <url> | shasum -a 256
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   license "Apache-2.0"
 

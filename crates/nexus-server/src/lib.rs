@@ -10,6 +10,7 @@ mod embedded_ui;
 mod error;
 mod pipeline_store;
 mod progress;
+mod rate_limit;
 mod runner;
 mod scheduler;
 pub mod telemetry;
@@ -43,6 +44,7 @@ struct AppState {
     pipelines: PipelineStore,
     progress: ProgressHub,
     alerts: AlertNotifier,
+    login_rate_limiter: std::sync::Arc<rate_limit::LoginRateLimiter>,
 }
 
 impl From<PipelineStoreError> for ApiError {
@@ -131,6 +133,14 @@ fn router(state: AppState) -> Router {
         ))
         .layer(Extension(Role::Read));
 
+    // Rate-limit the login endpoint per IP before it hits Argon2 verification.
+    // Layer order: Extension is outermost so the middleware sees it on the
+    // way in (axum applies layers inside-out, last .layer runs first).
+    let login_routes = Router::new()
+        .route("/auth/login", post(login_handler))
+        .layer(middleware::from_fn(rate_limit::login_rate_limit))
+        .layer(Extension(state.login_rate_limiter.clone()));
+
     let app = Router::new()
         .route("/health", get(health))
         // Unauthenticated like /health — Prometheus scrapers don't carry a
@@ -138,7 +148,7 @@ fn router(state: AppState) -> Router {
         // scrape-auth story; network segmentation is the intended guard
         // here (ARCHITECTURE.md §9/§10).
         .route("/metrics", get(metrics_handler))
-        .route("/auth/login", post(login_handler))
+        .merge(login_routes)
         // Not behind `require_role` — a browser's `WebSocket` API can't set
         // an `Authorization` header, so this route takes the JWT as a query
         // param and checks the role itself (see `progress_ws_handler`).
@@ -225,12 +235,33 @@ async fn login_handler(
     State(state): State<AppState>,
     Json(body): Json<LoginRequest>,
 ) -> Result<Json<LoginResponse>, ApiError> {
-    let role = state
+    let result = state
         .auth_store
         .verify(&body.username, &body.password)
         .await
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::unauthorized("invalid username or password"))?;
+        .map_err(ApiError::internal);
+
+    let log_outcome = match &result {
+        Ok(Some(_)) => (true, "login succeeded"),
+        Ok(None) => (false, "invalid username or password"),
+        Err(_) => (false, "login verification error"),
+    };
+    // Log to stdout/tracing and to the durable audit table. Do not block the
+    // response on audit persistence, but surface failures in server logs.
+    tracing::info!(
+        username = %body.username,
+        success = log_outcome.0,
+        "{}", log_outcome.1
+    );
+    if let Err(e) = state
+        .auth_store
+        .log_security_event(Some(&body.username), "login", log_outcome.0, None)
+        .await
+    {
+        tracing::warn!(error = %e, "failed to write login audit log");
+    }
+
+    let role = result?.ok_or_else(|| ApiError::unauthorized("invalid username or password"))?;
     let token = state.jwt.issue(&body.username, role)?;
     Ok(Json(LoginResponse { token }))
 }
@@ -546,6 +577,7 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         pipelines,
         progress: ProgressHub::default(),
         alerts: AlertNotifier::new(config.slack_webhook_url.clone()),
+        login_rate_limiter: std::sync::Arc::new(rate_limit::LoginRateLimiter::default()),
     })
 }
 
@@ -564,6 +596,16 @@ pub async fn build_app(config: &ServerConfig) -> anyhow::Result<Router> {
 /// Boots the server. This is the only orchestration entrypoint — `src/main.rs`
 /// just calls this, no separate scheduler lives in the main binary
 /// (ARCHITECTURE.md §1).
+fn validate_jwt_secret(secret: &str) -> anyhow::Result<()> {
+    if secret.len() < 32 {
+        anyhow::bail!(
+            "NEXUS_JWT_SECRET must be at least 32 bytes (256 bits) of entropy for HS256 security; \
+             generate one with: openssl rand -hex 32 (ARCHITECTURE.md §10)"
+        );
+    }
+    Ok(())
+}
+
 pub async fn run() -> anyhow::Result<()> {
     let database_url =
         std::env::var("NEXUS_CHECKPOINT_DB").unwrap_or_else(|_| "sqlite://nexusflow.db".into());
@@ -573,6 +615,7 @@ pub async fn run() -> anyhow::Result<()> {
         .unwrap_or_else(|_| "sqlite://nexusflow-pipelines.db".into());
     let jwt_secret = std::env::var("NEXUS_JWT_SECRET")
         .map_err(|_| anyhow::anyhow!("NEXUS_JWT_SECRET must be set (ARCHITECTURE.md §10)"))?;
+    validate_jwt_secret(&jwt_secret)?;
     let encryption_key_hex = std::env::var("NEXUS_ENCRYPTION_KEY").map_err(|_| {
         anyhow::anyhow!(
             "NEXUS_ENCRYPTION_KEY must be set — a 64-char hex string (32 bytes), \
@@ -637,9 +680,12 @@ pub async fn run() -> anyhow::Result<()> {
     tracing::info!(%addr, "nexus-server listening");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
     Ok(())
 }
@@ -695,6 +741,10 @@ mod tests {
             pipelines: PipelineStore::connect("sqlite::memory:").await.unwrap(),
             progress: ProgressHub::default(),
             alerts: AlertNotifier::new(None),
+            login_rate_limiter: std::sync::Arc::new(rate_limit::LoginRateLimiter::new(
+                std::time::Duration::from_secs(60),
+                10_000,
+            )),
         }
     }
 
@@ -1515,5 +1565,66 @@ mod tests {
         assert_eq!(event.bytes_written, 999);
 
         ws.close(None).await.ok();
+    }
+
+    #[test]
+    fn rejects_jwt_secret_shorter_than_32_bytes() {
+        assert!(validate_jwt_secret("short").is_err());
+        assert!(validate_jwt_secret("exactly-31-characters-long-!!!").is_err());
+        assert!(validate_jwt_secret(&"x".repeat(32)).is_ok());
+    }
+
+    #[tokio::test]
+    async fn login_rate_limits_per_ip() {
+        let auth_store = AuthStore::connect("sqlite::memory:").await.unwrap();
+        auth_store
+            .seed_admin_if_empty("admin", "test-password")
+            .await
+            .unwrap();
+        let limiter = std::sync::Arc::new(rate_limit::LoginRateLimiter::new(
+            std::time::Duration::from_secs(60),
+            2,
+        ));
+        let state = AppState {
+            checkpoints: CheckpointStore::connect("sqlite::memory:").await.unwrap(),
+            auth_store,
+            jwt: JwtCodec::new(b"test-secret", 3600),
+            secrets: SecretCipher::from_hex_key(&"ab".repeat(32)).unwrap(),
+            pipelines: PipelineStore::connect("sqlite::memory:").await.unwrap(),
+            progress: ProgressHub::default(),
+            alerts: AlertNotifier::new(None),
+            login_rate_limiter: limiter,
+        };
+        let app = router(state);
+
+        let body = serde_json::json!({"username": "admin", "password": "wrong"});
+        for _ in 0..2 {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/auth/login")
+                        .header("content-type", "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+
+        let blocked = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(blocked.status(), StatusCode::TOO_MANY_REQUESTS);
     }
 }
