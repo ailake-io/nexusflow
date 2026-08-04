@@ -236,16 +236,18 @@ jobs:
 
   # Split out from `connectors` so the two heaviest/flakiest multi-container
   # tests run after that job's huge compile step has fully exited — see the
-  # comment on connectors' last step. Sequential on purpose (needs:
-  # connectors): this is still the same single self-hosted runner, so it
-  # wouldn't run concurrently with connectors anyway, but `needs:` makes the
-  # ordering explicit rather than incidental.
+  # comment on connectors' last step. Runs on a dedicated Windows self-hosted
+  # runner (label `windows-connectors-heavy`) so it does not contend for RAM
+  # with the Linux self-hosted runner that runs clippy/test/connectors.
+  # `needs: connectors` is kept so the heavy tests only start after the
+  # connectors workspace has passed its own compile/test gate.
   connectors-heavy:
     name: connectors-heavy
     needs: connectors
-    runs-on: self-hosted
+    runs-on: [self-hosted, windows-connectors-heavy]
     defaults:
       run:
+        shell: bash
         working-directory: crates/nexus-connectors
     steps:
       - uses: actions/checkout@v4
