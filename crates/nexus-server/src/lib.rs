@@ -162,7 +162,10 @@ fn router(state: AppState) -> Router {
     // User management is Admin-only.
     let admin_protected = Router::new()
         .route("/users", get(list_users_handler).post(create_user_handler))
-        .route("/users/{username}", get(get_user_handler).delete(delete_user_handler))
+        .route(
+            "/users/{username}",
+            get(get_user_handler).delete(delete_user_handler),
+        )
         .route("/users/{username}/role", put(update_user_role_handler))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -187,8 +190,9 @@ fn router(state: AppState) -> Router {
         .route("/metrics", get(metrics_handler))
         .merge(login_routes)
         // Not behind `require_role` — a browser's `WebSocket` API can't set
-        // an `Authorization` header, so this route takes the JWT as a query
-        // param and checks the role itself (see `progress_ws_handler`).
+        // an `Authorization` header, so this route reads the JWT from the
+        // `Sec-WebSocket-Protocol` subprotocol and checks the role itself
+        // (see `progress_ws_handler`).
         .route(
             "/pipelines/{id}/runs/{run_id}/progress",
             get(progress_ws_handler),
@@ -555,7 +559,9 @@ struct UserResponse {
     role: Role,
 }
 
-async fn list_users_handler(State(state): State<AppState>) -> Result<Json<Vec<UserResponse>>, ApiError> {
+async fn list_users_handler(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<UserResponse>>, ApiError> {
     let users = state
         .auth_store
         .list_users()
@@ -592,7 +598,9 @@ async fn create_user_handler(
         return Err(ApiError::bad_request("username must not be empty"));
     }
     if body.password.len() < 8 {
-        return Err(ApiError::bad_request("password must be at least 8 characters"));
+        return Err(ApiError::bad_request(
+            "password must be at least 8 characters",
+        ));
     }
     state
         .auth_store
@@ -650,24 +658,35 @@ async fn delete_user_handler(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[derive(Deserialize)]
-struct ProgressWsQuery {
-    token: String,
-}
-
 /// `/pipelines/{id}/runs/{run_id}/progress` — streams that run's
 /// `ProgressEvent`s as JSON text frames until the run finishes (server
 /// closes) or the client disconnects. `{id}` isn't used for the lookup
 /// (progress is keyed by `run_id` alone) — kept in the path purely so the
 /// URL reads as "this run, under this pipeline", matching `GET .../runs`.
+///
+/// The JWT is carried in the `Sec-WebSocket-Protocol` header instead of the
+/// query string, so it never appears in URLs, server logs, or browser
+/// history. The browser WebSocket API can't set a custom `Authorization`
+/// header, but it can request a subprotocol. The client requests
+/// `nexusflow-<token>`; we strip the prefix to recover the JWT and echo
+/// `nexusflow` back in the handshake response.
 async fn progress_ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
     Path((_id, run_id)): Path<(String, i64)>,
-    Query(query): Query<ProgressWsQuery>,
 ) -> Result<Response, ApiError> {
-    let rx = authorize_progress_subscription(&state, &query.token, run_id).await?;
-    Ok(ws.on_upgrade(move |socket| forward_progress(socket, rx)))
+    let token = ws
+        .requested_protocols()
+        .next()
+        .and_then(|h| h.to_str().ok())
+        .and_then(|proto| proto.strip_prefix("nexusflow-"))
+        .ok_or_else(|| {
+            ApiError::unauthorized("expected nexusflow-<token> Sec-WebSocket-Protocol")
+        })?;
+    let rx = authorize_progress_subscription(&state, token, run_id).await?;
+    Ok(ws
+        .protocols(["nexusflow"])
+        .on_upgrade(move |socket| forward_progress(socket, rx)))
 }
 
 /// Split out from `progress_ws_handler` so it's callable directly from a
@@ -1901,8 +1920,17 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
 
-        let url = format!("ws://{addr}/pipelines/p1/runs/{run_id}/progress?token={token}");
-        let (mut ws, _response) = tokio_tungstenite::connect_async(url)
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+        let mut request = format!("ws://{addr}/pipelines/p1/runs/{run_id}/progress")
+            .into_client_request()
+            .expect("request url is valid");
+        request.headers_mut().insert(
+            axum::http::header::SEC_WEBSOCKET_PROTOCOL,
+            axum::http::HeaderValue::from_str(&format!("nexusflow-{token}"))
+                .expect("protocol value is valid"),
+        );
+        let (mut ws, _response) = tokio_tungstenite::connect_async(request)
             .await
             .expect("real WebSocket handshake succeeds");
 

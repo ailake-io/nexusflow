@@ -126,13 +126,15 @@ export function listRuns(token: string, pipelineId: string): Promise<RunRecord[]
 }
 
 /**
- * Browsers' WebSocket API can't set an Authorization header, so the token
- * travels as a query param — the server verifies it directly for this one
- * route instead of through the usual Bearer-header extractor.
+ * The progress WebSocket URL carries no credentials. The JWT is sent via the
+ * `Sec-WebSocket-Protocol` subprotocol, which keeps it out of URLs, server
+ * logs, and browser history. The browser WebSocket API cannot set a custom
+ * `Authorization` header, but it can request a subprotocol; see
+ * `progress_ws_handler` on the server.
  */
-export function progressSocketUrl(pipelineId: string, runId: number, token: string): string {
+export function progressSocketUrl(pipelineId: string, runId: number): string {
   const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
-  return `${protocol}://${window.location.host}/pipelines/${encodeURIComponent(pipelineId)}/runs/${runId}/progress?token=${encodeURIComponent(token)}`
+  return `${protocol}://${window.location.host}/pipelines/${encodeURIComponent(pipelineId)}/runs/${runId}/progress`
 }
 
 /** Matches nexus-server::pipeline_store::NodeSummary — connector name only,

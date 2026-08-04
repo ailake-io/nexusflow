@@ -70,7 +70,7 @@ export function useRunProgress(): UseRunProgressResult {
         // list shows the authoritative state on the next page load.
       }
 
-      const ws = new WebSocket(progressSocketUrl(pipelineId, id, token))
+      const ws = new WebSocket(progressSocketUrl(pipelineId, id), `nexusflow-${token}`)
       wsRef.current = ws
 
       ws.onmessage = (event) => {
