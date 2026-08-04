@@ -258,6 +258,113 @@ impl PipelineSpec {
         }
         Ok(())
     }
+
+    /// Validates that the spec does not attempt to read local files or reach
+    /// internal networks (SSRF) via connector configs. Intended for ad-hoc
+    /// runs submitted by callers with `Write`/`Admin`; callers with lower
+    /// roles should not be allowed to submit arbitrary specs at all.
+    pub fn validate_security(&self) -> Result<(), NexusError> {
+        for (i, node) in self.sources.iter().enumerate() {
+            validate_node_security(&node.config, &node.connector, "sources", i)?;
+        }
+        for (i, node) in self.sinks.iter().enumerate() {
+            validate_node_security(&node.config, &node.connector, "sinks", i)?;
+        }
+        if let Some(dbt) = &self.dbt {
+            if dbt.project_dir.starts_with('/') {
+                return Err(NexusError::Schema(
+                    "dbt.project_dir must be a relative path".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Rejects absolute local paths and internal/private URLs in connector
+/// configs. This is a defense-in-depth guard for ad-hoc pipeline runs.
+fn validate_node_security(
+    config: &Value,
+    connector: &str,
+    context: &str,
+    index: usize,
+) -> Result<(), NexusError> {
+    let sensitive = ["path", "uri", "project_dir", "base_url"];
+    for key in &sensitive {
+        if let Some(Value::String(s)) = config.get(key) {
+            // Absolute local path -> reject. URIs with schemes (postgres://,
+            // http://, etc.) don't start with '/', so this only catches
+            // filesystem paths.
+            if s.starts_with('/') {
+                return Err(NexusError::Schema(format!(
+                    "{context}[{index}] ({connector}): {key} must not be an absolute path"
+                )));
+            }
+            // HTTP(S) URLs pointing to internal/reserved endpoints -> reject.
+            if let Some(host) = http_host(s) {
+                if is_internal_host(&host) {
+                    return Err(NexusError::Schema(format!(
+                        "{context}[{index}] ({connector}): {key} points to an internal host"
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn http_host(s: &str) -> Option<String> {
+    s.strip_prefix("http://")
+        .or_else(|| s.strip_prefix("https://"))
+        .map(|rest| rest.split('/').next().unwrap_or(rest).to_lowercase())
+}
+
+fn is_internal_host(host: &str) -> bool {
+    // Strip optional port.
+    let host = host.split(':').next().unwrap_or(host);
+    if host == "localhost"
+        || host == "127.0.0.1"
+        || host == "::1"
+        || host.ends_with(".local")
+        || host == "metadata.google.internal"
+        || host == "instance-data.azuremetadata"
+    {
+        return true;
+    }
+    // Cloud metadata endpoints.
+    if host == "169.254.169.254" {
+        return true;
+    }
+    // Private IPv4 ranges.
+    if let Ok(addr) = host.parse::<std::net::IpAddr>() {
+        match addr {
+            std::net::IpAddr::V4(v4) => {
+                let o = v4.octets();
+                // 10.0.0.0/8
+                if o[0] == 10 {
+                    return true;
+                }
+                // 172.16.0.0/12
+                if o[0] == 172 && (16..=31).contains(&o[1]) {
+                    return true;
+                }
+                // 192.168.0.0/16
+                if o[0] == 192 && o[1] == 168 {
+                    return true;
+                }
+                // 127.0.0.0/8 (localhost range)
+                if o[0] == 127 {
+                    return true;
+                }
+            }
+            std::net::IpAddr::V6(v6) => {
+                if v6.is_loopback() || v6.is_unique_local() {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 #[cfg(test)]

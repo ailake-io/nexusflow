@@ -16,7 +16,7 @@ mod scheduler;
 pub mod telemetry;
 
 use alerts::AlertNotifier;
-use auth::{require_role, JwtCodec, Role};
+use auth::{require_role, Claims, JwtCodec, Role};
 use auth_store::AuthStore;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Extension, FromRef, Path, Query, State};
@@ -271,17 +271,23 @@ struct RunAccepted {
     run_id: i64,
 }
 
-/// `POST /pipelines/{id}/run` — validates the spec, records the run and
-/// returns **202 Accepted** with its id immediately; the pipeline itself
-/// executes in a detached supervisor task (`execute_pipeline_run`) that
-/// always records the terminal state. Before this, the pipeline ran inline
-/// in the request: a client disconnect (or process restart) stranded the
-/// row as `'running'` forever, and the scheduler — which never overlaps a
-/// pipeline with itself — would skip it indefinitely.
-#[tracing::instrument(skip(state, spec), fields(pipeline_id = %id))]
+/// `POST /pipelines/{id}/run` — records the run and returns **202 Accepted**
+/// with its id immediately; the pipeline itself executes in a detached
+/// supervisor task (`execute_pipeline_run`) that always records the terminal
+/// state. Before this, the pipeline ran inline in the request: a client
+/// disconnect (or process restart) stranded the row as `'running'` forever,
+/// and the scheduler — which never overlaps a pipeline with itself — would
+/// skip it indefinitely.
+///
+/// RBAC/security: callers with `Execute` may only trigger a previously
+/// persisted pipeline (ad-hoc specs are rejected). Callers with `Write` or
+/// `Admin` may submit an ad-hoc spec, but it is validated for SSRF and
+/// arbitrary local-file reads before execution.
+#[tracing::instrument(skip(state, spec, claims), fields(pipeline_id = %id))]
 async fn run_pipeline_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Extension(claims): Extension<Claims>,
     Json(spec): Json<PipelineSpec>,
 ) -> Result<(StatusCode, Json<RunAccepted>), ApiError> {
     if spec.pipeline_id != id {
@@ -293,7 +299,21 @@ async fn run_pipeline_handler(
     spec.validate()
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
 
-    let run_id = start_pipeline_run(&state, &spec)
+    let effective_spec = if claims.role >= Role::Write {
+        spec.validate_security()
+            .map_err(|e| ApiError::bad_request(e.to_string()))?;
+        spec
+    } else {
+        // Execute-only callers must run the persisted definition, not an
+        // ad-hoc spec that could point at local files or internal endpoints.
+        state
+            .pipelines
+            .get_spec(&id, &state.secrets)
+            .await
+            .map_err(ApiError::from)?
+    };
+
+    let run_id = start_pipeline_run(&state, &effective_spec)
         .await
         .map_err(ApiError::internal)?;
     Ok((StatusCode::ACCEPTED, Json(RunAccepted { run_id })))
@@ -1102,23 +1122,39 @@ mod tests {
         // executes the run, so the run is *accepted* (202) and the failure
         // lands in the run history — not in the HTTP response.
         let state = test_state().await;
-        let token = bearer(&state, Role::Execute);
+        let write_token = bearer(&state, Role::Write);
+        let execute_token = bearer(&state, Role::Execute);
         let app = router(state);
+
+        // Execute callers may only trigger persisted pipelines.
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                "/pipelines",
+                &write_token,
+                sample_pipeline("p1"),
+            ))
+            .await
+            .unwrap();
 
         let body = serde_json::json!({
             "pipeline_id": "p1",
             "sources": [{"connector": "mongodb", "config": {}}],
             "sinks": [{"connector": "postgres", "config": {}}]
         });
-
         let response = app
             .clone()
-            .oneshot(json_request("POST", "/pipelines/p1/run", &token, body))
+            .oneshot(json_request(
+                "POST",
+                "/pipelines/p1/run",
+                &execute_token,
+                body,
+            ))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::ACCEPTED);
 
-        let record = wait_for_terminal_run(&app, &token, "p1").await;
+        let record = wait_for_terminal_run(&app, &execute_token, "p1").await;
         assert_eq!(record["status"], "failed");
         assert!(record["error"]
             .as_str()
@@ -1129,17 +1165,27 @@ mod tests {
     #[tokio::test]
     async fn run_response_run_id_is_immediately_subscribable_for_progress() {
         let state = test_state().await;
-        let token = bearer(&state, Role::Execute);
+        let write_token = bearer(&state, Role::Write);
+        let execute_token = bearer(&state, Role::Execute);
         let app = router(state.clone());
 
-        let body = serde_json::json!({
-            "pipeline_id": "p1",
-            "sources": [{"connector": "mongodb", "config": {}}],
-            "sinks": [{"connector": "postgres", "config": {}}]
-        });
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                "/pipelines",
+                &write_token,
+                sample_pipeline("p1"),
+            ))
+            .await
+            .unwrap();
 
         let response = app
-            .oneshot(json_request("POST", "/pipelines/p1/run", &token, body))
+            .oneshot(json_request(
+                "POST",
+                "/pipelines/p1/run",
+                &execute_token,
+                sample_pipeline("p1"),
+            ))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::ACCEPTED);
@@ -1156,6 +1202,65 @@ mod tests {
         authorize_progress_subscription(&state, &read_token, run_id)
             .await
             .expect("progress channel exists from the moment the 202 is sent");
+    }
+
+    #[tokio::test]
+    async fn run_rejects_ad_hoc_spec_for_execute_role() {
+        let state = test_state().await;
+        let token = bearer(&state, Role::Execute);
+        let app = router(state);
+
+        let body = serde_json::json!({
+            "pipeline_id": "p1",
+            "sources": [{"connector": "postgres", "config": {}}],
+            "sinks": [{"connector": "sqlite", "config": {}}]
+        });
+
+        let response = app
+            .oneshot(json_request("POST", "/pipelines/p1/run", &token, body))
+            .await
+            .unwrap();
+        // Pipeline p1 was never persisted, so Execute gets a 404 rather than
+        // being allowed to run an arbitrary spec.
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn run_ad_hoc_rejects_absolute_local_path() {
+        let state = test_state().await;
+        let token = bearer(&state, Role::Write);
+        let app = router(state);
+
+        let body = serde_json::json!({
+            "pipeline_id": "p1",
+            "sources": [{"connector": "sqlite", "config": {"path": "/etc/passwd"}}],
+            "sinks": [{"connector": "sqlite", "config": {"path": "out.db"}}]
+        });
+
+        let response = app
+            .oneshot(json_request("POST", "/pipelines/p1/run", &token, body))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn run_ad_hoc_rejects_internal_url() {
+        let state = test_state().await;
+        let token = bearer(&state, Role::Write);
+        let app = router(state);
+
+        let body = serde_json::json!({
+            "pipeline_id": "p1",
+            "sources": [{"connector": "rest", "config": {"base_url": "http://169.254.169.254/latest/meta-data"}}],
+            "sinks": [{"connector": "sqlite", "config": {"path": "out.db"}}]
+        });
+
+        let response = app
+            .oneshot(json_request("POST", "/pipelines/p1/run", &token, body))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     fn json_request(
@@ -1413,8 +1518,19 @@ mod tests {
     #[tokio::test]
     async fn run_records_failed_run_in_history() {
         let state = test_state().await;
-        let token = bearer(&state, Role::Execute);
+        let write_token = bearer(&state, Role::Write);
+        let execute_token = bearer(&state, Role::Execute);
         let app = router(state);
+
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                "/pipelines",
+                &write_token,
+                sample_pipeline("p1"),
+            ))
+            .await
+            .unwrap();
 
         let body = serde_json::json!({
             "pipeline_id": "p1",
@@ -1423,12 +1539,17 @@ mod tests {
         });
         let run = app
             .clone()
-            .oneshot(json_request("POST", "/pipelines/p1/run", &token, body))
+            .oneshot(json_request(
+                "POST",
+                "/pipelines/p1/run",
+                &execute_token,
+                body,
+            ))
             .await
             .unwrap();
         assert_eq!(run.status(), StatusCode::ACCEPTED);
 
-        let record = wait_for_terminal_run(&app, &token, "p1").await;
+        let record = wait_for_terminal_run(&app, &execute_token, "p1").await;
         assert_eq!(record["status"], "failed");
         assert!(record["error"]
             .as_str()
