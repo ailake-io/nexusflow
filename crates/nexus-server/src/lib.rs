@@ -159,6 +159,17 @@ fn router(state: AppState) -> Router {
         ))
         .layer(Extension(Role::Read));
 
+    // User management is Admin-only.
+    let admin_protected = Router::new()
+        .route("/users", get(list_users_handler).post(create_user_handler))
+        .route("/users/{username}", get(get_user_handler).delete(delete_user_handler))
+        .route("/users/{username}/role", put(update_user_role_handler))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_role::<AppState>,
+        ))
+        .layer(Extension(Role::Admin));
+
     // Rate-limit the login endpoint per IP before it hits Argon2 verification.
     // Layer order: Extension is outermost so the middleware sees it on the
     // way in (axum applies layers inside-out, last .layer runs first).
@@ -182,6 +193,7 @@ fn router(state: AppState) -> Router {
             "/pipelines/{id}/runs/{run_id}/progress",
             get(progress_ws_handler),
         )
+        .merge(admin_protected)
         .merge(execute_protected)
         .merge(write_protected)
         .merge(read_protected)
@@ -305,10 +317,12 @@ struct RunAccepted {
 /// and the scheduler — which never overlaps a pipeline with itself — would
 /// skip it indefinitely.
 ///
-/// RBAC/security: callers with `Execute` may only trigger a previously
-/// persisted pipeline (ad-hoc specs are rejected). Callers with `Write` or
-/// `Admin` may submit an ad-hoc spec, but it is validated for SSRF and
-/// arbitrary local-file reads before execution.
+/// RBAC/security: if a pipeline with this id has already been persisted,
+/// the stored definition is always used, regardless of what (if anything) the
+/// caller put in the body. That prevents an `Execute` caller from smuggling an
+/// arbitrary spec in the body of an existing-pipeline run. If the pipeline does
+/// not exist, only `Write`/`Admin` callers may submit an ad-hoc spec, and it is
+/// validated for SSRF and arbitrary local-file reads before execution.
 #[tracing::instrument(skip(state, spec, claims), fields(pipeline_id = %id))]
 async fn run_pipeline_handler(
     State(state): State<AppState>,
@@ -325,18 +339,22 @@ async fn run_pipeline_handler(
     spec.validate()
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
 
-    let effective_spec = if claims.role >= Role::Write {
+    let persisted = match state.pipelines.get_spec(&id, &state.secrets).await {
+        Ok(spec) => Some(spec),
+        Err(PipelineStoreError::NotFound(_)) => None,
+        Err(e) => return Err(ApiError::from(e)),
+    };
+
+    let effective_spec = if let Some(spec) = persisted {
+        spec
+    } else if claims.role >= Role::Write {
         spec.validate_security()
             .map_err(|e| ApiError::bad_request(e.to_string()))?;
         spec
     } else {
-        // Execute-only callers must run the persisted definition, not an
-        // ad-hoc spec that could point at local files or internal endpoints.
-        state
-            .pipelines
-            .get_spec(&id, &state.secrets)
-            .await
-            .map_err(ApiError::from)?
+        return Err(ApiError::forbidden(
+            "ad-hoc runs require Write or Admin role",
+        ));
     };
 
     let run_id = start_pipeline_run(&state, &effective_spec)
@@ -522,6 +540,114 @@ async fn list_runs_handler(
 ) -> Result<Json<Vec<RunRecord>>, ApiError> {
     let (limit, offset) = pagination.validated()?;
     Ok(Json(state.pipelines.list_runs(&id, limit, offset).await?))
+}
+
+#[derive(Deserialize)]
+struct CreateUserRequest {
+    username: String,
+    password: String,
+    role: Role,
+}
+
+#[derive(Serialize)]
+struct UserResponse {
+    username: String,
+    role: Role,
+}
+
+async fn list_users_handler(State(state): State<AppState>) -> Result<Json<Vec<UserResponse>>, ApiError> {
+    let users = state
+        .auth_store
+        .list_users()
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(
+        users
+            .into_iter()
+            .map(|(username, role)| UserResponse { username, role })
+            .collect(),
+    ))
+}
+
+async fn get_user_handler(
+    State(state): State<AppState>,
+    Path(username): Path<String>,
+) -> Result<Json<UserResponse>, ApiError> {
+    let user = state
+        .auth_store
+        .get_user(&username)
+        .await
+        .map_err(ApiError::internal)?;
+    match user {
+        Some((username, role)) => Ok(Json(UserResponse { username, role })),
+        None => Err(ApiError::not_found(format!("user {username:?} not found"))),
+    }
+}
+
+async fn create_user_handler(
+    State(state): State<AppState>,
+    Json(body): Json<CreateUserRequest>,
+) -> Result<(StatusCode, Json<UserResponse>), ApiError> {
+    if body.username.trim().is_empty() {
+        return Err(ApiError::bad_request("username must not be empty"));
+    }
+    if body.password.len() < 8 {
+        return Err(ApiError::bad_request("password must be at least 8 characters"));
+    }
+    state
+        .auth_store
+        .create_user(&body.username, &body.password, body.role)
+        .await
+        .map_err(|e| match e.to_string().contains("UNIQUE") {
+            true => ApiError::conflict(format!("user {:?} already exists", body.username)),
+            false => ApiError::internal(e),
+        })?;
+    Ok((
+        StatusCode::CREATED,
+        Json(UserResponse {
+            username: body.username,
+            role: body.role,
+        }),
+    ))
+}
+
+#[derive(Deserialize)]
+struct UpdateRoleRequest {
+    role: Role,
+}
+
+async fn update_user_role_handler(
+    State(state): State<AppState>,
+    Path(username): Path<String>,
+    Json(body): Json<UpdateRoleRequest>,
+) -> Result<Json<UserResponse>, ApiError> {
+    let updated = state
+        .auth_store
+        .update_user_role(&username, body.role)
+        .await
+        .map_err(ApiError::internal)?;
+    if !updated {
+        return Err(ApiError::not_found(format!("user {username:?} not found")));
+    }
+    Ok(Json(UserResponse {
+        username,
+        role: body.role,
+    }))
+}
+
+async fn delete_user_handler(
+    State(state): State<AppState>,
+    Path(username): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let deleted = state
+        .auth_store
+        .delete_user(&username)
+        .await
+        .map_err(ApiError::internal)?;
+    if !deleted {
+        return Err(ApiError::not_found(format!("user {username:?} not found")));
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]
@@ -1259,9 +1385,9 @@ mod tests {
             .oneshot(json_request("POST", "/pipelines/p1/run", &token, body))
             .await
             .unwrap();
-        // Pipeline p1 was never persisted, so Execute gets a 404 rather than
-        // being allowed to run an arbitrary spec.
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        // Pipeline p1 was never persisted, and Execute role is not allowed to
+        // submit ad-hoc specs, so the request is forbidden.
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

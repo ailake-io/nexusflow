@@ -111,6 +111,53 @@ impl AuthStore {
         Ok(())
     }
 
+    pub async fn list_users(&self) -> anyhow::Result<Vec<(String, Role)>> {
+        let rows: Vec<(String, String)> =
+            sqlx::query_as("SELECT username, role FROM users ORDER BY username")
+                .fetch_all(&self.pool)
+                .await?;
+        rows.into_iter()
+            .map(|(username, role_str)| {
+                let role = serde_json::from_value(serde_json::Value::String(role_str))?;
+                Ok((username, role))
+            })
+            .collect()
+    }
+
+    pub async fn get_user(&self, username: &str) -> anyhow::Result<Option<(String, Role)>> {
+        let row: Option<(String, String)> =
+            sqlx::query_as("SELECT username, role FROM users WHERE username = ?")
+                .bind(username)
+                .fetch_optional(&self.pool)
+                .await?;
+        row.map(|(username, role_str)| {
+            let role = serde_json::from_value(serde_json::Value::String(role_str))?;
+            Ok((username, role))
+        })
+        .transpose()
+    }
+
+    pub async fn update_user_role(&self, username: &str, role: Role) -> anyhow::Result<bool> {
+        let role_str = serde_json::to_value(role)?
+            .as_str()
+            .expect("Role serializes to a string")
+            .to_string();
+        let result = sqlx::query("UPDATE users SET role = ? WHERE username = ?")
+            .bind(role_str)
+            .bind(username)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn delete_user(&self, username: &str) -> anyhow::Result<bool> {
+        let result = sqlx::query("DELETE FROM users WHERE username = ?")
+            .bind(username)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Returns the user's role iff `password` matches, `None` for either an
     /// unknown username or a wrong password — deliberately not
     /// distinguishable to the caller, so a login failure never leaks which

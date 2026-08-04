@@ -49,6 +49,28 @@ async fn login(app: Router, username: &str, password: &str) -> String {
         .to_string()
 }
 
+async fn create_pipeline(app: Router, spec: &Value, token: &str) -> (StatusCode, Value) {
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/pipelines")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(spec.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    (status, body)
+}
+
 async fn post_run(
     app: Router,
     pipeline_id: &str,
@@ -204,6 +226,13 @@ async fn fans_in_two_postgres_sources_transforms_and_writes_to_sqlite() {
         .expect("app builds");
 
     let token = login(app.clone(), "admin", "test-password").await;
+    let (create_status, create_body) = create_pipeline(app.clone(), &spec, &token).await;
+    assert_eq!(
+        create_status,
+        StatusCode::CREATED,
+        "pipeline was not created: {create_body:?}"
+    );
+
     let (status, body) = post_run(app.clone(), "enrich-events", &spec, &token).await;
     assert_eq!(
         status,
@@ -246,6 +275,12 @@ async fn fans_in_two_postgres_sources_transforms_and_writes_to_sqlite() {
         .await
         .expect("app rebuilds");
     let token2 = login(app2.clone(), "admin", "test-password").await;
+    let (create_status2, create_body2) = create_pipeline(app2.clone(), &spec, &token2).await;
+    assert_eq!(
+        create_status2,
+        StatusCode::CREATED,
+        "pipeline was not recreated after restart: {create_body2:?}"
+    );
     let (status2, body2) = post_run(app2.clone(), "enrich-events", &spec, &token2).await;
     assert_eq!(
         status2,
