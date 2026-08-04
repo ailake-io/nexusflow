@@ -103,12 +103,18 @@ export interface RunRecord {
 }
 
 /**
- * POST /pipelines/{id}/run doesn't resolve until the whole pipeline
- * finishes — callers that want live progress shouldn't await this before
- * polling `listRuns` for the new run's id (see hooks/useRunProgress.ts).
+ * POST /pipelines/{id}/run returns **202 Accepted** as soon as the run row
+ * and its progress channel exist on the server — the pipeline itself
+ * executes in a background task, so the caller gets the new run's id
+ * immediately and can subscribe to its progress WebSocket right away (see
+ * hooks/useRunProgress.ts). The terminal state (success/failed, stats,
+ * error) is read back via `listRuns`.
  */
-export function runPipeline(token: string, spec: { pipeline_id: string }): Promise<unknown> {
-  return request(
+export function runPipeline(
+  token: string,
+  spec: { pipeline_id: string },
+): Promise<{ run_id: number }> {
+  return request<{ run_id: number }>(
     `/pipelines/${encodeURIComponent(spec.pipeline_id)}/run`,
     { method: 'POST', body: JSON.stringify(spec) },
     token,

@@ -32,6 +32,21 @@ impl AuthStore {
         .execute(&pool)
         .await?;
 
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                happened_at TEXT NOT NULL DEFAULT (datetime('now')),
+                username TEXT,
+                action TEXT NOT NULL,
+                success INTEGER NOT NULL,
+                ip TEXT
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await?;
+
         Ok(Self { pool })
     }
 
@@ -72,6 +87,25 @@ impl AuthStore {
             .bind(username)
             .bind(password_hash)
             .bind(role_str)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Records a security-relevant event durably. `success` is 1/0 and `ip`
+    /// is optional (e.g. extracted from the HTTP connection).
+    pub async fn log_security_event(
+        &self,
+        username: Option<&str>,
+        action: &str,
+        success: bool,
+        ip: Option<&str>,
+    ) -> anyhow::Result<()> {
+        sqlx::query("INSERT INTO audit_log (username, action, success, ip) VALUES (?, ?, ?, ?)")
+            .bind(username)
+            .bind(action)
+            .bind(if success { 1 } else { 0 })
+            .bind(ip)
             .execute(&self.pool)
             .await?;
         Ok(())

@@ -13,6 +13,10 @@ default = []
 # (it's just data), but a spec that sets it gets a clear "not compiled in"
 # error instead of silently doing nothing.
 dbt = ["tokio/process"]
+# Embeddings pipeline stage: chunking + ONNX inference via nexus-ai. Off by
+# default because it pulls in ort, hf-hub, tokenizers and ONNX binaries, which
+# significantly increases build time and binary size when not needed.
+embeddings = ["dep:nexus-ai", "nexus-ai/cpu"]
 # Single-binary deployment (Marco 11, CLAUDE.md §7): embeds frontend/dist
 # into the binary via rust-embed and serves it (with SPA fallback) for any
 # GET that doesn't match an API route. Off by default because rust-embed's
@@ -42,7 +46,7 @@ embed-ui = ["dep:rust-embed"]
 connectors-all = [
     "mongodb", "kafka", "rest", "odbc", "milvus", "qdrant", "lancedb",
     "pgvector", "pinecone", "chromadb", "deltalake", "iceberg", "parquet",
-    "ailake",
+    "ailake", "embeddings",
 ]
 mongodb = ["dep:nexus-connector-mongodb"]
 kafka = ["dep:nexus-connector-kafka", "nexus-connector-kafka/consumer"]
@@ -92,6 +96,7 @@ nexus-connector-iceberg = { version = "0.1.0", path = "../nexus-connectors/nexus
 nexus-connector-parquet = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-parquet", optional = true }
 nexus-connector-ailake = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-ailake", optional = true }
 nexus-core = { version = "0.1.0", path = "../nexus-core" }
+nexus-ai = { version = "0.1.0", path = "../nexus-ai", optional = true }
 hex = "0.4.3"
 # Pipeline scheduler (background cron polling, see scheduler.rs) — matches
 # nexus-core's own cron/chrono versions (parse_cron_expression's return
@@ -99,6 +104,7 @@ hex = "0.4.3"
 # the same crate, not just a compatible one).
 chrono = { version = "0.4.45", features = ["serde"] }
 cron = "0.17.0"
+dashmap = "6.2.1"
 reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
@@ -136,13 +142,10 @@ tracing-opentelemetry = { version = "0.33.0", default-features = false, features
 opentelemetry-prometheus = "0.32.0"
 prometheus = "0.14.0"
 rust-embed = { version = "8.12.0", optional = true, features = ["mime-guess"] }
-
-[dev-dependencies]
-# Pinned to match the workspace-wide arrow-array/arrow-schema version
-# (nexus-core, connectors) — a mismatched version here would be a second,
-# incompatible RecordBatch type.
 arrow-array = "58.4.0"
 arrow-schema = "58.4.0"
+
+[dev-dependencies]
 async-trait = "0.1.91"
 futures = "0.3.33"
 futures-util = "0.3.33"

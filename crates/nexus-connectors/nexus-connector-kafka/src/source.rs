@@ -5,7 +5,7 @@ use arrow_schema::SchemaRef;
 use async_trait::async_trait;
 use futures::stream::{self, BoxStream, StreamExt};
 use nexus_core::{NexusError, RecordBatchBuilder, Source};
-use rdkafka::consumer::{Consumer, StreamConsumer};
+use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
 use rdkafka::error::KafkaError;
 use rdkafka::message::Message;
 use rdkafka::topic_partition_list::TopicPartitionList;
@@ -19,11 +19,18 @@ use std::time::{Duration, Instant};
 /// CDC mode (opcode extraction) — see ARCHITECTURE.md §4.1/§7.
 pub struct KafkaSource {
     consumer: StreamConsumer,
+    topic: String,
     schema: SchemaRef,
     envelope: KafkaEnvelope,
     batch_size: usize,
     poll_timeout: Duration,
     max_messages: usize,
+    /// `true` when the consumer was manually assigned via `start_offsets`
+    /// instead of subscribed as a group member. In that mode Kafka does not
+    /// consider us a group member, so broker-side offset commits are not
+    /// possible (and not needed — the engine checkpoint is the source of
+    /// truth). See ARCHITECTURE.md §5.
+    manual_assignment: bool,
     /// Last consumed offset per partition — read after `read_batches` to
     /// build a `CheckpointCursor` per partition (resume via
     /// `start_offsets`), per ARCHITECTURE.md §5.
@@ -35,7 +42,11 @@ impl KafkaSource {
         let consumer: StreamConsumer = ClientConfig::new()
             .set("bootstrap.servers", &config.bootstrap_servers)
             .set("group.id", &config.group_id)
-            .set("enable.auto.commit", "true")
+            // Manual offset commit: the engine's checkpoint is the source of
+            // truth, not a background heartbeat. `read_batches` commits once
+            // the returned batches have been successfully produced, matching
+            // the at-least-once contract of the other sources.
+            .set("enable.auto.commit", "false")
             .set("auto.offset.reset", "earliest")
             .create()
             .map_err(|e| NexusError::Connector(format!("kafka consumer create failed: {e}")))?;
@@ -62,11 +73,13 @@ impl KafkaSource {
 
         Ok(Self {
             consumer,
+            topic: config.topic.clone(),
             schema: build_schema(&config.fields, config.envelope),
             envelope: config.envelope,
             batch_size: config.batch_size,
             poll_timeout: Duration::from_millis(config.poll_timeout_ms),
             max_messages: config.max_messages,
+            manual_assignment: !config.start_offsets.is_empty(),
             last_offsets: HashMap::new(),
         })
     }
@@ -75,6 +88,26 @@ impl KafkaSource {
     /// `CheckpointCursor` per `(pipeline_id, "{topic}-{partition}")`.
     pub fn last_offsets(&self) -> &HashMap<i32, i64> {
         &self.last_offsets
+    }
+
+    /// Commits the last consumed offsets synchronously. Called automatically
+    /// at the end of a successful `read_batches` call so the engine's
+    /// checkpoint and Kafka's consumer group state stay aligned.
+    fn commit_offsets(&self) -> Result<(), NexusError> {
+        if self.last_offsets.is_empty() || self.manual_assignment {
+            return Ok(());
+        }
+        let mut tpl = TopicPartitionList::new();
+        for (&partition, &offset) in &self.last_offsets {
+            tpl.add_partition_offset(&self.topic, partition, Offset::Offset(offset))
+                .map_err(|e| {
+                    NexusError::Connector(format!("kafka commit offset list failed: {e}"))
+                })?;
+        }
+        self.consumer
+            .commit(&tpl, CommitMode::Sync)
+            .map_err(|e| NexusError::Connector(format!("kafka offset commit failed: {e}")))?;
+        Ok(())
     }
 }
 
@@ -140,6 +173,12 @@ impl Source for KafkaSource {
                 &buffer,
             )?);
         }
+
+        // Manual commit: only advance Kafka offsets after the batches that
+        // contain them have been successfully assembled. If downstream
+        // processing fails, the next run resumes from the previous checkpoint
+        // rather than from an auto-committed offset that may skip data.
+        self.commit_offsets()?;
 
         Ok(Box::pin(stream::iter(batches.into_iter().map(Ok))))
     }

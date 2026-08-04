@@ -10,6 +10,7 @@ mod embedded_ui;
 mod error;
 mod pipeline_store;
 mod progress;
+mod rate_limit;
 mod runner;
 mod scheduler;
 pub mod telemetry;
@@ -27,7 +28,7 @@ use axum::{Json, Router};
 use checkpoint_store::CheckpointStore;
 use crypto::SecretCipher;
 use error::ApiError;
-use nexus_core::{ConnectorRegistry, PartitionStats, PipelineSpec};
+use nexus_core::{ConnectorRegistry, PipelineSpec, ProgressSender};
 use pipeline_store::{PipelineStore, PipelineStoreError, PipelineSummary, RunRecord};
 use progress::ProgressHub;
 use serde::{Deserialize, Serialize};
@@ -43,6 +44,7 @@ struct AppState {
     pipelines: PipelineStore,
     progress: ProgressHub,
     alerts: AlertNotifier,
+    login_rate_limiter: std::sync::Arc<rate_limit::LoginRateLimiter>,
 }
 
 impl From<PipelineStoreError> for ApiError {
@@ -131,6 +133,14 @@ fn router(state: AppState) -> Router {
         ))
         .layer(Extension(Role::Read));
 
+    // Rate-limit the login endpoint per IP before it hits Argon2 verification.
+    // Layer order: Extension is outermost so the middleware sees it on the
+    // way in (axum applies layers inside-out, last .layer runs first).
+    let login_routes = Router::new()
+        .route("/auth/login", post(login_handler))
+        .layer(middleware::from_fn(rate_limit::login_rate_limit))
+        .layer(Extension(state.login_rate_limiter.clone()));
+
     let app = Router::new()
         .route("/health", get(health))
         // Unauthenticated like /health — Prometheus scrapers don't carry a
@@ -138,7 +148,7 @@ fn router(state: AppState) -> Router {
         // scrape-auth story; network segmentation is the intended guard
         // here (ARCHITECTURE.md §9/§10).
         .route("/metrics", get(metrics_handler))
-        .route("/auth/login", post(login_handler))
+        .merge(login_routes)
         // Not behind `require_role` — a browser's `WebSocket` API can't set
         // an `Authorization` header, so this route takes the JWT as a query
         // param and checks the role itself (see `progress_ws_handler`).
@@ -225,22 +235,55 @@ async fn login_handler(
     State(state): State<AppState>,
     Json(body): Json<LoginRequest>,
 ) -> Result<Json<LoginResponse>, ApiError> {
-    let role = state
+    let result = state
         .auth_store
         .verify(&body.username, &body.password)
         .await
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::unauthorized("invalid username or password"))?;
+        .map_err(ApiError::internal);
+
+    let log_outcome = match &result {
+        Ok(Some(_)) => (true, "login succeeded"),
+        Ok(None) => (false, "invalid username or password"),
+        Err(_) => (false, "login verification error"),
+    };
+    // Log to stdout/tracing and to the durable audit table. Do not block the
+    // response on audit persistence, but surface failures in server logs.
+    tracing::info!(
+        username = %body.username,
+        success = log_outcome.0,
+        "{}", log_outcome.1
+    );
+    if let Err(e) = state
+        .auth_store
+        .log_security_event(Some(&body.username), "login", log_outcome.0, None)
+        .await
+    {
+        tracing::warn!(error = %e, "failed to write login audit log");
+    }
+
+    let role = result?.ok_or_else(|| ApiError::unauthorized("invalid username or password"))?;
     let token = state.jwt.issue(&body.username, role)?;
     Ok(Json(LoginResponse { token }))
 }
 
+#[derive(Serialize)]
+struct RunAccepted {
+    run_id: i64,
+}
+
+/// `POST /pipelines/{id}/run` — validates the spec, records the run and
+/// returns **202 Accepted** with its id immediately; the pipeline itself
+/// executes in a detached supervisor task (`execute_pipeline_run`) that
+/// always records the terminal state. Before this, the pipeline ran inline
+/// in the request: a client disconnect (or process restart) stranded the
+/// row as `'running'` forever, and the scheduler — which never overlaps a
+/// pipeline with itself — would skip it indefinitely.
 #[tracing::instrument(skip(state, spec), fields(pipeline_id = %id))]
 async fn run_pipeline_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(spec): Json<PipelineSpec>,
-) -> Result<Json<Vec<PartitionStats>>, ApiError> {
+) -> Result<(StatusCode, Json<RunAccepted>), ApiError> {
     if spec.pipeline_id != id {
         return Err(ApiError::bad_request(format!(
             "path id {id:?} does not match body.pipeline_id {:?}",
@@ -250,31 +293,54 @@ async fn run_pipeline_handler(
     spec.validate()
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
 
-    let stats = execute_pipeline(&state, &spec)
+    let run_id = start_pipeline_run(&state, &spec)
         .await
         .map_err(ApiError::internal)?;
-    Ok(Json(stats))
+    Ok((StatusCode::ACCEPTED, Json(RunAccepted { run_id })))
 }
 
-/// Runs a pipeline end to end and records the outcome — shared by the
-/// manual `POST /pipelines/{id}/run` handler above and `scheduler.rs`'s
-/// cron-triggered runs, so a scheduled run gets exactly the same history/
-/// dbt/alerting behavior as a manually-triggered one, not a second
-/// slightly-different code path.
-#[tracing::instrument(skip(state, spec), fields(pipeline_id = %spec.pipeline_id, run_id))]
-async fn execute_pipeline(
+/// Creates the run row and spawns the supervisor task that executes the
+/// pipeline — shared by the manual `POST /pipelines/{id}/run` handler above
+/// and `scheduler.rs`'s cron-triggered runs, so a scheduled run gets
+/// exactly the same history/dbt/alerting behavior as a manually-triggered
+/// one, not a second slightly-different code path.
+///
+/// The progress channel is registered here, *before* the caller's 202
+/// response can reach the client — otherwise a client subscribing to
+/// `/runs/{run_id}/progress` immediately after the 202 could win the race
+/// against the supervisor's own `progress.start` and get a spurious 404.
+pub(crate) async fn start_pipeline_run(
     state: &AppState,
     spec: &PipelineSpec,
-) -> anyhow::Result<Vec<PartitionStats>> {
+) -> Result<i64, PipelineStoreError> {
     // Recorded regardless of whether `spec.pipeline_id` was ever persisted
     // via `POST /pipelines` — ad-hoc runs (body-only, no prior create)
     // still show up in `GET /pipelines/{id}/runs`, same as always-persisted
     // ones.
     let run_id = state.pipelines.start_run(&spec.pipeline_id).await?;
-    tracing::Span::current().record("run_id", run_id);
     let progress_tx = state.progress.start(run_id);
 
-    let result = runner::run_pipeline(spec, &state.checkpoints, Some(progress_tx)).await;
+    let supervisor = state.clone();
+    let spec = spec.clone();
+    tokio::spawn(async move {
+        execute_pipeline_run(supervisor, spec, run_id, progress_tx).await;
+    });
+    Ok(run_id)
+}
+
+/// Supervisor for one pipeline run: executes the pipeline and *always*
+/// records the terminal state (`finish_run_success` / `finish_run_failure`)
+/// while the process lives — a run row must never be stranded as
+/// `'running'` (death of the process itself is handled by the boot-time
+/// reaper, `PipelineStore::fail_interrupted_runs`).
+#[tracing::instrument(skip(state, spec, progress_tx), fields(pipeline_id = %spec.pipeline_id, run_id))]
+async fn execute_pipeline_run(
+    state: AppState,
+    spec: PipelineSpec,
+    run_id: i64,
+    progress_tx: ProgressSender,
+) {
+    let result = runner::run_pipeline(&spec, &state.checkpoints, Some(progress_tx)).await;
     state.progress.finish(run_id);
 
     match result {
@@ -291,8 +357,8 @@ async fn execute_pipeline(
                         dbt_summary = outcome.summary_json();
                     }
                     Err(e) => {
-                        record_run_failure(state, run_id, &spec.pipeline_id, &e).await;
-                        return Err(e);
+                        record_run_failure(&state, run_id, &spec.pipeline_id, &e).await;
+                        return;
                     }
                 }
             }
@@ -303,12 +369,8 @@ async fn execute_pipeline(
             {
                 tracing::warn!(error = %e, "failed to record successful pipeline run");
             }
-            Ok(stats)
         }
-        Err(e) => {
-            record_run_failure(state, run_id, &spec.pipeline_id, &e).await;
-            Err(e)
-        }
+        Err(e) => record_run_failure(&state, run_id, &spec.pipeline_id, &e).await,
     }
 }
 
@@ -318,16 +380,19 @@ async fn record_run_failure(
     pipeline_id: &str,
     error: &anyhow::Error,
 ) {
-    if let Err(record_err) = state
-        .pipelines
-        .finish_run_failure(run_id, &error.to_string())
-        .await
-    {
+    // Full detail (cause chain included) stays in the server log…
+    tracing::error!(error = format!("{error:?}"), "pipeline run failed");
+    // …what gets persisted (readable by any `Read` role via GET
+    // /pipelines/{id}/runs) and forwarded to Slack is the sanitized
+    // version: connector errors routinely embed connection URIs with
+    // credentials.
+    let sanitized = error::sanitize_error(&error.to_string());
+    if let Err(record_err) = state.pipelines.finish_run_failure(run_id, &sanitized).await {
         tracing::warn!(error = %record_err, "failed to record failed pipeline run");
     }
     state
         .alerts
-        .notify_pipeline_failed(pipeline_id, run_id, &error.to_string());
+        .notify_pipeline_failed(pipeline_id, run_id, &sanitized);
 }
 
 async fn create_pipeline_handler(
@@ -512,6 +577,7 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         pipelines,
         progress: ProgressHub::default(),
         alerts: AlertNotifier::new(config.slack_webhook_url.clone()),
+        login_rate_limiter: std::sync::Arc::new(rate_limit::LoginRateLimiter::default()),
     })
 }
 
@@ -530,6 +596,16 @@ pub async fn build_app(config: &ServerConfig) -> anyhow::Result<Router> {
 /// Boots the server. This is the only orchestration entrypoint — `src/main.rs`
 /// just calls this, no separate scheduler lives in the main binary
 /// (ARCHITECTURE.md §1).
+fn validate_jwt_secret(secret: &str) -> anyhow::Result<()> {
+    if secret.len() < 32 {
+        anyhow::bail!(
+            "NEXUS_JWT_SECRET must be at least 32 bytes (256 bits) of entropy for HS256 security; \
+             generate one with: openssl rand -hex 32 (ARCHITECTURE.md §10)"
+        );
+    }
+    Ok(())
+}
+
 pub async fn run() -> anyhow::Result<()> {
     let database_url =
         std::env::var("NEXUS_CHECKPOINT_DB").unwrap_or_else(|_| "sqlite://nexusflow.db".into());
@@ -539,6 +615,7 @@ pub async fn run() -> anyhow::Result<()> {
         .unwrap_or_else(|_| "sqlite://nexusflow-pipelines.db".into());
     let jwt_secret = std::env::var("NEXUS_JWT_SECRET")
         .map_err(|_| anyhow::anyhow!("NEXUS_JWT_SECRET must be set (ARCHITECTURE.md §10)"))?;
+    validate_jwt_secret(&jwt_secret)?;
     let encryption_key_hex = std::env::var("NEXUS_ENCRYPTION_KEY").map_err(|_| {
         anyhow::anyhow!(
             "NEXUS_ENCRYPTION_KEY must be set — a 64-char hex string (32 bytes), \
@@ -577,6 +654,21 @@ pub async fn run() -> anyhow::Result<()> {
     })
     .await?;
 
+    // Reap runs stranded as 'running' by a previous process (crash, kill,
+    // deploy). A run's supervisor always records its terminal state while
+    // the process lives, so anything still 'running' at boot is dead — and
+    // would otherwise make the scheduler skip that pipeline forever.
+    match state.pipelines.fail_interrupted_runs().await {
+        Ok(0) => {}
+        Ok(reaped) => tracing::warn!(
+            reaped,
+            "marked interrupted runs from a previous process as failed"
+        ),
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to reap interrupted runs from a previous process")
+        }
+    }
+
     // Cron-based automatic pipeline triggering (see scheduler.rs) — only
     // started on the real boot path, not by `build_app` (tests don't want
     // it racing their own assertions).
@@ -588,9 +680,43 @@ pub async fn run() -> anyhow::Result<()> {
     tracing::info!(%addr, "nexus-server listening");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
     Ok(())
+}
+
+/// Ctrl+C or SIGTERM (SIGTERM is what Docker/Kubernetes send on stop) —
+/// axum then stops accepting new connections and lets in-flight requests
+/// finish. Already-spawned run supervisors are detached tasks and are *not*
+/// awaited: a run cut short mid-flight is reaped as 'failed' by the next
+/// boot's `fail_interrupted_runs`.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => {},
+        () = terminate => {},
+    }
+    tracing::info!("shutdown signal received, finishing in-flight requests");
 }
 
 #[cfg(test)]
@@ -615,6 +741,10 @@ mod tests {
             pipelines: PipelineStore::connect("sqlite::memory:").await.unwrap(),
             progress: ProgressHub::default(),
             alerts: AlertNotifier::new(None),
+            login_rate_limiter: std::sync::Arc::new(rate_limit::LoginRateLimiter::new(
+                std::time::Duration::from_secs(60),
+                10_000,
+            )),
         }
     }
 
@@ -931,8 +1061,46 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
+    /// Polls GET /pipelines/{id}/runs until the newest run reaches a
+    /// terminal state — runs execute in a background supervisor task, so
+    /// assertions on run history have to wait for it to settle.
+    async fn wait_for_terminal_run(
+        app: &Router,
+        token: &str,
+        pipeline_id: &str,
+    ) -> serde_json::Value {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/pipelines/{pipeline_id}/runs"))
+                        .header("authorization", token)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let runs = body_json(response).await;
+            if let Some(record) = runs.as_array().and_then(|a| a.first()) {
+                if record["finished_at"].is_string() {
+                    return record.clone();
+                }
+            }
+            if std::time::Instant::now() > deadline {
+                panic!("run for {pipeline_id} never reached a terminal state: {runs}");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
     #[tokio::test]
-    async fn run_rejects_unsupported_connector() {
+    async fn run_with_unsupported_connector_is_accepted_then_fails_in_history() {
+        // Connector support is only known once the background supervisor
+        // executes the run, so the run is *accepted* (202) and the failure
+        // lands in the run history — not in the HTTP response.
         let state = test_state().await;
         let token = bearer(&state, Role::Execute);
         let app = router(state);
@@ -944,19 +1112,50 @@ mod tests {
         });
 
         let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/pipelines/p1/run")
-                    .header("content-type", "application/json")
-                    .header("authorization", token)
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
+            .clone()
+            .oneshot(json_request("POST", "/pipelines/p1/run", &token, body))
             .await
             .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
 
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let record = wait_for_terminal_run(&app, &token, "p1").await;
+        assert_eq!(record["status"], "failed");
+        assert!(record["error"]
+            .as_str()
+            .unwrap()
+            .contains("unsupported connector"));
+    }
+
+    #[tokio::test]
+    async fn run_response_run_id_is_immediately_subscribable_for_progress() {
+        let state = test_state().await;
+        let token = bearer(&state, Role::Execute);
+        let app = router(state.clone());
+
+        let body = serde_json::json!({
+            "pipeline_id": "p1",
+            "sources": [{"connector": "mongodb", "config": {}}],
+            "sinks": [{"connector": "postgres", "config": {}}]
+        });
+
+        let response = app
+            .oneshot(json_request("POST", "/pipelines/p1/run", &token, body))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let accepted = body_json(response).await;
+        let run_id = accepted["run_id"]
+            .as_i64()
+            .expect("202 body carries the new run's id");
+
+        // The channel is registered by `start_pipeline_run` *before* the
+        // 202 goes out — a client connecting right after the response must
+        // never get a spurious 404.
+        let read_token = bearer(&state, Role::Read);
+        let read_token = read_token.strip_prefix("Bearer ").unwrap().to_string();
+        authorize_progress_subscription(&state, &read_token, run_id)
+            .await
+            .expect("progress channel exists from the moment the 202 is sent");
     }
 
     fn json_request(
@@ -1227,28 +1426,33 @@ mod tests {
             .oneshot(json_request("POST", "/pipelines/p1/run", &token, body))
             .await
             .unwrap();
-        assert_eq!(run.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(run.status(), StatusCode::ACCEPTED);
 
-        let runs = app
-            .oneshot(
-                Request::builder()
-                    .uri("/pipelines/p1/runs")
-                    .header("authorization", token)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(runs.status(), StatusCode::OK);
-
-        let runs_body = body_json(runs).await;
-        let runs_array = runs_body.as_array().unwrap();
-        assert_eq!(runs_array.len(), 1);
-        assert_eq!(runs_array[0]["status"], "failed");
-        assert!(runs_array[0]["error"]
+        let record = wait_for_terminal_run(&app, &token, "p1").await;
+        assert_eq!(record["status"], "failed");
+        assert!(record["error"]
             .as_str()
             .unwrap()
             .contains("unsupported connector"));
+    }
+
+    #[tokio::test]
+    async fn run_history_error_is_sanitized_of_credentials() {
+        let state = test_state().await;
+        let run_id = state.pipelines.start_run("p1").await.unwrap();
+
+        let err = anyhow::anyhow!(
+            "ADBC error: failed to connect to postgres://admin:s3cret@db.internal:5432/app: timeout"
+        );
+        record_run_failure(&state, run_id, "p1", &err).await;
+
+        let runs = state.pipelines.list_runs("p1").await.unwrap();
+        let stored = runs[0].error.as_deref().unwrap();
+        assert!(
+            !stored.contains("s3cret"),
+            "credentials must never reach the run history: {stored}"
+        );
+        assert!(stored.contains("postgres://***@db.internal:5432/app"));
     }
 
     #[tokio::test]
@@ -1361,5 +1565,66 @@ mod tests {
         assert_eq!(event.bytes_written, 999);
 
         ws.close(None).await.ok();
+    }
+
+    #[test]
+    fn rejects_jwt_secret_shorter_than_32_bytes() {
+        assert!(validate_jwt_secret("short").is_err());
+        assert!(validate_jwt_secret("exactly-31-characters-long-!!!").is_err());
+        assert!(validate_jwt_secret(&"x".repeat(32)).is_ok());
+    }
+
+    #[tokio::test]
+    async fn login_rate_limits_per_ip() {
+        let auth_store = AuthStore::connect("sqlite::memory:").await.unwrap();
+        auth_store
+            .seed_admin_if_empty("admin", "test-password")
+            .await
+            .unwrap();
+        let limiter = std::sync::Arc::new(rate_limit::LoginRateLimiter::new(
+            std::time::Duration::from_secs(60),
+            2,
+        ));
+        let state = AppState {
+            checkpoints: CheckpointStore::connect("sqlite::memory:").await.unwrap(),
+            auth_store,
+            jwt: JwtCodec::new(b"test-secret", 3600),
+            secrets: SecretCipher::from_hex_key(&"ab".repeat(32)).unwrap(),
+            pipelines: PipelineStore::connect("sqlite::memory:").await.unwrap(),
+            progress: ProgressHub::default(),
+            alerts: AlertNotifier::new(None),
+            login_rate_limiter: limiter,
+        };
+        let app = router(state);
+
+        let body = serde_json::json!({"username": "admin", "password": "wrong"});
+        for _ in 0..2 {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/auth/login")
+                        .header("content-type", "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+
+        let blocked = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(blocked.status(), StatusCode::TOO_MANY_REQUESTS);
     }
 }

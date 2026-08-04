@@ -9,6 +9,11 @@ use nexus_core::{
     PipelineSpec, ProgressSender, Transform,
 };
 
+#[cfg(feature = "embeddings")]
+use arrow_array::RecordBatch as ArrowRecordBatch;
+#[cfg(feature = "embeddings")]
+use arrow_schema::SchemaRef as ArrowSchemaRef;
+
 #[tracing::instrument(skip_all, fields(pipeline_id = %spec.pipeline_id))]
 pub async fn run_pipeline(
     spec: &PipelineSpec,
@@ -31,6 +36,13 @@ async fn run_linear_pipeline(
     checkpoints: &CheckpointStore,
     progress: Option<ProgressSender>,
 ) -> anyhow::Result<Vec<PartitionStats>> {
+    if spec.embedding.is_some() {
+        anyhow::bail!(
+            "embedding stage is not supported on the no-transform (postgres→postgres) path; \
+             add a transform node to use embeddings"
+        );
+    }
+
     let source_node = &spec.sources[0];
     let sink_node = &spec.sinks[0];
 
@@ -126,6 +138,17 @@ async fn run_transform_pipeline(
     }
 
     let inputs = PipelineEngine::drain_sources(sources).await?;
+
+    #[cfg(feature = "embeddings")]
+    let inputs = apply_embedding_stage(inputs, spec.embedding.as_ref()).await?;
+    #[cfg(not(feature = "embeddings"))]
+    if spec.embedding.is_some() {
+        anyhow::bail!(
+            "pipeline contains an embedding node but the server was built without \
+             the 'embeddings' feature"
+        );
+    }
+
     let transform = DataFusionTransform::new(&transform_spec.sql);
     let output = transform.apply(inputs).await?;
 
@@ -178,4 +201,23 @@ async fn run_transform_pipeline(
     }
 
     Ok(stats)
+}
+
+#[cfg(feature = "embeddings")]
+async fn apply_embedding_stage(
+    inputs: Vec<(String, ArrowSchemaRef, Vec<ArrowRecordBatch>)>,
+    embedding_spec: Option<&nexus_core::EmbeddingSpec>,
+) -> anyhow::Result<Vec<(String, ArrowSchemaRef, Vec<ArrowRecordBatch>)>> {
+    let Some(spec) = embedding_spec else {
+        return Ok(inputs);
+    };
+    let mut out = Vec::with_capacity(inputs.len());
+    for (name, schema, batches) in inputs {
+        let mut embedded = Vec::with_capacity(batches.len());
+        for batch in &batches {
+            embedded.push(nexus_ai::embedding::apply_embedding(batch, spec).await?);
+        }
+        out.push((name, schema, embedded));
+    }
+    Ok(out)
 }

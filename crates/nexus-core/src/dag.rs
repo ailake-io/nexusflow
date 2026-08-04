@@ -56,6 +56,51 @@ pub struct DbtConfig {
     pub select: Option<String>,
 }
 
+/// Configuration for the optional embedding/chunking stage. Defined in
+/// nexus-core so `PipelineSpec` can carry it without adding an nexus-ai
+/// dependency to the core crate; nexus-ai consumes this spec at runtime.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingSpec {
+    /// Column containing the text to embed.
+    pub source_column: String,
+    /// Name of the `FixedSizeList<Float32>` column to append.
+    pub output_column: String,
+    /// Embedding width — must match the model's output dimension.
+    pub dimension: usize,
+    /// Which ONNX model to load.
+    pub model: EmbeddingModelSpec,
+    /// How to split `source_column` into chunks before embedding.
+    pub chunking: ChunkingSpec,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingModelSpec {
+    /// Hugging Face repo id, e.g. "sentence-transformers/all-MiniLM-L6-v2".
+    pub repo: String,
+    /// ONNX model file name inside the repo/revision.
+    pub filename: String,
+    /// Tokenizer file name inside the repo/revision.
+    pub tokenizer_filename: String,
+    /// Max token sequence length fed to the model.
+    pub max_length: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "strategy")]
+pub enum ChunkingSpec {
+    FixedWindow {
+        chunk_size: usize,
+        #[serde(default)]
+        overlap: usize,
+    },
+    RecursiveCharacter {
+        chunk_size: usize,
+        #[serde(default)]
+        overlap: usize,
+        separators: Option<Vec<String>>,
+    },
+}
+
 /// Two shapes, both valid DAGs (ARCHITECTURE.md §4):
 /// - No transform: strictly linear `1 source -> 1 sink`, partitioned
 ///   execution (Marco 1's model — `PipelineEngine::run`).
@@ -68,6 +113,10 @@ pub struct PipelineSpec {
     #[serde(default)]
     pub transform: Option<TransformSpec>,
     pub sinks: Vec<NodeSpec>,
+    /// Optional chunking + embedding stage, applied to every source batch
+    /// before the SQL transform (if present) or before the sinks.
+    #[serde(default)]
+    pub embedding: Option<EmbeddingSpec>,
     #[serde(default = "default_channel_capacity")]
     pub channel_capacity: usize,
     #[serde(default = "default_partitions")]
@@ -147,6 +196,52 @@ impl PipelineSpec {
             Some(t) => {
                 if t.sql.trim().is_empty() {
                     return Err(NexusError::Schema("transform.sql must not be empty".into()));
+                }
+            }
+        }
+
+        if let Some(embedding) = &self.embedding {
+            if embedding.source_column.trim().is_empty() {
+                return Err(NexusError::Schema(
+                    "embedding.source_column must not be empty".into(),
+                ));
+            }
+            if embedding.output_column.trim().is_empty() {
+                return Err(NexusError::Schema(
+                    "embedding.output_column must not be empty".into(),
+                ));
+            }
+            if embedding.dimension == 0 {
+                return Err(NexusError::Schema("embedding.dimension must be > 0".into()));
+            }
+            if embedding.model.repo.trim().is_empty() {
+                return Err(NexusError::Schema(
+                    "embedding.model.repo must not be empty".into(),
+                ));
+            }
+            if embedding.model.filename.trim().is_empty() {
+                return Err(NexusError::Schema(
+                    "embedding.model.filename must not be empty".into(),
+                ));
+            }
+            if embedding.model.tokenizer_filename.trim().is_empty() {
+                return Err(NexusError::Schema(
+                    "embedding.model.tokenizer_filename must not be empty".into(),
+                ));
+            }
+            if embedding.model.max_length == 0 {
+                return Err(NexusError::Schema(
+                    "embedding.model.max_length must be > 0".into(),
+                ));
+            }
+            match &embedding.chunking {
+                ChunkingSpec::FixedWindow { chunk_size, .. }
+                | ChunkingSpec::RecursiveCharacter { chunk_size, .. } => {
+                    if *chunk_size == 0 {
+                        return Err(NexusError::Schema(
+                            "embedding.chunking.chunk_size must be > 0".into(),
+                        ));
+                    }
                 }
             }
         }
@@ -262,6 +357,57 @@ mod tests {
             "sinks": [{"connector": "postgres", "config": {}}]
         }"#;
         let err = PipelineSpec::parse(json).expect_err("blank transform SQL must be rejected");
+        assert!(matches!(err, NexusError::Schema(_)));
+    }
+
+    #[test]
+    fn parses_pipeline_with_embedding_node() {
+        let json = r#"{
+            "pipeline_id": "embed-demo",
+            "sources": [{"connector": "postgres", "config": {}}],
+            "transform": {"sql": "SELECT * FROM source0"},
+            "sinks": [{"connector": "lancedb", "config": {}}],
+            "embedding": {
+                "source_column": "body",
+                "output_column": "embedding",
+                "dimension": 384,
+                "model": {
+                    "repo": "sentence-transformers/all-MiniLM-L6-v2",
+                    "filename": "model.onnx",
+                    "tokenizer_filename": "tokenizer.json",
+                    "max_length": 128
+                },
+                "chunking": {
+                    "strategy": "fixed_window",
+                    "chunk_size": 256,
+                    "overlap": 32
+                }
+            }
+        }"#;
+        let spec = PipelineSpec::parse(json).expect("valid embedding spec parses");
+        assert!(spec.embedding.is_some());
+        let embedding = spec.embedding.unwrap();
+        assert_eq!(embedding.source_column, "body");
+        assert_eq!(embedding.dimension, 384);
+        assert_eq!(embedding.model.max_length, 128);
+    }
+
+    #[test]
+    fn rejects_embedding_spec_with_empty_source_column() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "postgres", "config": {}}],
+            "transform": {"sql": "SELECT 1"},
+            "sinks": [{"connector": "lancedb", "config": {}}],
+            "embedding": {
+                "source_column": "",
+                "output_column": "embedding",
+                "dimension": 384,
+                "model": {"repo": "r", "filename": "m.onnx", "tokenizer_filename": "t.json", "max_length": 128},
+                "chunking": {"strategy": "fixed_window", "chunk_size": 256}
+            }
+        }"#;
+        let err = PipelineSpec::parse(json).expect_err("empty source column must fail");
         assert!(matches!(err, NexusError::Schema(_)));
     }
 }

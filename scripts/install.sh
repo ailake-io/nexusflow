@@ -60,6 +60,21 @@ work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
 
 curl -fsSL "$url" -o "$work_dir/$asset"
+
+# Verify tarball integrity against the published SHA256SUMS before extracting.
+sums_url="https://github.com/$REPO/releases/download/$version/SHA256SUMS"
+if curl -fsSL "$sums_url" -o "$work_dir/SHA256SUMS"; then
+  (
+    cd "$work_dir"
+    sha256sum -c "SHA256SUMS" --ignore-missing || {
+      echo "error: checksum verification failed for $asset" >&2
+      exit 1
+    }
+  )
+else
+  echo "warning: could not download SHA256SUMS; skipping checksum verification" >&2
+fi
+
 tar -xzf "$work_dir/$asset" -C "$work_dir"
 
 mkdir -p "$INSTALL_DIR" "$BIN_DIR"

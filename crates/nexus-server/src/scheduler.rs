@@ -9,8 +9,8 @@ const TICK_INTERVAL: Duration = Duration::from_secs(30);
 /// Cron-based automatic pipeline triggering. A pipeline opts in by setting
 /// `PipelineSpec.schedule` (validated as a real cron expression at create/
 /// update time — see `nexus_core::schedule`). This background task polls
-/// every persisted pipeline that has one and fires `execute_pipeline` for
-/// whichever are due, using the exact same run/record/dbt/alert path a
+/// every persisted pipeline that has one and fires `start_pipeline_run`
+/// for whichever are due, using the exact same run/record/dbt/alert path a
 /// manual `POST /pipelines/{id}/run` goes through.
 ///
 /// Not spawned by `build_app` (see its doc comment) — only `run()`'s real
@@ -84,8 +84,11 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
                     return;
                 }
             };
-            if let Err(e) = crate::execute_pipeline(&state, &spec).await {
-                tracing::warn!(pipeline_id = %pipeline_id, error = %e, "scheduled pipeline run failed");
+            // Spawns the run's supervisor task itself, so this returns as
+            // soon as the run row exists — the tick is never blocked by a
+            // running pipeline.
+            if let Err(e) = crate::start_pipeline_run(&state, &spec).await {
+                tracing::warn!(pipeline_id = %pipeline_id, error = %e, "scheduler: failed to start pipeline run");
             }
         });
     }
