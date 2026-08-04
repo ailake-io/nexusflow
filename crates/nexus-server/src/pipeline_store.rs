@@ -225,14 +225,18 @@ impl PipelineStore {
     pub async fn list_summaries(
         &self,
         cipher: &SecretCipher,
+        limit: i64,
+        offset: i64,
     ) -> Result<Vec<PipelineSummary>, PipelineStoreError> {
         let rows: Vec<SummaryRow> = sqlx::query_as(
             "SELECT p.spec_ciphertext, p.created_at, p.updated_at, r.status, r.started_at \
              FROM pipelines p LEFT JOIN pipeline_runs r ON r.id = ( \
                  SELECT id FROM pipeline_runs WHERE pipeline_id = p.id \
                  ORDER BY started_at DESC LIMIT 1 \
-             ) ORDER BY p.created_at",
+             ) ORDER BY p.created_at LIMIT ? OFFSET ?",
         )
+        .bind(limit)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter()
@@ -318,7 +322,12 @@ impl PipelineStore {
         Ok(result.rows_affected())
     }
 
-    pub async fn list_runs(&self, pipeline_id: &str) -> Result<Vec<RunRecord>, PipelineStoreError> {
+    pub async fn list_runs(
+        &self,
+        pipeline_id: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<RunRecord>, PipelineStoreError> {
         type RunRow = (
             i64,
             String,
@@ -331,9 +340,12 @@ impl PipelineStore {
         );
         let rows: Vec<RunRow> = sqlx::query_as(
             "SELECT id, pipeline_id, started_at, finished_at, status, error, stats_json, \
-                 dbt_summary_json FROM pipeline_runs WHERE pipeline_id = ? ORDER BY started_at DESC",
+                 dbt_summary_json FROM pipeline_runs WHERE pipeline_id = ? \
+                 ORDER BY started_at DESC LIMIT ? OFFSET ?",
         )
         .bind(pipeline_id)
+        .bind(limit)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await?;
 
@@ -484,7 +496,7 @@ mod tests {
         assert_eq!(summary.sources[0].connector, "postgres");
         assert!(!summary.has_transform);
 
-        let list = store.list_summaries(&cipher).await.unwrap();
+        let list = store.list_summaries(&cipher, 100, 0).await.unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].pipeline_id, "p1");
     }
@@ -558,7 +570,7 @@ mod tests {
         let store = PipelineStore::connect("sqlite::memory:").await.unwrap();
         let run_id = store.start_run("p1").await.unwrap();
 
-        let runs_before = store.list_runs("p1").await.unwrap();
+        let runs_before = store.list_runs("p1", 100, 0).await.unwrap();
         assert_eq!(runs_before[0].status, "running");
         assert!(runs_before[0].finished_at.is_none());
 
@@ -572,7 +584,7 @@ mod tests {
             .await
             .unwrap();
 
-        let runs = store.list_runs("p1").await.unwrap();
+        let runs = store.list_runs("p1", 100, 0).await.unwrap();
         assert_eq!(runs[0].status, "success");
         assert!(runs[0].finished_at.is_some());
         assert_eq!(runs[0].stats.as_ref().unwrap()[0]["rows_written"], 100);
@@ -594,7 +606,7 @@ mod tests {
             .await
             .unwrap();
 
-        let runs = store.list_runs("p1").await.unwrap();
+        let runs = store.list_runs("p1", 100, 0).await.unwrap();
         assert_eq!(runs[0].dbt_summary.as_ref().unwrap()["tests_passed"], 2);
     }
 
@@ -607,7 +619,7 @@ mod tests {
             .await
             .unwrap();
 
-        let runs = store.list_runs("p1").await.unwrap();
+        let runs = store.list_runs("p1", 100, 0).await.unwrap();
         assert_eq!(runs[0].status, "failed");
         assert_eq!(runs[0].error.as_deref(), Some("connector unreachable"));
     }
@@ -627,7 +639,7 @@ mod tests {
         let reaped = store.fail_interrupted_runs().await.unwrap();
         assert_eq!(reaped, 1, "only the still-'running' row is reaped");
 
-        let runs = store.list_runs("p1").await.unwrap();
+        let runs = store.list_runs("p1", 100, 0).await.unwrap();
         let stale = runs.iter().find(|r| r.id == stale_id).unwrap();
         assert_eq!(stale.status, "failed");
         assert!(stale.finished_at.is_some());
@@ -649,7 +661,7 @@ mod tests {
         store.start_run("p1").await.unwrap();
         store.start_run("p2").await.unwrap();
 
-        assert_eq!(store.list_runs("p1").await.unwrap().len(), 1);
-        assert_eq!(store.list_runs("p2").await.unwrap().len(), 1);
+        assert_eq!(store.list_runs("p1", 100, 0).await.unwrap().len(), 1);
+        assert_eq!(store.list_runs("p2", 100, 0).await.unwrap().len(), 1);
     }
 }

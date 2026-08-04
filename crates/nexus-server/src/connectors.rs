@@ -1,6 +1,6 @@
 use nexus_connector_postgres::{PostgresConnectorConfig, PostgresSink, PostgresSource};
 use nexus_connector_sqlite::{SqliteConnectorConfig, SqliteSink, SqliteSource};
-use nexus_core::{NodeSpec, Sink, Source};
+use nexus_core::{NodeSpec, PipelineSpec, Sink, Source};
 
 #[cfg(feature = "ailake")]
 use nexus_connector_ailake::{AilakeConnectorConfig, AilakeSink, AilakeSource};
@@ -42,6 +42,55 @@ use nexus_connector_rest::{RestConnectorConfig, RestSource};
 /// they're AI Lakehouse destinations or read-only bridging sources by
 /// design (see each crate's own src/lib.rs doc comment), not an oversight
 /// here.
+/// Validates that a source node's config can be deserialized into the
+/// connector's strongly-typed config struct. This catches typos, missing
+/// required fields, and wrong types at pipeline create/update time, before
+/// the invalid config is persisted.
+pub fn validate_source_config(node: &NodeSpec) -> anyhow::Result<()> {
+    match node.connector.as_str() {
+        "postgres" => {
+            let _: PostgresConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        "sqlite" => {
+            let _: SqliteConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "mongodb")]
+        "mongodb" => {
+            let _: MongoConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "kafka")]
+        "kafka" => {
+            let _: KafkaConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "rest")]
+        "rest" => {
+            let _: RestConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "odbc")]
+        "odbc" => {
+            let _: OdbcConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "deltalake")]
+        "deltalake" => {
+            let _: DeltaConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "iceberg")]
+        "iceberg" => {
+            let _: IcebergConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "parquet")]
+        "parquet" => {
+            let _: ParquetConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "ailake")]
+        "ailake" => {
+            let _: AilakeConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        other => anyhow::bail!("unsupported source connector: {other:?}"),
+    }
+    Ok(())
+}
+
 pub async fn build_source(
     node: &NodeSpec,
     index: usize,
@@ -99,6 +148,84 @@ pub async fn build_source(
         other => anyhow::bail!("unsupported source connector: {other:?}"),
     };
     Ok((name, source))
+}
+
+/// Validates that a sink node's config can be deserialized into the
+/// connector's strongly-typed config struct. See `validate_source_config`.
+pub fn validate_sink_config(node: &NodeSpec) -> anyhow::Result<()> {
+    match node.connector.as_str() {
+        "postgres" => {
+            let _: PostgresConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        "sqlite" => {
+            let _: SqliteConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "mongodb")]
+        "mongodb" => {
+            let _: MongoConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "odbc")]
+        "odbc" => {
+            let _: OdbcConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "milvus")]
+        "milvus" => {
+            let _: MilvusConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "qdrant")]
+        "qdrant" => {
+            let _: QdrantConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "lancedb")]
+        "lancedb" => {
+            let _: LanceDbConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "pgvector")]
+        "pgvector" => {
+            let _: PgVectorConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "pinecone")]
+        "pinecone" => {
+            let _: PineconeConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "chromadb")]
+        "chromadb" => {
+            let _: ChromaConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "deltalake")]
+        "deltalake" => {
+            let _: DeltaConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "iceberg")]
+        "iceberg" => {
+            let _: IcebergConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "parquet")]
+        "parquet" => {
+            let _: ParquetConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "ailake")]
+        "ailake" => {
+            let _: AilakeConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        other => anyhow::bail!("unsupported sink connector: {other:?}"),
+    }
+    Ok(())
+}
+
+/// Validates that every source/sink config in the spec deserializes into the
+/// connector's typed config struct. This catches structural config errors at
+/// pipeline create/update time, before persistence.
+pub fn validate_pipeline_configs(spec: &PipelineSpec) -> anyhow::Result<()> {
+    for (i, node) in spec.sources.iter().enumerate() {
+        validate_source_config(node)
+            .map_err(|e| anyhow::anyhow!("source[{i}] ({}): {e}", node.connector))?;
+    }
+    for (i, node) in spec.sinks.iter().enumerate() {
+        validate_sink_config(node)
+            .map_err(|e| anyhow::anyhow!("sink[{i}] ({}): {e}", node.connector))?;
+    }
+    Ok(())
 }
 
 pub async fn build_sink(

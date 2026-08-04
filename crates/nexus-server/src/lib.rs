@@ -34,6 +34,32 @@ use progress::ProgressHub;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
+const DEFAULT_PAGE_LIMIT: i64 = 50;
+const MAX_PAGE_LIMIT: i64 = 1000;
+
+/// Query parameters for paginated list endpoints.
+#[derive(Debug, Deserialize)]
+struct Pagination {
+    #[serde(default)]
+    offset: i64,
+    #[serde(default = "default_page_limit")]
+    limit: i64,
+}
+
+fn default_page_limit() -> i64 {
+    DEFAULT_PAGE_LIMIT
+}
+
+impl Pagination {
+    fn validated(self) -> Result<(i64, i64), ApiError> {
+        if self.offset < 0 {
+            return Err(ApiError::bad_request("offset must be >= 0"));
+        }
+        let limit = self.limit.clamp(1, MAX_PAGE_LIMIT);
+        Ok((limit, self.offset))
+    }
+}
+
 #[derive(Clone)]
 struct AppState {
     checkpoints: CheckpointStore,
@@ -421,6 +447,8 @@ async fn create_pipeline_handler(
 ) -> Result<(StatusCode, Json<PipelineSummary>), ApiError> {
     spec.validate()
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    connectors::validate_pipeline_configs(&spec)
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
     state.pipelines.create(&spec, &state.secrets).await?;
     let summary = state
         .pipelines
@@ -431,8 +459,15 @@ async fn create_pipeline_handler(
 
 async fn list_pipelines_handler(
     State(state): State<AppState>,
+    Query(pagination): Query<Pagination>,
 ) -> Result<Json<Vec<PipelineSummary>>, ApiError> {
-    Ok(Json(state.pipelines.list_summaries(&state.secrets).await?))
+    let (limit, offset) = pagination.validated()?;
+    Ok(Json(
+        state
+            .pipelines
+            .list_summaries(&state.secrets, limit, offset)
+            .await?,
+    ))
 }
 
 async fn get_pipeline_handler(
@@ -464,6 +499,8 @@ async fn update_pipeline_handler(
     }
     spec.validate()
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    connectors::validate_pipeline_configs(&spec)
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
     state.pipelines.update(&id, &spec, &state.secrets).await?;
     Ok(Json(
         state.pipelines.get_summary(&id, &state.secrets).await?,
@@ -481,8 +518,10 @@ async fn delete_pipeline_handler(
 async fn list_runs_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(pagination): Query<Pagination>,
 ) -> Result<Json<Vec<RunRecord>>, ApiError> {
-    Ok(Json(state.pipelines.list_runs(&id).await?))
+    let (limit, offset) = pagination.validated()?;
+    Ok(Json(state.pipelines.list_runs(&id, limit, offset).await?))
 }
 
 #[derive(Deserialize)]
@@ -1288,8 +1327,16 @@ mod tests {
     fn sample_pipeline(id: &str) -> serde_json::Value {
         serde_json::json!({
             "pipeline_id": id,
-            "sources": [{"connector": "postgres", "config": {"uri": "postgres://user:pw@host/db"}}],
-            "sinks": [{"connector": "sqlite", "config": {"path": "/tmp/out.db"}}]
+            "sources": [{"connector": "postgres", "config": {
+                "uri": "postgres://user:pw@host/db",
+                "table": "src",
+                "primary_key": "id"
+            }}],
+            "sinks": [{"connector": "sqlite", "config": {
+                "uri": "/tmp/out.db",
+                "table": "dst",
+                "primary_key": "id"
+            }}]
         })
     }
 
@@ -1412,6 +1459,75 @@ mod tests {
         let list = body_json(response).await;
         assert_eq!(list.as_array().unwrap().len(), 1);
         assert_eq!(list[0]["pipeline_id"], "p1");
+    }
+
+    #[tokio::test]
+    async fn list_pipelines_pagination() {
+        let state = test_state().await;
+        let write_token = bearer(&state, Role::Write);
+        let read_token = bearer(&state, Role::Read);
+        let app = router(state);
+
+        for i in 1..=3 {
+            app.clone()
+                .oneshot(json_request(
+                    "POST",
+                    "/pipelines",
+                    &write_token,
+                    sample_pipeline(&format!("p{i}")),
+                ))
+                .await
+                .unwrap();
+        }
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/pipelines?limit=2&offset=0")
+                    .header("authorization", read_token.clone())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let first = body_json(response).await;
+        assert_eq!(first.as_array().unwrap().len(), 2);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/pipelines?limit=2&offset=2")
+                    .header("authorization", read_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let second = body_json(response).await;
+        assert_eq!(second.as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn create_pipeline_rejects_invalid_connector_config() {
+        let state = test_state().await;
+        let token = bearer(&state, Role::Write);
+        let app = router(state);
+
+        // Postgres config is missing required `table` and `primary_key`.
+        let body = serde_json::json!({
+            "pipeline_id": "p1",
+            "sources": [{"connector": "postgres", "config": {"uri": "postgres://user:pw@host/db"}}],
+            "sinks": [{"connector": "sqlite", "config": {"uri": ":memory:", "table": "dst", "primary_key": "id"}}]
+        });
+
+        let response = app
+            .oneshot(json_request("POST", "/pipelines", &token, body))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
@@ -1567,7 +1683,7 @@ mod tests {
         );
         record_run_failure(&state, run_id, "p1", &err).await;
 
-        let runs = state.pipelines.list_runs("p1").await.unwrap();
+        let runs = state.pipelines.list_runs("p1", 100, 0).await.unwrap();
         let stored = runs[0].error.as_deref().unwrap();
         assert!(
             !stored.contains("s3cret"),

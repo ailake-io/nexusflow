@@ -28,8 +28,13 @@ pub fn spawn(state: AppState) {
     });
 }
 
+const SCHEDULER_PAGE_LIMIT: i64 = 10_000;
+
 async fn tick(state: &AppState) -> anyhow::Result<()> {
-    let summaries = state.pipelines.list_summaries(&state.secrets).await?;
+    let summaries = state
+        .pipelines
+        .list_summaries(&state.secrets, SCHEDULER_PAGE_LIMIT, 0)
+        .await?;
     for summary in summaries {
         let Some(expr) = &summary.schedule else {
             continue;
@@ -50,7 +55,10 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
             }
         };
 
-        let runs = state.pipelines.list_runs(&summary.pipeline_id).await?;
+        let runs = state
+            .pipelines
+            .list_runs(&summary.pipeline_id, SCHEDULER_PAGE_LIMIT, 0)
+            .await?;
         // `list_runs` is ordered most-recent-first (see pipeline_store.rs).
         if let Some(last) = runs.first() {
             if last.finished_at.is_none() {
