@@ -37,7 +37,7 @@ fn unique_suffix() -> String {
 // names/network and the previous attempt's `ContainerAsync` guards drop
 // (stopping/removing those containers) when `run_once` returns, so a retry
 // never contends with a half-started previous attempt for RAM.
-const MAX_ATTEMPTS: u32 = 3;
+const MAX_ATTEMPTS: u32 = 5;
 
 #[tokio::test]
 async fn postgres_to_kafka_cdc_carries_correct_opcode_per_row() {
@@ -50,6 +50,12 @@ async fn postgres_to_kafka_cdc_carries_correct_opcode_per_row() {
                     "postgres_to_kafka_cdc_carries_correct_opcode_per_row: attempt {attempt}/{MAX_ATTEMPTS} failed: {e}"
                 );
                 last_err = Some(e);
+                // Brief pause between retries so any containers from the
+                // failed attempt are fully stopped/removed and memory is
+                // reclaimed before the next topology starts.
+                if attempt < MAX_ATTEMPTS {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
             }
         }
     }
@@ -153,7 +159,7 @@ async fn run_once() -> Result<(), String> {
         // and flakiest of the three containers in practice. When even this
         // is exceeded, the outer retry in the caller restarts the whole
         // topology rather than waiting longer still.
-        .with_startup_timeout(Duration::from_secs(300))
+        .with_startup_timeout(Duration::from_secs(600))
         .start()
         .await
         .map_err(|e| format!("kafka connect starts: {e}"))?;
