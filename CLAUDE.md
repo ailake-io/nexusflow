@@ -80,6 +80,8 @@ nexusflow/
 * **Saída (Destination):** Descarrega via ADBC ou converte batch Arrow para queries parametrizadas (batch insert).
 * **Suporte a CDC (Change Data Capture):** Leitura de logs de transação (WAL no Postgres, Binlog no MySQL) convertidos em eventos Arrow contendo opcodes (`I`, `U`, `D`) para cargas incrementais em tempo real.
 
+> **Estado real (ver `ROADMAP.md`)**: a matriz acima é a visão de produto, não o estado atual. Hoje só **Postgres** e **SQLite** existem como conectores ADBC fast-path (`crates/nexus-connectors/nexus-connector-postgres`/`-sqlite`); MySQL, DuckDB, Snowflake, BigQuery e ClickHouse ADBC **não têm crate implementado**. Nenhum conector Arrow Flight SQL existe ainda — ClickHouse/Dremio/Spark Flight SQL/Databricks são inteiramente aspiracionais. CDC hoje é só via Debezium+Kafka (`nexus-connector-kafka`, camada Híbrida) — o parser nativo de WAL/binlog descrito acima é condicional e não agendado (`ARCHITECTURE.md §7`, `ROADMAP.md` Marco 13).
+
 ### 4.2. Engine de Streaming, Backpressure e Checkpointing
 O núcleo opera via canais assíncronos (`mpsc::channel`).
 * **Backpressure:** Limitando o canal `mpsc(100)`, evita-se estouro de memória RAM (OOM) se a leitura for mais rápida que a escrita.
