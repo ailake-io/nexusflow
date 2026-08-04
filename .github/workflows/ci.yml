@@ -10,6 +10,45 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Checks both Cargo.lock files (root + crates/nexus-connectors' own nested
+  # workspace — see the `connectors` job's comment below on why that one is
+  # gitignored and only exists as a build byproduct) against the RustSec
+  # advisory database. ubuntu-latest, not self-hosted: this doesn't need the
+  # connector crates' native build deps, just cargo-audit itself. The
+  # nested workspace's own Cargo.lock is generated fresh by this step's own
+  # `cargo audit` run (nothing to check out for it), unlike the drift check
+  # against the root lockfile (see the `connectors` job), which needs a
+  # `cargo check` to have run first.
+  cargo-audit:
+    name: cargo-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-audit --locked
+      # --ignore entries below were each traced with `cargo tree -i <crate>`
+      # to confirm there's no fix reachable today without breaking a version
+      # pin this repo already relies on deliberately — don't add to this
+      # list without doing the same trace:
+      #   RUSTSEC-2023-0071 (rsa, via jsonwebtoken's RS256 support) — the
+      #     advisory itself says "No fixed upgrade is available!"; a known,
+      #     ecosystem-wide, currently-unfixable issue for anyone signing JWTs
+      #     with RSA via `jsonwebtoken`.
+      #   RUSTSEC-2026-0194 / -0195 (quick-xml, via object_store <-
+      #     datafusion 54.1.0) — object_store pins quick-xml `^0.39.0`
+      #     exactly; the fix needs a newer datafusion, which needs arrow 59+
+      #     (ROADMAP.md's "Débitos conhecidos" already tracks that pin).
+      #   RUSTSEC-2025-0009 / RUSTSEC-2024-0336 (ring / rustls, via
+      #     milvus-sdk-rust's tonic 0.8.3) — nexus-connector-milvus's only
+      #     SDK option; no newer milvus-sdk-rust release exists with a newer
+      #     tonic to move to.
+      - name: Audit root workspace
+        run: cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195 --ignore RUSTSEC-2025-0009 --ignore RUSTSEC-2024-0336
+      - name: Audit crates/nexus-connectors workspace
+        run: cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195 --ignore RUSTSEC-2025-0009 --ignore RUSTSEC-2024-0336
+        working-directory: crates/nexus-connectors
+
   fmt:
     name: fmt
     runs-on: ubuntu-latest
@@ -121,6 +160,12 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm run lint
+      # --audit-level=high: low/moderate advisories in this ecosystem are
+      # overwhelmingly transitive dev-tooling noise (see npm's own advisory
+      # backlog) that would make this step fail on things nobody can act on
+      # without an upstream release; high/critical is the bar worth
+      # blocking a merge over.
+      - run: npm audit --audit-level=high
 
   # Self-hosted for the same reason as clippy above.
   test:
@@ -152,6 +197,21 @@ jobs:
         run: |
           ./scripts/build-adbc-postgresql-driver.sh
           ./scripts/build-adbc-sqlite-driver.sh
+
+      # --all-features turns on nexus-ai's `cpu` feature, whose
+      # embedding_integration test (crates/nexus-ai/tests/embedding_integration.rs)
+      # downloads a real sentence-transformers ONNX model + tokenizer from the
+      # Hugging Face Hub into ~/.cache/nexusflow/models (see
+      # nexus-ai::embedding::model::cache_root). This host is a shared dev
+      # desktop doubling as the self-hosted runner (see the `connectors`
+      # job's comment below), not a dedicated ephemeral box, so nothing
+      # guarantees that directory survives between runs — cache it
+      # explicitly instead of relying on it.
+      - name: Cache Hugging Face model cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/nexusflow/models
+          key: hf-models-${{ hashFiles('crates/nexus-ai/tests/embedding_integration.rs') }}
 
       # Same reason as the clippy job: --all-features enables embed-ui,
       # whose RustEmbed derive needs frontend/dist to exist at compile time.
@@ -186,6 +246,15 @@ jobs:
   # every connector crate still compiles/lints/tests standalone within its
   # own nested workspace (its own `cargo check --workspace` with no
   # features), independent of whatever subset nexus-server happens to link.
+  #
+  # `crates/nexus-connectors/Cargo.lock` is gitignored on purpose (its own
+  # comment: "the root Cargo.lock is authoritative for actual builds, this
+  # one is only a byproduct of running cargo directly inside a connector
+  # crate's directory") — there's nothing to check out, `cargo check
+  # --workspace` below generates it fresh every run. That's exactly why the
+  # drift check against the root Cargo.lock has to live as a step *here*,
+  # right after that command, instead of as its own job: it needs the file
+  # to actually exist on disk first.
   connectors:
     name: connectors
     needs: test
@@ -222,6 +291,13 @@ jobs:
       # the whole point of gating rdkafka/odbc-api behind Cargo features
       # (CLAUDE.md §8.5), so it's checked on its own before --all-features.
       - run: cargo check --workspace
+
+      # Now that `cargo check` above has resolved this nested workspace's
+      # own Cargo.lock, compare it against the root one — same connector
+      # crates' dependencies, resolved independently (see this job's
+      # top comment), which can silently drift apart over time.
+      - run: python3 ../../scripts/check-lockfile-drift.py
+
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       # postgres_to_kafka_cdc_carries_correct_opcode_per_row (3 JVMs:
       # Zookeeper+Kafka+Connect) and text_chunk_embed_milvus_end_to_end
