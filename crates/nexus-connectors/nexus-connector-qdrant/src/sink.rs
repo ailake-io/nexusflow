@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use nexus_core::{split_by_opcode, CheckpointCursor, NexusError, Sink, OPCODE_COLUMN};
 use qdrant_client::qdrant::{DeletePointsBuilder, PointStruct, PointsIdsList, UpsertPointsBuilder};
 use qdrant_client::{Payload, Qdrant};
+use serde_json::{Map, Value};
 
 /// AI Lakehouse sink #2. Every non-embedding, non-opcode column becomes the
 /// point's JSON payload; `embedding_column` becomes the point vector. See
@@ -42,7 +43,15 @@ impl QdrantSink {
             .zip(embeddings)
             .zip(payloads)
             .map(|((id, vector), payload)| {
-                let payload: Payload = payload.as_object().cloned().unwrap_or_default().into();
+                // `payload` is already an owned `Value::Object` (from
+                // `batch_to_payloads`) — match it out instead of
+                // `.as_object().cloned()`, which would clone every key and
+                // value in the map a second time for no reason (M1,
+                // CLAUDE.md §8.1).
+                let payload: Payload = match payload {
+                    Value::Object(map) => map.into(),
+                    _ => Map::new().into(),
+                };
                 PointStruct::new(id, vector, payload)
             })
             .collect();

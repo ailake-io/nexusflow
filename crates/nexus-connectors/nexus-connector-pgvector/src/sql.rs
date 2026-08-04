@@ -50,6 +50,80 @@ pub fn build_delete_sql(table: &str, primary_key: &str) -> Result<String, NexusE
     ))
 }
 
+/// Multi-row upsert used by `PgVectorSink::write_batch`.
+///
+/// Produces `INSERT ... VALUES ($1,$2,..), ($n+1,..), ... ON CONFLICT (...) DO UPDATE SET ...`
+/// with one placeholder group per row.
+pub fn build_bulk_upsert_sql(
+    table: &str,
+    primary_key: &str,
+    columns: &[String],
+    embedding_column: &str,
+    rows: usize,
+) -> Result<String, NexusError> {
+    if rows == 0 {
+        return build_upsert_sql(table, primary_key, columns, embedding_column);
+    }
+    let quoted_table = quote_identifier(table)?;
+    let quoted_primary_key = quote_identifier(primary_key)?;
+    let quoted_embedding_column = quote_identifier(embedding_column)?;
+    let quoted_columns: Vec<String> = columns
+        .iter()
+        .map(|c| quote_identifier(c))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let all_columns: Vec<String> = quoted_columns
+        .iter()
+        .cloned()
+        .chain(std::iter::once(quoted_embedding_column.clone()))
+        .collect();
+    let col_count = all_columns.len();
+
+    let values: Vec<String> = (0..rows)
+        .map(|row| {
+            let placeholders: Vec<String> = (1..=col_count)
+                .map(|col| format!("${}", row * col_count + col))
+                .collect();
+            format!("({})", placeholders.join(", "))
+        })
+        .collect();
+
+    let mut updates: Vec<String> = columns
+        .iter()
+        .zip(quoted_columns.iter())
+        .filter(|(raw, _)| raw.as_str() != primary_key)
+        .map(|(_, quoted)| format!("{quoted} = EXCLUDED.{quoted}"))
+        .collect();
+    updates.push(format!(
+        "{quoted_embedding_column} = EXCLUDED.{quoted_embedding_column}"
+    ));
+
+    Ok(format!(
+        "INSERT INTO {quoted_table} ({cols}) VALUES {vals} ON CONFLICT ({quoted_primary_key}) DO UPDATE SET {upd}",
+        cols = all_columns.join(", "),
+        vals = values.join(", "),
+        upd = updates.join(", "),
+    ))
+}
+
+/// Multi-row delete used by `PgVectorSink::write_batch` for CDC `__opcode = D` batches.
+pub fn build_bulk_delete_sql(
+    table: &str,
+    primary_key: &str,
+    rows: usize,
+) -> Result<String, NexusError> {
+    if rows == 0 {
+        return build_delete_sql(table, primary_key);
+    }
+    let quoted_table = quote_identifier(table)?;
+    let quoted_primary_key = quote_identifier(primary_key)?;
+    let placeholders: Vec<String> = (1..=rows).map(|i| format!("${i}")).collect();
+    Ok(format!(
+        "DELETE FROM {quoted_table} WHERE {quoted_primary_key} IN ({in_list})",
+        in_list = placeholders.join(", ")
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -87,5 +161,30 @@ mod tests {
         )
         .expect_err("malicious table name must be rejected");
         assert!(matches!(err, NexusError::Schema(_)));
+    }
+
+    #[test]
+    fn bulk_upsert_sql_has_one_placeholder_group_per_row() {
+        let sql = build_bulk_upsert_sql(
+            "docs",
+            "id",
+            &["id".to_string(), "text".to_string()],
+            "embedding",
+            2,
+        )
+        .unwrap();
+
+        assert_eq!(
+            sql,
+            "INSERT INTO \"docs\" (\"id\", \"text\", \"embedding\") \
+             VALUES ($1, $2, $3), ($4, $5, $6) \
+             ON CONFLICT (\"id\") DO UPDATE SET \"text\" = EXCLUDED.\"text\", \"embedding\" = EXCLUDED.\"embedding\""
+        );
+    }
+
+    #[test]
+    fn bulk_delete_sql_has_one_placeholder_per_row() {
+        let sql = build_bulk_delete_sql("docs", "id", 3).unwrap();
+        assert_eq!(sql, "DELETE FROM \"docs\" WHERE \"id\" IN ($1, $2, $3)");
     }
 }

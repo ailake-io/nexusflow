@@ -8,6 +8,16 @@ use nexus_core::{NexusError, RecordBatchBuilder, Source};
 use odbc_api::{Bit, ConnectionOptions, Cursor, Environment, Nullable};
 use serde_json::Value;
 use std::sync::Arc;
+use tokio::sync::mpsc::Sender;
+
+/// Batches in flight between the blocking ODBC cursor thread and the async
+/// stream consumer. Small on purpose: this is read-ahead, not the primary
+/// buffer — a full `Sender::blocking_send` stalls the cursor thread once it
+/// fills up, so a slow consumer holds back ODBC fetches instead of the
+/// whole table piling up in memory before the first batch is even yielded
+/// (M2, CLAUDE.md §8.1; same bounded-channel backpressure design as
+/// `PipelineEngine::run_partition`, ARCHITECTURE.md §4.2).
+const CHANNEL_CAPACITY: usize = 4;
 
 /// Bridging connector for legacy databases via ODBC — see ARCHITECTURE.md
 /// §2/§4.1. Row-wise cursor access (`Cursor::next_row`), not columnar
@@ -45,11 +55,25 @@ fn build_schema(fields: &[OdbcFieldSpec]) -> SchemaRef {
 
 /// Runs entirely inside one blocking closure: `odbc-api` handles wrap raw
 /// (non-`Send`) pointers, so the `Environment`/`Connection`/`Cursor` must
-/// never cross an `.await` — see the module-level note in `sink.rs`.
+/// never cross an `.await` — see the module-level note in `sink.rs`. Any
+/// error (connect, query, or a row failing to decode) is reported as one
+/// `Err` item on `tx` rather than a return value, since this runs detached
+/// inside `spawn_blocking` — see `read_batches` below.
 fn fetch_all(
     config: &OdbcConnectorConfig,
     schema: &SchemaRef,
-) -> Result<Vec<RecordBatch>, NexusError> {
+    tx: &Sender<Result<RecordBatch, NexusError>>,
+) {
+    if let Err(e) = fetch_all_inner(config, schema, tx) {
+        let _ = tx.blocking_send(Err(e));
+    }
+}
+
+fn fetch_all_inner(
+    config: &OdbcConnectorConfig,
+    schema: &SchemaRef,
+    tx: &Sender<Result<RecordBatch, NexusError>>,
+) -> Result<(), NexusError> {
     let env = Environment::new().map_err(|e| NexusError::Connector(format!("odbc env: {e}")))?;
     let conn = env
         .connect_with_connection_string(&config.connection_string, ConnectionOptions::default())
@@ -61,8 +85,13 @@ fn fetch_all(
         .map_err(|e| NexusError::Connector(format!("odbc query failed: {e}")))?
         .ok_or_else(|| NexusError::Connector("odbc SELECT returned no result set".into()))?;
 
-    let mut batches = Vec::new();
     let mut buffer: Vec<Value> = Vec::with_capacity(config.batch_size);
+    let send_batch = |buffer: &mut Vec<Value>| -> Result<(), NexusError> {
+        let batch = RecordBatchBuilder::from_json_rows(schema.clone(), buffer)?;
+        buffer.clear();
+        tx.blocking_send(Ok(batch))
+            .map_err(|_| NexusError::Connector("odbc reader: receiver dropped".into()))
+    };
 
     while let Some(mut row) = cursor
         .next_row()
@@ -77,15 +106,14 @@ fn fetch_all(
         buffer.push(Value::Object(object));
 
         if buffer.len() >= config.batch_size {
-            batches.push(RecordBatchBuilder::from_json_rows(schema.clone(), &buffer)?);
-            buffer.clear();
+            send_batch(&mut buffer)?;
         }
     }
     if !buffer.is_empty() {
-        batches.push(RecordBatchBuilder::from_json_rows(schema.clone(), &buffer)?);
+        send_batch(&mut buffer)?;
     }
 
-    Ok(batches)
+    Ok(())
 }
 
 fn read_column(
@@ -139,12 +167,20 @@ impl Source for OdbcSource {
     ) -> Result<BoxStream<'_, Result<RecordBatch, NexusError>>, NexusError> {
         let config = self.config.clone();
         let schema = self.schema.clone();
+        let (tx, rx) =
+            tokio::sync::mpsc::channel::<Result<RecordBatch, NexusError>>(CHANNEL_CAPACITY);
 
-        let batches = tokio::task::spawn_blocking(move || fetch_all(&config, &schema))
-            .await
-            .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))??;
+        // Fire-and-forget: the blocking cursor thread reports its own
+        // errors through `tx` (see `fetch_all`), and a panic just drops the
+        // sender, which ends the stream with `None` like a clean EOF. There
+        // is no separate result to join back here — that's the whole point
+        // of streaming the batches out as they're produced instead of
+        // collecting them first.
+        tokio::task::spawn_blocking(move || fetch_all(&config, &schema, &tx));
 
-        Ok(Box::pin(stream::iter(batches.into_iter().map(Ok))))
+        Ok(Box::pin(stream::unfold(rx, |mut rx| async move {
+            rx.recv().await.map(|item| (item, rx))
+        })))
     }
 
     fn schema(&self) -> SchemaRef {

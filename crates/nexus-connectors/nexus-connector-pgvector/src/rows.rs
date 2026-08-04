@@ -10,22 +10,22 @@ use tokio_postgres::types::ToSql;
 /// order, typed per each field's Arrow `DataType`) — mirrors
 /// `nexus-connector-odbc`'s per-row binding style, just for
 /// `tokio-postgres` instead of ODBC.
-pub fn row_params(
-    batch: &RecordBatch,
+pub fn row_params<'a>(
+    batch: &'a RecordBatch,
     columns: &[String],
     row: usize,
-) -> Result<Vec<Box<dyn ToSql + Sync + Send>>, NexusError> {
+) -> Result<Vec<Box<dyn ToSql + Sync + Send + 'a>>, NexusError> {
     columns
         .iter()
         .map(|name| column_value(batch, name, row))
         .collect()
 }
 
-fn column_value(
-    batch: &RecordBatch,
+fn column_value<'a>(
+    batch: &'a RecordBatch,
     name: &str,
     row: usize,
-) -> Result<Box<dyn ToSql + Sync + Send>, NexusError> {
+) -> Result<Box<dyn ToSql + Sync + Send + 'a>, NexusError> {
     let idx = batch
         .schema()
         .index_of(name)
@@ -43,20 +43,27 @@ fn column_value(
     Ok(match batch.schema().field(idx).data_type() {
         DataType::Int64 => {
             let arr = downcast!(Int64Array);
-            Box::new((!arr.is_null(row)).then(|| arr.value(row))) as Box<dyn ToSql + Sync + Send>
+            Box::new((!arr.is_null(row)).then(|| arr.value(row)))
+                as Box<dyn ToSql + Sync + Send + 'a>
         }
         DataType::Float64 => {
             let arr = downcast!(Float64Array);
-            Box::new((!arr.is_null(row)).then(|| arr.value(row))) as Box<dyn ToSql + Sync + Send>
+            Box::new((!arr.is_null(row)).then(|| arr.value(row)))
+                as Box<dyn ToSql + Sync + Send + 'a>
         }
         DataType::Boolean => {
             let arr = downcast!(BooleanArray);
-            Box::new((!arr.is_null(row)).then(|| arr.value(row))) as Box<dyn ToSql + Sync + Send>
+            Box::new((!arr.is_null(row)).then(|| arr.value(row)))
+                as Box<dyn ToSql + Sync + Send + 'a>
         }
         DataType::Utf8 => {
             let arr = downcast!(StringArray);
-            Box::new((!arr.is_null(row)).then(|| arr.value(row).to_string()))
-                as Box<dyn ToSql + Sync + Send>
+            // Borrow `&'a str` straight out of the batch instead of
+            // `.to_string()`-ing it — the boxed `ToSql` value only needs to
+            // live as long as `batch` does, and it never outlives the
+            // `write_batch` call that owns it (M1, CLAUDE.md §8.1).
+            Box::new((!arr.is_null(row)).then(|| arr.value(row)))
+                as Box<dyn ToSql + Sync + Send + 'a>
         }
         other => {
             return Err(NexusError::Schema(format!(

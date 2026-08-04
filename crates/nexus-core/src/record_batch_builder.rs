@@ -32,8 +32,7 @@ impl RecordBatchBuilder {
                         .collect::<Vec<_>>(),
                 )),
                 DataType::Utf8 => Arc::new(StringArray::from_iter(
-                    rows.iter()
-                        .map(|row| row.get(name).and_then(Value::as_str)),
+                    rows.iter().map(|row| row.get(name).and_then(Value::as_str)),
                 )),
                 other => {
                     return Err(NexusError::Schema(format!(
