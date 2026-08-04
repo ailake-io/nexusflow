@@ -83,7 +83,7 @@ jobs:
       - name: Boot the image and hit the embedded UI
         run: |
           docker run -d --name nexusflow-ci -p 8080:8080 \
-            -e NEXUS_JWT_SECRET=ci-secret \
+            -e NEXUS_JWT_SECRET=ci-secret-that-is-long-enough-for-jwt-signing \
             -e NEXUS_ENCRYPTION_KEY=$(printf 'ab%.0s' {1..32}) \
             -e NEXUS_CHECKPOINT_DB=sqlite::memory: \
             -e NEXUS_AUTH_DB=sqlite::memory: \

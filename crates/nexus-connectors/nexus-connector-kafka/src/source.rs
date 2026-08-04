@@ -5,7 +5,7 @@ use arrow_schema::SchemaRef;
 use async_trait::async_trait;
 use futures::stream::{self, BoxStream, StreamExt};
 use nexus_core::{NexusError, RecordBatchBuilder, Source};
-use rdkafka::consumer::{Consumer, StreamConsumer};
+use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
 use rdkafka::error::KafkaError;
 use rdkafka::message::Message;
 use rdkafka::topic_partition_list::TopicPartitionList;
@@ -98,7 +98,7 @@ impl KafkaSource {
                 })?;
         }
         self.consumer
-            .commit(&tpl, rdkafka::util::Timeout::Never)
+            .commit(&tpl, CommitMode::Sync)
             .map_err(|e| NexusError::Connector(format!("kafka offset commit failed: {e}")))?;
         Ok(())
     }
