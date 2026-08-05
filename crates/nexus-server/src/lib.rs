@@ -684,7 +684,8 @@ async fn progress_ws_handler(
         .strip_prefix("nexusflow-")
         .ok_or_else(|| ApiError::unauthorized("expected nexusflow-<token> protocol"))?;
     let rx = authorize_progress_subscription(&state, token, run_id).await?;
-    Ok(ws.protocols([proto.clone()])
+    Ok(ws
+        .protocols([proto.clone()])
         .on_upgrade(move |socket| forward_progress(socket, rx)))
 }
 
