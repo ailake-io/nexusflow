@@ -57,7 +57,7 @@ ARG FEATURES
 # stage is discarded after the build (see the `runtime` stage below), so it
 # costs build time, not final image size.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      pkg-config libssl-dev cmake make g++ zlib1g-dev protobuf-compiler libprotobuf-dev libsqlite3-dev \
+      pkg-config libssl-dev cmake make g++ zlib1g-dev protobuf-compiler libprotobuf-dev libsqlite3-dev python3 \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY . .
