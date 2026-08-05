@@ -333,7 +333,9 @@ jobs:
 
       # The self-hosted Windows runner has WSL's bash earlier in PATH than Git
       # Bash, so dtolnay/rust-toolchain's internal bash steps mangle the temp
-      # script path. Use PowerShell to install/verify rustup instead.
+      # script path. Use PowerShell to install/verify rustup instead, and put
+      # Git for Windows' Unix tools + CMake on PATH so rdkafka-sys can build
+      # librdkafka with its cmake-build feature.
       - name: Install Rust stable
         shell: pwsh
         run: |
@@ -345,6 +347,9 @@ jobs:
           }
           rustup default stable
           "$cargoBin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          "C:\Program Files\Git\usr\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          "C:\Program Files\CMake\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          "C:\ProgramData\chocolatey\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
 
       - uses: Swatinem/rust-cache@v2
         with:

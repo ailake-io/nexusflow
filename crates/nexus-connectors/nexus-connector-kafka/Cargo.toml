@@ -16,7 +16,7 @@ arrow-schema = "58.4.0"
 async-trait = "0.1.91"
 futures = "0.3.33"
 nexus-core = { version = "0.1.0", path = "../../nexus-core" }
-rdkafka = { version = "0.39.0", optional = true }
+rdkafka = { version = "0.39.0", optional = true, features = ["cmake-build"] }
 serde = { version = "1.0.229", features = ["derive"] }
 schemars = "1.2.2"
 serde_json = "1.0.151"
