@@ -65,7 +65,14 @@ COPY . .
 # directory at *compile* time — must exist before `cargo build` runs, same
 # requirement CI's clippy/test jobs have (see ci.yml).
 COPY --from=frontend /src/frontend/dist ./frontend/dist
-RUN cargo build --release -p nexusflow --features "${FEATURES}"
+# BuildKit cache mounts for cargo registry + target/ make rebuilds *much*
+# faster once the first full compile has happened. Because the binary ends up
+# inside the target cache mount, copy it out to /tmp before the mount is
+# unmounted so the runtime stage can COPY it normally.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release -p nexusflow --features "${FEATURES}" && \
+    cp /src/target/release/nexusflow /tmp/nexusflow-bin
 
 FROM ${RUNTIME_IMAGE} AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -74,7 +81,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && groupadd -r -g 1000 nexusflow \
     && useradd -r -u 1000 -g nexusflow nexusflow
 
-COPY --from=builder /src/target/release/nexusflow /usr/lib/nexusflow/nexusflow-bin
+COPY --from=builder /tmp/nexusflow-bin /usr/lib/nexusflow/nexusflow-bin
 COPY --from=adbc /out/libadbc_driver_postgresql.so /out/libadbc_driver_sqlite.so /usr/lib/nexusflow/
 COPY packaging/linux/nexusflow-wrapper.sh /usr/bin/nexusflow
 RUN chmod +x /usr/bin/nexusflow \
