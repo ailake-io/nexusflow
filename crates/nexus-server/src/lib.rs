@@ -668,24 +668,23 @@ async fn delete_user_handler(
 /// query string, so it never appears in URLs, server logs, or browser
 /// history. The browser WebSocket API can't set a custom `Authorization`
 /// header, but it can request a subprotocol. The client requests
-/// `nexusflow-<token>`; we strip the prefix to recover the JWT and echo
-/// `nexusflow` back in the handshake response.
+/// `nexusflow-<token>`; we strip the prefix to recover the JWT and echo the
+/// same protocol back in the handshake response.
 async fn progress_ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
     Path((_id, run_id)): Path<(String, i64)>,
 ) -> Result<Response, ApiError> {
-    let token = ws
+    let proto = ws
         .requested_protocols()
         .next()
-        .and_then(|h| h.to_str().ok())
-        .and_then(|proto| proto.strip_prefix("nexusflow-"))
-        .ok_or_else(|| {
-            ApiError::unauthorized("expected nexusflow-<token> Sec-WebSocket-Protocol")
-        })?;
+        .and_then(|h| h.to_str().ok().map(String::from))
+        .ok_or_else(|| ApiError::unauthorized("missing Sec-WebSocket-Protocol"))?;
+    let token = proto
+        .strip_prefix("nexusflow-")
+        .ok_or_else(|| ApiError::unauthorized("expected nexusflow-<token> protocol"))?;
     let rx = authorize_progress_subscription(&state, token, run_id).await?;
-    Ok(ws
-        .protocols(["nexusflow"])
+    Ok(ws.protocols([proto.clone()])
         .on_upgrade(move |socket| forward_progress(socket, rx)))
 }
 
