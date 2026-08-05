@@ -1,8 +1,10 @@
 /target
 
 # nexus-connectors is a nested workspace (crate-per-connector, see
-# ARCHITECTURE.md §3); the root Cargo.lock is authoritative for actual
-# builds, this one is only a byproduct of running cargo directly inside a
-# connector crate's directory.
-crates/nexus-connectors/Cargo.lock
+# ARCHITECTURE.md §3). Its Cargo.lock is now tracked so the CI drift check
+# compares two reproducible lockfiles instead of a fresh resolution against
+# the pinned root lock (which drifts whenever crates.io gets new compatible
+# patch releases). The root Cargo.lock remains authoritative for release
+# builds of the nexusflow binary; the connectors lock is only for the nested
+# workspace's own CI checks.
 crates/nexus-connectors/target

@@ -247,14 +247,14 @@ jobs:
   # own nested workspace (its own `cargo check --workspace` with no
   # features), independent of whatever subset nexus-server happens to link.
   #
-  # `crates/nexus-connectors/Cargo.lock` is gitignored on purpose (its own
-  # comment: "the root Cargo.lock is authoritative for actual builds, this
-  # one is only a byproduct of running cargo directly inside a connector
-  # crate's directory") — there's nothing to check out, `cargo check
-  # --workspace` below generates it fresh every run. That's exactly why the
-  # drift check against the root Cargo.lock has to live as a step *here*,
-  # right after that command, instead of as its own job: it needs the file
-  # to actually exist on disk first.
+  # `crates/nexus-connectors/Cargo.lock` is tracked on purpose so the drift
+  # check below compares two reproducible lockfiles instead of a fresh
+  # resolution (which would drift whenever crates.io publishes new compatible
+  # patch releases). The root Cargo.lock remains authoritative for release
+  # builds of the nexusflow binary; the connectors lock is only for this
+  # nested workspace's own CI checks. `cargo check --workspace --locked`
+  # below validates that the committed lock is still usable, and the drift
+  # step right after it guarantees the two locks stay aligned.
   connectors:
     name: connectors
     needs: test
@@ -290,15 +290,18 @@ jobs:
       # Every connector must also compile with no features enabled — that's
       # the whole point of gating rdkafka/odbc-api behind Cargo features
       # (CLAUDE.md §8.5), so it's checked on its own before --all-features.
-      - run: cargo check --workspace
+      # --locked ensures we exercise the exact dependency graph tracked in
+      # crates/nexus-connectors/Cargo.lock, the same one the drift check below
+      # compares against the root lock.
+      - run: cargo check --workspace --locked
 
-      # Now that `cargo check` above has resolved this nested workspace's
-      # own Cargo.lock, compare it against the root one — same connector
-      # crates' dependencies, resolved independently (see this job's
-      # top comment), which can silently drift apart over time.
+      # Compare the nested workspace's tracked Cargo.lock against the root
+      # one — same connector crates' dependencies, resolved independently
+      # (see this job's top comment), which can silently drift apart over
+      # time if not kept in sync.
       - run: python3 ../../scripts/check-lockfile-drift.py
 
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       # postgres_to_kafka_cdc_carries_correct_opcode_per_row (3 JVMs:
       # Zookeeper+Kafka+Connect) and text_chunk_embed_milvus_end_to_end
       # (3 containers: etcd+minio+milvus) are the two heaviest, flakiest
@@ -308,7 +311,7 @@ jobs:
       # the connectors-heavy job below so they run only after this job's own
       # compile step has fully exited (and released its memory) instead of
       # competing with it.
-      - run: cargo test --workspace --all-features -- --skip postgres_to_kafka_cdc_carries_correct_opcode_per_row --skip text_chunk_embed_milvus_end_to_end
+      - run: cargo test --workspace --all-features --locked -- --skip postgres_to_kafka_cdc_carries_correct_opcode_per_row --skip text_chunk_embed_milvus_end_to_end
 
   # Split out from `connectors` so the two heaviest/flakiest multi-container
   # tests run after that job's huge compile step has fully exited — see the
