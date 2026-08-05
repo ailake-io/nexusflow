@@ -79,7 +79,7 @@ jobs:
   clippy:
     name: clippy
     needs: fmt
-    runs-on: self-hosted
+    runs-on: [self-hosted, Linux]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -171,7 +171,7 @@ jobs:
   test:
     name: test
     needs: clippy
-    runs-on: self-hosted
+    runs-on: [self-hosted, Linux]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -258,10 +258,10 @@ jobs:
   connectors:
     name: connectors
     needs: test
-    # Self-hosted runner (nexusflow-local) — heaviest job (lancedb/milvus/
+    # Self-hosted Linux runner (nexusflow-local) — heaviest job (lancedb/milvus/
     # mongodb dep trees), was hitting the 14GB disk cap on ubuntu-latest.
     # Repo is private, single-maintainer, so no untrusted-PR risk.
-    runs-on: self-hosted
+    runs-on: [self-hosted, Linux]
     defaults:
       run:
         working-directory: crates/nexus-connectors
