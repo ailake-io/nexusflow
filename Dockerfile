@@ -81,8 +81,8 @@ FROM ${RUNTIME_IMAGE} AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
       libpq5 libsqlite3-0 ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* \
-    && groupadd -r -g 1000 nexusflow \
-    && useradd -r -u 1000 -g nexusflow nexusflow
+    && groupadd -r -g 1001 nexusflow \
+    && useradd -r -u 1001 -g nexusflow nexusflow
 
 COPY --from=builder /tmp/nexusflow-bin /usr/lib/nexusflow/nexusflow-bin
 COPY --from=adbc /out/libadbc_driver_postgresql.so /out/libadbc_driver_sqlite.so /usr/lib/nexusflow/
