@@ -14,7 +14,7 @@
 # day nexus-ai's ONNX-via-ort CUDA execution provider lands, without a
 # second Dockerfile to maintain in sync.
 
-ARG RUNTIME_IMAGE=debian:bookworm-slim
+ARG RUNTIME_IMAGE=ubuntu:24.04
 # `docker build --build-arg FEATURES=embed-ui,connectors-all .` links every
 # optional connector (nexus-server/Cargo.toml) into the binary — default
 # stays embed-ui only, same size/behavior as before this arg existed. When
@@ -43,8 +43,10 @@ COPY scripts/build-adbc-postgresql-driver.sh scripts/build-adbc-sqlite-driver.sh
 RUN scripts/build-adbc-postgresql-driver.sh /out \
  && scripts/build-adbc-sqlite-driver.sh /out
 
-FROM rust:1-slim-bookworm AS builder
+FROM rust:1-slim-trixie AS builder
 ARG FEATURES
+# Trixie gives us glibc/libstdc++ new enough to link the prebuilt ONNX
+# Runtime that ort-sys pulls in when the `embeddings` feature is enabled.
 # pkg-config/libssl-dev cover the default (embed-ui) build. The rest only
 # matter if FEATURES pulls in the heavier connectors (see nexus-server/
 # Cargo.toml's per-connector features): cmake+make for odbc's vendored
@@ -70,6 +72,7 @@ COPY --from=frontend /src/frontend/dist ./frontend/dist
 # inside the target cache mount, copy it out to /tmp before the mount is
 # unmounted so the runtime stage can COPY it normally.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/src/target \
     cargo build --release -p nexusflow --features "${FEATURES}" && \
     cp /src/target/release/nexusflow /tmp/nexusflow-bin
