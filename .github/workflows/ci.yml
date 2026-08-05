@@ -330,7 +330,22 @@ jobs:
         working-directory: crates/nexus-connectors
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+
+      # The self-hosted Windows runner has WSL's bash earlier in PATH than Git
+      # Bash, so dtolnay/rust-toolchain's internal bash steps mangle the temp
+      # script path. Use PowerShell to install/verify rustup instead.
+      - name: Install Rust stable
+        shell: pwsh
+        run: |
+          $cargoBin = "$env:USERPROFILE\.cargo\bin"
+          if (!(Get-Command rustc.exe -ErrorAction SilentlyContinue)) {
+            Invoke-WebRequest -Uri https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
+            ./rustup-init.exe -y --default-toolchain stable --no-modify-path
+            Remove-Item rustup-init.exe
+          }
+          rustup default stable
+          "$cargoBin" | Out-File -FilePath $env:GITHUB_PATH -Append
+
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: crates/nexus-connectors
