@@ -1,11 +1,10 @@
 use crate::config::QdrantConnectorConfig;
-use crate::rows::{batch_to_payloads, extract_embeddings, extract_ids};
+use crate::rows::{batch_to_qdrant_payloads, extract_embeddings, extract_ids};
 use arrow_array::RecordBatch;
 use async_trait::async_trait;
 use nexus_core::{split_by_opcode, CheckpointCursor, NexusError, Sink, OPCODE_COLUMN};
 use qdrant_client::qdrant::{DeletePointsBuilder, PointStruct, PointsIdsList, UpsertPointsBuilder};
-use qdrant_client::{Payload, Qdrant};
-use serde_json::{Map, Value};
+use qdrant_client::Qdrant;
 
 /// AI Lakehouse sink #2. Every non-embedding, non-opcode column becomes the
 /// point's JSON payload; `embedding_column` becomes the point vector. See
@@ -36,24 +35,14 @@ impl QdrantSink {
         }
         let embeddings = extract_embeddings(batch, &self.embedding_column)?;
         let ids = extract_ids(batch, &self.primary_key)?;
-        let payloads = batch_to_payloads(batch, &[self.embedding_column.as_str(), OPCODE_COLUMN])?;
+        let payloads =
+            batch_to_qdrant_payloads(batch, &[self.embedding_column.as_str(), OPCODE_COLUMN])?;
 
         let points: Vec<PointStruct> = ids
             .into_iter()
             .zip(embeddings)
             .zip(payloads)
-            .map(|((id, vector), payload)| {
-                // `payload` is already an owned `Value::Object` (from
-                // `batch_to_payloads`) — match it out instead of
-                // `.as_object().cloned()`, which would clone every key and
-                // value in the map a second time for no reason (M1,
-                // CLAUDE.md §8.1).
-                let payload: Payload = match payload {
-                    Value::Object(map) => map.into(),
-                    _ => Map::new().into(),
-                };
-                PointStruct::new(id, vector, payload)
-            })
+            .map(|((id, vector), payload)| PointStruct::new(id, vector, payload))
             .collect();
 
         self.client

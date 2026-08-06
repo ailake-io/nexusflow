@@ -597,7 +597,9 @@ mod tests {
             "sinks": [{"connector": "postgres", "config": {}}]
         }"#;
         let spec = PipelineSpec::parse(json).unwrap();
-        let err = spec.validate_security().expect_err("absolute path must be rejected");
+        let err = spec
+            .validate_security()
+            .expect_err("absolute path must be rejected");
         assert!(err.to_string().contains("absolute path"));
     }
 
@@ -609,7 +611,9 @@ mod tests {
             "sinks": [{"connector": "postgres", "config": {}}]
         }"#;
         let spec = PipelineSpec::parse(json).unwrap();
-        let err = spec.validate_security().expect_err("nested internal URL must be rejected");
+        let err = spec
+            .validate_security()
+            .expect_err("nested internal URL must be rejected");
         assert!(err.to_string().contains("internal host"));
     }
 
@@ -621,7 +625,9 @@ mod tests {
             "sinks": [{"connector": "postgres", "config": {}}]
         }"#;
         let spec = PipelineSpec::parse(json).unwrap();
-        let err = spec.validate_security().expect_err("internal URL in array must be rejected");
+        let err = spec
+            .validate_security()
+            .expect_err("internal URL in array must be rejected");
         assert!(err.to_string().contains("internal host"));
     }
 
@@ -634,7 +640,9 @@ mod tests {
             "dbt": {"project_dir": "../etc", "command": "run"}
         }"#;
         let spec = PipelineSpec::parse(json).unwrap();
-        let err = spec.validate_security().expect_err("dbt path traversal must be rejected");
+        let err = spec
+            .validate_security()
+            .expect_err("dbt path traversal must be rejected");
         assert!(err.to_string().contains("parent-dir"));
     }
 
@@ -646,7 +654,8 @@ mod tests {
             "sinks": [{"connector": "postgres", "config": {}}]
         }"#;
         let spec = PipelineSpec::parse(json).unwrap();
-        spec.validate_security().expect("external URL must be accepted");
+        spec.validate_security()
+            .expect("external URL must be accepted");
     }
 
     #[test]
@@ -657,7 +666,9 @@ mod tests {
             "sinks": [{"connector": "postgres", "config": {}}]
         }"#;
         let spec = PipelineSpec::parse(json).unwrap();
-        let err = spec.validate_security().expect_err("CGNAT host must be rejected");
+        let err = spec
+            .validate_security()
+            .expect_err("CGNAT host must be rejected");
         assert!(err.to_string().contains("internal host"));
     }
 }

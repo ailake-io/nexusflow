@@ -8,3 +8,4 @@
 # builds of the nexusflow binary; the connectors lock is only for the nested
 # workspace's own CI checks.
 crates/nexus-connectors/target
+graphify-out/
