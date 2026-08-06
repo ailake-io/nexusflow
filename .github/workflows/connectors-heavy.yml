@@ -1,0 +1,57 @@
+name: connectors-heavy
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [develop]
+    paths:
+      - 'crates/nexus-connectors/**'
+      - '.github/workflows/connectors-heavy.yml'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  connectors-heavy:
+    name: connectors-heavy
+    # Dedicated Windows self-hosted runner. Docker Desktop must be running and
+    # exposing the named pipe for testcontainers.
+    runs-on: [windows-connectors-heavy]
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: crates/nexus-connectors
+    env:
+      DOCKER_HOST: npipe:////./pipe/docker_engine
+    steps:
+      - uses: actions/checkout@v4
+
+      # The self-hosted Windows runner has WSL's bash earlier in PATH than Git
+      # Bash, so dtolnay/rust-toolchain's internal bash steps mangle the temp
+      # script path. Use PowerShell to install/verify rustup instead, and put
+      # Git for Windows' Unix tools + CMake on PATH so rdkafka-sys can build
+      # librdkafka with its cmake-build feature.
+      - name: Install Rust stable
+        shell: pwsh
+        run: |
+          $cargoBin = "$env:USERPROFILE\.cargo\bin"
+          if (!(Get-Command rustc.exe -ErrorAction SilentlyContinue)) {
+            Invoke-WebRequest -Uri https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
+            ./rustup-init.exe -y --default-toolchain stable --no-modify-path
+            Remove-Item rustup-init.exe
+          }
+          rustup default stable
+          "$cargoBin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          "C:\Program Files\Git\usr\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          "C:\Program Files\CMake\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/nexus-connectors
+
+      - name: Verify Docker is reachable
+        shell: pwsh
+        run: docker info
+
+      - run: cargo test -p nexus-connector-kafka --all-features --test cdc_debezium_integration
+      - run: cargo test -p nexus-connector-milvus --all-features --test milvus_integration

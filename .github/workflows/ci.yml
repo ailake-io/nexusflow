@@ -313,30 +313,4 @@ jobs:
       # competing with it.
       - run: cargo test --workspace --all-features --locked -- --skip postgres_to_kafka_cdc_carries_correct_opcode_per_row --skip text_chunk_embed_milvus_end_to_end
 
-  # Split out from `connectors` so the two heaviest/flakiest multi-container
-  # tests run after this job's huge compile step has fully exited — see the
-  # comment on connectors' last step. Temporarily back on the Linux self-hosted
-  # runner because the dedicated Windows box doesn't have a reachable Docker
-  # daemon for testcontainers (named pipe not exposed); revisit once Docker
-  # Desktop is confirmed running there.
-  connectors-heavy:
-    name: connectors-heavy
-    needs: connectors
-    runs-on: [self-hosted, Linux]
-    defaults:
-      run:
-        working-directory: crates/nexus-connectors
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: crates/nexus-connectors
 
-      # The kafka CDC test spins up Zookeeper + Kafka + Kafka Connect (three
-      # JVMs) and repeatedly times out on the Connect container startup on this
-      # memory-constrained self-hosted runner (~23-25GB of 31GB already in use
-      # by other desktop processes). Skip it in CI until a runner with enough
-      # free RAM is available; the milvus integration still exercises a
-      # multi-container testcontainers path.
-      - run: cargo test -p nexus-connector-milvus --all-features --test milvus_integration
