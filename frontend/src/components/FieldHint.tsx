@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Info } from 'lucide-react'
+import { useI18n } from '@/lib/i18n'
 
 /**
  * Small info button next to a form field's label — click to reveal the
@@ -9,6 +10,7 @@ import { Info } from 'lucide-react'
  * can have a dozen fields. Click again to hide it.
  */
 export function FieldHint({ text }: { text: string }) {
+  const { t } = useI18n()
   const [open, setOpen] = useState(false)
 
   return (
@@ -16,7 +18,7 @@ export function FieldHint({ text }: { text: string }) {
       <button
         type="button"
         onClick={() => setOpen((current) => !current)}
-        aria-label="What goes in this field?"
+        aria-label={t('common.whatGoesHere')}
         aria-expanded={open}
         className="flex h-4 w-4 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-primary"
       >

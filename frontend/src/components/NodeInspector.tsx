@@ -7,6 +7,7 @@ import type {
   TransformNodeData,
 } from '@/lib/dag'
 import type { ConnectorDescriptor } from '@/lib/api'
+import { useI18n } from '@/lib/i18n'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { SchemaForm } from '@/components/SchemaForm'
@@ -40,6 +41,7 @@ function parseConfig(raw: string): Record<string, unknown> {
  * transform SQL). See lib/dag.ts for the schema these map onto.
  */
 export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps) {
+  const { t } = useI18n()
   const data = node.data
   if (data.kind === 'connector') {
     const descriptor = connectors.find((c) => c.name === data.connector)
@@ -53,13 +55,13 @@ export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps
             <Database className="h-4 w-4 text-primary" />
             <h2 className="text-sm font-semibold text-foreground">{data.connector}</h2>
           </div>
-          <p className="mt-0.5 text-[10px] text-muted-foreground">Connector node</p>
+          <p className="mt-0.5 text-[10px] text-muted-foreground">{t('canvas.connectorNode')}</p>
         </div>
         <div className="flex-1 overflow-auto p-4">
           <div className="flex flex-col gap-4">
             <div>
               <Label htmlFor="node-role" className="text-xs font-medium">
-                Role
+                {t('canvas.role')}
               </Label>
               <select
                 id="node-role"
@@ -67,13 +69,14 @@ export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps
                 onChange={(e) => onChange(node.id, { role: e.target.value as ConnectorRole })}
                 className="mt-1.5 flex h-9 w-full rounded-lg border border-input bg-transparent px-3 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring"
               >
-                <option value="source">source</option>
-                <option value="sink">sink</option>
+                <option value="source">{t('pipelines.source')}</option>
+                <option value="sink">{t('pipelines.sink')}</option>
               </select>
             </div>
             <div>
               <Label htmlFor="node-name" className="text-xs font-medium">
-                Name <span className="text-muted-foreground">(optional)</span>
+                {t('canvas.name')}{' '}
+                <span className="text-muted-foreground">({t('common.optional')})</span>
               </Label>
               <Input
                 id="node-name"
@@ -94,7 +97,7 @@ export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps
             ) : (
               <div>
                 <Label htmlFor="node-config" className="text-xs font-medium">
-                  Config <span className="text-muted-foreground">(JSON)</span>
+                  {t('canvas.config')} <span className="text-muted-foreground">({t('canvas.configJson')})</span>
                 </Label>
                 <textarea
                   id="node-config"
@@ -118,13 +121,13 @@ export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps
         <div className="border-b border-white/10 px-4 py-3">
           <div className="flex items-center gap-2">
             <Code2 className="h-4 w-4 text-accent" />
-            <h2 className="text-sm font-semibold text-foreground">Transform</h2>
+            <h2 className="text-sm font-semibold text-foreground">{t('canvas.transform')}</h2>
           </div>
-          <p className="mt-0.5 text-[10px] text-muted-foreground">SQL transformation</p>
+          <p className="mt-0.5 text-[10px] text-muted-foreground">{t('canvas.transformDesc')}</p>
         </div>
         <div className="flex-1 overflow-auto p-4">
           <Label htmlFor="transform-sql" className="text-xs font-medium">
-            SQL
+            {t('canvas.sql')}
           </Label>
           <textarea
             id="transform-sql"
@@ -132,7 +135,7 @@ export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps
             onChange={(e) => onChange(node.id, { sql: e.target.value })}
             rows={16}
             spellCheck={false}
-            placeholder="SELECT * FROM source"
+            placeholder={t('canvas.sqlPlaceholder')}
             className="mt-1.5 w-full rounded-lg border border-input bg-transparent p-3 font-mono text-xs text-foreground outline-none focus:ring-2 focus:ring-ring"
           />
         </div>
@@ -145,27 +148,27 @@ export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps
       <div className="border-b border-white/10 px-4 py-3">
         <div className="flex items-center gap-2">
           <Layers className="h-4 w-4 text-emerald-400" />
-          <h2 className="text-sm font-semibold text-foreground">dbt</h2>
+          <h2 className="text-sm font-semibold text-foreground">{t('canvas.dbt')}</h2>
         </div>
-        <p className="mt-0.5 text-[10px] text-muted-foreground">Post-load ELT step</p>
+        <p className="mt-0.5 text-[10px] text-muted-foreground">{t('canvas.dbtDesc')}</p>
       </div>
       <div className="flex-1 overflow-auto p-4">
         <div className="flex flex-col gap-4">
           <div>
             <Label htmlFor="dbt-project-dir" className="text-xs font-medium">
-              Project dir
+              {t('canvas.projectDir')}
             </Label>
             <Input
               id="dbt-project-dir"
               value={data.projectDir}
-              placeholder="/path/to/dbt/project"
+              placeholder={t('canvas.projectDirPlaceholder')}
               onChange={(e) => onChange(node.id, { projectDir: e.target.value })}
               className="mt-1.5"
             />
           </div>
           <div>
             <Label htmlFor="dbt-command" className="text-xs font-medium">
-              Command
+              {t('canvas.command')}
             </Label>
             <select
               id="dbt-command"
@@ -173,19 +176,19 @@ export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps
               onChange={(e) => onChange(node.id, { command: e.target.value as DbtCommand })}
               className="mt-1.5 flex h-9 w-full rounded-lg border border-input bg-transparent px-3 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring"
             >
-              <option value="run">run</option>
-              <option value="build">build (models + tests)</option>
-              <option value="test">test</option>
+              <option value="run">{t('canvas.dbtRun')}</option>
+              <option value="build">{t('canvas.dbtBuild')}</option>
+              <option value="test">{t('canvas.dbtTest')}</option>
             </select>
           </div>
           <div>
             <Label htmlFor="dbt-select" className="text-xs font-medium">
-              Select <span className="text-muted-foreground">(optional)</span>
+              {t('canvas.selectOptional')}
             </Label>
             <Input
               id="dbt-select"
               value={data.select}
-              placeholder="e.g. tag:nightly"
+              placeholder={t('canvas.selectPlaceholder')}
               onChange={(e) => onChange(node.id, { select: e.target.value })}
               className="mt-1.5"
             />

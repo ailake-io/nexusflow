@@ -1,5 +1,6 @@
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import type { DagNode } from '@/lib/dag'
+import { useI18n } from '@/lib/i18n'
 import { Database, Code2, Layers } from 'lucide-react'
 
 /** Custom renderers for canvas nodes — read connector/role/sql straight off
@@ -7,6 +8,7 @@ import { Database, Code2, Layers } from 'lucide-react'
  * nothing to keep in sync when the inspector edits role/name/sql. */
 
 export function ConnectorNodeView({ data, selected }: NodeProps<DagNode>) {
+  const { t } = useI18n()
   if (data.kind !== 'connector') return null
   const isSource = data.role === 'source'
   return (
@@ -32,7 +34,7 @@ export function ConnectorNodeView({ data, selected }: NodeProps<DagNode>) {
             isSource ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'
           }`}
         >
-          {data.role}
+          {isSource ? t('pipelines.source') : t('pipelines.sink')}
         </span>
         {data.name && <span className="truncate">{data.name}</span>}
       </div>
@@ -46,6 +48,7 @@ export function ConnectorNodeView({ data, selected }: NodeProps<DagNode>) {
 }
 
 export function TransformNodeView({ selected }: NodeProps<DagNode>) {
+  const { t } = useI18n()
   return (
     <div
       className={`min-w-[8rem] rounded-lg border bg-card px-3 py-2 shadow-sm transition-all ${
@@ -61,9 +64,9 @@ export function TransformNodeView({ selected }: NodeProps<DagNode>) {
       />
       <div className="flex items-center gap-2">
         <Code2 className="h-3.5 w-3.5 text-accent" />
-        <div className="text-sm font-semibold text-foreground">transform</div>
+        <div className="text-sm font-semibold text-foreground">{t('pipelines.transform')}</div>
       </div>
-      <div className="mt-0.5 text-xs text-muted-foreground">SQL</div>
+      <div className="mt-0.5 text-xs text-muted-foreground">{t('canvas.sql')}</div>
       <Handle
         type="source"
         position={Position.Right}
@@ -73,7 +76,14 @@ export function TransformNodeView({ selected }: NodeProps<DagNode>) {
   )
 }
 
+function dbtCommandLabel(command: string, t: (key: string) => string): string {
+  if (command === 'build') return t('canvas.dbtBuild')
+  if (command === 'test') return t('canvas.dbtTest')
+  return t('canvas.dbtRun')
+}
+
 export function DbtNodeView({ data, selected }: NodeProps<DagNode>) {
+  const { t } = useI18n()
   if (data.kind !== 'dbt') return null
   return (
     <div
@@ -90,10 +100,12 @@ export function DbtNodeView({ data, selected }: NodeProps<DagNode>) {
       />
       <div className="flex items-center gap-2">
         <Layers className="h-3.5 w-3.5 text-emerald-400" />
-        <div className="text-sm font-semibold text-foreground">dbt {data.command}</div>
+        <div className="text-sm font-semibold text-foreground">
+          {t('canvas.dbt')} {dbtCommandLabel(data.command, t)}
+        </div>
       </div>
       <div className="mt-0.5 truncate text-xs text-muted-foreground">
-        {data.select || data.projectDir || 'no project set'}
+        {data.select || data.projectDir || t('canvas.noProjectSet')}
       </div>
     </div>
   )

@@ -1,15 +1,18 @@
 import { useState, type FormEvent } from 'react'
 import { useAuth } from '@/lib/auth-context'
+import { useI18n } from '@/lib/i18n'
 import { ApiError } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Logo } from '@/components/Logo'
+import { LanguageToggle } from '@/components/LanguageToggle'
 import { AlertCircle, ArrowRight, Database, Shield } from 'lucide-react'
 
 export function LoginForm() {
   const { login } = useAuth()
+  const { t } = useI18n()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -22,7 +25,7 @@ export function LoginForm() {
     try {
       await login(username, password)
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Login failed')
+      setError(err instanceof ApiError ? err.message : t('auth.loginFailed'))
     } finally {
       setSubmitting(false)
     }
@@ -41,53 +44,65 @@ export function LoginForm() {
 
         <div className="relative z-10 max-w-sm">
           <h2 className="text-3xl font-semibold tracking-tight text-foreground">
-            Build data pipelines <span className="text-primary">visually</span>.
+            {t('auth.headline')
+              .split(/(visually|visualmente)/i)
+              .map((part, i) =>
+                /^(visually|visualmente)$/i.test(part) ? (
+                  <span key={i} className="text-primary">{part}</span>
+                ) : (
+                  part
+                ),
+              )}
           </h2>
           <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
-            Connect sources and sinks, transform with SQL, run dbt models, and stream CDC events — all from one canvas.
+            {t('auth.subheadline')}
           </p>
 
           <div className="mt-8 flex flex-col gap-3">
             <div className="flex items-center gap-3 rounded-lg border border-white/5 bg-white/[0.02] p-3">
               <Database className="h-5 w-5 text-primary" />
               <div>
-                <div className="text-xs font-medium text-foreground">20+ connectors</div>
-                <div className="text-[10px] text-muted-foreground">Postgres, Kafka, S3, LanceDB, Milvus…</div>
+                <div className="text-xs font-medium text-foreground">{t('auth.featureConnectors')}</div>
+                <div className="text-[10px] text-muted-foreground">{t('auth.featureConnectorsDesc')}</div>
               </div>
             </div>
             <div className="flex items-center gap-3 rounded-lg border border-white/5 bg-white/[0.02] p-3">
               <Shield className="h-5 w-5 text-accent" />
               <div>
-                <div className="text-xs font-medium text-foreground">Enterprise-ready security</div>
-                <div className="text-[10px] text-muted-foreground">JWT auth, encrypted secrets, RBAC.</div>
+                <div className="text-xs font-medium text-foreground">{t('auth.featureSecurity')}</div>
+                <div className="text-[10px] text-muted-foreground">{t('auth.featureSecurityDesc')}</div>
               </div>
             </div>
           </div>
         </div>
 
-        <div className="relative z-10 text-[10px] text-muted-foreground">
-          © {new Date().getFullYear()} NexusFlow
+        <div className="relative z-10 flex items-center justify-between">
+          <span className="text-[10px] text-muted-foreground">
+            {t('auth.copyright', { year: String(new Date().getFullYear()) })}
+          </span>
+          <LanguageToggle />
         </div>
       </div>
 
       <div className="flex w-full flex-col items-center justify-center p-6 lg:w-1/2 lg:p-10">
         <div className="w-full max-w-sm animate-slide-in-up">
-          <div className="mb-8 lg:hidden">
+          <div className="mb-8 flex items-center justify-between lg:hidden">
             <Logo />
+            <LanguageToggle />
           </div>
 
           <Card className="border-white/10 bg-card/80 backdrop-blur">
             <CardHeader className="space-y-1">
-              <CardTitle className="text-lg font-semibold">Welcome back</CardTitle>
+              <CardTitle className="text-lg font-semibold">{t('auth.welcomeBack')}</CardTitle>
               <CardDescription className="text-xs text-muted-foreground">
-                Enter your credentials to access the workbench.
+                {t('auth.enterCredentials')}
               </CardDescription>
             </CardHeader>
             <CardContent>
               <form onSubmit={handleSubmit} className="flex flex-col gap-4">
                 <div className="flex flex-col gap-2">
                   <Label htmlFor="username" className="text-xs font-medium">
-                    Username
+                    {t('auth.username')}
                   </Label>
                   <Input
                     id="username"
@@ -100,7 +115,7 @@ export function LoginForm() {
                 </div>
                 <div className="flex flex-col gap-2">
                   <Label htmlFor="password" className="text-xs font-medium">
-                    Password
+                    {t('auth.password')}
                   </Label>
                   <Input
                     id="password"
@@ -119,7 +134,7 @@ export function LoginForm() {
                   </div>
                 )}
                 <Button type="submit" disabled={submitting} className="gap-2">
-                  {submitting ? 'Signing in…' : 'Sign in'}
+                  {submitting ? t('auth.signingIn') : t('auth.signIn')}
                   {!submitting && <ArrowRight className="h-3.5 w-3.5" />}
                 </Button>
               </form>

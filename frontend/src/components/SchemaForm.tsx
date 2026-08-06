@@ -1,3 +1,4 @@
+import { useI18n } from '@/lib/i18n'
 import type { JsonSchemaNode } from '@/lib/api'
 import { FieldHint } from '@/components/FieldHint'
 import { Input } from '@/components/ui/input'
@@ -37,6 +38,7 @@ interface SchemaFormProps {
  * instead of always-visible text — keeps a 10+ field form scannable.
  */
 export function SchemaForm({ schema, defs, value, onChange, idPrefix }: SchemaFormProps) {
+  const { t } = useI18n()
   const properties = schema.properties ?? {}
   const required = new Set(schema.required ?? [])
 
@@ -65,7 +67,7 @@ export function SchemaForm({ schema, defs, value, onChange, idPrefix }: SchemaFo
                 className="mt-1.5 flex h-9 w-full rounded-lg border border-input bg-transparent px-3 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring"
               >
                 <option value="" disabled>
-                  select...
+                  {t('schemaForm.select')}…
                 </option>
                 {fieldSchema.enum.map((option) => (
                   <option key={option} value={option}>
@@ -130,7 +132,7 @@ export function SchemaForm({ schema, defs, value, onChange, idPrefix }: SchemaFo
 
         if (fieldSchema.type === 'object') {
           return (
-            <fieldset key={key} className="rounded-lg border border-input p-2">
+            <fieldset key={key} className="rounded-lg border border-white/10 p-3">
               <legend className="flex items-center gap-1.5 px-1 text-xs text-muted-foreground">
                 {label}
                 {fieldSchema.description && <FieldHint text={fieldSchema.description} />}
@@ -157,7 +159,7 @@ export function SchemaForm({ schema, defs, value, onChange, idPrefix }: SchemaFo
               id={fieldId}
               value={(value[key] as string) ?? ''}
               onChange={(e) => setField(key, e.target.value)}
-              className="mt-1"
+              className="mt-1.5"
             />
           </div>
         )
@@ -176,6 +178,7 @@ interface ArrayFieldProps {
 }
 
 function ArrayField({ label, description, itemSchema, defs, items, onChange }: ArrayFieldProps) {
+  const { t } = useI18n()
   const isObjectItem = itemSchema.type === 'object'
 
   const updateItem = (index: number, next: JsonValue) => {
@@ -193,14 +196,14 @@ function ArrayField({ label, description, itemSchema, defs, items, onChange }: A
   }
 
   return (
-    <fieldset className="rounded-lg border border-input p-2">
+    <fieldset className="rounded-lg border border-white/10 p-3">
       <legend className="flex items-center gap-1.5 px-1 text-xs text-muted-foreground">
         {label}
         {description && <FieldHint text={description} />}
       </legend>
       <div className="flex flex-col gap-2">
         {items.map((item, index) => (
-          <div key={index} className="flex items-start gap-2 rounded-md border border-input/50 p-2">
+          <div key={index} className="flex items-start gap-2 rounded-md border border-white/10 p-2">
             <div className="flex-1">
               {isObjectItem ? (
                 <SchemaForm
@@ -220,9 +223,9 @@ function ArrayField({ label, description, itemSchema, defs, items, onChange }: A
             <button
               type="button"
               onClick={() => removeItem(index)}
-              className="text-xs text-destructive hover:underline"
+              className="text-xs text-red-400 hover:underline"
             >
-              remove
+              {t('common.remove')}
             </button>
           </div>
         ))}
@@ -232,7 +235,7 @@ function ArrayField({ label, description, itemSchema, defs, items, onChange }: A
         onClick={addItem}
         className="mt-2 text-xs text-primary hover:underline"
       >
-        + add
+        {t('common.add')}
       </button>
     </fieldset>
   )

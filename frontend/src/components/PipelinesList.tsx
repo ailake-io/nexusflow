@@ -12,6 +12,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { StatusBadge } from '@/components/ui/status-badge'
 import { EmptyState } from '@/components/EmptyState'
+import { useI18n } from '@/lib/i18n'
 import { deletePipeline, getPipelineSpec, type NodeSummary } from '@/lib/api'
 import { useAuth } from '@/lib/auth-context'
 import { usePipelines } from '@/hooks/usePipelines'
@@ -57,6 +58,7 @@ interface PipelinesListProps {
 }
 
 export function PipelinesList({ onEdit }: PipelinesListProps) {
+  const { t } = useI18n()
   const { token } = useAuth()
   const { pipelines, loading, error, refresh } = usePipelines()
   const [deletingId, setDeletingId] = useState<string | null>(null)
@@ -96,17 +98,15 @@ export function PipelinesList({ onEdit }: PipelinesListProps) {
     <div className="h-full overflow-auto p-6">
       <div className="mb-6 flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-semibold tracking-tight">Pipelines</h1>
-          <p className="text-xs text-muted-foreground">
-            Manage saved pipelines. Edit reloads the full spec onto the canvas.
-          </p>
+          <h1 className="text-lg font-semibold tracking-tight">{t('pipelines.title')}</h1>
+          <p className="text-xs text-muted-foreground">{t('pipelines.subtitle')}</p>
         </div>
       </div>
 
       {loading && pipelines.length === 0 && (
         <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">
           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-          Loading pipelines…
+          {t('pipelines.loading')}
         </div>
       )}
 
@@ -132,8 +132,8 @@ export function PipelinesList({ onEdit }: PipelinesListProps) {
       {!loading && pipelines.length === 0 && (
         <EmptyState
           icon={<Workflow className="h-6 w-6" />}
-          title="No pipelines saved yet"
-          description="Build a pipeline on the Canvas, then save it to see it here."
+          title={t('pipelines.emptyTitle')}
+          description={t('pipelines.emptyDescription')}
         />
       )}
 
@@ -146,13 +146,18 @@ export function PipelinesList({ onEdit }: PipelinesListProps) {
             <div className="flex items-start justify-between gap-4">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-semibold text-foreground">{p.pipeline_id}</span>
-                <StatusBadge variant={statusVariant(p.last_run_status)} pulse={p.last_run_status === 'running'}>
-                  {p.last_run_status ?? 'never run'}
+                <StatusBadge
+                  variant={statusVariant(p.last_run_status)}
+                  pulse={p.last_run_status === 'running'}
+                >
+                  {p.last_run_status
+                    ? t(`status.${p.last_run_status}` as 'status.running' | 'status.success' | 'status.failed')
+                    : t('pipelines.neverRun')}
                 </StatusBadge>
                 {p.schedule && (
                   <span
                     className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-xs text-muted-foreground"
-                    title={`Runs on cron: ${p.schedule}`}
+                    title={t('pipelines.runsOn', { schedule: p.schedule })}
                   >
                     <Clock className="h-3 w-3" />
                     {p.schedule}
@@ -173,7 +178,7 @@ export function PipelinesList({ onEdit }: PipelinesListProps) {
                   ) : (
                     <Edit2 className="h-3.5 w-3.5" />
                   )}
-                  {editingId === p.pipeline_id ? 'Loading…' : 'Edit'}
+                  {editingId === p.pipeline_id ? t('pipelines.editing') : t('pipelines.edit')}
                 </Button>
                 <Button
                   type="button"
@@ -188,7 +193,7 @@ export function PipelinesList({ onEdit }: PipelinesListProps) {
                   ) : (
                     <Trash2 className="h-3.5 w-3.5" />
                   )}
-                  {deletingId === p.pipeline_id ? 'Deleting…' : 'Delete'}
+                  {deletingId === p.pipeline_id ? t('pipelines.deleting') : t('pipelines.delete')}
                 </Button>
               </div>
             </div>
@@ -201,7 +206,7 @@ export function PipelinesList({ onEdit }: PipelinesListProps) {
               {p.has_transform && (
                 <span className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-xs text-foreground">
                   <Workflow className="h-3 w-3 text-muted-foreground" />
-                  transform
+                  {t('pipelines.transform')}
                 </span>
               )}
               {p.has_transform && <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />}
@@ -211,7 +216,8 @@ export function PipelinesList({ onEdit }: PipelinesListProps) {
             </div>
 
             <p className="mt-3 text-[10px] text-muted-foreground">
-              Updated {p.updated_at} · Created {p.created_at}
+              {t('pipelines.updatedAt', { updated: p.updated_at })} ·{' '}
+              {t('pipelines.createdAt', { created: p.created_at })}
             </p>
           </div>
         ))}

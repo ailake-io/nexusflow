@@ -1,5 +1,6 @@
 import type { DragEvent } from 'react'
 import { Database, Loader2, AlertCircle } from 'lucide-react'
+import { useI18n } from '@/lib/i18n'
 import type { ConnectorDescriptor } from '@/lib/api'
 import { EmptyState } from '@/components/EmptyState'
 
@@ -20,22 +21,22 @@ function onDragStart(event: DragEvent<HTMLDivElement>, connectorName: string) {
  * (ARCHITECTURE.md §3).
  */
 export function ConnectorPalette({ connectors, loading, error }: ConnectorPaletteProps) {
+  const { t } = useI18n()
+
   return (
     <aside className="flex w-60 shrink-0 flex-col border-r bg-card">
       <div className="border-b border-white/10 px-4 py-3">
         <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          Connectors
+          {t('canvas.connectors')}
         </h2>
-        <p className="mt-0.5 text-[10px] text-muted-foreground/70">
-          Drag to canvas
-        </p>
+        <p className="mt-0.5 text-[10px] text-muted-foreground/70">{t('canvas.dragToCanvas')}</p>
       </div>
 
       <div className="flex-1 overflow-auto p-3">
         {loading && (
           <div className="flex items-center gap-2 py-4 text-xs text-muted-foreground">
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            Loading connectors…
+            {t('common.loading')}
           </div>
         )}
         {error && (
@@ -47,8 +48,8 @@ export function ConnectorPalette({ connectors, loading, error }: ConnectorPalett
         {!loading && connectors.length === 0 && (
           <EmptyState
             icon={<Database className="h-5 w-5" />}
-            title="No connectors"
-            description="The server reported no available connectors."
+            title={t('canvas.noConnectors')}
+            description={t('canvas.noConnectorsDesc')}
             className="p-3"
           />
         )}

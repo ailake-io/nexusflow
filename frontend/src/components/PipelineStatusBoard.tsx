@@ -8,6 +8,7 @@ import {
   Loader2,
   AlertCircle,
 } from 'lucide-react'
+import { useI18n } from '@/lib/i18n'
 import { usePipelines } from '@/hooks/usePipelines'
 import { StatusBadge } from '@/components/ui/status-badge'
 import { EmptyState } from '@/components/EmptyState'
@@ -19,12 +20,12 @@ type FlagColor = 'green' | 'yellow' | 'red' | 'gray'
 
 const FLAG_CONFIG: Record<
   FlagColor,
-  { label: string; variant: 'success' | 'running' | 'failed' | 'idle'; icon: typeof CheckCircle2 }
+  { variant: 'success' | 'running' | 'failed' | 'idle'; icon: typeof CheckCircle2 }
 > = {
-  green: { label: 'Success', variant: 'success', icon: CheckCircle2 },
-  yellow: { label: 'Running', variant: 'running', icon: Clock },
-  red: { label: 'Failed', variant: 'failed', icon: XCircle },
-  gray: { label: 'Scheduled', variant: 'idle', icon: CalendarClock },
+  green: { variant: 'success', icon: CheckCircle2 },
+  yellow: { variant: 'running', icon: Clock },
+  red: { variant: 'failed', icon: XCircle },
+  gray: { variant: 'idle', icon: CalendarClock },
 }
 
 /** One pipeline's flag reflects its last known outcome, not just whether it
@@ -45,6 +46,7 @@ function flagFor(p: PipelineSummary): FlagColor {
  * "running" flag flips to green/red without a manual refresh.
  */
 export function PipelineStatusBoard() {
+  const { t } = useI18n()
   const { pipelines, loading, error, refresh } = usePipelines()
 
   useEffect(() => {
@@ -60,19 +62,21 @@ export function PipelineStatusBoard() {
     { green: 0, yellow: 0, red: 0, gray: 0 } as Record<FlagColor, number>,
   )
 
+  const flagOrder: FlagColor[] = ['green', 'yellow', 'red', 'gray']
+
   return (
     <div className="h-full overflow-auto p-6">
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-lg font-semibold tracking-tight">Pipeline Status</h1>
-          <p className="text-xs text-muted-foreground">
-            Live overview of every saved pipeline. Refreshes every 5 seconds.
-          </p>
+          <h1 className="text-lg font-semibold tracking-tight">{t('status.title')}</h1>
+          <p className="text-xs text-muted-foreground">{t('status.subtitle')}</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          {(['green', 'yellow', 'red', 'gray'] as const).map((color) => {
+          {flagOrder.map((color) => {
             const config = FLAG_CONFIG[color]
             const Icon = config.icon
+            const labelKey: 'success' | 'running' | 'failed' | 'scheduled' =
+              color === 'green' ? 'success' : color === 'yellow' ? 'running' : color === 'red' ? 'failed' : 'scheduled'
             return (
               <div
                 key={color}
@@ -80,7 +84,7 @@ export function PipelineStatusBoard() {
               >
                 <Icon className="h-3.5 w-3.5 text-muted-foreground" />
                 <span className="font-medium text-foreground">{counts[color]}</span>
-                <span className="text-muted-foreground">{config.label.toLowerCase()}</span>
+                <span className="text-muted-foreground">{t(`status.${labelKey}`).toLowerCase()}</span>
               </div>
             )
           })}
@@ -90,7 +94,7 @@ export function PipelineStatusBoard() {
       {loading && pipelines.length === 0 && (
         <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">
           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-          Loading status…
+          {t('status.loading')}
         </div>
       )}
 
@@ -104,8 +108,8 @@ export function PipelineStatusBoard() {
       {!loading && pipelines.length === 0 && (
         <EmptyState
           icon={<Activity className="h-6 w-6" />}
-          title="No pipelines to monitor"
-          description="Save a pipeline to see its runtime status here."
+          title={t('status.emptyTitle')}
+          description={t('status.emptyDescription')}
         />
       )}
 
@@ -114,32 +118,37 @@ export function PipelineStatusBoard() {
           <table className="w-full text-sm">
             <thead className="bg-muted/50 text-left text-xs uppercase tracking-wider text-muted-foreground">
               <tr>
-                <th className="px-4 py-3 font-medium">Status</th>
-                <th className="px-4 py-3 font-medium">Pipeline</th>
-                <th className="px-4 py-3 font-medium">Schedule</th>
-                <th className="px-4 py-3 font-medium">Last Run</th>
+                <th className="px-4 py-3 font-medium">{t('status.status')}</th>
+                <th className="px-4 py-3 font-medium">{t('status.pipeline')}</th>
+                <th className="px-4 py-3 font-medium">{t('status.schedule')}</th>
+                <th className="px-4 py-3 font-medium">{t('status.lastRun')}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-white/5">
               {pipelines.map((p) => {
                 const color = flagFor(p)
                 const config = FLAG_CONFIG[color]
+                const labelKey: 'success' | 'running' | 'failed' | 'scheduled' =
+                  color === 'green'
+                    ? 'success'
+                    : color === 'yellow'
+                      ? 'running'
+                      : color === 'red'
+                        ? 'failed'
+                        : 'scheduled'
                 return (
-                  <tr
-                    key={p.pipeline_id}
-                    className="transition-colors hover:bg-white/[0.02]"
-                  >
+                  <tr key={p.pipeline_id} className="transition-colors hover:bg-white/[0.02]">
                     <td className="px-4 py-3">
                       <StatusBadge variant={config.variant} pulse={color === 'yellow'}>
-                        {config.label}
+                        {t(`status.${labelKey}`)}
                       </StatusBadge>
                     </td>
                     <td className="px-4 py-3 font-medium text-foreground">{p.pipeline_id}</td>
                     <td className="px-4 py-3 text-muted-foreground">
-                      {p.schedule ?? <span className="italic opacity-60">manual</span>}
+                      {p.schedule ?? <span className="italic opacity-60">{t('status.manual')}</span>}
                     </td>
                     <td className="px-4 py-3 text-muted-foreground">
-                      {p.last_run_at ?? <span className="italic opacity-60">never run</span>}
+                      {p.last_run_at ?? <span className="italic opacity-60">{t('status.neverRun')}</span>}
                     </td>
                   </tr>
                 )

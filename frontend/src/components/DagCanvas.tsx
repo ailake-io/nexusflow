@@ -16,6 +16,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { Code2, Layers } from 'lucide-react'
+import { useI18n } from '@/lib/i18n'
 import { ConnectorPalette } from '@/components/ConnectorPalette'
 import { dagNodeTypes } from '@/components/dag-node-types'
 import { ExecutionPanel } from '@/components/ExecutionPanel'
@@ -45,6 +46,7 @@ interface CanvasInnerProps {
 }
 
 function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
+  const { t } = useI18n()
   const { connectors, loading, error } = useConnectors()
   const { screenToFlowPosition } = useReactFlow()
   const wrapperRef = useRef<HTMLDivElement>(null)
@@ -216,7 +218,7 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
       />
       {runTriggerError && (
         <div className="flex items-center gap-2 border-b border-red-500/20 bg-red-500/10 px-4 py-2 text-xs text-red-400">
-          <span className="font-semibold">Run error:</span> {runTriggerError}
+          <span className="font-semibold">{t('canvas.runError')}</span> {runTriggerError}
         </div>
       )}
       <div className="flex flex-1 overflow-hidden">
@@ -243,7 +245,7 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
               className="flex items-center gap-2 rounded-lg border border-white/10 bg-card/90 px-3 py-2 text-sm font-medium text-foreground shadow-lg backdrop-blur transition-all hover:border-accent/40 hover:bg-card"
             >
               <Code2 className="h-3.5 w-3.5 text-accent" />
-              + Transform
+              {t('canvas.addTransform')}
             </button>
             <button
               type="button"
@@ -251,7 +253,7 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
               className="flex items-center gap-2 rounded-lg border border-white/10 bg-card/90 px-3 py-2 text-sm font-medium text-foreground shadow-lg backdrop-blur transition-all hover:border-emerald-400/40 hover:bg-card"
             >
               <Layers className="h-3.5 w-3.5 text-emerald-400" />
-              + dbt
+              {t('canvas.addDbt')}
             </button>
           </div>
         </div>
