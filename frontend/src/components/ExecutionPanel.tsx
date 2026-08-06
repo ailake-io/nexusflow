@@ -1,5 +1,7 @@
 import type { DbtRunSummary } from '@/lib/api'
 import type { ExecutionStatus, PartitionProgress } from '@/hooks/useRunProgress'
+import { StatusBadge } from '@/components/ui/status-badge'
+import { AlertCircle, Terminal, Database, Clock } from 'lucide-react'
 
 interface ExecutionPanelProps {
   status: ExecutionStatus
@@ -9,20 +11,15 @@ interface ExecutionPanelProps {
   dbtSummary: DbtRunSummary | null
 }
 
-const STATUS_LABEL: Record<ExecutionStatus, string> = {
-  idle: 'Idle',
-  starting: 'Starting…',
-  running: 'Running',
-  success: 'Success',
-  failed: 'Failed',
-}
-
-const STATUS_CLASS: Record<ExecutionStatus, string> = {
-  idle: 'text-muted-foreground',
-  starting: 'text-muted-foreground',
-  running: 'text-primary',
-  success: 'text-emerald-600 dark:text-emerald-400',
-  failed: 'text-destructive',
+const STATUS_CONFIG: Record<
+  ExecutionStatus,
+  { label: string; variant: 'idle' | 'running' | 'success' | 'failed' }
+> = {
+  idle: { label: 'Idle', variant: 'idle' },
+  starting: { label: 'Starting…', variant: 'running' },
+  running: { label: 'Running', variant: 'running' },
+  success: { label: 'Success', variant: 'success' },
+  failed: { label: 'Failed', variant: 'failed' },
 }
 
 /** Live execution panel (Marco 8 task #16) — consumes the progress
@@ -38,63 +35,85 @@ export function ExecutionPanel({
   if (status === 'idle') return null
 
   const rows = Object.values(partitions)
+  const statusConfig = STATUS_CONFIG[status]
 
   return (
-    <div className="border-t bg-card p-3">
-      <div className="mb-2 flex items-center gap-2 text-sm">
-        <span className={`font-medium ${STATUS_CLASS[status]}`}>{STATUS_LABEL[status]}</span>
-        {runId !== null && <span className="text-muted-foreground">run #{runId}</span>}
+    <div className="border-t border-white/10 bg-card p-4 animate-slide-in-up">
+      <div className="mb-3 flex flex-wrap items-center gap-3">
+        <StatusBadge variant={statusConfig.variant} pulse={status === 'running' || status === 'starting'}>
+          {statusConfig.label}
+        </StatusBadge>
+        {runId !== null && (
+          <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Terminal className="h-3.5 w-3.5" />
+            run #{runId}
+          </span>
+        )}
       </div>
+
       {rows.length > 0 && (
-        <table className="w-full text-xs">
-          <thead>
-            <tr className="text-left text-muted-foreground">
-              <th className="pr-4 font-normal">Partition</th>
-              <th className="pr-4 font-normal">Rows</th>
-              <th className="pr-4 font-normal">Rows/s</th>
-              <th className="pr-4 font-normal">MB</th>
-              <th className="font-normal">MB/s</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((p) => (
-              <tr key={p.partition_id}>
-                <td className="pr-4">{p.partition_id}</td>
-                <td className="pr-4">{p.rows_written.toLocaleString()}</td>
-                <td className="pr-4">{p.rowsPerSecond.toFixed(0)}</td>
-                <td className="pr-4">{(p.bytes_written / 1_000_000).toFixed(2)}</td>
-                <td>{p.mbPerSecond.toFixed(2)}</td>
+        <div className="overflow-hidden rounded-lg border border-white/10">
+          <table className="w-full text-xs">
+            <thead className="bg-muted/50 text-left uppercase tracking-wider text-muted-foreground">
+              <tr>
+                <th className="px-3 py-2 font-medium">Partition</th>
+                <th className="px-3 py-2 font-medium">Rows</th>
+                <th className="px-3 py-2 font-medium">Rows/s</th>
+                <th className="px-3 py-2 font-medium">MB</th>
+                <th className="px-3 py-2 font-medium">MB/s</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody className="divide-y divide-white/5">
+              {rows.map((p) => (
+                <tr key={p.partition_id} className="hover:bg-white/[0.02]">
+                  <td className="px-3 py-2 font-mono text-foreground">{p.partition_id}</td>
+                  <td className="px-3 py-2">{p.rows_written.toLocaleString()}</td>
+                  <td className="px-3 py-2">{p.rowsPerSecond.toFixed(0)}</td>
+                  <td className="px-3 py-2">{(p.bytes_written / 1_000_000).toFixed(2)}</td>
+                  <td className="px-3 py-2">{p.mbPerSecond.toFixed(2)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
+
       {dbtSummary && (
-        <div className="mt-3 border-t pt-2 text-xs">
-          <div className="mb-1 font-medium text-muted-foreground">
+        <div className="mt-3 rounded-lg border border-white/10 bg-white/[0.02] p-3">
+          <div className="mb-2 flex items-center gap-2 text-xs font-medium text-foreground">
+            <Database className="h-3.5 w-3.5 text-emerald-400" />
             dbt {dbtSummary.command}
           </div>
-          <div className="flex flex-wrap gap-x-4 gap-y-1">
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
             <span>
               models: {dbtSummary.models_succeeded}/{dbtSummary.models_total}
               {dbtSummary.models_failed > 0 && (
-                <span className="text-destructive"> ({dbtSummary.models_failed} failed)</span>
+                <span className="text-red-400"> ({dbtSummary.models_failed} failed)</span>
               )}
             </span>
             <span>
               tests: {dbtSummary.tests_passed}/{dbtSummary.tests_total}
               {dbtSummary.tests_failed > 0 && (
-                <span className="text-destructive"> ({dbtSummary.tests_failed} failed)</span>
+                <span className="text-red-400"> ({dbtSummary.tests_failed} failed)</span>
               )}
             </span>
             {dbtSummary.nodes_in_lineage !== null && (
               <span>lineage: {dbtSummary.nodes_in_lineage} nodes</span>
             )}
-            <span>{dbtSummary.elapsed_time.toFixed(2)}s</span>
+            <span className="inline-flex items-center gap-1">
+              <Clock className="h-3 w-3" />
+              {dbtSummary.elapsed_time.toFixed(2)}s
+            </span>
           </div>
         </div>
       )}
-      {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
+
+      {error && (
+        <div className="mt-3 flex items-start gap-2 rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-xs text-red-400">
+          <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          {error}
+        </div>
+      )}
     </div>
   )
 }

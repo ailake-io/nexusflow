@@ -1,7 +1,8 @@
 import { useState } from 'react'
+import { Info } from 'lucide-react'
 
 /**
- * Small "ⓘ" button next to a form field's label — click to reveal the
+ * Small info button next to a form field's label — click to reveal the
  * field's explanation (from the connector's JSON Schema `description`,
  * itself sourced from a Rust doc comment on the Config struct field) in a
  * popover, instead of always showing the text and cluttering a form that
@@ -15,16 +16,16 @@ export function FieldHint({ text }: { text: string }) {
       <button
         type="button"
         onClick={() => setOpen((current) => !current)}
-        aria-label="O que colocar neste campo?"
+        aria-label="What goes in this field?"
         aria-expanded={open}
-        className="flex h-4 w-4 items-center justify-center rounded-full border border-muted-foreground/50 text-[10px] leading-none text-muted-foreground hover:border-foreground hover:text-foreground"
+        className="flex h-4 w-4 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-primary"
       >
-        i
+        <Info className="h-3.5 w-3.5" />
       </button>
       {open && (
         <span
           role="tooltip"
-          className="absolute left-0 top-5 z-50 w-56 rounded-md border bg-popover p-2 text-xs leading-snug text-popover-foreground shadow-md"
+          className="absolute left-0 top-5 z-50 w-56 rounded-lg border border-white/10 bg-popover p-2.5 text-xs leading-relaxed text-popover-foreground shadow-lg"
         >
           {text}
         </span>

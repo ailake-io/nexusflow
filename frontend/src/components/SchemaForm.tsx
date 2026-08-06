@@ -62,7 +62,7 @@ export function SchemaForm({ schema, defs, value, onChange, idPrefix }: SchemaFo
                 id={fieldId}
                 value={(value[key] as string) ?? ''}
                 onChange={(e) => setField(key, e.target.value)}
-                className="mt-1 flex h-8 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm"
+                className="mt-1.5 flex h-9 w-full rounded-lg border border-input bg-transparent px-3 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring"
               >
                 <option value="" disabled>
                   select...
@@ -85,7 +85,7 @@ export function SchemaForm({ schema, defs, value, onChange, idPrefix }: SchemaFo
                 type="checkbox"
                 checked={Boolean(value[key] ?? fieldSchema.default ?? false)}
                 onChange={(e) => setField(key, e.target.checked)}
-                className="h-4 w-4 rounded border-input"
+                className="h-4 w-4 rounded border-input bg-transparent text-primary accent-primary outline-none focus:ring-2 focus:ring-ring"
               />
               <Label htmlFor={fieldId}>{label}</Label>
               {fieldSchema.description && <FieldHint text={fieldSchema.description} />}
@@ -108,7 +108,7 @@ export function SchemaForm({ schema, defs, value, onChange, idPrefix }: SchemaFo
                   const raw = e.target.value
                   setField(key, raw === '' ? undefined : Number(raw))
                 }}
-                className="mt-1"
+                className="mt-1.5"
               />
             </div>
           )
