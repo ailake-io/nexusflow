@@ -328,6 +328,10 @@ jobs:
       run:
         shell: pwsh
         working-directory: crates/nexus-connectors
+    env:
+      # testcontainers on Windows talks to Docker Desktop through the named
+      # pipe by default; without this it tries TCP localhost:2375 and fails.
+      DOCKER_HOST: npipe:////./pipe/docker_engine
     steps:
       - uses: actions/checkout@v4
 
@@ -354,6 +358,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: crates/nexus-connectors
+
+      - name: Verify Docker is reachable
+        shell: pwsh
+        run: docker info
 
       - run: cargo test -p nexus-connector-kafka --all-features --test cdc_debezium_integration
       - run: cargo test -p nexus-connector-milvus --all-features --test milvus_integration
