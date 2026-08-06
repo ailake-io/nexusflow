@@ -16,7 +16,7 @@ mod scheduler;
 pub mod telemetry;
 
 use alerts::AlertNotifier;
-use auth::{require_role, Claims, JwtCodec, Role};
+use auth::{require_role, Claims, JwtCodec, Role, TokenBlocklist};
 use auth_store::AuthStore;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Extension, FromRef, Path, Query, State};
@@ -181,6 +181,16 @@ fn router(state: AppState) -> Router {
         .layer(middleware::from_fn(rate_limit::login_rate_limit))
         .layer(Extension(state.login_rate_limiter.clone()));
 
+    // Logout requires any valid token; the token is revoked so it can't be
+    // reused until expiry. Protected by Read role (minimum authenticated role).
+    let logout_routes = Router::new()
+        .route("/auth/logout", post(logout_handler))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_role::<AppState>,
+        ))
+        .layer(Extension(Role::Read));
+
     let app = Router::new()
         .route("/health", get(health))
         // Unauthenticated like /health — Prometheus scrapers don't carry a
@@ -189,6 +199,7 @@ fn router(state: AppState) -> Router {
         // here (ARCHITECTURE.md §9/§10).
         .route("/metrics", get(metrics_handler))
         .merge(login_routes)
+        .merge(logout_routes)
         // Not behind `require_role` — a browser's `WebSocket` API can't set
         // an `Authorization` header, so this route reads the JWT from the
         // `Sec-WebSocket-Protocol` subprotocol and checks the role itself
@@ -306,6 +317,28 @@ async fn login_handler(
     let role = result?.ok_or_else(|| ApiError::unauthorized("invalid username or password"))?;
     let token = state.jwt.issue(&body.username, role)?;
     Ok(Json(LoginResponse { token }))
+}
+
+#[derive(Serialize)]
+struct LogoutResponse {
+    revoked: bool,
+}
+
+async fn logout_handler(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    req: axum::extract::Request,
+) -> Result<Json<LogoutResponse>, ApiError> {
+    let header = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| ApiError::unauthorized("missing Authorization header"))?;
+    let token = header
+        .strip_prefix("Bearer ")
+        .ok_or_else(|| ApiError::unauthorized("Authorization header must be 'Bearer <token>'"))?;
+    state.jwt.blocklist().revoke(token.to_string(), claims.exp);
+    Ok(Json(LogoutResponse { revoked: true }))
 }
 
 #[derive(Serialize)]
@@ -469,6 +502,8 @@ async fn create_pipeline_handler(
 ) -> Result<(StatusCode, Json<PipelineSummary>), ApiError> {
     spec.validate()
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    spec.validate_security()
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
     connectors::validate_pipeline_configs(&spec)
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
     state.pipelines.create(&spec, &state.secrets).await?;
@@ -520,6 +555,8 @@ async fn update_pipeline_handler(
         )));
     }
     spec.validate()
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    spec.validate_security()
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
     connectors::validate_pipeline_configs(&spec)
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
@@ -770,7 +807,12 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
     if let Some((username, password)) = &config.bootstrap_admin {
         auth_store.seed_admin_if_empty(username, password).await?;
     }
-    let jwt = JwtCodec::new(config.jwt_secret.as_bytes(), config.jwt_ttl_seconds);
+    let token_blocklist = TokenBlocklist::new();
+    let jwt = JwtCodec::with_blocklist(
+        config.jwt_secret.as_bytes(),
+        config.jwt_ttl_seconds,
+        token_blocklist,
+    );
     let secrets = SecretCipher::from_hex_key(&config.encryption_key_hex)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(AppState {
@@ -1478,7 +1520,7 @@ mod tests {
                 "primary_key": "id"
             }}],
             "sinks": [{"connector": "sqlite", "config": {
-                "uri": "/tmp/out.db",
+                "uri": "out.db",
                 "table": "dst",
                 "primary_key": "id"
             }}]
@@ -2017,5 +2059,39 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(blocked.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn logout_revokes_token_immediately() {
+        let state = test_state().await;
+        let token = bearer(&state, Role::Read);
+        let app = router(state.clone());
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/auth/logout")
+                    .header("authorization", &token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // The same token must now be rejected on a protected route.
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/connectors")
+                    .header("authorization", token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 }

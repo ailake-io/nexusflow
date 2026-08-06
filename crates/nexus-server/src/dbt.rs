@@ -1,4 +1,5 @@
 use nexus_core::{DbtCommand, DbtConfig};
+use std::time::Duration;
 
 /// One model/test result from dbt's `target/run_results.json` (schema
 /// `https://schemas.getdbt.com/dbt/run-results/v6.json`) — only the fields
@@ -113,6 +114,20 @@ impl DbtOutcome {
     }
 }
 
+fn truncate_utf8(bytes: &[u8], max_len: usize) -> String {
+    if bytes.len() <= max_len {
+        return String::from_utf8_lossy(bytes).into_owned();
+    }
+    let s = String::from_utf8_lossy(bytes);
+    let mut boundary = max_len;
+    while boundary > 0 && !s.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    let mut out = s[..boundary].to_string();
+    out.push_str("\n…[truncated]");
+    out
+}
+
 fn subcommand(command: DbtCommand) -> &'static str {
     match command {
         DbtCommand::Run => "run",
@@ -178,21 +193,32 @@ fn read_json_artifact<T: serde::de::DeserializeOwned>(path: &std::path::Path) ->
 pub async fn run(config: &DbtConfig) -> anyhow::Result<DbtOutcome> {
     let command = subcommand(config.command);
 
+    let timeout_seconds: u64 = std::env::var("NEXUS_DBT_TIMEOUT_SECONDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(300);
+    const MAX_OUTPUT_BYTES: usize = 1_048_576; // 1 MiB per stream
+
     let mut cmd = tokio::process::Command::new("dbt");
-    cmd.arg(command).current_dir(&config.project_dir);
+    cmd.arg(command)
+        .current_dir(&config.project_dir)
+        .kill_on_drop(true);
     if let Some(select) = &config.select {
         cmd.arg("--select").arg(select);
     }
 
-    let output = cmd.output().await.map_err(|e| {
-        anyhow::anyhow!(
-            "failed to spawn `dbt {command}` in {:?}: {e} (is the `dbt` CLI on PATH?)",
-            config.project_dir
-        )
-    })?;
+    let output = tokio::time::timeout(Duration::from_secs(timeout_seconds), cmd.output())
+        .await
+        .map_err(|_| anyhow::anyhow!("dbt {command} timed out after {timeout_seconds}s"))?
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "failed to spawn `dbt {command}` in {:?}: {e} (is the `dbt` CLI on PATH?)",
+                config.project_dir
+            )
+        })?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let stdout = truncate_utf8(&output.stdout, MAX_OUTPUT_BYTES);
+    let stderr = truncate_utf8(&output.stderr, MAX_OUTPUT_BYTES);
     tracing::info!(
         %stdout,
         %stderr,

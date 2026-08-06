@@ -41,6 +41,18 @@ export class ApiError extends Error {
   }
 }
 
+let unauthorizedHandler: (() => void) | null = null
+
+/**
+ * Registers a callback invoked when an API call receives 401 Unauthorized.
+ * The auth layer uses this to clear the stored token and return to the login
+ * screen. Ignored for the login endpoint itself (wrong credentials must not
+ * log the user out).
+ */
+export function onUnauthorized(handler: () => void) {
+  unauthorizedHandler = handler
+}
+
 async function request<T>(path: string, init: RequestInit = {}, token?: string): Promise<T> {
   const headers = new Headers(init.headers)
   if (token) headers.set('authorization', `Bearer ${token}`)
@@ -49,6 +61,9 @@ async function request<T>(path: string, init: RequestInit = {}, token?: string):
   const response = await fetch(path, { ...init, headers })
   if (!response.ok) {
     const body = await response.json().catch(() => null)
+    if (response.status === 401 && !path.endsWith('/auth/login') && unauthorizedHandler) {
+      unauthorizedHandler()
+    }
     throw new ApiError(response.status, body?.error ?? response.statusText)
   }
   if (response.status === 204) return undefined as T

@@ -8,6 +8,9 @@ on:
       - 'crates/nexus-connectors/**'
       - '.github/workflows/connectors-heavy.yml'
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -17,6 +20,7 @@ jobs:
     # Dedicated Windows self-hosted runner. Docker Desktop must be running and
     # exposing the named pipe for testcontainers.
     runs-on: [windows-connectors-heavy]
+    timeout-minutes: 180
     defaults:
       run:
         shell: pwsh
@@ -24,7 +28,7 @@ jobs:
     env:
       DOCKER_HOST: npipe:////./pipe/docker_engine
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       # The self-hosted Windows runner has WSL's bash earlier in PATH than Git
       # Bash, so dtolnay/rust-toolchain's internal bash steps mangle the temp
@@ -37,6 +41,12 @@ jobs:
           $cargoBin = "$env:USERPROFILE\.cargo\bin"
           if (!(Get-Command rustc.exe -ErrorAction SilentlyContinue)) {
             Invoke-WebRequest -Uri https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
+            $expected = (Invoke-WebRequest -Uri https://win.rustup.rs/x86_64.sha256 -UseBasicParsing).Content.Split()[0]
+            $actual = (Get-FileHash -Algorithm SHA256 -Path rustup-init.exe).Hash
+            if ($expected -ne $actual) {
+              Write-Error "rustup-init checksum mismatch: expected $expected, got $actual"
+              exit 1
+            }
             ./rustup-init.exe -y --default-toolchain stable --no-modify-path
             Remove-Item rustup-init.exe
           }
@@ -45,7 +55,7 @@ jobs:
           "C:\Program Files\Git\usr\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
           "C:\Program Files\CMake\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@720f7e45ccee46c12a7b1ae7c7112cbc783e5dbb # v2.7.7
         with:
           workspaces: crates/nexus-connectors
 
