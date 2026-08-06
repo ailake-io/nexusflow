@@ -10,7 +10,7 @@ Consolidado dos itens que ficaram faltando/incompletos ao longo das fases abaixo
 
 1. **Fase 12 — Enterprise connectors**: nada implementado ainda. Repo separado, mecanismo de license key (JWT), definir primeiro conector pago.
 2. **Marco 13 do `IMPLEMENTATION_PLAN.md` — CDC nativo sem Kafka/Debezium**: condicional, não agendado. Só entra se o overhead de operar Debezium+Kafka virar bloqueador real de adoção confirmado (não é especulativo). Parser de WAL nativo do Postgres, resume por LSN em vez de offset Kafka.
-3. **`nexus-ai`: só a feature `cpu` existe** — `cuda`/`metal`/`api` (aceleração de embeddings) não implementados. O perfil `cuda` do Docker já tem a infra de runtime pronta (base image + `--gpus all`), mas não acelera nada até isso ser feito.
+3. **`nexus-ai`: features `cuda`/`metal` registram o execution provider ONNX Runtime correto (`ort::ep::CUDA`/`ort::ep::CoreML`), mas não validadas em hardware real** (sandbox é Linux sem GPU) — só confirmado que compilam e que o EP é registrado antes do load da sessão; runtime faz fallback silencioso pra CPU se o driver/hardware não estiver presente. `api` (embeddings via LLM externa) ainda não implementado. O perfil `cuda` do Docker já tem a infra de runtime pronta (base image + `--gpus all`).
 4. **Alertas: só Slack implementado** — MS Teams, PagerDuty, Email e Webhook genérico ainda faltam (ver `CLAUDE.md §6`).
 5. **Windows (`.msi`/winget) e macOS (Homebrew/`.dmg`): specs escritos em `packaging/`, nunca validados em máquina real** (sandbox de dev é Linux). Falta também um build script dos drivers ADBC pra Windows (`.dll`) e macOS (`.dylib`) — os scripts atuais (`scripts/build-adbc-*.sh`) só geram `.so`.
 6. **`.rpm` nunca testado** — `scripts/package-rpm.sh` está escrito mas o sandbox não tem `rpmbuild` instalado pra validar.
@@ -50,9 +50,9 @@ Consolidado dos itens que ficaram faltando/incompletos ao longo das fases abaixo
 - [x] Resume automático a partir do checkpoint por partição em falha
 - [ ] (Pós-MVP, sob demanda) Parser nativo de WAL Postgres / binlog MySQL — condicional, ver Marco 13 do `IMPLEMENTATION_PLAN.md`; só entra se overhead de operar Debezium+Kafka virar bloqueador real de adoção
 
-## Fase 5 — AI Lakehouse (`nexus-ai`) ✅ (GPU/API acceleration pendente)
+## Fase 5 — AI Lakehouse (`nexus-ai`) ✅ (API acceleration pendente, GPU não validada em hardware real)
 - [x] Chunking (fixed-size, recursive, semantic)
-- [x] Embeddings via `ort` (feature `cpu`) — `cuda`/`metal`/`api` ainda não implementados (`crates/nexus-ai/Cargo.toml` só define `cpu`)
+- [x] Embeddings via `ort` (feature `cpu`) — `cuda`/`metal` registram o execution provider certo (compilam, não validados em GPU/Apple Silicon real) — `api` ainda não implementado
 - [x] Sinks vetoriais: pgvector → Qdrant → LanceDB → Milvus → Pinecone → ChromaDB (nessa ordem, do mais simples de operar ao mais complexo)
 
 ## Fase 6 — Data Lake formats ✅

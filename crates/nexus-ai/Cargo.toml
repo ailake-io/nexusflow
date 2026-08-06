@@ -21,6 +21,17 @@ cpu = [
     "dep:arrow-schema",
     "dep:ndarray",
 ]
+# NVIDIA GPU inference via ONNX Runtime's CUDA execution provider. Requires
+# a CUDA-enabled ONNX Runtime build at link time (see Dockerfile's `cuda`
+# runtime profile, CLAUDE.md §7) — not validated on real hardware in this
+# sandbox (Linux, no GPU), only that the feature compiles and the EP is
+# registered before session load.
+cuda = ["cpu", "ort/cuda"]
+# Apple Silicon/Metal inference via ONNX Runtime's CoreML execution
+# provider (ONNX Runtime has no execution provider named "Metal" directly —
+# CoreML is the EP that dispatches to the Neural Engine/GPU on Apple
+# hardware). Not validated on real hardware in this sandbox (Linux).
+metal = ["cpu", "ort/coreml"]
 
 [dependencies]
 arrow-array = { version = "58.4.0", optional = true }

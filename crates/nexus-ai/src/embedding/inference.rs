@@ -1,6 +1,7 @@
 use crate::embedding::model::{resolve_model_path, ModelConfig, ModelError};
 use arrow_array::{Array, FixedSizeListArray, Float32Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use ort::session::builder::SessionBuilder;
 use ort::session::Session;
 use ort::value::Tensor;
 use std::sync::Arc;
@@ -26,6 +27,36 @@ pub enum EmbeddingError {
 
 fn ort_err(e: impl std::fmt::Display) -> EmbeddingError {
     EmbeddingError::Ort(e.to_string())
+}
+
+/// Registers the GPU execution provider selected by Cargo feature, if any
+/// (`cuda`/`metal` are additive on top of `cpu`, see nexus-ai/Cargo.toml).
+/// ONNX Runtime falls back to its default CPU EP when neither is enabled,
+/// or transparently at runtime if the registered EP fails to initialize on
+/// a given machine (e.g. `cuda` compiled in but no NVIDIA driver present).
+#[cfg(feature = "cuda")]
+fn with_accelerated_execution_provider(
+    builder: SessionBuilder,
+) -> Result<SessionBuilder, EmbeddingError> {
+    builder
+        .with_execution_providers([ort::ep::CUDA::default().build()])
+        .map_err(ort_err)
+}
+
+#[cfg(all(feature = "metal", not(feature = "cuda")))]
+fn with_accelerated_execution_provider(
+    builder: SessionBuilder,
+) -> Result<SessionBuilder, EmbeddingError> {
+    builder
+        .with_execution_providers([ort::ep::CoreML::default().build()])
+        .map_err(ort_err)
+}
+
+#[cfg(not(any(feature = "cuda", feature = "metal")))]
+fn with_accelerated_execution_provider(
+    builder: SessionBuilder,
+) -> Result<SessionBuilder, EmbeddingError> {
+    Ok(builder)
 }
 
 /// Pinned ONNX model + its tokenizer — both resolved (downloaded/cached) via
@@ -64,10 +95,9 @@ impl EmbeddingModel {
 
         let tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| EmbeddingError::Tokenizer(e.to_string()))?;
-        let session = Session::builder()
-            .map_err(ort_err)?
-            .commit_from_file(&model_path)
-            .map_err(ort_err)?;
+        let mut builder =
+            with_accelerated_execution_provider(Session::builder().map_err(ort_err)?)?;
+        let session = builder.commit_from_file(&model_path).map_err(ort_err)?;
 
         Ok(Self {
             session,
