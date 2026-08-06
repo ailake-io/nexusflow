@@ -15,6 +15,8 @@ import {
   type OnSelectionChangeFunc,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
+import { Code2, Layers } from 'lucide-react'
+import { useI18n } from '@/lib/i18n'
 import { ConnectorPalette } from '@/components/ConnectorPalette'
 import { dagNodeTypes } from '@/components/dag-node-types'
 import { ExecutionPanel } from '@/components/ExecutionPanel'
@@ -44,6 +46,7 @@ interface CanvasInnerProps {
 }
 
 function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
+  const { t } = useI18n()
   const { connectors, loading, error } = useConnectors()
   const { screenToFlowPosition } = useReactFlow()
   const wrapperRef = useRef<HTMLDivElement>(null)
@@ -214,11 +217,13 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
         saving={saving}
       />
       {runTriggerError && (
-        <p className="border-b bg-card px-3 py-1 text-sm text-destructive">{runTriggerError}</p>
+        <div className="flex items-center gap-2 border-b border-red-500/20 bg-red-500/10 px-4 py-2 text-xs text-red-400">
+          <span className="font-semibold">{t('canvas.runError')}</span> {runTriggerError}
+        </div>
       )}
       <div className="flex flex-1 overflow-hidden">
         <ConnectorPalette connectors={connectors} loading={loading} error={error} />
-        <div ref={wrapperRef} className="flex-1" onDragOver={onDragOver} onDrop={onDrop}>
+        <div ref={wrapperRef} className="relative flex-1 bg-background" onDragOver={onDragOver} onDrop={onDrop}>
           <ReactFlow
             nodes={nodes}
             edges={edges}
@@ -229,9 +234,28 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
             onSelectionChange={onSelectionChange}
             fitView
           >
-            <Background />
+            <Background gap={20} size={1} color="oklch(1 0 0 / 8%)" />
             <Controls />
           </ReactFlow>
+
+          <div className="absolute bottom-4 left-4 flex gap-2">
+            <button
+              type="button"
+              onClick={addTransformNode}
+              className="flex items-center gap-2 rounded-lg border border-white/10 bg-card/90 px-3 py-2 text-sm font-medium text-foreground shadow-lg backdrop-blur transition-all hover:border-accent/40 hover:bg-card"
+            >
+              <Code2 className="h-3.5 w-3.5 text-accent" />
+              {t('canvas.addTransform')}
+            </button>
+            <button
+              type="button"
+              onClick={addDbtNode}
+              className="flex items-center gap-2 rounded-lg border border-white/10 bg-card/90 px-3 py-2 text-sm font-medium text-foreground shadow-lg backdrop-blur transition-all hover:border-emerald-400/40 hover:bg-card"
+            >
+              <Layers className="h-3.5 w-3.5 text-emerald-400" />
+              {t('canvas.addDbt')}
+            </button>
+          </div>
         </div>
         {selectedNode && (
           <NodeInspector node={selectedNode} connectors={connectors} onChange={updateNodeData} />
@@ -244,22 +268,6 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
         error={execution.error}
         dbtSummary={execution.dbtSummary}
       />
-      <div className="absolute bottom-4 left-64 flex gap-2">
-        <button
-          type="button"
-          onClick={addTransformNode}
-          className="rounded-md border bg-card px-3 py-1.5 text-sm shadow-sm hover:bg-muted"
-        >
-          + Transform
-        </button>
-        <button
-          type="button"
-          onClick={addDbtNode}
-          className="rounded-md border bg-card px-3 py-1.5 text-sm shadow-sm hover:bg-muted"
-        >
-          + dbt
-        </button>
-      </div>
     </div>
   )
 }

@@ -1,4 +1,14 @@
 import { useState } from 'react'
+import {
+  Save,
+  Download,
+  Upload,
+  Play,
+  Loader2,
+  CheckCircle2,
+  AlertCircle,
+} from 'lucide-react'
+import { useI18n } from '@/lib/i18n'
 import { Button } from '@/components/ui/button'
 import { FieldHint } from '@/components/FieldHint'
 import { Input } from '@/components/ui/input'
@@ -34,6 +44,7 @@ export function PipelineIoPanel({
   running,
   saving,
 }: PipelineIoPanelProps) {
+  const { t } = useI18n()
   const [text, setText] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
@@ -68,19 +79,24 @@ export function PipelineIoPanel({
   }
 
   return (
-    <div className="flex flex-col gap-2 border-b bg-card p-3">
+    <div className="flex flex-col gap-3 border-b border-white/10 bg-card p-4">
       <div className="flex flex-wrap items-end gap-3">
         <div>
-          <Label htmlFor="pipeline-id">pipeline_id</Label>
+          <Label htmlFor="pipeline-id" className="text-xs font-medium">
+            {t('ioPanel.pipelineId')}
+          </Label>
           <Input
             id="pipeline-id"
             value={meta.pipelineId}
             onChange={(e) => onMetaChange({ ...meta, pipelineId: e.target.value })}
-            className="mt-1 w-48"
+            placeholder="my-pipeline"
+            className="mt-1.5 w-56"
           />
         </div>
         <div>
-          <Label htmlFor="partitions">partitions</Label>
+          <Label htmlFor="partitions" className="text-xs font-medium">
+            {t('ioPanel.partitions')}
+          </Label>
           <Input
             id="partitions"
             type="number"
@@ -93,11 +109,13 @@ export function PipelineIoPanel({
                 partitions: e.target.value ? Number(e.target.value) : undefined,
               })
             }
-            className="mt-1 w-24"
+            className="mt-1.5 w-28"
           />
         </div>
         <div>
-          <Label htmlFor="channel-capacity">channel_capacity</Label>
+          <Label htmlFor="channel-capacity" className="text-xs font-medium">
+            {t('ioPanel.channelCapacity')}
+          </Label>
           <Input
             id="channel-capacity"
             type="number"
@@ -110,51 +128,80 @@ export function PipelineIoPanel({
                 channelCapacity: e.target.value ? Number(e.target.value) : undefined,
               })
             }
-            className="mt-1 w-24"
+            className="mt-1.5 w-28"
           />
         </div>
         <div>
           <div className="flex items-center gap-1.5">
-            <Label htmlFor="schedule">schedule (cron)</Label>
-            <FieldHint
-              text={
-                'Opcional. Formato Unix de 5 campos (minuto hora dia-do-mês mês ' +
-                'dia-da-semana), ex.: "0 */6 * * *" roda a cada 6 horas, ' +
-                '"*/15 * * * *" a cada 15 minutos, "0 3 * * *" toda madrugada às 3h. ' +
-                'Deixe em branco pra rodar só manualmente (botão Run ou API).'
-              }
-            />
+            <Label htmlFor="schedule" className="text-xs font-medium">
+              {t('ioPanel.schedule')}
+            </Label>
+            <FieldHint text={t('ioPanel.scheduleHint')} />
           </div>
           <Input
             id="schedule"
             value={meta.schedule ?? ''}
             placeholder="ex.: 0 */6 * * *"
             onChange={(e) => onMetaChange({ ...meta, schedule: e.target.value })}
-            className="mt-1 w-48"
+            className="mt-1.5 w-52"
           />
         </div>
-        <Button type="button" onClick={handleSave} disabled={saving}>
-          {saving ? 'Saving…' : 'Save'}
-        </Button>
-        <Button type="button" onClick={handleExport}>
-          Export JSON
-        </Button>
-        <Button type="button" variant="outline" onClick={handleImport}>
-          Load JSON
-        </Button>
-        <Button type="button" variant="secondary" onClick={onRun} disabled={running}>
-          {running ? 'Running…' : 'Run'}
-        </Button>
+
+        <div className="ml-auto flex items-center gap-2">
+          <Button
+            type="button"
+            onClick={handleSave}
+            disabled={saving}
+            className="gap-1.5"
+          >
+            {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+            {saving ? t('ioPanel.saving') : t('ioPanel.save')}
+          </Button>
+          <Button type="button" variant="outline" onClick={handleExport} className="gap-1.5">
+            <Download className="h-3.5 w-3.5" />
+            {t('ioPanel.exportJson')}
+          </Button>
+          <Button type="button" variant="outline" onClick={handleImport} className="gap-1.5">
+            <Upload className="h-3.5 w-3.5" />
+            {t('ioPanel.loadJson')}
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={onRun}
+            disabled={running}
+            className="gap-1.5 bg-primary text-primary-foreground hover:bg-primary/90"
+          >
+            {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+            {running ? t('ioPanel.running') : t('ioPanel.run')}
+          </Button>
+        </div>
       </div>
-      {error && <p className="text-sm text-destructive">{error}</p>}
-      {saved && !error && <p className="text-sm text-muted-foreground">Pipeline salvo.</p>}
+
+      {(error || saved) && (
+        <div className="flex flex-wrap items-center gap-2">
+          {error && (
+            <div className="flex items-center gap-2 rounded-md border border-red-500/20 bg-red-500/10 px-3 py-1.5 text-xs text-red-400">
+              <AlertCircle className="h-3.5 w-3.5" />
+              {error}
+            </div>
+          )}
+          {saved && !error && (
+            <div className="flex items-center gap-2 rounded-md border border-emerald-500/20 bg-emerald-500/10 px-3 py-1.5 text-xs text-emerald-400">
+              <CheckCircle2 className="h-3.5 w-3.5" />
+              {t('ioPanel.saved')}
+            </div>
+          )}
+        </div>
+      )}
+
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
-        rows={6}
+        rows={5}
         spellCheck={false}
-        placeholder="PipelineSpec JSON — Export fills this in, Load reads from it"
-        className="w-full rounded-lg border border-input bg-transparent p-2 font-mono text-xs"
+        placeholder={t('ioPanel.placeholder')}
+        className="w-full rounded-lg border border-input bg-transparent p-3 font-mono text-xs text-foreground outline-none focus:ring-2 focus:ring-ring"
       />
     </div>
   )
