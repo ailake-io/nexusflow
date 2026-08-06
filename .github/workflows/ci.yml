@@ -314,54 +314,24 @@ jobs:
       - run: cargo test --workspace --all-features --locked -- --skip postgres_to_kafka_cdc_carries_correct_opcode_per_row --skip text_chunk_embed_milvus_end_to_end
 
   # Split out from `connectors` so the two heaviest/flakiest multi-container
-  # tests run after that job's huge compile step has fully exited — see the
-  # comment on connectors' last step. Runs on a dedicated Windows self-hosted
-  # runner (label `windows-connectors-heavy`) so it does not contend for RAM
-  # with the Linux self-hosted runner that runs clippy/test/connectors.
-  # `needs: connectors` is kept so the heavy tests only start after the
-  # connectors workspace has passed its own compile/test gate.
+  # tests run after this job's huge compile step has fully exited — see the
+  # comment on connectors' last step. Temporarily back on the Linux self-hosted
+  # runner because the dedicated Windows box doesn't have a reachable Docker
+  # daemon for testcontainers (named pipe not exposed); revisit once Docker
+  # Desktop is confirmed running there.
   connectors-heavy:
     name: connectors-heavy
     needs: connectors
-    runs-on: [self-hosted, windows-connectors-heavy]
+    runs-on: [self-hosted, Linux]
     defaults:
       run:
-        shell: pwsh
         working-directory: crates/nexus-connectors
-    env:
-      # testcontainers on Windows talks to Docker Desktop through the named
-      # pipe by default; without this it tries TCP localhost:2375 and fails.
-      DOCKER_HOST: npipe:////./pipe/docker_engine
     steps:
       - uses: actions/checkout@v4
-
-      # The self-hosted Windows runner has WSL's bash earlier in PATH than Git
-      # Bash, so dtolnay/rust-toolchain's internal bash steps mangle the temp
-      # script path. Use PowerShell to install/verify rustup instead, and put
-      # Git for Windows' Unix tools + CMake on PATH so rdkafka-sys can build
-      # librdkafka with its cmake-build feature.
-      - name: Install Rust stable
-        shell: pwsh
-        run: |
-          $cargoBin = "$env:USERPROFILE\.cargo\bin"
-          if (!(Get-Command rustc.exe -ErrorAction SilentlyContinue)) {
-            Invoke-WebRequest -Uri https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
-            ./rustup-init.exe -y --default-toolchain stable --no-modify-path
-            Remove-Item rustup-init.exe
-          }
-          rustup default stable
-          "$cargoBin" | Out-File -FilePath $env:GITHUB_PATH -Append
-          "C:\Program Files\Git\usr\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
-          "C:\Program Files\CMake\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
-          "C:\ProgramData\chocolatey\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
-
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: crates/nexus-connectors
-
-      - name: Verify Docker is reachable
-        shell: pwsh
-        run: docker info
 
       - run: cargo test -p nexus-connector-kafka --all-features --test cdc_debezium_integration
       - run: cargo test -p nexus-connector-milvus --all-features --test milvus_integration
