@@ -47,6 +47,13 @@ impl ApiError {
         }
     }
 
+    pub fn too_many_requests(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            message: message.into(),
+        }
+    }
+
     /// 500s never carry the underlying error's text: connector/sqlx errors
     /// routinely embed connection URIs — credentials included — so the
     /// detail goes to the server log and the client gets a generic message.
@@ -61,6 +68,19 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        let retry_after = if self.status == StatusCode::TOO_MANY_REQUESTS {
+            Some((axum::http::header::RETRY_AFTER, "60".to_string()))
+        } else {
+            None
+        };
+        if let Some((header, value)) = retry_after {
+            return (
+                self.status,
+                [(header, value)],
+                Json(json!({ "error": self.message })),
+            )
+                .into_response();
+        }
         (self.status, Json(json!({ "error": self.message }))).into_response()
     }
 }

@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   listRuns,
   progressSocketUrl,
@@ -27,6 +27,7 @@ interface UseRunProgressResult {
 
 const SETTLE_POLL_INTERVAL_MS = 250
 const SETTLE_POLL_MAX_ATTEMPTS = 20
+const WS_INACTIVITY_TIMEOUT_MS = 30_000
 
 /**
  * Drives the "run + watch live progress" flow (Marco 8 task #16). The run
@@ -45,6 +46,38 @@ export function useRunProgress(): UseRunProgressResult {
   const [dbtSummary, setDbtSummary] = useState<DbtRunSummary | null>(null)
   const lastSample = useRef<Record<string, { event: ProgressEvent; at: number }>>({})
   const wsRef = useRef<WebSocket | null>(null)
+  const inactivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const abortControllerRef = useRef<AbortController | null>(null)
+
+  const resetInactivityTimer = useCallback(() => {
+    if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current)
+    inactivityTimerRef.current = setTimeout(() => {
+      wsRef.current?.close()
+      setError('progress connection timed out due to inactivity')
+      setStatus('failed')
+    }, WS_INACTIVITY_TIMEOUT_MS)
+  }, [])
+
+  const clearInactivityTimer = useCallback(() => {
+    if (inactivityTimerRef.current) {
+      clearTimeout(inactivityTimerRef.current)
+      inactivityTimerRef.current = null
+    }
+  }, [])
+
+  const cleanupRun = useCallback(() => {
+    clearInactivityTimer()
+    abortControllerRef.current?.abort()
+    abortControllerRef.current = null
+    wsRef.current?.close()
+    wsRef.current = null
+  }, [clearInactivityTimer])
+
+  useEffect(() => {
+    return () => {
+      cleanupRun()
+    }
+  }, [cleanupRun])
 
   const applyFinalRecord = useCallback((record: RunRecord) => {
     setStatus(record.status === 'success' ? 'success' : 'failed')
@@ -54,11 +87,15 @@ export function useRunProgress(): UseRunProgressResult {
 
   const connectSocket = useCallback(
     (token: string, pipelineId: string, id: number) => {
+      cleanupRun()
+      abortControllerRef.current = new AbortController()
+
       // Re-fetch the authoritative record once the socket closes instead of
       // trusting the last progress event — a failure can happen between two
       // events. The supervisor closes the progress channel *before* it
       // writes the terminal state, so poll briefly until the record settles.
       const settleFinalRecord = async (attempt: number) => {
+        if (abortControllerRef.current?.signal.aborted) return
         const runs = await listRuns(token, pipelineId).catch(() => [] as RunRecord[])
         const record = runs.find((r) => r.id === id)
         if (record && record.finished_at) {
@@ -72,8 +109,10 @@ export function useRunProgress(): UseRunProgressResult {
 
       const ws = new WebSocket(progressSocketUrl(pipelineId, id), `nexusflow-${token}`)
       wsRef.current = ws
+      resetInactivityTimer()
 
       ws.onmessage = (event) => {
+        resetInactivityTimer()
         const data = JSON.parse(event.data as string) as ProgressEvent
         const now = performance.now()
         const prev = lastSample.current[data.partition_id]
@@ -93,22 +132,29 @@ export function useRunProgress(): UseRunProgressResult {
         }))
       }
 
+      ws.onerror = () => {
+        clearInactivityTimer()
+        setError('progress connection failed')
+        setStatus('failed')
+      }
+
       ws.onclose = () => {
+        clearInactivityTimer()
         void settleFinalRecord(0)
       }
     },
-    [applyFinalRecord],
+    [applyFinalRecord, cleanupRun, clearInactivityTimer, resetInactivityTimer],
   )
 
   const run = useCallback(
     async (token: string, spec: PipelineSpec) => {
+      cleanupRun()
       setStatus('starting')
       setPartitions({})
       setError(null)
       setDbtSummary(null)
       setRunId(null)
       lastSample.current = {}
-      wsRef.current?.close()
 
       try {
         const { run_id } = await runPipeline(token, spec)
@@ -122,7 +168,7 @@ export function useRunProgress(): UseRunProgressResult {
         setError(err instanceof Error ? err.message : String(err))
       }
     },
-    [connectSocket],
+    [connectSocket, cleanupRun],
   )
 
   return { status, runId, partitions, error, dbtSummary, run }

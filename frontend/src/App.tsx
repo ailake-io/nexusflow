@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import {
   Workflow,
   List,
@@ -25,12 +25,14 @@ function App() {
   const [view, setView] = useState<View>('canvas')
   const [pipelineToLoad, setPipelineToLoad] = useState<PipelineSpec | null>(null)
 
-  if (!token) return <LoginForm />
-
-  const handleEdit = (spec: PipelineSpec) => {
+  const handleEdit = useCallback((spec: PipelineSpec) => {
     setPipelineToLoad(spec)
     setView('canvas')
-  }
+  }, [])
+
+  const handlePipelineLoaded = useCallback(() => setPipelineToLoad(null), [])
+
+  if (!token) return <LoginForm />
 
   const navItems: { id: View; label: string; icon: typeof Workflow }[] = [
     { id: 'canvas', label: t('nav.canvas'), icon: Workflow },
@@ -110,7 +112,7 @@ function App() {
           {view === 'canvas' && (
             <DagCanvas
               pipelineToLoad={pipelineToLoad}
-              onPipelineLoaded={() => setPipelineToLoad(null)}
+              onPipelineLoaded={handlePipelineLoaded}
             />
           )}
           {view === 'pipelines' && <PipelinesList onEdit={handleEdit} />}

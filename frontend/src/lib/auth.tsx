@@ -1,5 +1,5 @@
-import { useCallback, useState, type ReactNode } from 'react'
-import { login as apiLogin } from '@/lib/api'
+import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { login as apiLogin, onUnauthorized } from '@/lib/api'
 import { AuthContext } from '@/lib/auth-context'
 
 const STORAGE_KEY = 'nexusflow.token'
@@ -20,6 +20,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     sessionStorage.removeItem(STORAGE_KEY)
     setToken(null)
   }, [])
+
+  useEffect(() => {
+    onUnauthorized(logout)
+  }, [logout])
 
   return <AuthContext value={{ token, login, logout }}>{children}</AuthContext>
 }

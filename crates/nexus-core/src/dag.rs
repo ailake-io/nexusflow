@@ -271,71 +271,117 @@ impl PipelineSpec {
             validate_node_security(&node.config, &node.connector, "sinks", i)?;
         }
         if let Some(dbt) = &self.dbt {
-            if dbt.project_dir.starts_with('/') {
-                return Err(NexusError::Schema(
-                    "dbt.project_dir must be a relative path".into(),
-                ));
-            }
+            validate_dbt_project_dir(&dbt.project_dir)?;
         }
         Ok(())
     }
 }
 
-/// Rejects absolute local paths and internal/private URLs in connector
-/// configs. This is a defense-in-depth guard for ad-hoc pipeline runs.
+/// Rejects absolute local paths and internal/private URLs anywhere inside a
+/// connector config (recursively, including nested objects and arrays).
+/// This is a defense-in-depth guard for pipeline specs.
 fn validate_node_security(
     config: &Value,
     connector: &str,
     context: &str,
     index: usize,
 ) -> Result<(), NexusError> {
-    let sensitive = ["path", "uri", "project_dir", "base_url"];
-    for key in &sensitive {
-        if let Some(Value::String(s)) = config.get(key) {
-            // Absolute local path -> reject. URIs with schemes (postgres://,
-            // http://, etc.) don't start with '/', so this only catches
-            // filesystem paths.
-            if s.starts_with('/') {
-                return Err(NexusError::Schema(format!(
-                    "{context}[{index}] ({connector}): {key} must not be an absolute path"
-                )));
-            }
-            // HTTP(S) URLs pointing to internal/reserved endpoints -> reject.
-            if let Some(host) = http_host(s) {
-                if is_internal_host(&host) {
-                    return Err(NexusError::Schema(format!(
-                        "{context}[{index}] ({connector}): {key} points to an internal host"
-                    )));
+    match config {
+        Value::String(s) => validate_string_security(s, connector, context, index, "value"),
+        Value::Object(map) => {
+            for (key, value) in map {
+                if let Value::String(s) = value {
+                    validate_string_security(s, connector, context, index, key)?;
+                } else {
+                    validate_node_security(value, connector, context, index)?;
                 }
             }
+            Ok(())
+        }
+        Value::Array(items) => {
+            for item in items {
+                validate_node_security(item, connector, context, index)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn validate_string_security(
+    s: &str,
+    connector: &str,
+    context: &str,
+    index: usize,
+    key: &str,
+) -> Result<(), NexusError> {
+    // Absolute local path -> reject. URIs with schemes (postgres://,
+    // http://, etc.) don't start with '/', so this only catches
+    // filesystem paths.
+    if s.starts_with('/') {
+        return Err(NexusError::Schema(format!(
+            "{context}[{index}] ({connector}): {key} must not be an absolute path"
+        )));
+    }
+    // HTTP(S) URLs pointing to internal/reserved endpoints -> reject.
+    if let Some(host) = http_host(s) {
+        if is_internal_host(&host) {
+            return Err(NexusError::Schema(format!(
+                "{context}[{index}] ({connector}): {key} points to an internal host"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Rejects dbt project_dir that uses parent-dir components or is absolute.
+fn validate_dbt_project_dir(project_dir: &str) -> Result<(), NexusError> {
+    if project_dir.starts_with('/') {
+        return Err(NexusError::Schema(
+            "dbt.project_dir must be a relative path".into(),
+        ));
+    }
+    for component in std::path::Path::new(project_dir).components() {
+        if matches!(component, std::path::Component::ParentDir) {
+            return Err(NexusError::Schema(
+                "dbt.project_dir must not contain parent-dir references (..)".into(),
+            ));
         }
     }
     Ok(())
 }
 
 fn http_host(s: &str) -> Option<String> {
-    s.strip_prefix("http://")
-        .or_else(|| s.strip_prefix("https://"))
-        .map(|rest| rest.split('/').next().unwrap_or(rest).to_lowercase())
+    let url = url::Url::parse(s).ok()?;
+    url.host_str().map(|h| h.to_lowercase())
 }
 
 fn is_internal_host(host: &str) -> bool {
     // Strip optional port.
     let host = host.split(':').next().unwrap_or(host);
+
+    // Named localhost / link-local / internal endpoints.
     if host == "localhost"
         || host == "127.0.0.1"
         || host == "::1"
         || host.ends_with(".local")
         || host == "metadata.google.internal"
+        || host == "metadata.google.internal."
         || host == "instance-data.azuremetadata"
+        || host == "kubernetes.default.svc"
+        || host == "kubernetes.default.svc.cluster.local"
+        || host == "0.0.0.0"
+        || host == "::"
     {
         return true;
     }
+
     // Cloud metadata endpoints.
     if host == "169.254.169.254" {
         return true;
     }
-    // Private IPv4 ranges.
+
+    // Parse as IP and check private/reserved ranges.
     if let Ok(addr) = host.parse::<std::net::IpAddr>() {
         match addr {
             std::net::IpAddr::V4(v4) => {
@@ -356,9 +402,21 @@ fn is_internal_host(host: &str) -> bool {
                 if o[0] == 127 {
                     return true;
                 }
+                // 100.64.0.0/10 (CGNAT / shared address space)
+                if o[0] == 100 && (64..=127).contains(&o[1]) {
+                    return true;
+                }
+                // 169.254.0.0/16 (link-local IPv4)
+                if o[0] == 169 && o[1] == 254 {
+                    return true;
+                }
             }
             std::net::IpAddr::V6(v6) => {
-                if v6.is_loopback() || v6.is_unique_local() {
+                if v6.is_loopback()
+                    || v6.is_unique_local()
+                    || v6.is_unspecified()
+                    || (v6.segments()[0] & 0xffc0) == 0xfe80
+                {
                     return true;
                 }
             }
@@ -516,5 +574,90 @@ mod tests {
         }"#;
         let err = PipelineSpec::parse(json).expect_err("empty source column must fail");
         assert!(matches!(err, NexusError::Schema(_)));
+    }
+
+    #[test]
+    fn validate_security_rejects_ssrf_via_userinfo() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "rest", "config": {"uri": "http://user:pass@169.254.169.254/latest/meta-data"}}],
+            "sinks": [{"connector": "postgres", "config": {}}]
+        }"#;
+        let spec = PipelineSpec::parse(json).unwrap();
+        let err = spec.validate_security().expect_err("SSRF must be rejected");
+        let msg = err.to_string();
+        assert!(msg.contains("internal host"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn validate_security_rejects_absolute_path() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "sqlite", "config": {"path": "/etc/passwd"}}],
+            "sinks": [{"connector": "postgres", "config": {}}]
+        }"#;
+        let spec = PipelineSpec::parse(json).unwrap();
+        let err = spec.validate_security().expect_err("absolute path must be rejected");
+        assert!(err.to_string().contains("absolute path"));
+    }
+
+    #[test]
+    fn validate_security_rejects_nested_internal_url() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "rest", "config": {"endpoint": {"base_url": "http://localhost:8080"}}}],
+            "sinks": [{"connector": "postgres", "config": {}}]
+        }"#;
+        let spec = PipelineSpec::parse(json).unwrap();
+        let err = spec.validate_security().expect_err("nested internal URL must be rejected");
+        assert!(err.to_string().contains("internal host"));
+    }
+
+    #[test]
+    fn validate_security_rejects_internal_url_in_array() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "rest", "config": {"uris": ["http://10.0.0.1/api"]}}],
+            "sinks": [{"connector": "postgres", "config": {}}]
+        }"#;
+        let spec = PipelineSpec::parse(json).unwrap();
+        let err = spec.validate_security().expect_err("internal URL in array must be rejected");
+        assert!(err.to_string().contains("internal host"));
+    }
+
+    #[test]
+    fn validate_security_rejects_dbt_path_traversal() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "postgres", "config": {}}],
+            "sinks": [{"connector": "postgres", "config": {}}],
+            "dbt": {"project_dir": "../etc", "command": "run"}
+        }"#;
+        let spec = PipelineSpec::parse(json).unwrap();
+        let err = spec.validate_security().expect_err("dbt path traversal must be rejected");
+        assert!(err.to_string().contains("parent-dir"));
+    }
+
+    #[test]
+    fn validate_security_accepts_external_url() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "rest", "config": {"uri": "https://example.com/api"}}],
+            "sinks": [{"connector": "postgres", "config": {}}]
+        }"#;
+        let spec = PipelineSpec::parse(json).unwrap();
+        spec.validate_security().expect("external URL must be accepted");
+    }
+
+    #[test]
+    fn validate_security_rejects_cgnat_host() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "rest", "config": {"uri": "http://100.64.0.1/api"}}],
+            "sinks": [{"connector": "postgres", "config": {}}]
+        }"#;
+        let spec = PipelineSpec::parse(json).unwrap();
+        let err = spec.validate_security().expect_err("CGNAT host must be rejected");
+        assert!(err.to_string().contains("internal host"));
     }
 }

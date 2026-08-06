@@ -65,6 +65,7 @@ export function PipelinesList({ onEdit }: PipelinesListProps) {
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editError, setEditError] = useState<string | null>(null)
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
 
   const handleDelete = async (pipelineId: string) => {
     if (!token) return
@@ -77,6 +78,7 @@ export function PipelinesList({ onEdit }: PipelinesListProps) {
       setDeleteError(err instanceof Error ? err.message : String(err))
     } finally {
       setDeletingId(null)
+      setConfirmDeleteId(null)
     }
   }
 
@@ -185,7 +187,7 @@ export function PipelinesList({ onEdit }: PipelinesListProps) {
                   variant="destructive"
                   size="sm"
                   disabled={deletingId === p.pipeline_id}
-                  onClick={() => handleDelete(p.pipeline_id)}
+                  onClick={() => setConfirmDeleteId(p.pipeline_id)}
                   className="gap-1.5"
                 >
                   {deletingId === p.pipeline_id ? (
@@ -214,6 +216,40 @@ export function PipelinesList({ onEdit }: PipelinesListProps) {
                 <NodeBadge key={`sink-${i}`} node={n} />
               ))}
             </div>
+
+            {confirmDeleteId === p.pipeline_id && (
+              <div className="mt-3 rounded-lg border border-red-500/20 bg-red-500/10 p-3">
+                <p className="mb-2 text-xs text-red-200">
+                  {t('pipelines.deleteConfirm', { id: p.pipeline_id })}
+                </p>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    size="sm"
+                    disabled={deletingId === p.pipeline_id}
+                    onClick={() => handleDelete(p.pipeline_id)}
+                    className="gap-1.5"
+                  >
+                    {deletingId === p.pipeline_id ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-3.5 w-3.5" />
+                    )}
+                    {t('pipelines.confirmDelete')}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setConfirmDeleteId(null)}
+                    disabled={deletingId === p.pipeline_id}
+                  >
+                    {t('pipelines.cancelDelete')}
+                  </Button>
+                </div>
+              </div>
+            )}
 
             <p className="mt-3 text-[10px] text-muted-foreground">
               {t('pipelines.updatedAt', { updated: p.updated_at })} ·{' '}
