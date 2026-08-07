@@ -97,13 +97,22 @@ jobs:
     name: docker-publish
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # linux/arm64 compiles connectors-all's full Rust workspace under QEMU
+    # emulation (no native arm64 Docker builder wired up here, unlike the
+    # `build` job above which uses a real ubuntu-24.04-arm runner for the
+    # tarball) — emulated cargo builds run several times slower than
+    # native, hence the generous timeout versus the amd64-only job this
+    # replaced (60min).
+    timeout-minutes: 180
     permissions:
       contents: read
       packages: write
       id-token: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+        with:
+          platforms: arm64
       - uses: docker/setup-buildx-action@c47758b77c4736b95dc5a9f63504ba8c8d8a0670 # v3.7.1
       - uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
         with:
@@ -124,6 +133,7 @@ jobs:
       - uses: docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a6 # v6.15.0
         with:
           context: .
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

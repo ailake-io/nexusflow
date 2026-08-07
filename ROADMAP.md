@@ -15,7 +15,7 @@ Consolidado dos itens que ficaram faltando/incompletos ao longo das fases abaixo
 5. **Windows (`.msi`/winget) e macOS (Homebrew/`.dmg`): specs escritos em `packaging/`, nunca validados em máquina real** (sandbox de dev é Linux). Falta também um build script dos drivers ADBC pra Windows (`.dll`) e macOS (`.dylib`) — os scripts atuais (`scripts/build-adbc-*.sh`) só geram `.so`.
 6. **`.rpm` nunca testado** — `scripts/package-rpm.sh` está escrito mas o sandbox não tem `rpmbuild` instalado pra validar.
 7. **Estatísticas de hardware (CPU/RAM/GPU) não implementadas** — o WebSocket de progresso (`ARCHITECTURE.md §12`) só transmite `batches_written`/`rows_written`/`bytes_written` por partição. `CLAUDE.md §6` menciona "estatísticas de hardware" na UI real-time; isso ainda não existe (nenhum uso de `sysinfo` ou equivalente em `nexus-server`).
-8. **Imagens Docker: publicadas no GHCR a cada tag de release** (`docker-publish` job em `.github/workflows/release.yml`, `ghcr.io/<owner>/<repo>` com tags semver via `GITHUB_TOKEN` — sem credencial externa) — ainda **não multi-arch**: builda só pra arquitetura do runner (amd64), sem `platforms:` no `docker/build-push-action`.
+8. **Imagens Docker: publicadas no GHCR a cada tag de release, multi-arch (amd64+arm64)** (`docker-publish` job em `.github/workflows/release.yml`, `ghcr.io/<owner>/<repo>` com tags semver via `GITHUB_TOKEN` — sem credencial externa). arm64 builda via QEMU emulado (`docker/setup-qemu-action`), não runner ARM nativo como o job `build` (tarballs) usa — cargo compila mais lento sob emulação, timeout do job em 180min pra acomodar; não validado ainda com uma tag `v*` real (só revisão de config).
 9. **Admin (gestão de usuários) só existe no backend** — rotas `GET/POST /users`, `GET/DELETE /users/{username}`, `PUT /users/{username}/role` existem em `nexus-server` (ver `crates/nexus-server/src/lib.rs`), mas o Canvas (Fase 8) não tem nenhuma tela pra elas — só dá pra gerenciar usuários via API direta.
 10. Ver também a seção **Débitos conhecidos** no fim deste arquivo (secrets sem KMS, RBAC sem escopo por recurso, versões de dependência pinadas, advisories RustSec aceitos).
 
@@ -82,7 +82,7 @@ Consolidado dos itens que ficaram faltando/incompletos ao longo das fases abaixo
 ## Fase 11 — Distribuição multiplataforma ✅ (Windows/macOS não validados)
 - [x] Single binary com frontend embutido (`rust-embed`, feature `embed-ui`)
 - [x] Empacotamento: AppImage/deb (Linux, testado) — rpm (spec pronto, sem `rpmbuild` local) — `.msi`/winget (Windows) e Homebrew/dmg (macOS) têm specs em `packaging/` mas não foram validados em máquina real
-- [x] Imagem Docker com perfil `cuda` selecionável via `--build-arg RUNTIME_IMAGE` (base image + `--gpus all` prontos; aceleração real pendente da Fase 5's `cuda` feature), publicada no GHCR a cada tag de release — **não multi-arch ainda**: `Dockerfile`/CI não passam `platforms:` pro build, então só builda pra arquitetura do runner (amd64); ver item 8 das Pendências ativas acima
+- [x] Imagem Docker com perfil `cuda` selecionável via `--build-arg RUNTIME_IMAGE` (base image + `--gpus all` prontos; aceleração real pendente da Fase 5's `cuda` feature), publicada no GHCR a cada tag de release, multi-arch (amd64 nativo + arm64 via QEMU) — ver item 8 das Pendências ativas acima sobre o trade-off de build sob emulação
 - [x] Script de instalação `curl | sh` (`scripts/install.sh`) + `.github/workflows/release.yml`
 
 ## Fase 12 — Enterprise connectors (paralelo, repo separado)
