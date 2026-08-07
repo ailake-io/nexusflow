@@ -12,8 +12,13 @@ use std::sync::Arc;
 /// [`load_embedding_backend`] and reused across every batch of that run.
 #[cfg(any(feature = "cpu", feature = "api"))]
 pub enum EmbeddingBackend {
+    // Boxed: EmbeddingModel holds an ort::Session + tokenizers::Tokenizer
+    // (>1KB), versus ApiEmbeddingModel's single reqwest::Client handle
+    // (~80 bytes) — an unboxed variant would force every EmbeddingBackend
+    // value to be sized for the larger one regardless of which is active
+    // (clippy::large_enum_variant, real with cpu+api both compiled in).
     #[cfg(feature = "cpu")]
-    Onnx(crate::embedding::EmbeddingModel),
+    Onnx(Box<crate::embedding::EmbeddingModel>),
     #[cfg(feature = "api")]
     Api(crate::embedding::ApiEmbeddingModel),
 }
@@ -59,7 +64,7 @@ pub async fn load_embedding_backend(
                 max_length: *max_length,
             };
             let model = crate::embedding::EmbeddingModel::load(&model_cfg).await?;
-            Ok(EmbeddingBackend::Onnx(model))
+            Ok(EmbeddingBackend::Onnx(Box::new(model)))
         }
         #[cfg(not(feature = "cpu"))]
         EmbeddingModelSpec::Onnx { .. } => Err(EmbeddingError::UnsupportedBackend(
