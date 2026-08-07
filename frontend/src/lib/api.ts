@@ -241,3 +241,62 @@ export function deletePipeline(token: string, pipelineId: string): Promise<void>
     token,
   )
 }
+
+/** Matches nexus-server's Role enum (`#[serde(rename_all = "lowercase")]`) —
+ * `Read < Execute < Write < Admin`, ARCHITECTURE.md §10. */
+export type Role = 'read' | 'execute' | 'write' | 'admin'
+
+/** Matches nexus-server::UserResponse, as returned by the /users routes
+ * (all Admin-only). */
+export interface UserRecord {
+  username: string
+  role: Role
+}
+
+export function listUsers(token: string): Promise<UserRecord[]> {
+  return request<UserRecord[]>('/users', {}, token)
+}
+
+export function createUser(
+  token: string,
+  username: string,
+  password: string,
+  role: Role,
+): Promise<UserRecord> {
+  return request<UserRecord>(
+    '/users',
+    { method: 'POST', body: JSON.stringify({ username, password, role }) },
+    token,
+  )
+}
+
+export function updateUserRole(token: string, username: string, role: Role): Promise<UserRecord> {
+  return request<UserRecord>(
+    `/users/${encodeURIComponent(username)}/role`,
+    { method: 'PUT', body: JSON.stringify({ role }) },
+    token,
+  )
+}
+
+export function deleteUser(token: string, username: string): Promise<void> {
+  return request<void>(`/users/${encodeURIComponent(username)}`, { method: 'DELETE' }, token)
+}
+
+/** Decodes the `role` claim from a JWT's payload without verifying the
+ * signature — the server is the actual enforcement point on every request
+ * this is only used to decide whether to show the Admin nav item at all.
+ * Returns `null` on any malformed/unexpected token instead of throwing, so
+ * a UI-only decode issue never blocks login. */
+export function decodeRoleFromToken(token: string): Role | null {
+  try {
+    const payload = token.split('.')[1]
+    const json = atob(payload.replace(/-/g, '+').replace(/_/g, '/'))
+    const claims = JSON.parse(json) as { role?: unknown }
+    const role = claims.role
+    return role === 'read' || role === 'execute' || role === 'write' || role === 'admin'
+      ? role
+      : null
+  } catch {
+    return null
+  }
+}

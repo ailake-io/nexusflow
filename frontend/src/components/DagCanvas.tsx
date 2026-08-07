@@ -282,3 +282,5 @@ export function DagCanvas(props: CanvasInnerProps) {
     </ReactFlowProvider>
   )
 }
+
+export default DagCanvas

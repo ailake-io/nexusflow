@@ -160,3 +160,5 @@ export function PipelineStatusBoard() {
     </div>
   )
 }
+
+export default PipelineStatusBoard
