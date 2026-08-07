@@ -64,6 +64,13 @@ ort = { version = "2.0.0-rc.10", optional = true, default-features = false, feat
     "ndarray",
     "download-binaries",
     "tls-rustls",
+    # CI compiles cuda+metal together via --all-features on a plain Linux
+    # runner with neither GPU nor Apple hardware — no prebuilt ort-sys binary
+    # satisfies that exact combo. This makes ort-sys fall back to the closest
+    # available build instead of refusing to link; the EPs still aren't
+    # exercised on real hardware here regardless (see the `cuda`/`metal`
+    # feature doc comments above).
+    "lax-feature-matching",
 ] }
 reqwest = { version = "0.12.28", optional = true, default-features = false, features = [
     "json",
