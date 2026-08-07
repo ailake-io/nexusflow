@@ -16,7 +16,7 @@ Consolidado dos itens que ficaram faltando/incompletos ao longo das fases abaixo
 6. **`.rpm` validado com `rpmbuild` real** — `scripts/package-rpm.sh` buildou `nexusflow-0.1.0-1.x86_64.rpm` de ponta a ponta; corrigido de brinde um `Requires:` incompleto (faltava `unixODBC`/`cyrus-sasl-lib`, equivalentes RPM do `unixodbc`/`libsasl2-2` que o `.deb` já lista — não pegos pelo scanner automático do rpmbuild porque são dlopen'd, não linkados direto no ELF).
 7. **Estatísticas de hardware (CPU/RAM) implementadas** — `sysinfo` via `nexus-server::hardware_stats`, frame `{"hardware_stats": {...}}` intercalado no WebSocket de progresso a cada 2s (mesmo canal do `ProgressEvent`, discriminado pela chave). Sem GPU — `sysinfo` não expõe utilização de GPU (é vendor-specific, NVML pra NVIDIA etc.) e nada no código depende disso ainda.
 8. **Imagens Docker: publicadas no GHCR a cada tag de release, multi-arch (amd64+arm64)** (`docker-publish` job em `.github/workflows/release.yml`, `ghcr.io/<owner>/<repo>` com tags semver via `GITHUB_TOKEN` — sem credencial externa). arm64 builda via QEMU emulado (`docker/setup-qemu-action`), não runner ARM nativo como o job `build` (tarballs) usa — cargo compila mais lento sob emulação, timeout do job em 180min pra acomodar; não validado ainda com uma tag `v*` real (só revisão de config).
-9. **Admin (gestão de usuários) só existe no backend** — rotas `GET/POST /users`, `GET/DELETE /users/{username}`, `PUT /users/{username}/role` existem em `nexus-server` (ver `crates/nexus-server/src/lib.rs`), mas o Canvas (Fase 8) não tem nenhuma tela pra elas — só dá pra gerenciar usuários via API direta.
+9. **Admin (gestão de usuários) tem tela no Canvas** — `UsersPanel.tsx` cobre criar/promover/excluir contra as rotas já existentes (`GET/POST /users`, `GET/DELETE /users/{username}`, `PUT /users/{username}/role`). Nav item só aparece pra role Admin (decodificado do JWT client-side, sem verificar assinatura) — enforcement real continua 100% no servidor (`auth.rs`).
 10. Ver também a seção **Débitos conhecidos** no fim deste arquivo (secrets sem KMS, RBAC sem escopo por recurso, versões de dependência pinadas, advisories RustSec aceitos).
 
 ## Fase 0 — Fundação (workspace) ✅
@@ -71,6 +71,7 @@ Consolidado dos itens que ficaram faltando/incompletos ao longo das fases abaixo
 - [x] Canvas node-based: criar/editar DAG, source of truth em JSON
 - [x] Painel de execução em tempo real (MB/s, linhas/s, logs)
 - [x] Tela de credenciais (sem exibir segredo em plain text)
+- [x] Admin: gestão de usuários (criar/promover/excluir), visível só pra role Admin
 
 ## Fase 9 — Observabilidade & Alertas ✅
 - [x] `tracing` estruturado (JSON) + OpenTelemetry (traces via OTLP + métricas Prometheus em `/metrics`)
