@@ -13,8 +13,8 @@ Consolidado dos itens que ficaram faltando/incompletos ao longo das fases abaixo
 3. **`nexus-ai`: features `cuda`/`metal` registram o execution provider ONNX Runtime correto (`ort::ep::CUDA`/`ort::ep::CoreML`), mas não validadas em hardware real** (sandbox é Linux sem GPU) — só confirmado que compilam e que o EP é registrado antes do load da sessão; runtime faz fallback silencioso pra CPU se o driver/hardware não estiver presente. `api` (embeddings via HTTP externa, endpoint compatível com OpenAI) implementada e testada (mock via `wiremock`) — sem chamada real contra OpenAI/Azure/etc neste sandbox. O perfil `cuda` do Docker já tem a infra de runtime pronta (base image + `--gpus all`).
 4. **Alertas: Slack, MS Teams, PagerDuty, Email e Webhook genérico — todos os 5 canais de `CLAUDE.md §6` implementados** (ver `nexus-server/src/alerts.rs`).
 5. **Windows (`.msi`/winget) e macOS (Homebrew/`.dmg`): specs escritos em `packaging/`, nunca validados em máquina real** (sandbox de dev é Linux). Falta também um build script dos drivers ADBC pra Windows (`.dll`) e macOS (`.dylib`) — os scripts atuais (`scripts/build-adbc-*.sh`) só geram `.so`.
-6. **`.rpm` nunca testado** — `scripts/package-rpm.sh` está escrito mas o sandbox não tem `rpmbuild` instalado pra validar.
-7. **Estatísticas de hardware (CPU/RAM/GPU) não implementadas** — o WebSocket de progresso (`ARCHITECTURE.md §12`) só transmite `batches_written`/`rows_written`/`bytes_written` por partição. `CLAUDE.md §6` menciona "estatísticas de hardware" na UI real-time; isso ainda não existe (nenhum uso de `sysinfo` ou equivalente em `nexus-server`).
+6. **`.rpm` validado com `rpmbuild` real** — `scripts/package-rpm.sh` buildou `nexusflow-0.1.0-1.x86_64.rpm` de ponta a ponta; corrigido de brinde um `Requires:` incompleto (faltava `unixODBC`/`cyrus-sasl-lib`, equivalentes RPM do `unixodbc`/`libsasl2-2` que o `.deb` já lista — não pegos pelo scanner automático do rpmbuild porque são dlopen'd, não linkados direto no ELF).
+7. **Estatísticas de hardware (CPU/RAM) implementadas** — `sysinfo` via `nexus-server::hardware_stats`, frame `{"hardware_stats": {...}}` intercalado no WebSocket de progresso a cada 2s (mesmo canal do `ProgressEvent`, discriminado pela chave). Sem GPU — `sysinfo` não expõe utilização de GPU (é vendor-specific, NVML pra NVIDIA etc.) e nada no código depende disso ainda.
 8. **Imagens Docker: publicadas no GHCR a cada tag de release, multi-arch (amd64+arm64)** (`docker-publish` job em `.github/workflows/release.yml`, `ghcr.io/<owner>/<repo>` com tags semver via `GITHUB_TOKEN` — sem credencial externa). arm64 builda via QEMU emulado (`docker/setup-qemu-action`), não runner ARM nativo como o job `build` (tarballs) usa — cargo compila mais lento sob emulação, timeout do job em 180min pra acomodar; não validado ainda com uma tag `v*` real (só revisão de config).
 9. **Admin (gestão de usuários) só existe no backend** — rotas `GET/POST /users`, `GET/DELETE /users/{username}`, `PUT /users/{username}/role` existem em `nexus-server` (ver `crates/nexus-server/src/lib.rs`), mas o Canvas (Fase 8) não tem nenhuma tela pra elas — só dá pra gerenciar usuários via API direta.
 10. Ver também a seção **Débitos conhecidos** no fim deste arquivo (secrets sem KMS, RBAC sem escopo por recurso, versões de dependência pinadas, advisories RustSec aceitos).
@@ -75,13 +75,14 @@ Consolidado dos itens que ficaram faltando/incompletos ao longo das fases abaixo
 ## Fase 9 — Observabilidade & Alertas ✅
 - [x] `tracing` estruturado (JSON) + OpenTelemetry (traces via OTLP + métricas Prometheus em `/metrics`)
 - [x] Alertas assíncronos: Slack (Block Kit), MS Teams (Adaptive Card), PagerDuty (Events API v2), Email (SMTP STARTTLS), Webhook genérico (JSON puro)
+- [x] Estatísticas de hardware (CPU/RAM via `sysinfo`) intercaladas no WebSocket de progresso a cada 2s — sem GPU (vendor-specific, nada depende disso ainda)
 
 ## Fase 10 — dbt (ELT opcional) ✅
 - [x] Subprocesso assíncrono invocando `dbt run`/`build`/`test` pós-carga (feature `dbt`), com resultado de lineage/qualidade no histórico de execução
 
 ## Fase 11 — Distribuição multiplataforma ✅ (Windows/macOS não validados)
 - [x] Single binary com frontend embutido (`rust-embed`, feature `embed-ui`)
-- [x] Empacotamento: AppImage/deb (Linux, testado) — rpm (spec pronto, sem `rpmbuild` local) — `.msi`/winget (Windows) e Homebrew/dmg (macOS) têm specs em `packaging/` mas não foram validados em máquina real
+- [x] Empacotamento: AppImage/deb/rpm (Linux, todos testados) — `.msi`/winget (Windows) e Homebrew/dmg (macOS) têm specs em `packaging/` mas não foram validados em máquina real
 - [x] Imagem Docker com perfil `cuda` selecionável via `--build-arg RUNTIME_IMAGE` (base image + `--gpus all` prontos; aceleração real pendente da Fase 5's `cuda` feature), publicada no GHCR a cada tag de release, multi-arch (amd64 nativo + arm64 via QEMU) — ver item 8 das Pendências ativas acima sobre o trade-off de build sob emulação
 - [x] Script de instalação `curl | sh` (`scripts/install.sh`) + `.github/workflows/release.yml`
 
