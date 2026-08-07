@@ -130,7 +130,7 @@ Módulo intermediário que converte colunas de texto em vetores float32 e anexa 
 ## 🔔 6. Observabilidade, Telemetria e Alertas
 
 * **Logs Estruturados:** Utilização da crate `tracing` formatando logs em JSON para captura via OpenTelemetry, permitindo rastrear gargalos em tasks assíncronas.
-* **Alertas Assíncronos (`tokio::spawn`):** Slack (Block Kit), MS Teams (Adaptive Card), PagerDuty Events API v2 e Email (SMTP STARTTLS) estão implementados. Webhooks genéricos ainda não.
+* **Alertas Assíncronos (`tokio::spawn`):** Slack (Block Kit), MS Teams (Adaptive Card), PagerDuty Events API v2, Email (SMTP STARTTLS) e Webhook genérico (JSON) estão implementados.
 * **UI Real-Time:** WebSockets transmitem progresso por partição (batches/rows/bytes escritos) e MB/s/rows/s são derivados no cliente. **Estatísticas de hardware (CPU/GPU/memória) ainda não são transmitidas.**
 
 ---
