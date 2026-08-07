@@ -127,27 +127,27 @@ impl Source for PostgresSource {
         let mut connection = self.connection.clone();
 
         // ADBC calls are blocking FFI (libpq under the hood); run off the
-        // async executor. Partitions are bounded PK ranges, so eagerly
-        // collecting is acceptable for M1 — see IMPLEMENTATION_PLAN.md Marco 1.
-        let batches =
-            tokio::task::spawn_blocking(move || -> Result<Vec<RecordBatch>, NexusError> {
+        // async executor and yield each batch as it is produced instead of
+        // collecting the whole partition before the downstream pipeline starts.
+        let reader = tokio::task::spawn_blocking(
+            move || -> Result<Box<dyn arrow_array::RecordBatchReader + Send>, NexusError> {
                 let mut statement = connection
                     .new_statement()
                     .map_err(|e| NexusError::Connector(e.to_string()))?;
                 statement
                     .set_sql_query(&query)
                     .map_err(|e| NexusError::Connector(e.to_string()))?;
-                let reader = statement
+                statement
                     .execute()
-                    .map_err(|e| NexusError::Connector(e.to_string()))?;
-                reader
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|e| NexusError::Serialization(e.to_string()))
-            })
-            .await
-            .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))??;
+                    .map_err(|e| NexusError::Connector(e.to_string()))
+            },
+        )
+        .await
+        .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))??;
 
-        Ok(Box::pin(stream::iter(batches.into_iter().map(Ok))))
+        Ok(Box::pin(stream::iter(reader.map(|r| {
+            r.map_err(|e| NexusError::Serialization(e.to_string()))
+        }))))
     }
 
     fn schema(&self) -> SchemaRef {
