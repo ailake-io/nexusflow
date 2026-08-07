@@ -30,7 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@720f7e45ccee46c12a7b1ae7c7112cbc783e5dbb # v2.7.7
+      - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
       - run: cargo install cargo-audit --locked
       # --ignore entries below were each traced with `cargo tree -i <crate>`
       # to confirm there's no fix reachable today without breaking a version
@@ -92,12 +92,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@720f7e45ccee46c12a7b1ae7c7112cbc783e5dbb # v2.7.7
+      - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
       # --all-features turns on nexus-server's embed-ui, whose
       # #[derive(RustEmbed)] needs frontend/dist to exist at compile time
       # (Marco 11). Reuse the artifact built by the `frontend` job instead of
       # rebuilding it here (A34).
-      - uses: actions/download-artifact@65a9edc5881444af0b9093a83ba2535f647f564c # v4.1.7
+      - uses: actions/download-artifact@65a9edc5881444af0b9093a5e628f2fe47ea3b2e # v4.1.7
         with:
           name: frontend-dist
           path: frontend/dist
@@ -115,8 +115,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: docker/setup-buildx-action@c47758b77c4736b95dc5a9f63504ba8c8d8a0670 # v3.7.1
-      - uses: docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a6 # v6.15.0
+      - uses: docker/setup-buildx-action@c47758b77c9736f4b2ef4073d4d51994fabfe349 # v3.7.1
+      - uses: docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a4 # v6.15.0
         with:
           context: .
           load: true
@@ -160,7 +160,7 @@ jobs:
         working-directory: frontend
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: actions/setup-node@1e60f622b4bbe3a6edab36a8db22d6e1d1e4c0d1 # v4.0.3
+      - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
         with:
           node-version: "22"
           cache: npm
@@ -174,7 +174,7 @@ jobs:
       # without an upstream release; high/critical is the bar worth
       # blocking a merge over.
       - run: npm audit --audit-level=high
-      - uses: actions/upload-artifact@65a9edc5881444af0b9093a83ba2535f647f564c # v4.1.7
+      - uses: actions/upload-artifact@834a144ee995460fba8ed112a2fc961b36a5ec5a # v4.3.6
         with:
           name: frontend-dist
           path: frontend/dist
@@ -189,7 +189,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@720f7e45ccee46c12a7b1ae7c7112cbc783e5dbb # v2.7.7
+      - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
 
       # nexus-connector-postgres/nexus-connector-sqlite need the real ADBC
       # drivers at test runtime (C++ implementations, not crates.io packages —
@@ -201,7 +201,7 @@ jobs:
       # apt-get here (runner service has no interactive sudo).
       - name: Cache built ADBC drivers
         id: adbc-cache
-        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720aeadc142 # v4.2.0
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
           path: target/adbc
           key: adbc-drivers-${{ runner.os }}-${{ hashFiles('scripts/build-adbc-postgresql-driver.sh', 'scripts/build-adbc-sqlite-driver.sh') }}
@@ -222,7 +222,7 @@ jobs:
       # guarantees that directory survives between runs — cache it
       # explicitly instead of relying on it.
       - name: Cache Hugging Face model cache
-        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720aeadc142 # v4.2.0
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
           path: ~/.cache/nexusflow/models
           key: hf-models-${{ hashFiles('crates/nexus-ai/tests/embedding_integration.rs') }}
@@ -230,7 +230,7 @@ jobs:
       # Same reason as the clippy job: --all-features enables embed-ui,
       # whose RustEmbed derive needs frontend/dist to exist at compile time.
       # Reuse the artifact built by the `frontend` job (A34).
-      - uses: actions/download-artifact@65a9edc5881444af0b9093a83ba2535f647f564c # v4.1.7
+      - uses: actions/download-artifact@65a9edc5881444af0b9093a5e628f2fe47ea3b2e # v4.1.7
         with:
           name: frontend-dist
           path: frontend/dist
@@ -288,7 +288,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@720f7e45ccee46c12a7b1ae7c7112cbc783e5dbb # v2.7.7
+      - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
         with:
           workspaces: crates/nexus-connectors
 
