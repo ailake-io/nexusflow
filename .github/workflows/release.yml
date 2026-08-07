@@ -155,9 +155,22 @@ jobs:
         run: |
           cd dist
           sha256sum *.tar.gz > SHA256SUMS
+      - name: Import GPG signing key
+        uses: crazy-max/ghaction-import-gpg@01dd5d3ca463c7f10f7f4f7b4f177225ac9ee48d # v6.1.0
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.GPG_PASSPHRASE }}
+      - name: Sign release artifacts
+        run: |
+          cd dist
+          for f in *.tar.gz SHA256SUMS; do
+            gpg --batch --yes --armor --detach-sign --output "$f.asc" "$f"
+          done
       - uses: softprops/action-gh-release@c062e08bd532815e2082a85e87e3ef5c1253cc56 # v2.2.0
         with:
           files: |
             dist/*.tar.gz
+            dist/*.tar.gz.asc
             dist/SHA256SUMS
+            dist/SHA256SUMS.asc
           generate_release_notes: true

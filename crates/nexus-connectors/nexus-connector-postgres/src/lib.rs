@@ -14,7 +14,7 @@ mod source;
 
 pub use config::PostgresConnectorConfig;
 pub use driver::DRIVER_PATH_ENV;
-pub use introspect::{primary_key_bounds, table_schema};
+pub use introspect::{primary_key_bounds, table_schema, PkPartitionKind};
 pub use sink::PostgresSink;
 pub use source::{split_into_partitions, PartitionRange, PostgresSource};
 

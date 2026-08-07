@@ -11,7 +11,7 @@ use arrow_array::{BooleanArray, RecordBatch};
 use arrow_schema::SchemaRef;
 use arrow_select::filter::filter_record_batch;
 use async_trait::async_trait;
-use futures::stream::{self, BoxStream};
+use futures::stream::{self, BoxStream, StreamExt};
 use nexus_core::{NexusError, Source};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -135,32 +135,41 @@ impl Source for AilakeSource {
             .list_files(&self.table, None)
             .await
             .map_err(|e| NexusError::Connector(format!("ailake list_files failed: {e}")))?;
-        let deleted =
+        let deleted = Arc::new(
             deleted_primary_keys(&self.catalog, &self.store, &self.table, &self.primary_key)
-                .await?;
+                .await?,
+        );
 
-        let mut batches = Vec::with_capacity(files.len());
-        for file in files {
-            let batch = read_file_batch(
-                &self.store,
-                &file.path,
-                &self.embedding_column,
-                self.dimension,
-            )
-            .await?;
-            let batch = if deleted.is_empty() {
-                batch
-            } else {
-                let pk_values = extract_pk_strings(&batch, &self.primary_key)?;
-                let keep: Vec<bool> = pk_values.iter().map(|v| !deleted.contains(v)).collect();
-                let mask = BooleanArray::from(keep);
-                filter_record_batch(&batch, &mask)
-                    .map_err(|e| NexusError::Schema(format!("ailake delete filter failed: {e}")))?
-            };
-            batches.push(Ok(batch));
-        }
+        // Stream data files one by one so peak memory is one file rather than
+        // the whole table. Equality deletes are still accumulated up-front:
+        // they are expected to be small compared to the data files, and the
+        // alternative (sort-merge by primary key) would require loading every
+        // data file into memory anyway.
+        let store = self.store.clone();
+        let embedding_column = self.embedding_column.clone();
+        let primary_key = self.primary_key.clone();
+        let dimension = self.dimension;
 
-        Ok(Box::pin(stream::iter(batches)))
+        let stream = stream::iter(files).then(move |file| {
+            let store = store.clone();
+            let deleted = deleted.clone();
+            let embedding_column = embedding_column.clone();
+            let primary_key = primary_key.clone();
+            async move {
+                let batch = read_file_batch(&store, &file.path, &embedding_column, dimension).await?;
+                if deleted.is_empty() {
+                    Ok(batch)
+                } else {
+                    let pk_values = extract_pk_strings(&batch, &primary_key)?;
+                    let keep: Vec<bool> = pk_values.iter().map(|v| !deleted.contains(v)).collect();
+                    let mask = BooleanArray::from(keep);
+                    filter_record_batch(&batch, &mask)
+                        .map_err(|e| NexusError::Schema(format!("ailake delete filter failed: {e}")))
+                }
+            }
+        });
+
+        Ok(Box::pin(stream))
     }
 
     fn schema(&self) -> SchemaRef {

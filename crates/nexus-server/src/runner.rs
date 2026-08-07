@@ -1,8 +1,8 @@
 use crate::checkpoint_store::CheckpointStore;
 use crate::connectors::{build_sink, build_source};
 use nexus_connector_postgres::{
-    primary_key_bounds, split_into_partitions, table_schema, PostgresConnectorConfig, PostgresSink,
-    PostgresSource,
+    primary_key_bounds, split_into_partitions, table_schema, PkPartitionKind, PostgresConnectorConfig,
+    PostgresSink, PostgresSource,
 };
 use nexus_core::{
     CheckpointCursor, DataFusionTransform, PartitionHandle, PartitionStats, PipelineEngine,
@@ -61,26 +61,38 @@ async fn run_linear_pipeline(
     let schema = table_schema(&source_cfg).await?;
     let columns: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
 
-    let Some((min, max)) = primary_key_bounds(&source_cfg).await? else {
-        return Ok(Vec::new());
-    };
-
-    let ranges = split_into_partitions(min, max, spec.partitions);
     let done = checkpoints.done_partitions(&spec.pipeline_id).await?;
-
     let mut handles = Vec::new();
-    for (i, range) in ranges.into_iter().enumerate() {
-        let partition_id = format!("p{i}");
-        if done.contains(&partition_id) {
-            continue;
+
+    match primary_key_bounds(&source_cfg).await? {
+        None => return Ok(Vec::new()),
+        Some(PkPartitionKind::NonNumeric) => {
+            if !done.contains("p0") {
+                let source = PostgresSource::connect(&source_cfg, None)?;
+                let sink = PostgresSink::connect(&sink_cfg, &columns)?;
+                handles.push(PartitionHandle {
+                    partition_id: "p0".to_string(),
+                    source: Box::new(source),
+                    sink: Box::new(sink),
+                });
+            }
         }
-        let source = PostgresSource::connect(&source_cfg, Some(range))?;
-        let sink = PostgresSink::connect(&sink_cfg, &columns)?;
-        handles.push(PartitionHandle {
-            partition_id,
-            source: Box::new(source),
-            sink: Box::new(sink),
-        });
+        Some(PkPartitionKind::Int64(min, max)) => {
+            let ranges = split_into_partitions(min, max, spec.partitions);
+            for (i, range) in ranges.into_iter().enumerate() {
+                let partition_id = format!("p{i}");
+                if done.contains(&partition_id) {
+                    continue;
+                }
+                let source = PostgresSource::connect(&source_cfg, Some(range))?;
+                let sink = PostgresSink::connect(&sink_cfg, &columns)?;
+                handles.push(PartitionHandle {
+                    partition_id,
+                    source: Box::new(source),
+                    sink: Box::new(sink),
+                });
+            }
+        }
     }
 
     let engine = PipelineEngine::new(spec.channel_capacity);

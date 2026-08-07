@@ -84,7 +84,7 @@ jobs:
   # owns that.
   clippy:
     name: clippy
-    needs: fmt
+    needs: [fmt, frontend]
     runs-on: [self-hosted, Linux]
     timeout-minutes: 60
     steps:
@@ -95,15 +95,12 @@ jobs:
       - uses: Swatinem/rust-cache@720f7e45ccee46c12a7b1ae7c7112cbc783e5dbb # v2.7.7
       # --all-features turns on nexus-server's embed-ui, whose
       # #[derive(RustEmbed)] needs frontend/dist to exist at compile time
-      # (Marco 11) — build it for real rather than faking an empty dir, so
-      # this also catches an actually-broken frontend build.
-      - uses: actions/setup-node@1e60f622b4bbe3a6edab36a8db22d6e1d1e4c0d1 # v4.0.3
+      # (Marco 11). Reuse the artifact built by the `frontend` job instead of
+      # rebuilding it here (A34).
+      - uses: actions/download-artifact@65a9edc5881444af0b9093a83ba2535f647f564c # v4.1.7
         with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - run: npm ci && npm run build
-        working-directory: frontend
+          name: frontend-dist
+          path: frontend/dist
       - run: cargo clippy -p nexus-core -p nexus-ai -p nexus-server --all-targets --all-features -- -D warnings
 
   # Marco 11's done criterion, checked for real rather than just documented:
@@ -177,11 +174,16 @@ jobs:
       # without an upstream release; high/critical is the bar worth
       # blocking a merge over.
       - run: npm audit --audit-level=high
+      - uses: actions/upload-artifact@65a9edc5881444af0b9093a83ba2535f647f564c # v4.1.7
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          retention-days: 1
 
   # Self-hosted for the same reason as clippy above.
   test:
     name: test
-    needs: clippy
+    needs: [clippy, frontend]
     runs-on: [self-hosted, Linux]
     timeout-minutes: 90
     steps:
@@ -227,13 +229,11 @@ jobs:
 
       # Same reason as the clippy job: --all-features enables embed-ui,
       # whose RustEmbed derive needs frontend/dist to exist at compile time.
-      - uses: actions/setup-node@1e60f622b4bbe3a6edab36a8db22d6e1d1e4c0d1 # v4.0.3
+      # Reuse the artifact built by the `frontend` job (A34).
+      - uses: actions/download-artifact@65a9edc5881444af0b9093a83ba2535f647f564c # v4.1.7
         with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - run: npm ci && npm run build
-        working-directory: frontend
+          name: frontend-dist
+          path: frontend/dist
 
       - name: Run tests
         env:

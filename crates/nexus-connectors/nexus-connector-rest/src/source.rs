@@ -7,6 +7,8 @@ use futures::stream::{self, BoxStream};
 use nexus_core::{NexusError, RecordBatchBuilder, Source};
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::time::Instant;
 
 /// Generic bridging connector for REST/SaaS APIs — see ARCHITECTURE.md §2/§4.1
 /// and `CLAUDE.md §8.2`. No native partitioning: this is the degenerate
@@ -20,8 +22,12 @@ pub struct RestSource {
 impl RestSource {
     pub fn connect(config: &RestConnectorConfig) -> Result<Self, NexusError> {
         let schema = build_schema(&config.fields);
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(config.timeout_seconds))
+            .build()
+            .map_err(|e| NexusError::Connector(format!("REST client build failed: {e}")))?;
         Ok(Self {
-            client: reqwest::Client::new(),
+            client,
             config: config.clone(),
             schema,
         })
@@ -88,6 +94,65 @@ async fn fetch_page(
         .map_err(|e| NexusError::Serialization(format!("REST response not JSON: {e}")))
 }
 
+fn is_transient_error(err: &NexusError) -> bool {
+    let msg = err.to_string().to_lowercase();
+    msg.contains("timeout")
+        || msg.contains("connect")
+        || msg.contains("500")
+        || msg.contains("502")
+        || msg.contains("503")
+        || msg.contains("504")
+}
+
+async fn fetch_page_with_retry(
+    client: &reqwest::Client,
+    config: &RestConnectorConfig,
+    query: &[(String, String)],
+) -> Result<Value, NexusError> {
+    let mut last_err = None;
+    for attempt in 0..=config.retries {
+        match fetch_page(client, config, query).await {
+            Ok(value) => return Ok(value),
+            Err(err) => {
+                if attempt == config.retries || !is_transient_error(&err) {
+                    return Err(err);
+                }
+                let delay = Duration::from_secs(config.retry_backoff_seconds)
+                    * 2u32.pow(attempt);
+                tracing::warn!(
+                    "REST request failed (attempt {}/{}): {err}, retrying in {:?}",
+                    attempt + 1,
+                    config.retries + 1,
+                    delay
+                );
+                tokio::time::sleep(delay).await;
+                last_err = Some(err);
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| NexusError::Connector("REST retry exhausted".to_string())))
+}
+
+async fn fetch_page_with_rate_limit(
+    client: &reqwest::Client,
+    config: &RestConnectorConfig,
+    query: &[(String, String)],
+    last_request: &tokio::sync::Mutex<Option<Instant>>,
+) -> Result<Value, NexusError> {
+    if config.requests_per_second > 0 {
+        let min_interval = Duration::from_secs_f64(1.0 / f64::from(config.requests_per_second));
+        let mut guard = last_request.lock().await;
+        if let Some(prev) = *guard {
+            let elapsed = prev.elapsed();
+            if elapsed < min_interval {
+                tokio::time::sleep(min_interval - elapsed).await;
+            }
+        }
+        *guard = Some(Instant::now());
+    }
+    fetch_page_with_retry(client, config, query).await
+}
+
 fn rows_from_body<'a>(
     config: &RestConnectorConfig,
     body: &'a Value,
@@ -131,19 +196,20 @@ impl Source for RestSource {
                 pages_left: config.max_pages,
             },
         };
+        let last_request = Arc::new(tokio::sync::Mutex::new(None::<Instant>));
 
         let stream = stream::unfold(
-            (initial_state, client, config, schema),
-            move |(state, client, config, schema)| async move {
+            (initial_state, client, config, schema, last_request),
+            move |(state, client, config, schema, last_request)| async move {
                 let (batch, next_state) = match state {
                     PaginationState::None { done: true } => return None,
                     PaginationState::None { done: false } => {
-                        let body = match fetch_page(&client, &config, &[]).await {
+                        let body = match fetch_page_with_rate_limit(&client, &config, &[], &last_request).await {
                             Ok(b) => b,
                             Err(e) => {
                                 return Some((
                                     Err(e),
-                                    (PaginationState::None { done: true }, client, config, schema),
+                                    (PaginationState::None { done: true }, client, config, schema, last_request),
                                 ))
                             }
                         };
@@ -152,7 +218,7 @@ impl Source for RestSource {
                             Err(e) => {
                                 return Some((
                                     Err(e),
-                                    (PaginationState::None { done: true }, client, config, schema),
+                                    (PaginationState::None { done: true }, client, config, schema, last_request),
                                 ))
                             }
                         };
@@ -175,7 +241,7 @@ impl Source for RestSource {
                             (offset_param.clone(), offset.to_string()),
                             (limit_param.clone(), limit.to_string()),
                         ];
-                        let body = match fetch_page(&client, &config, &query).await {
+                        let body = match fetch_page_with_rate_limit(&client, &config, &query, &last_request).await {
                             Ok(b) => b,
                             Err(e) => {
                                 return Some((
@@ -188,6 +254,7 @@ impl Source for RestSource {
                                         client,
                                         config,
                                         schema,
+                                        last_request,
                                     ),
                                 ))
                             }
@@ -205,6 +272,7 @@ impl Source for RestSource {
                                         client,
                                         config,
                                         schema,
+                                        last_request,
                                     ),
                                 ))
                             }
@@ -239,7 +307,7 @@ impl Source for RestSource {
                             Some(c) => vec![(cursor_param.clone(), c.clone())],
                             None => vec![],
                         };
-                        let body = match fetch_page(&client, &config, &query).await {
+                        let body = match fetch_page_with_rate_limit(&client, &config, &query, &last_request).await {
                             Ok(b) => b,
                             Err(e) => {
                                 return Some((
@@ -252,6 +320,7 @@ impl Source for RestSource {
                                         client,
                                         config,
                                         schema,
+                                        last_request,
                                     ),
                                 ))
                             }
@@ -269,6 +338,7 @@ impl Source for RestSource {
                                         client,
                                         config,
                                         schema,
+                                        last_request,
                                     ),
                                 ))
                             }
@@ -291,7 +361,7 @@ impl Source for RestSource {
                         (batch, next_state)
                     }
                 };
-                Some((batch, (next_state, client, config, schema)))
+                Some((batch, (next_state, client, config, schema, last_request)))
             },
         );
         Ok(Box::pin(stream))

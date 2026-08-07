@@ -3,8 +3,9 @@ use crate::error::NexusError;
 use crate::traits::{Sink, Source, Transform};
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
-use futures::StreamExt;
+use futures::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
+use std::pin::Pin;
 
 /// One partition's Source+Sink pair, ready to run. Partitioning is the unit
 /// of parallelism — see ARCHITECTURE.md §4.
@@ -228,7 +229,8 @@ impl PipelineEngine {
     }
 
     /// Broadcast fan-out: every sink gets the full `batches` output, then
-    /// commits one checkpoint. A failed sink doesn't stop the others (same
+    /// commits one checkpoint. Sinks run concurrently so slow backends don't
+    /// block each other. A failed sink doesn't stop the others (same
     /// per-slot-error contract as `run`).
     #[tracing::instrument(skip_all, fields(num_sinks = sinks.len(), num_batches = batches.len()))]
     pub async fn fan_out_write(
@@ -237,40 +239,75 @@ impl PipelineEngine {
         sinks: Vec<(String, Box<dyn Sink>)>,
         progress: Option<ProgressSender>,
     ) -> Vec<Result<PartitionStats, NexusError>> {
-        let rows_in_output: usize = batches.iter().map(|b| b.num_rows()).sum();
+        let owned: Vec<RecordBatch> = batches.to_vec();
+        self.fan_out_write_stream(
+            Box::pin(futures::stream::iter(owned.into_iter().map(Ok))),
+            sinks,
+            progress,
+        )
+        .await
+    }
 
-        let mut results = Vec::with_capacity(sinks.len());
-        for (name, mut sink) in sinks {
-            let outcome: Result<PartitionStats, NexusError> = async {
-                let mut rows_written = 0usize;
-                let mut bytes_written = 0usize;
-                for (i, batch) in batches.iter().enumerate() {
-                    sink.write_batch(batch.clone()).await?;
-                    let batch_rows = batch.num_rows();
-                    let batch_bytes = batch.get_array_memory_size();
-                    rows_written += batch_rows;
-                    bytes_written += batch_bytes;
-                    metrics::record_batch(&name, batch_rows as u64, batch_bytes as u64);
-                    if let Some(tx) = &progress {
-                        let _ = tx.send(ProgressEvent {
-                            partition_id: name.clone(),
-                            batches_written: i + 1,
-                            rows_written,
-                            bytes_written,
-                        });
-                    }
-                }
-                sink.commit_checkpoint(CheckpointCursor::new(name.clone()))
-                    .await?;
-                Ok(PartitionStats {
-                    partition_id: name.clone(),
-                    batches_written: batches.len(),
-                    rows_written: rows_in_output,
-                })
-            }
-            .await;
-            results.push(outcome);
+    /// Streaming broadcast fan-out: sinks consume batches as they arrive.
+    /// This keeps peak memory closer to one batch per sink instead of holding
+    /// the entire transform output plus one copy per sink. The current
+    /// `DataFusionTransform` still materialises its output (SQL joins/aggregates
+    /// require it), but this helper lets future streaming transforms push rows
+    /// through without an intermediate `Vec`.
+    #[tracing::instrument(skip_all, fields(num_sinks = sinks.len()))]
+    pub async fn fan_out_write_stream(
+        &self,
+        batches: Pin<Box<dyn Stream<Item = Result<RecordBatch, NexusError>> + Send>>,
+        sinks: Vec<(String, Box<dyn Sink>)>,
+        progress: Option<ProgressSender>,
+    ) -> Vec<Result<PartitionStats, NexusError>> {
+        let (batch_tx, _) = tokio::sync::broadcast::channel::<Result<RecordBatch, NexusError>>(
+            self.channel_capacity.max(1),
+        );
+
+        let mut set = tokio::task::JoinSet::new();
+        for (name, sink) in sinks {
+            let mut rx = batch_tx.subscribe();
+            let progress = progress.clone();
+            let name_for_spawn = name.clone();
+            set.spawn(async move {
+                let result = write_one_sink_stream(name, sink, &mut rx, progress).await;
+                (name_for_spawn, result)
+            });
         }
+
+        let mut broadcast_err = None;
+        futures::pin_mut!(batches);
+        while let Some(item) = batches.next().await {
+            if batch_tx.send(item).is_err() {
+                // All consumers dropped; remember the first error we tried to
+                // broadcast so the JoinSet results still carry a cause.
+                broadcast_err = Some(NexusError::Connector(
+                    "all sinks dropped while broadcasting batches".to_string(),
+                ));
+                break;
+            }
+        }
+        drop(batch_tx);
+
+        let mut results = Vec::new();
+        while let Some(joined) = set.join_next().await {
+            match joined {
+                Ok((_name, Ok(stats))) => results.push(Ok(stats)),
+                Ok((_name, Err(e))) => results.push(Err(e)),
+                Err(e) => results.push(Err(NexusError::Connector(format!(
+                    "sink task panicked: {e}"
+                )))),
+            }
+        }
+
+        if let Some(e) = broadcast_err {
+            // If no sink produced a usable result, surface the broadcast error.
+            if results.iter().all(|r| r.is_err()) {
+                results.push(Err(e));
+            }
+        }
+
         results
     }
 
@@ -292,6 +329,45 @@ impl PipelineEngine {
             .into_iter()
             .collect()
     }
+}
+
+async fn write_one_sink_stream(
+    name: String,
+    mut sink: Box<dyn Sink>,
+    rx: &mut tokio::sync::broadcast::Receiver<Result<RecordBatch, NexusError>>,
+    progress: Option<ProgressSender>,
+) -> Result<PartitionStats, NexusError> {
+    let mut batches_written = 0usize;
+    let mut rows_written = 0usize;
+    let mut bytes_written = 0usize;
+
+    while let Ok(item) = rx.recv().await {
+        let batch = item?;
+        sink.write_batch(batch.clone()).await?;
+        let batch_rows = batch.num_rows();
+        let batch_bytes = batch.get_array_memory_size();
+        batches_written += 1;
+        rows_written += batch_rows;
+        bytes_written += batch_bytes;
+        metrics::record_batch(&name, batch_rows as u64, batch_bytes as u64);
+        if let Some(tx) = &progress {
+            let _ = tx.send(ProgressEvent {
+                partition_id: name.clone(),
+                batches_written,
+                rows_written,
+                bytes_written,
+            });
+        }
+    }
+
+    sink.commit_checkpoint(CheckpointCursor::new(name.clone()))
+        .await?;
+
+    Ok(PartitionStats {
+        partition_id: name,
+        batches_written,
+        rows_written,
+    })
 }
 
 /// N named sources (fan-in) -> 1 transform -> M named sinks (fan-out).
@@ -659,5 +735,50 @@ mod tests {
         assert_eq!(event.batches_written, 1);
         assert_eq!(event.rows_written, 3);
         assert!(event.bytes_written > 0);
+    }
+
+    #[tokio::test]
+    async fn fan_out_write_stream_runs_sinks_concurrently() {
+        let sink_a_received = Arc::new(Mutex::new(Vec::new()));
+        let sink_b_received = Arc::new(Mutex::new(Vec::new()));
+
+        let engine = PipelineEngine::new(8);
+        let results = engine
+            .fan_out_write_stream(
+                Box::pin(futures::stream::iter(vec![
+                    Ok(test_batch(vec![1, 2])),
+                    Ok(test_batch(vec![3, 4, 5])),
+                ])),
+                vec![
+                    (
+                        "sink_a".to_string(),
+                        Box::new(RecordingSink {
+                            received: sink_a_received.clone(),
+                            checkpoints: Arc::new(Mutex::new(Vec::new())),
+                        }) as Box<dyn Sink>,
+                    ),
+                    (
+                        "sink_b".to_string(),
+                        Box::new(RecordingSink {
+                            received: sink_b_received.clone(),
+                            checkpoints: Arc::new(Mutex::new(Vec::new())),
+                        }) as Box<dyn Sink>,
+                    ),
+                ],
+                None,
+            )
+            .await;
+        assert_eq!(results.len(), 2);
+        let total: usize = results
+            .into_iter()
+            .map(|r| r.expect("sink succeeds").rows_written)
+            .sum();
+        assert_eq!(total, 10, "each sink gets 5 rows");
+
+        let rows_in = |received: &Arc<Mutex<Vec<RecordBatch>>>| -> usize {
+            received.lock().unwrap().iter().map(|b| b.num_rows()).sum()
+        };
+        assert_eq!(rows_in(&sink_a_received), 5);
+        assert_eq!(rows_in(&sink_b_received), 5);
     }
 }

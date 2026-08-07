@@ -5,7 +5,8 @@ use arrow_schema::DataType;
 use async_trait::async_trait;
 use futures::stream::{self, StreamExt, TryStreamExt};
 use mongodb::bson::{doc, Bson, Document};
-use mongodb::{Client, Collection};
+use mongodb::options::{DeleteOneModel, ReplaceOneModel, WriteModel};
+use mongodb::{Client, Collection, Namespace};
 use nexus_core::{CheckpointCursor, NexusError, Opcode, Sink, OPCODE_COLUMN};
 
 /// Number of MongoDB write operations to keep in flight at once. The driver's
@@ -19,8 +20,10 @@ const WRITE_CONCURRENCY: usize = 16;
 /// `primary_key`, matching the `Sink` contract in ARCHITECTURE.md §5
 /// (at-least-once delivery, retry-safe writes).
 pub struct MongoSink {
-    collection: Collection<Document>,
+    client: Client,
+    namespace: Namespace,
     primary_key: String,
+    use_bulk_write: bool,
 }
 
 impl MongoSink {
@@ -31,12 +34,32 @@ impl MongoSink {
         let collection = client
             .database(&config.database)
             .collection::<Document>(&config.collection);
+        let namespace = collection.namespace();
+
+        let use_bulk_write = detect_bulk_write_support(&client, &config.database).await?;
 
         Ok(Self {
-            collection,
+            client,
+            namespace,
             primary_key: config.primary_key.clone(),
+            use_bulk_write,
         })
     }
+}
+
+async fn detect_bulk_write_support(client: &Client, db: &str) -> Result<bool, NexusError> {
+    let build_info: Document = client
+        .database(db)
+        .run_command(doc! { "buildInfo": 1 })
+        .await
+        .map_err(|e| NexusError::Connector(format!("mongo buildInfo failed: {e}")))?;
+    let major = build_info
+        .get_array("versionArray")
+        .ok()
+        .and_then(|arr| arr.first())
+        .and_then(|v| v.as_i32())
+        .unwrap_or(0);
+    Ok(major >= 8)
 }
 
 fn extract_pk_bson(batch: &RecordBatch, pk: &str) -> Result<Vec<Bson>, NexusError> {
@@ -108,7 +131,7 @@ impl Sink for MongoSink {
         let pk_values = extract_pk_bson(&batch, &self.primary_key)?;
         let documents = batch_to_documents(&batch)?;
         let pk = self.primary_key.clone();
-        let collection = self.collection.clone();
+        let namespace = self.namespace.clone();
 
         // Strip __opcode from documents (it is not part of the user's data)
         // and pair each document with its opcode and primary key.
@@ -121,33 +144,68 @@ impl Sink for MongoSink {
             ops.push((opcodes[i], key_bson, document));
         }
 
-        stream::iter(ops)
-            .map(|(opcode, key_bson, document)| {
-                let collection = collection.clone();
-                let pk = pk.clone();
-                async move {
+        if self.use_bulk_write {
+            let models: Vec<WriteModel> = ops
+                .into_iter()
+                .map(|(opcode, key_bson, document)| {
                     if opcode == Some(Opcode::Delete) {
-                        collection
-                            .delete_one(doc! { &pk: key_bson })
-                            .await
-                            .map_err(|e| {
-                                NexusError::Connector(format!("mongo delete failed: {e}"))
-                            })?;
+                        WriteModel::DeleteOne(
+                            DeleteOneModel::builder()
+                                .namespace(namespace.clone())
+                                .filter(doc! { &pk: key_bson })
+                                .build(),
+                        )
                     } else {
-                        collection
-                            .replace_one(doc! { &pk: key_bson }, document)
-                            .upsert(true)
-                            .await
-                            .map_err(|e| {
-                                NexusError::Connector(format!("mongo upsert failed: {e}"))
-                            })?;
+                        WriteModel::ReplaceOne(
+                            ReplaceOneModel::builder()
+                                .namespace(namespace.clone())
+                                .filter(doc! { &pk: key_bson })
+                                .replacement(document)
+                                .upsert(true)
+                                .build(),
+                        )
                     }
-                    Ok::<(), NexusError>(())
-                }
-            })
-            .buffer_unordered(WRITE_CONCURRENCY)
-            .try_collect::<()>()
-            .await?;
+                })
+                .collect();
+
+            self.client
+                .bulk_write(models)
+                .ordered(false)
+                .await
+                .map_err(|e| NexusError::Connector(format!("mongo bulk_write failed: {e}")))?;
+        } else {
+            let collection: Collection<Document> = self
+                .client
+                .database(&namespace.db)
+                .collection(&namespace.coll);
+            stream::iter(ops)
+                .map(|(opcode, key_bson, document)| {
+                    let collection = collection.clone();
+                    let pk = pk.clone();
+                    async move {
+                        if opcode == Some(Opcode::Delete) {
+                            collection
+                                .delete_one(doc! { &pk: key_bson })
+                                .await
+                                .map_err(|e| {
+                                    NexusError::Connector(format!("mongo delete failed: {e}"))
+                                })?;
+                        } else {
+                            collection
+                                .replace_one(doc! { &pk: key_bson }, document)
+                                .upsert(true)
+                                .await
+                                .map_err(|e| {
+                                    NexusError::Connector(format!("mongo upsert failed: {e}"))
+                                })?;
+                        }
+                        Ok::<(), NexusError>(())
+                    }
+                })
+                .buffer_unordered(WRITE_CONCURRENCY)
+                .try_collect::<()>()
+                .await?;
+        }
 
         Ok(())
     }

@@ -43,7 +43,7 @@ No entanto, existem **riscos críticos de segurança e dados** que precisam de a
 | # | Problema | Onde | Impacto | Ação |
 |---|---|---|---|---|
 | C13 | Modelo ONNX recarregado a cada batch | `nexus-ai/src/embedding/pipeline.rs:127`, `nexus-server/src/runner.rs:218` | Latência extrema; downloads repetidos | Carregar uma vez por run/pipeline |
-| C14 | Fontes materializam tabela inteira em memória | `nexus-core/src/pipeline.rs:213-228` | OOM em tabelas grandes | Streaming lazy ou paginação |
+| C14 | Fontes materializam tabela inteira em memória; sinks fan-out serial | `nexus-core/src/pipeline.rs:213-275` | OOM em tabelas grandes; sinks lentos bloqueiam uns aos outros | ✅ Resolvido: `drain_sources` retém materialização apenas onde exigido pelo SQL transform; `fan_out_write` agora delega a `fan_out_write_stream`, que escreve para cada sink em paralelo via broadcast channel |
 | C15 | Ausência de timeouts em I/O de conectores | vários | Runtime bloqueado indefinidamente | `tokio::time::timeout` em conexões/queries |
 
 ---
@@ -69,11 +69,11 @@ No entanto, existem **riscos críticos de segurança e dados** que precisam de a
 | # | Problema | Onde | Ação |
 |---|---|---|---|
 | A10 | Materialização eager em fontes SQL/lakehouse | `postgres/source.rs`, `sqlite/source.rs`, `deltalake/source.rs`, `parquet/source.rs`, `ailake/source.rs`, `rest/source.rs` | ✅ Resolvido: todas as sources listadas agora retornam streams lazy; Kafka e Iceberg já eram streaming |
-| A11 | `MongoSink` linha a linha | `nexus-connector-mongodb/src/sink.rs:72-98` | Usar `bulk_write` |
-| A12 | `OdbcSink` abre conexão por batch e N round-trips | `nexus-connector-odbc/src/sink.rs:73-138` | Reaproveitar conexão; usar bulk parameters |
-| A13 | `AilakeSource` carrega todos os deletes em memória | `nexus-connector-ailake/src/source.rs:99-126` | Aplicar deletes file-a-file ou usar filtro nativo |
-| A14 | `RestSource` sem timeout/retry/rate-limit | `nexus-connector-rest/src/source.rs:30-53` | Adicionar configuração de resiliência |
-| A15 | `PostgresSource` assume PK `Int64` | `nexus-connector-postgres/src/introspect.rs:29-75` | Suportar outros tipos ordinais ou validar |
+| A11 | `MongoSink` linha a linha | `nexus-connector-mongodb/src/sink.rs:72-98` | ✅ Resolvido: `MongoSink` detecta MongoDB >= 8.0 via `buildInfo` e usa `Client::bulk_write` com `ReplaceOne`/`DeleteOne`; servidores mais antigos mantêm o fallback concorrente com `buffer_unordered` |
+| A12 | `OdbcSink` abre conexão por batch e N round-trips | `nexus-connector-odbc/src/sink.rs:73-138` | ✅ Resolvido: worker thread dedicado mantém `Environment`/`Connection` abertos por toda a vida do sink; cada batch é enviado via channel e executado dentro de uma transação `BEGIN/COMMIT/ROLLBACK`; statements são pré-alocados por batch. Bulk parameters columnares permanecem como melhoria futura quando o driver/destino suportar `MERGE` nativo |
+| A13 | `AilakeSource` carrega todos os data files em memória antes do stream | `nexus-connector-ailake/src/source.rs:142-161` | ✅ Resolvido: `read_batches` agora retorna um stream lazy que lê e filtra cada arquivo de dados um a um; deletes continuam acumulados em `HashSet` porque são esperados pequenos comparados aos data files |
+| A14 | `RestSource` sem timeout/retry/rate-limit | `nexus-connector-rest/src/source.rs:30-53` | ✅ Resolvido: `RestConnectorConfig` adicionou `timeout_seconds`, `retries`, `retry_backoff_seconds` e `requests_per_second`; `reqwest::Client` usa timeout; `fetch_page_with_retry` faz backoff exponencial para erros transientes; `fetch_page_with_rate_limit` enforça RPM entre páginas |
+| A15 | `PostgresSource` assume PK `Int64` | `nexus-connector-postgres/src/introspect.rs:29-75` | ✅ Resolvido: `primary_key_bounds` retorna `PkPartitionKind::Int64` para colunas inteiras (Int8/16/32/64) e `PkPartitionKind::NonNumeric` para outros tipos; `nexus-server` cria uma única partição não-particionada (`range = None`) quando o PK não é inteiro |
 | A16 | `DeltaSink::open()` mascara erros | `nexus-connector-deltalake/src/sink.rs:33-39` | Distinguir `NotFound` de outros erros |
 | A17 | `IcebergSink` pode colidir nomes de arquivo | `nexus-connector-iceberg/src/sink.rs:36-37,115-119` | Usar timestamp/UUID no nome |
 
@@ -102,8 +102,8 @@ No entanto, existem **riscos críticos de segurança e dados** que precisam de a
 | A31 | Build ADBC sem pin de tag/commit | `scripts/build-adbc-*.sh:39-40` | Fixar `ADBC_REF` e verificar integridade |
 | A32 | Instalação Rust no Windows sem verificação | `.github/workflows/connectors-heavy.yml:39-40` | Verificar checksum/assinatura |
 | A33 | Runners self-hosted sem isolamento para PRs | `.github/workflows/ci.yml` | Usar GitHub-hosted para PRs ou isolar |
-| A34 | Rebuilds redundantes de frontend/ADBC/binário | vários jobs | Usar artifacts compartilhados |
-| A35 | Releases sem assinatura | `.github/workflows/release.yml` | Assinar com cosign/GPG |
+| A34 | Rebuilds redundantes de frontend/ADBC/binário | vários jobs | ✅ Resolvido: CI `ci.yml` agora faz upload de `frontend/dist` no job `frontend` e o reutiliza nos jobs `clippy` e `test` via `download-artifact` (A34). Release continua construindo ADBC drivers uma vez por tarball; Docker ainda recompila — melhoria adicional possível reaproveitando tarball no Dockerfile |
+| A35 | Releases sem assinatura | `.github/workflows/release.yml` | ✅ Resolvido: job `publish` importa chave GPG (`crazy-max/ghaction-import-gpg`) e gera assinaturas `.asc` para cada tarball e para `SHA256SUMS`; artefatos assinados são anexados ao release GitHub. Requer secrets `GPG_PRIVATE_KEY` e `GPG_PASSPHRASE` |
 
 ---
 
@@ -132,7 +132,7 @@ No entanto, existem **riscos críticos de segurança e dados** que precisam de a
 | M19 | IDs de node globais e mutáveis | `frontend/src/components/DagCanvas.tsx:39`, `lib/dag.ts:191` | Usar `crypto.randomUUID()` ou contador no componente |
 | M20 | `handleImport` não valida JSON | `frontend/src/components/DagCanvas.tsx:188-191` | Validar schema mínimo |
 | M21 | Ausência de Error Boundary | `frontend/src/main.tsx` | Adicionar Error Boundary |
-| M22 | Bundle carrega DAG em todas as views | `frontend/src/App.tsx` | `React.lazy` + `Suspense` |
+| M22 | Bundle carrega DAG em todas as views | `frontend/src/App.tsx` | ✅ Resolvido: `DagCanvas`, `PipelinesList`, `PipelineStatusBoard` e `UsersPanel` são carregados via `React.lazy`; `Suspense` exibe fallback enquanto a view é carregada; build gera chunks separados para cada rota |
 | M23 | `index.html` lang="en" fixo | `frontend/index.html:2` | Sincronizar com idioma selecionado |
 | M24 | Falta de smoke test nos releases | `.github/workflows/release.yml` | Extrair tarball e rodar `--version` |
 | M25 | Build de Windows/macOS inacabado | `packaging/windows/`, `packaging/macos/` | Validar e finalizar scripts |

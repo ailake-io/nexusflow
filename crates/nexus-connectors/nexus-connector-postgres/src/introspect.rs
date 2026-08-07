@@ -2,7 +2,7 @@ use crate::config::PostgresConnectorConfig;
 use crate::driver::open_connection;
 use adbc_core::{Connection as _, Statement as _};
 use arrow_array::{Array, Int64Array};
-use arrow_schema::SchemaRef;
+use arrow_schema::{DataType, SchemaRef};
 use nexus_core::quote_identifier;
 use nexus_core::NexusError;
 use std::sync::Arc;
@@ -24,11 +24,21 @@ pub async fn table_schema(cfg: &PostgresConnectorConfig) -> Result<SchemaRef, Ne
     .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))?
 }
 
+/// How the primary key can be partitioned for the Marco 1 linear path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PkPartitionKind {
+    /// Integer primary key with inclusive numeric bounds.
+    Int64(i64, i64),
+    /// Primary key is present but not a single integer column (e.g. text,
+    /// uuid, composite). The source falls back to one unpartitioned read.
+    NonNumeric,
+}
+
 /// Min/max of the primary key, used to split the table into partition
 /// ranges. Returns `None` for an empty table.
 pub async fn primary_key_bounds(
     cfg: &PostgresConnectorConfig,
-) -> Result<Option<(i64, i64)>, NexusError> {
+) -> Result<Option<PkPartitionKind>, NexusError> {
     let cfg = cfg.clone();
     tokio::task::spawn_blocking(move || {
         // `pk`/`table` come from the pipeline spec (attacker-controlled) and
@@ -38,11 +48,29 @@ pub async fn primary_key_bounds(
         let table = quote_identifier(&cfg.table)?;
 
         let mut connection = open_connection(&cfg.uri)?;
+        let schema = connection
+            .get_table_schema(None, None, &cfg.table)
+            .map_err(|e| NexusError::Schema(e.to_string()))?;
+        let pk_type = schema
+            .fields()
+            .iter()
+            .find(|f| f.name() == &cfg.primary_key)
+            .map(|f| f.data_type().clone())
+            .ok_or_else(|| NexusError::Schema(format!("primary key column '{}' not found", cfg.primary_key)))?;
+
+        let cast = match pk_type {
+            DataType::Int64 => "",
+            DataType::Int32 | DataType::Int16 | DataType::Int8 => "::bigint",
+            _ => return Ok(Some(PkPartitionKind::NonNumeric)),
+        };
+
         let mut statement = connection
             .new_statement()
             .map_err(|e| NexusError::Connector(e.to_string()))?;
         statement
-            .set_sql_query(format!("SELECT MIN({pk}), MAX({pk}) FROM {table}"))
+            .set_sql_query(format!(
+                "SELECT MIN({pk}){cast}, MAX({pk}){cast} FROM {table}"
+            ))
             .map_err(|e| NexusError::Connector(e.to_string()))?;
         let reader = statement
             .execute()
@@ -71,7 +99,7 @@ pub async fn primary_key_bounds(
             return Ok(None);
         }
 
-        Ok(Some((min_arr.value(0), max_arr.value(0))))
+        Ok(Some(PkPartitionKind::Int64(min_arr.value(0), max_arr.value(0))))
     })
     .await
     .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))?

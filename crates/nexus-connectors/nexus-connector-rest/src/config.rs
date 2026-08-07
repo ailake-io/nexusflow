@@ -28,6 +28,18 @@ pub struct RestConnectorConfig {
     /// against a misbehaving API looping forever.
     #[serde(default = "default_max_pages")]
     pub max_pages: usize,
+    /// Per-request timeout in seconds.
+    #[serde(default = "default_timeout_seconds")]
+    pub timeout_seconds: u64,
+    /// Number of retries on transient failures (5xx, timeouts, connect errors).
+    #[serde(default = "default_retries")]
+    pub retries: u32,
+    /// Base delay between retries in seconds (exponential backoff).
+    #[serde(default = "default_retry_backoff_seconds")]
+    pub retry_backoff_seconds: u64,
+    /// Maximum requests per second across this source (0 = unlimited).
+    #[serde(default)]
+    pub requests_per_second: u32,
 }
 
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
@@ -83,4 +95,16 @@ pub enum RestPagination {
 
 fn default_max_pages() -> usize {
     1000
+}
+
+fn default_timeout_seconds() -> u64 {
+    30
+}
+
+fn default_retries() -> u32 {
+    3
+}
+
+fn default_retry_backoff_seconds() -> u64 {
+    1
 }
