@@ -90,6 +90,20 @@ export interface ProgressEvent {
   bytes_written: number
 }
 
+/** Matches nexus-server::hardware_stats::HardwareStats. Sent every ~2s on
+ * the same WebSocket as ProgressEvent, wrapped as `{ hardware_stats: ... }`
+ * so the client can tell the two message shapes apart (CLAUDE.md §6). */
+export interface HardwareStats {
+  cpu_percent: number
+  memory_used_bytes: number
+  memory_total_bytes: number
+}
+
+/** A frame on the progress WebSocket is either a bare ProgressEvent or a
+ * `{ hardware_stats }` wrapper — never both, discriminated by the presence
+ * of the `hardware_stats` key. */
+export type ProgressSocketMessage = ProgressEvent | { hardware_stats: HardwareStats }
+
 /** Matches nexus-server::dbt::DbtOutcome::summary_json's shape (Marco 10
  * task #26) — `undefined` when the pipeline has no `dbt` step, or the
  * server build lacks the "dbt" feature. */

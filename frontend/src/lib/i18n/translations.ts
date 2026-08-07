@@ -131,6 +131,8 @@ export const translations = {
       lineage: 'lineage: {count} nodes',
       elapsed: '{seconds}s',
       dbtCommand: 'dbt {command}',
+      cpu: 'CPU',
+      memory: 'Memory',
     },
     common: {
       loading: 'Loading…',
@@ -284,6 +286,8 @@ export const translations = {
       lineage: 'linhagem: {count} nodes',
       elapsed: '{seconds}s',
       dbtCommand: 'dbt {command}',
+      cpu: 'CPU',
+      memory: 'Memória',
     },
     common: {
       loading: 'Carregando…',

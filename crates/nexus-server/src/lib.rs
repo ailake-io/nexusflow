@@ -8,6 +8,7 @@ mod dbt;
 #[cfg(feature = "embed-ui")]
 mod embedded_ui;
 mod error;
+mod hardware_stats;
 mod pipeline_store;
 mod progress;
 mod rate_limit;
@@ -750,10 +751,23 @@ async fn authorize_progress_subscription(
         .ok_or_else(|| ApiError::not_found(format!("run {run_id} not found or already finished")))
 }
 
+/// How often a `hardware_stats` frame is interleaved into the progress
+/// stream — frequent enough to feel "live" without meaningfully competing
+/// with `ProgressEvent` traffic for bandwidth.
+const HARDWARE_STATS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
 async fn forward_progress(
     mut socket: WebSocket,
     mut rx: tokio::sync::broadcast::Receiver<nexus_core::ProgressEvent>,
 ) {
+    let mut hardware = hardware_stats::HardwareMonitor::new();
+    let mut hardware_ticker = tokio::time::interval(HARDWARE_STATS_INTERVAL);
+    // The first tick fires immediately; sysinfo's CPU usage is only
+    // meaningful as a delta between two refreshes, so the first sample sent
+    // to the client is discarded rather than shipped as a misleading 0%.
+    hardware_ticker.tick().await;
+    hardware.sample();
+
     loop {
         tokio::select! {
             event = rx.recv() => {
@@ -769,6 +783,14 @@ async fn forward_progress(
                     // mean the next one it does get is still consistent.
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            _ = hardware_ticker.tick() => {
+                let stats = hardware.sample();
+                let json = serde_json::to_string(&serde_json::json!({ "hardware_stats": stats }))
+                    .expect("HardwareStats always serializes");
+                if socket.send(Message::Text(json.into())).await.is_err() {
+                    break;
                 }
             }
             incoming = socket.recv() => {

@@ -27,7 +27,12 @@ mkdir -p "$RPMBUILD_ROOT"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
 # header for the exact build commands), it doesn't recompile Rust/C++/the
 # frontend. libpq/sqlite-libs are the RPM-side names of deb's libpq5/
 # libsqlite3-0 (same rationale: pulls in the rest of the driver .so's
-# transitive deps automatically, see package-deb.sh).
+# transitive deps automatically, see package-deb.sh). unixODBC/cyrus-sasl-lib
+# are the Fedora/RHEL names of deb's unixodbc/libsasl2-2 — same rationale,
+# connectors-all is compiled in (nexus-connector-odbc dlopens unixODBC,
+# rdkafka's SASL auth path links libsasl2 dynamically even though librdkafka
+# itself is static). openSUSE names this package `libsasl2-3` instead of
+# `cyrus-sasl-lib`; not handled here since this spec targets Fedora/RHEL.
 cat > "$RPMBUILD_ROOT/SPECS/nexusflow.spec" <<EOF
 Name: nexusflow
 Version: $VERSION
@@ -35,7 +40,7 @@ Release: 1%{?dist}
 Summary: Universal Rust data & vector ETL/lakehouse framework
 License: Apache-2.0
 URL: https://github.com/ailake-io/nexusflow
-Requires: libpq, sqlite-libs
+Requires: libpq, sqlite-libs, unixODBC, cyrus-sasl-lib
 BuildArch: x86_64
 
 %description

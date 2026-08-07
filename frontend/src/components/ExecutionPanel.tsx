@@ -1,13 +1,14 @@
 import { useI18n } from '@/lib/i18n'
-import type { DbtRunSummary } from '@/lib/api'
+import type { DbtRunSummary, HardwareStats } from '@/lib/api'
 import type { ExecutionStatus, PartitionProgress } from '@/hooks/useRunProgress'
 import { StatusBadge } from '@/components/ui/status-badge'
-import { AlertCircle, Terminal, Database, Clock } from 'lucide-react'
+import { AlertCircle, Terminal, Database, Clock, Cpu } from 'lucide-react'
 
 interface ExecutionPanelProps {
   status: ExecutionStatus
   runId: number | null
   partitions: Record<string, PartitionProgress>
+  hardwareStats: HardwareStats | null
   error: string | null
   dbtSummary: DbtRunSummary | null
 }
@@ -16,6 +17,7 @@ export function ExecutionPanel({
   status,
   runId,
   partitions,
+  hardwareStats,
   error,
   dbtSummary,
 }: ExecutionPanelProps) {
@@ -44,6 +46,15 @@ export function ExecutionPanel({
           <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
             <Terminal className="h-3.5 w-3.5" />
             {t('execution.run', { id: runId })}
+          </span>
+        )}
+        {hardwareStats && (
+          <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Cpu className="h-3.5 w-3.5" />
+            {t('execution.cpu')} {hardwareStats.cpu_percent.toFixed(0)}% ·{' '}
+            {t('execution.memory')}{' '}
+            {(hardwareStats.memory_used_bytes / 1_000_000_000).toFixed(1)}/
+            {(hardwareStats.memory_total_bytes / 1_000_000_000).toFixed(1)} GB
           </span>
         )}
       </div>

@@ -265,6 +265,7 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
         status={execution.status}
         runId={execution.runId}
         partitions={execution.partitions}
+        hardwareStats={execution.hardwareStats}
         error={execution.error}
         dbtSummary={execution.dbtSummary}
       />

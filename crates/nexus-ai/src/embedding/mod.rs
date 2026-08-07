@@ -26,4 +26,4 @@ pub use inference::{EmbeddingModel, EmbeddingModelConfig};
 #[cfg(feature = "cpu")]
 pub use model::{resolve_model_path, ModelConfig, ModelError};
 #[cfg(any(feature = "cpu", feature = "api"))]
-pub use pipeline::apply_embedding;
+pub use pipeline::{apply_embedding, load_embedding_backend, EmbeddingBackend};

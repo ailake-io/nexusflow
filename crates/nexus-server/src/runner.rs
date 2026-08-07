@@ -211,11 +211,17 @@ async fn apply_embedding_stage(
     let Some(spec) = embedding_spec else {
         return Ok(inputs);
     };
+
+    // Load the embedding backend once per run, not once per batch — ONNX
+    // model loading and tokenizer initialization are expensive and must not
+    // repeat for every RecordBatch (REVIEW_ACTION_PLAN C13).
+    let mut backend = nexus_ai::embedding::load_embedding_backend(spec).await?;
+
     let mut out = Vec::with_capacity(inputs.len());
     for (name, schema, batches) in inputs {
         let mut embedded = Vec::with_capacity(batches.len());
         for batch in &batches {
-            embedded.push(nexus_ai::embedding::apply_embedding(batch, spec).await?);
+            embedded.push(nexus_ai::embedding::apply_embedding(batch, spec, &mut backend).await?);
         }
         out.push((name, schema, embedded));
     }

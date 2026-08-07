@@ -110,6 +110,9 @@ hex = "0.4.3"
 chrono = { version = "0.4.45", features = ["serde"] }
 cron = "0.17.0"
 dashmap = "6.2.1"
+# Hardware stats (CPU/RAM) in the progress WebSocket — CLAUDE.md §6 "UI
+# Real-Time: WebSockets transmitindo estatísticas de hardware".
+sysinfo = "0.37.2"
 # Email alert channel (alerts.rs) — rustls-tls, no native OpenSSL build,
 # consistent with reqwest's own TLS choice elsewhere in this crate.
 lettre = { version = "0.11.19", default-features = false, features = [
