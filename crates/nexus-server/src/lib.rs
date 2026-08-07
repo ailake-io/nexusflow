@@ -800,6 +800,10 @@ pub struct ServerConfig {
     pub slack_webhook_url: Option<String>,
     /// `NEXUS_TEAMS_WEBHOOK_URL` — same "off is fine" contract as Slack's.
     pub teams_webhook_url: Option<String>,
+    /// `NEXUS_PAGERDUTY_ROUTING_KEY` — same "off is fine" contract as
+    /// Slack's. PagerDuty's Events API posts to one fixed endpoint for
+    /// every account, so this is a routing key, not a URL (see alerts.rs).
+    pub pagerduty_routing_key: Option<String>,
 }
 
 async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
@@ -827,6 +831,7 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         alerts: AlertNotifier::new(AlertConfig {
             slack_webhook_url: config.slack_webhook_url.clone(),
             teams_webhook_url: config.teams_webhook_url.clone(),
+            pagerduty_routing_key: config.pagerduty_routing_key.clone(),
         }),
         login_rate_limiter: std::sync::Arc::new(rate_limit::LoginRateLimiter::default()),
     })
@@ -898,6 +903,12 @@ pub async fn run() -> anyhow::Result<()> {
             "NEXUS_TEAMS_WEBHOOK_URL not set — pipeline failures will not raise a Teams alert"
         );
     }
+    let pagerduty_routing_key = std::env::var("NEXUS_PAGERDUTY_ROUTING_KEY").ok();
+    if pagerduty_routing_key.is_none() {
+        tracing::warn!(
+            "NEXUS_PAGERDUTY_ROUTING_KEY not set — pipeline failures will not page PagerDuty"
+        );
+    }
 
     let state = build_state(&ServerConfig {
         checkpoint_database_url: database_url,
@@ -909,6 +920,7 @@ pub async fn run() -> anyhow::Result<()> {
         encryption_key_hex,
         slack_webhook_url,
         teams_webhook_url,
+        pagerduty_routing_key,
     })
     .await?;
 

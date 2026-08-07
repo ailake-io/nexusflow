@@ -10,7 +10,18 @@ use serde_json::{json, Value};
 pub struct AlertConfig {
     pub slack_webhook_url: Option<String>,
     pub teams_webhook_url: Option<String>,
+    /// PagerDuty Events API v2 "integration key" (routing key) — unlike
+    /// Slack/Teams there's no per-tenant URL, every account posts to the
+    /// same fixed endpoint (`PAGERDUTY_EVENTS_URL`) with this key
+    /// identifying which service/escalation policy receives the event.
+    pub pagerduty_routing_key: Option<String>,
 }
+
+/// PagerDuty's Events API v2 endpoint — same for every account; the
+/// `routing_key` in the request body is what routes an event to a specific
+/// service. See
+/// https://developer.pagerduty.com/docs/events-api-v2/trigger-events/.
+const PAGERDUTY_EVENTS_URL: &str = "https://events.pagerduty.com/v2/enqueue";
 
 /// Fires async alerts on pipeline failure, fanning out to every configured
 /// channel independently — one channel's failure/absence never affects
@@ -44,6 +55,16 @@ impl AlertNotifier {
             let client = self.client.clone();
             let payload = teams_failure_payload(pipeline_id, run_id, error);
             spawn_webhook_post(client, url, payload, "Teams");
+        }
+        if let Some(routing_key) = self.config.pagerduty_routing_key.clone() {
+            let client = self.client.clone();
+            let payload = pagerduty_failure_payload(&routing_key, pipeline_id, run_id, error);
+            spawn_webhook_post(
+                client,
+                PAGERDUTY_EVENTS_URL.to_string(),
+                payload,
+                "PagerDuty",
+            );
         }
     }
 }
@@ -81,6 +102,35 @@ fn slack_failure_payload(pipeline_id: &str, run_id: i64, error: &str) -> Value {
                 }
             }
         ]
+    })
+}
+
+/// PagerDuty Events API v2 "trigger" event. `dedup_key` is set to
+/// `pipeline_id`+`run_id` so repeated failure notifications for the same
+/// run (there's only ever one per run today, but this is what PagerDuty's
+/// own docs recommend) coalesce into one incident instead of paging
+/// on-call multiple times for the same underlying failure — critical
+/// severity, per IMPLEMENTATION_PLAN.md Marco 7 ("PagerDuty (críticos)").
+fn pagerduty_failure_payload(
+    routing_key: &str,
+    pipeline_id: &str,
+    run_id: i64,
+    error: &str,
+) -> Value {
+    json!({
+        "routing_key": routing_key,
+        "event_action": "trigger",
+        "dedup_key": format!("nexusflow-{pipeline_id}-{run_id}"),
+        "payload": {
+            "summary": format!("Pipeline '{pipeline_id}' run {run_id} failed: {error}"),
+            "source": "nexusflow",
+            "severity": "critical",
+            "custom_details": {
+                "pipeline_id": pipeline_id,
+                "run_id": run_id,
+                "error": error
+            }
+        }
     })
 }
 
@@ -152,6 +202,20 @@ mod tests {
         assert!(joined.contains("p1"));
         assert!(joined.contains('7'));
         assert!(joined.contains("connector unreachable"));
+    }
+
+    #[test]
+    fn pagerduty_payload_includes_pipeline_run_and_error() {
+        let payload =
+            pagerduty_failure_payload("routing-key-123", "p1", 7, "connector unreachable");
+        assert_eq!(payload["routing_key"], "routing-key-123");
+        assert_eq!(payload["event_action"], "trigger");
+        assert_eq!(payload["dedup_key"], "nexusflow-p1-7");
+        assert_eq!(payload["payload"]["severity"], "critical");
+        let summary = payload["payload"]["summary"].as_str().unwrap();
+        assert!(summary.contains("p1"));
+        assert!(summary.contains('7'));
+        assert!(summary.contains("connector unreachable"));
     }
 
     #[tokio::test]
@@ -251,6 +315,7 @@ mod tests {
         let notifier = AlertNotifier::new(AlertConfig {
             slack_webhook_url: Some(format!("http://{slack_addr}/webhook")),
             teams_webhook_url: Some(format!("http://{teams_addr}/webhook")),
+            ..Default::default()
         });
         notifier.notify_pipeline_failed("p3", 44, "both channels");
 

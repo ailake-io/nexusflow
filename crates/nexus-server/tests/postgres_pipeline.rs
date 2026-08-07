@@ -122,6 +122,7 @@ fn test_server_config(checkpoint_database_url: String) -> ServerConfig {
         encryption_key_hex: "ab".repeat(32),
         slack_webhook_url: None,
         teams_webhook_url: None,
+        pagerduty_routing_key: None,
     }
 }
 
