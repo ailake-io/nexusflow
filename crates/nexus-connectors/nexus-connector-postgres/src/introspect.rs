@@ -56,7 +56,12 @@ pub async fn primary_key_bounds(
             .iter()
             .find(|f| f.name() == &cfg.primary_key)
             .map(|f| f.data_type().clone())
-            .ok_or_else(|| NexusError::Schema(format!("primary key column '{}' not found", cfg.primary_key)))?;
+            .ok_or_else(|| {
+                NexusError::Schema(format!(
+                    "primary key column '{}' not found",
+                    cfg.primary_key
+                ))
+            })?;
 
         let cast = match pk_type {
             DataType::Int64 => "",
@@ -99,7 +104,10 @@ pub async fn primary_key_bounds(
             return Ok(None);
         }
 
-        Ok(Some(PkPartitionKind::Int64(min_arr.value(0), max_arr.value(0))))
+        Ok(Some(PkPartitionKind::Int64(
+            min_arr.value(0),
+            max_arr.value(0),
+        )))
     })
     .await
     .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))?

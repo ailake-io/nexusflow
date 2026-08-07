@@ -117,8 +117,7 @@ async fn fetch_page_with_retry(
                 if attempt == config.retries || !is_transient_error(&err) {
                     return Err(err);
                 }
-                let delay = Duration::from_secs(config.retry_backoff_seconds)
-                    * 2u32.pow(attempt);
+                let delay = Duration::from_secs(config.retry_backoff_seconds) * 2u32.pow(attempt);
                 tracing::warn!(
                     "REST request failed (attempt {}/{}): {err}, retrying in {:?}",
                     attempt + 1,
@@ -204,21 +203,36 @@ impl Source for RestSource {
                 let (batch, next_state) = match state {
                     PaginationState::None { done: true } => return None,
                     PaginationState::None { done: false } => {
-                        let body = match fetch_page_with_rate_limit(&client, &config, &[], &last_request).await {
-                            Ok(b) => b,
-                            Err(e) => {
-                                return Some((
-                                    Err(e),
-                                    (PaginationState::None { done: true }, client, config, schema, last_request),
-                                ))
-                            }
-                        };
+                        let body =
+                            match fetch_page_with_rate_limit(&client, &config, &[], &last_request)
+                                .await
+                            {
+                                Ok(b) => b,
+                                Err(e) => {
+                                    return Some((
+                                        Err(e),
+                                        (
+                                            PaginationState::None { done: true },
+                                            client,
+                                            config,
+                                            schema,
+                                            last_request,
+                                        ),
+                                    ))
+                                }
+                            };
                         let rows = match rows_from_body(&config, &body) {
                             Ok(r) => r,
                             Err(e) => {
                                 return Some((
                                     Err(e),
-                                    (PaginationState::None { done: true }, client, config, schema, last_request),
+                                    (
+                                        PaginationState::None { done: true },
+                                        client,
+                                        config,
+                                        schema,
+                                        last_request,
+                                    ),
                                 ))
                             }
                         };
@@ -241,7 +255,14 @@ impl Source for RestSource {
                             (offset_param.clone(), offset.to_string()),
                             (limit_param.clone(), limit.to_string()),
                         ];
-                        let body = match fetch_page_with_rate_limit(&client, &config, &query, &last_request).await {
+                        let body = match fetch_page_with_rate_limit(
+                            &client,
+                            &config,
+                            &query,
+                            &last_request,
+                        )
+                        .await
+                        {
                             Ok(b) => b,
                             Err(e) => {
                                 return Some((
@@ -307,7 +328,14 @@ impl Source for RestSource {
                             Some(c) => vec![(cursor_param.clone(), c.clone())],
                             None => vec![],
                         };
-                        let body = match fetch_page_with_rate_limit(&client, &config, &query, &last_request).await {
+                        let body = match fetch_page_with_rate_limit(
+                            &client,
+                            &config,
+                            &query,
+                            &last_request,
+                        )
+                        .await
+                        {
                             Ok(b) => b,
                             Err(e) => {
                                 return Some((

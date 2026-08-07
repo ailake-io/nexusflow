@@ -1,8 +1,8 @@
 use crate::checkpoint_store::CheckpointStore;
 use crate::connectors::{build_sink, build_source};
 use nexus_connector_postgres::{
-    primary_key_bounds, split_into_partitions, table_schema, PkPartitionKind, PostgresConnectorConfig,
-    PostgresSink, PostgresSource,
+    primary_key_bounds, split_into_partitions, table_schema, PkPartitionKind,
+    PostgresConnectorConfig, PostgresSink, PostgresSource,
 };
 use nexus_core::{
     CheckpointCursor, DataFusionTransform, PartitionHandle, PartitionStats, PipelineEngine,

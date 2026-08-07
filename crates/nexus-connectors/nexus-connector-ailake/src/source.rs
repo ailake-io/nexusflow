@@ -156,15 +156,17 @@ impl Source for AilakeSource {
             let embedding_column = embedding_column.clone();
             let primary_key = primary_key.clone();
             async move {
-                let batch = read_file_batch(&store, &file.path, &embedding_column, dimension).await?;
+                let batch =
+                    read_file_batch(&store, &file.path, &embedding_column, dimension).await?;
                 if deleted.is_empty() {
                     Ok(batch)
                 } else {
                     let pk_values = extract_pk_strings(&batch, &primary_key)?;
                     let keep: Vec<bool> = pk_values.iter().map(|v| !deleted.contains(v)).collect();
                     let mask = BooleanArray::from(keep);
-                    filter_record_batch(&batch, &mask)
-                        .map_err(|e| NexusError::Schema(format!("ailake delete filter failed: {e}")))
+                    filter_record_batch(&batch, &mask).map_err(|e| {
+                        NexusError::Schema(format!("ailake delete filter failed: {e}"))
+                    })
                 }
             }
         });

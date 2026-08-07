@@ -192,7 +192,10 @@ impl Sink for OdbcSink {
     async fn write_batch(&mut self, batch: RecordBatch) -> Result<(), NexusError> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.tx
-            .send(BatchRequest { batch, response: tx })
+            .send(BatchRequest {
+                batch,
+                response: tx,
+            })
             .map_err(|_| NexusError::Connector("odbc sink worker has terminated".to_string()))?;
 
         rx.await
