@@ -20,13 +20,13 @@ No entanto, existem **riscos críticos de segurança e dados** que precisam de a
 
 | # | Problema | Onde | Impacto | Ação |
 |---|---|---|---|---|
-| C1 | `validate_security()` não é chamado em create/update de pipelines | `nexus-server/src/lib.rs:472,524` | Usuário Write persiste spec inseguro; Execute executa depois | Chamar `spec.validate_security()` em `create_pipeline_handler` e `update_pipeline_handler` |
+| C1 | `validate_security()` não é chamado em create/update de pipelines | `nexus-server/src/lib.rs:505,561` | Usuário Write persiste spec inseguro; Execute executa depois | ✅ Resolvido: `validate_security()` é chamada em `create_pipeline_handler` e `update_pipeline_handler` |
 | C2 | Bypass de SSRF via `user:pass@host` em URL | `nexus-core/src/dag.rs:316-320` | Acesso a metadata endpoints de cloud | Usar `url::Url` para parsing robusto de host |
 | C3 | Path traversal relativo permitido em `dbt.project_dir` | `nexus-core/src/dag.rs:274` | Execução de dbt em diretório arbitrário | Rejeitar `..`, canonicalizar contra diretório base |
-| C4 | `validate_security()` só inspeciona chaves de primeiro nível | `nexus-core/src/dag.rs:292-314` | URLs internas em JSON aninhado/array passam | Percorrer JSON recursivamente |
-| C5 | `is_internal_host()` não cobre IPv6 link-local, CGNAT, `metadata.google.internal` etc. | `nexus-core/src/dag.rs:322-368` | SSRF para endpoints internos comuns | Expandir blocklist ou usar whitelist |
-| C6 | Segredos literais no CI | `.github/workflows/ci.yml:125-126` | JWT secret e encryption key expostos em logs/YAML | Gerar dinamicamente no step ou usar GitHub Secrets |
-| C7 | `LoginRateLimiter` cresce sem limites | `nexus-server/src/rate_limit.rs:12-38` | Ataque de memória via spoofing de IP | Adicionar limite de entries ou cleanup periódico |
+| C4 | `validate_security()` só inspeciona chaves de primeiro nível | `nexus-core/src/dag.rs:292-314` | URLs internas em JSON aninhado/array passam | ✅ Resolvido: `validate_security()` percorre JSON recursivamente (objetos e arrays) |
+| C5 | `is_internal_host()` não cobre IPv6 link-local, CGNAT, `metadata.google.internal` etc. | `nexus-core/src/dag.rs:322-368` | SSRF para endpoints internos comuns | ✅ Resolvido: blocklist expandida para CGNAT, link-local, loopback e hostnames de metadata cloud |
+| C6 | Segredos literais no CI | `.github/workflows/ci.yml:125-126` | JWT secret e encryption key expostos em logs/YAML | ✅ Resolvido: segredos gerados dinamicamente via `openssl rand -hex 32` no step de smoke test |
+| C7 | `LoginRateLimiter` cresce sem limites | `nexus-server/src/rate_limit.rs:12-38` | Ataque de memória via spoofing de IP | ✅ Resolvido: limite máximo de IPs rastreados com evicção do mais antigo |
 
 ### Dados / Confiabilidade
 
@@ -54,9 +54,9 @@ No entanto, existem **riscos críticos de segurança e dados** que precisam de a
 
 | # | Problema | Onde | Ação |
 |---|---|---|---|
-| A1 | Sem revogação de JWT | `nexus-server/src/auth.rs:21-24` | Blocklist de tokens ou TTL curto + refresh |
-| A2 | Scheduler sem coordenação em multi-réplica | `nexus-server/src/scheduler.rs:19-29` | Lock distribuído ou documentar single-node |
-| A3 | `dbt.rs` sem timeout nem limite de saída | `nexus-server/src/dbt.rs:178-262` | `tokio::time::timeout` + limitar buffers stdout/stderr |
+| A1 | Sem revogação de JWT | `nexus-server/src/auth.rs:21-24` | ✅ Resolvido: `TokenBlocklist` em memória com `JwtCodec::with_blocklist`; `/auth/logout` adiciona token à blocklist |
+| A2 | Scheduler sem coordenação em multi-réplica | `nexus-server/src/scheduler.rs:19-29` | ✅ Escopo deliberado: documentado em `ARCHITECTURE.md §6` que o MVP/OSS é single-node; não é bug, é decisão de escopo |
+| A3 | `dbt.rs` sem timeout nem limite de saída | `nexus-server/src/dbt.rs:178-262` | ✅ Resolvido: timeout via `NEXUS_DBT_TIMEOUT_SECONDS` (default 300s) + truncamento de stdout/stderr em 1 MiB |
 | A4 | `sanitize_error` não remove credenciais em query strings | `nexus-server/src/error.rs:80-113` | Usar `url::Url` para sanitizar query params |
 | A5 | `ProgressHub` usa `std::sync::Mutex` em async | `nexus-server/src/progress.rs:14-37` | Migrar para `tokio::sync::Mutex` |
 | A6 | `alerts.rs` fire-and-forget sem observar tasks | `nexus-server/src/alerts.rs:35-46` | Logar falhas; aguardar JoinHandle em testes |
@@ -68,7 +68,7 @@ No entanto, existem **riscos críticos de segurança e dados** que precisam de a
 
 | # | Problema | Onde | Ação |
 |---|---|---|---|
-| A10 | Materialização eager em fontes SQL/lakehouse | `postgres/source.rs`, `sqlite/source.rs`, `deltalake/source.rs`, `parquet/source.rs` | Retornar streams lazy |
+| A10 | Materialização eager em fontes SQL/lakehouse | `postgres/source.rs`, `sqlite/source.rs`, `deltalake/source.rs`, `parquet/source.rs`, `ailake/source.rs`, `rest/source.rs` | ✅ Resolvido: todas as sources listadas agora retornam streams lazy; Kafka e Iceberg já eram streaming |
 | A11 | `MongoSink` linha a linha | `nexus-connector-mongodb/src/sink.rs:72-98` | Usar `bulk_write` |
 | A12 | `OdbcSink` abre conexão por batch e N round-trips | `nexus-connector-odbc/src/sink.rs:73-138` | Reaproveitar conexão; usar bulk parameters |
 | A13 | `AilakeSource` carrega todos os deletes em memória | `nexus-connector-ailake/src/source.rs:99-126` | Aplicar deletes file-a-file ou usar filtro nativo |
@@ -81,12 +81,12 @@ No entanto, existem **riscos críticos de segurança e dados** que precisam de a
 
 | # | Problema | Onde | Ação |
 |---|---|---|---|
-| A18 | `useRunProgress` não limpa WebSocket/timeout no desmonte | `frontend/src/hooks/useRunProgress.ts:47,67,73` | Adicionar cleanup e fechar socket |
-| A19 | `useRunProgress` pode aplicar estado de run anterior | `frontend/src/hooks/useRunProgress.ts:103-126` | Invalidar callbacks da run anterior |
-| A20 | WebSocket sem tratamento de erro/timeout | `frontend/src/hooks/useRunProgress.ts:73-99` | `ws.onerror`, timeout de inatividade |
-| A21 | Callback instável `onPipelineLoaded` no `App` | `frontend/src/App.tsx:52`, `DagCanvas.tsx:196-200` | Usar `useCallback` |
-| A22 | Deleção de pipeline sem confirmação | `frontend/src/components/PipelinesList.tsx:133-140` | Adicionar diálogo de confirmação |
-| A23 | JWT em `sessionStorage` sem CSP | `frontend/src/lib/auth.tsx:11`, `index.html` | Adicionar CSP; capturar 401 global |
+| A18 | `useRunProgress` não limpa WebSocket/timeout no desmonte | `frontend/src/hooks/useRunProgress.ts:47,67,73` | ✅ Resolvido: `useEffect` de cleanup fecha WebSocket, aborta fetch e limpa timer de inatividade |
+| A19 | `useRunProgress` pode aplicar estado de run anterior | `frontend/src/hooks/useRunProgress.ts:103-126` | ✅ Resolvido: `cleanupRun()` reseta estado e refs antes de iniciar nova run; callbacks usam refs estáveis |
+| A20 | WebSocket sem tratamento de erro/timeout | `frontend/src/hooks/useRunProgress.ts:73-99` | ✅ Resolvido: `ws.onerror`, `ws.onclose`, timeout de inatividade de 30s e fallback para polling do histórico |
+| A21 | Callback instável `onPipelineLoaded` no `App` | `frontend/src/App.tsx:52`, `DagCanvas.tsx:196-200` | ✅ Resolvido: `onPipelineLoaded` envolvido em `useCallback` no `App` |
+| A22 | Deleção de pipeline sem confirmação | `frontend/src/components/PipelinesList.tsx:133-140` | ✅ Resolvido: diálogo inline de confirmação com Cancelar/Confirmar |
+| A23 | JWT em `sessionStorage` sem CSP | `frontend/src/lib/auth.tsx:11`, `index.html` | ✅ Parcialmente resolvido: 401 global capturado em `api.ts` (`onUnauthorized`); CSP no `index.html` ainda pendente |
 | A24 | `radix-ui` inteiro como dependência | `frontend/package.json:20` | Trocar por pacotes individuais |
 | A25 | `shadcn` em dependencies | `frontend/package.json:23` | Mover para devDependencies ou remover |
 | A26 | Zero testes de comportamento | `frontend/src/lib/utils.test.ts` (único) | Adicionar testes para hooks e componentes |
@@ -146,10 +146,10 @@ No entanto, existem **riscos críticos de segurança e dados** que precisam de a
 | D1 | Stack inclui "Next.js (TypeScript) ou Vite" | Usa Vite apenas | Atualizar `CLAUDE.md` |
 | D2 | Conectores MySQL, DuckDB, Snowflake, BigQuery, ClickHouse ADBC | Não existem crates | Atualizar matriz ou implementar |
 | D3 | Arrow Flight SQL connectors | Nenhum registrado | Atualizar matriz ou implementar |
-| D4 | Alertas Teams/PagerDuty/Email/Webhook | Só Slack implementado | Atualizar docs ou implementar |
+| D4 | Alertas Teams/PagerDuty/Email/Webhook | Slack implementado | ✅ Resolvido: Slack, MS Teams, PagerDuty, Email (SMTP STARTTLS) e Webhook genérico implementados; docs atualizadas |
 | D5 | Stats de hardware no WebSocket | Não implementado | Atualizar docs ou implementar |
 | D6 | CDC nativo via WAL/binlog | Só Debezium+Kafka | Atualizar docs |
-| D7 | Features CUDA/Metal/API de embeddings | CPU apenas | Atualizar docs ou implementar |
+| D7 | Features CUDA/Metal/API de embeddings | CPU apenas | ✅ Resolvido: features `api` (HTTP externo), `cuda` (ONNX CUDA EP) e `metal` (CoreML EP) registradas e compiláveis; validação em hardware real pendente |
 | D8 | Cron com 5 ou 6 campos (Quartz) | Verificar suporte real | Atualizar docs se só 5 campos |
 | D9 | GETTING_STARTED exemplo `postgres → sqlite` com path absoluto | `runner.rs:37-44` rejeita path absoluto | Corrigir exemplo ou regra |
 | D10 | README: "MVP completo e além" | Muitos itens aspiracionais | Atenuar declaração ou listar gaps |
