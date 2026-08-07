@@ -1,3 +1,7 @@
+use lettre::message::Mailbox;
+use lettre::transport::smtp::authentication::Credentials;
+use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
+use nexus_core::NexusError;
 use serde_json::{json, Value};
 
 /// Which webhook URL to notify per channel — `None` on any field means that
@@ -15,6 +19,24 @@ pub struct AlertConfig {
     /// same fixed endpoint (`PAGERDUTY_EVENTS_URL`) with this key
     /// identifying which service/escalation policy receives the event.
     pub pagerduty_routing_key: Option<String>,
+    /// SMTP relay config — `None` means the Email channel is off, same
+    /// contract as every other channel here.
+    pub email: Option<EmailConfig>,
+}
+
+/// SMTP over STARTTLS only (never sends credentials/mail unencrypted) —
+/// good enough for the relays this targets (Gmail, SES, self-hosted
+/// Postfix/etc all support it on port 587). Implicit-TLS (port 465) isn't
+/// wired up; add `AsyncSmtpTransport::relay` alongside `starttls_relay` in
+/// `send_failure_email` if a provider needs it.
+#[derive(Clone)]
+pub struct EmailConfig {
+    pub smtp_host: String,
+    pub smtp_port: u16,
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub from: String,
+    pub to: Vec<String>,
 }
 
 /// PagerDuty's Events API v2 endpoint — same for every account; the
@@ -66,7 +88,58 @@ impl AlertNotifier {
                 "PagerDuty",
             );
         }
+        if let Some(email) = self.config.email.clone() {
+            let pipeline_id = pipeline_id.to_string();
+            let error = error.to_string();
+            tokio::spawn(async move {
+                if let Err(e) = send_failure_email(&email, &pipeline_id, run_id, &error).await {
+                    tracing::warn!(channel = "Email", error = %e, "failed to send alert");
+                }
+            });
+        }
     }
+}
+
+async fn send_failure_email(
+    config: &EmailConfig,
+    pipeline_id: &str,
+    run_id: i64,
+    error: &str,
+) -> Result<(), NexusError> {
+    let subject = format!("[nexusflow] Pipeline '{pipeline_id}' run {run_id} failed");
+    let body = format!(
+        "Pipeline: {pipeline_id}\nRun: {run_id}\nError: {error}\n\n---\nSent by NexusFlow"
+    );
+
+    let from: Mailbox = config
+        .from
+        .parse()
+        .map_err(|e| NexusError::Connector(format!("invalid email from address: {e}")))?;
+
+    let mut builder = Message::builder().from(from).subject(subject);
+    for to in &config.to {
+        let to: Mailbox = to
+            .parse()
+            .map_err(|e| NexusError::Connector(format!("invalid email to address: {e}")))?;
+        builder = builder.to(to);
+    }
+    let message = builder
+        .body(body)
+        .map_err(|e| NexusError::Connector(format!("failed to build email: {e}")))?;
+
+    let mut mailer = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&config.smtp_host)
+        .map_err(|e| NexusError::Connector(format!("invalid SMTP host: {e}")))?
+        .port(config.smtp_port);
+    if let (Some(username), Some(password)) = (&config.username, &config.password) {
+        mailer = mailer.credentials(Credentials::new(username.clone(), password.clone()));
+    }
+    mailer
+        .build()
+        .send(message)
+        .await
+        .map_err(|e| NexusError::Connector(format!("failed to send email: {e}")))?;
+
+    Ok(())
 }
 
 /// Shared fire-and-forget POST used by every webhook-shaped channel (Slack,
@@ -323,5 +396,23 @@ mod tests {
         let teams_body = wait_for_capture(&teams_received).await;
         assert!(slack_body["blocks"].is_array());
         assert_eq!(teams_body["type"], "message");
+    }
+
+    #[tokio::test]
+    async fn notify_with_email_config_is_fire_and_forget() {
+        // Invalid SMTP host is fine here: the task is spawned, returns
+        // immediately, and logs the failure — the run handler never waits.
+        let notifier = AlertNotifier::new(AlertConfig {
+            email: Some(EmailConfig {
+                smtp_host: "invalid.example".to_string(),
+                smtp_port: 587,
+                username: None,
+                password: None,
+                from: "nexus@example.com".to_string(),
+                to: vec!["ops@example.com".to_string()],
+            }),
+            ..Default::default()
+        });
+        notifier.notify_pipeline_failed("p4", 45, "email channel");
     }
 }

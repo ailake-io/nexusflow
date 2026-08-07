@@ -804,6 +804,8 @@ pub struct ServerConfig {
     /// Slack's. PagerDuty's Events API posts to one fixed endpoint for
     /// every account, so this is a routing key, not a URL (see alerts.rs).
     pub pagerduty_routing_key: Option<String>,
+    /// Email alert channel config — `None` means the channel is off.
+    pub email: Option<alerts::EmailConfig>,
 }
 
 async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
@@ -832,6 +834,7 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
             slack_webhook_url: config.slack_webhook_url.clone(),
             teams_webhook_url: config.teams_webhook_url.clone(),
             pagerduty_routing_key: config.pagerduty_routing_key.clone(),
+            email: config.email.clone(),
         }),
         login_rate_limiter: std::sync::Arc::new(rate_limit::LoginRateLimiter::default()),
     })
@@ -847,6 +850,36 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
 pub async fn build_app(config: &ServerConfig) -> anyhow::Result<Router> {
     let state = build_state(config).await?;
     Ok(router(state))
+}
+
+/// Parses the optional Email alert channel from environment variables.
+/// Returns `None` if the minimum required fields (`SMTP_HOST`, `FROM`, `TO`)
+/// are not all present — same "channel is off" contract as the webhook
+/// channels.
+fn parse_email_config_from_env() -> Option<alerts::EmailConfig> {
+    let smtp_host = std::env::var("NEXUS_EMAIL_SMTP_HOST").ok()?;
+    let smtp_port = std::env::var("NEXUS_EMAIL_SMTP_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(587);
+    let from = std::env::var("NEXUS_EMAIL_FROM").ok()?;
+    let to = std::env::var("NEXUS_EMAIL_TO")
+        .ok()?
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
+    if to.is_empty() {
+        return None;
+    }
+    Some(alerts::EmailConfig {
+        smtp_host,
+        smtp_port,
+        username: std::env::var("NEXUS_EMAIL_SMTP_USERNAME").ok(),
+        password: std::env::var("NEXUS_EMAIL_SMTP_PASSWORD").ok(),
+        from,
+        to,
+    })
 }
 
 /// Boots the server. This is the only orchestration entrypoint — `src/main.rs`
@@ -909,6 +942,12 @@ pub async fn run() -> anyhow::Result<()> {
             "NEXUS_PAGERDUTY_ROUTING_KEY not set — pipeline failures will not page PagerDuty"
         );
     }
+    let email = parse_email_config_from_env();
+    if email.is_none() {
+        tracing::warn!(
+            "NEXUS_EMAIL_SMTP_HOST/NEXUS_EMAIL_TO not set — pipeline failures will not send email alerts"
+        );
+    }
 
     let state = build_state(&ServerConfig {
         checkpoint_database_url: database_url,
@@ -921,6 +960,7 @@ pub async fn run() -> anyhow::Result<()> {
         slack_webhook_url,
         teams_webhook_url,
         pagerduty_routing_key,
+        email,
     })
     .await?;
 
