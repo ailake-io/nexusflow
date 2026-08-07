@@ -67,7 +67,8 @@ impl ApiEmbeddingModel {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             return Err(EmbeddingError::Api(format!(
-                "embedding API returned {status}: {body}"
+                "embedding API returned {status}: {}",
+                truncate(&body, 512)
             )));
         }
 
@@ -109,6 +110,19 @@ impl ApiEmbeddingModel {
             })
             .collect()
     }
+}
+
+/// Caps how much of an upstream error body ends up in `EmbeddingError`,
+/// which propagates into pipeline run logs a lower-privilege ("Execute"
+/// role) caller can read — without this, an arbitrarily large or
+/// sensitive response body would be reflected back in full.
+fn truncate(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max_chars).collect();
+    out.push_str("…[truncated]");
+    out
 }
 
 #[derive(Serialize)]
@@ -205,5 +219,40 @@ mod tests {
         });
         let err = model.embed_batch(&["x".to_string()]).await.unwrap_err();
         assert!(matches!(err, EmbeddingError::Api(_)));
+    }
+
+    #[tokio::test]
+    async fn large_error_body_is_truncated_not_reflected_in_full() {
+        let server = MockServer::start().await;
+        let huge_body = "x".repeat(10_000);
+        Mock::given(method("POST"))
+            .and(path("/embeddings"))
+            .respond_with(ResponseTemplate::new(500).set_body_string(huge_body))
+            .mount(&server)
+            .await;
+
+        let model = ApiEmbeddingModel::new(ApiEmbeddingConfig {
+            base_url: server.uri(),
+            model: "text-embedding-3-small".to_string(),
+            api_key_env: None,
+        });
+        let err = model.embed_batch(&["x".to_string()]).await.unwrap_err();
+        let EmbeddingError::Api(msg) = err else {
+            panic!("expected Api error");
+        };
+        // Bounded regardless of how large the upstream response was — an
+        // internal/compromised endpoint reflected back through error
+        // messages a lower-privilege caller can read must not become an
+        // unbounded information-disclosure channel.
+        assert!(
+            msg.len() < 1_000,
+            "error message not truncated: {} bytes",
+            msg.len()
+        );
+    }
+
+    #[test]
+    fn truncate_is_a_no_op_under_the_limit() {
+        assert_eq!(truncate("short", 512), "short");
     }
 }

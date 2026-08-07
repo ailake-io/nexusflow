@@ -317,8 +317,37 @@ impl PipelineSpec {
         if let Some(dbt) = &self.dbt {
             validate_dbt_project_dir(&dbt.project_dir)?;
         }
+        if let Some(embedding) = &self.embedding {
+            validate_embedding_security(&embedding.model)?;
+        }
         Ok(())
     }
+}
+
+/// `embedding.model`'s `Api` variant carries a `base_url` the server will
+/// both send requests to *and* attach a real secret (`api_key_env`) to as a
+/// Bearer token — unlike the JSON connector configs above, this field is a
+/// typed Rust struct, not a `serde_json::Value`, so it never went through
+/// `validate_node_security`'s recursive SSRF scan. Without this check, a
+/// `Write`-role pipeline spec could point `base_url` at an internal service
+/// (or attacker-controlled host) and have this server exfiltrate whatever
+/// secret `api_key_env` names straight to it.
+fn validate_embedding_security(model: &EmbeddingModelSpec) -> Result<(), NexusError> {
+    if let EmbeddingModelSpec::Api { base_url, .. } = model {
+        if base_url.starts_with('/') {
+            return Err(NexusError::Schema(
+                "embedding.model.base_url must not be an absolute path".into(),
+            ));
+        }
+        if let Some(host) = http_host(base_url) {
+            if is_internal_host(&host) {
+                return Err(NexusError::Schema(
+                    "embedding.model.base_url points to an internal host".into(),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Rejects absolute local paths and internal/private URLs anywhere inside a
@@ -758,5 +787,55 @@ mod tests {
             .validate_security()
             .expect_err("CGNAT host must be rejected");
         assert!(err.to_string().contains("internal host"));
+    }
+
+    #[test]
+    fn validate_security_rejects_ssrf_via_embedding_api_base_url() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "postgres", "config": {}}],
+            "sinks": [{"connector": "lancedb", "config": {}}],
+            "embedding": {
+                "source_column": "body",
+                "output_column": "embedding",
+                "dimension": 8,
+                "model": {
+                    "backend": "api",
+                    "base_url": "http://169.254.169.254/latest/meta-data",
+                    "model": "text-embedding-3-small",
+                    "api_key_env": "OPENAI_API_KEY"
+                },
+                "chunking": {"strategy": "fixed_window", "chunk_size": 256}
+            }
+        }"#;
+        let spec = PipelineSpec::parse(json).unwrap();
+        let err = spec.validate_security().expect_err(
+            "embedding API base_url pointing at a cloud metadata endpoint must be rejected",
+        );
+        assert!(err.to_string().contains("internal host"));
+    }
+
+    #[test]
+    fn validate_security_accepts_external_embedding_api_base_url() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "postgres", "config": {}}],
+            "sinks": [{"connector": "lancedb", "config": {}}],
+            "embedding": {
+                "source_column": "body",
+                "output_column": "embedding",
+                "dimension": 8,
+                "model": {
+                    "backend": "api",
+                    "base_url": "https://api.openai.com/v1",
+                    "model": "text-embedding-3-small",
+                    "api_key_env": "OPENAI_API_KEY"
+                },
+                "chunking": {"strategy": "fixed_window", "chunk_size": 256}
+            }
+        }"#;
+        let spec = PipelineSpec::parse(json).unwrap();
+        spec.validate_security()
+            .expect("external embedding API base_url must be accepted");
     }
 }
