@@ -146,6 +146,7 @@ fn test_server_config(checkpoint_database_url: String) -> ServerConfig {
         bootstrap_admin: Some(("admin".to_string(), "test-password".to_string())),
         encryption_key_hex: "ab".repeat(32),
         slack_webhook_url: None,
+        teams_webhook_url: None,
     }
 }
 

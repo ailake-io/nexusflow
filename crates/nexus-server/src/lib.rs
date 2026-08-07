@@ -15,7 +15,7 @@ mod runner;
 mod scheduler;
 pub mod telemetry;
 
-use alerts::AlertNotifier;
+use alerts::{AlertConfig, AlertNotifier};
 use auth::{require_role, Claims, JwtCodec, Role, TokenBlocklist};
 use auth_store::AuthStore;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -798,6 +798,8 @@ pub struct ServerConfig {
     /// `NEXUS_SLACK_WEBHOOK_URL` — `None` just means alerting is off, not a
     /// startup failure (see `alerts.rs`).
     pub slack_webhook_url: Option<String>,
+    /// `NEXUS_TEAMS_WEBHOOK_URL` — same "off is fine" contract as Slack's.
+    pub teams_webhook_url: Option<String>,
 }
 
 async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
@@ -822,7 +824,10 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         secrets,
         pipelines,
         progress: ProgressHub::default(),
-        alerts: AlertNotifier::new(config.slack_webhook_url.clone()),
+        alerts: AlertNotifier::new(AlertConfig {
+            slack_webhook_url: config.slack_webhook_url.clone(),
+            teams_webhook_url: config.teams_webhook_url.clone(),
+        }),
         login_rate_limiter: std::sync::Arc::new(rate_limit::LoginRateLimiter::default()),
     })
 }
@@ -887,6 +892,12 @@ pub async fn run() -> anyhow::Result<()> {
             "NEXUS_SLACK_WEBHOOK_URL not set — pipeline failures will not raise a Slack alert"
         );
     }
+    let teams_webhook_url = std::env::var("NEXUS_TEAMS_WEBHOOK_URL").ok();
+    if teams_webhook_url.is_none() {
+        tracing::warn!(
+            "NEXUS_TEAMS_WEBHOOK_URL not set — pipeline failures will not raise a Teams alert"
+        );
+    }
 
     let state = build_state(&ServerConfig {
         checkpoint_database_url: database_url,
@@ -897,6 +908,7 @@ pub async fn run() -> anyhow::Result<()> {
         bootstrap_admin,
         encryption_key_hex,
         slack_webhook_url,
+        teams_webhook_url,
     })
     .await?;
 
@@ -986,7 +998,7 @@ mod tests {
             secrets: SecretCipher::from_hex_key(&"ab".repeat(32)).unwrap(),
             pipelines: PipelineStore::connect("sqlite::memory:").await.unwrap(),
             progress: ProgressHub::default(),
-            alerts: AlertNotifier::new(None),
+            alerts: AlertNotifier::new(AlertConfig::default()),
             login_rate_limiter: std::sync::Arc::new(rate_limit::LoginRateLimiter::new(
                 std::time::Duration::from_secs(60),
                 10_000,
@@ -2025,7 +2037,7 @@ mod tests {
             secrets: SecretCipher::from_hex_key(&"ab".repeat(32)).unwrap(),
             pipelines: PipelineStore::connect("sqlite::memory:").await.unwrap(),
             progress: ProgressHub::default(),
-            alerts: AlertNotifier::new(None),
+            alerts: AlertNotifier::new(AlertConfig::default()),
             login_rate_limiter: limiter,
         };
         let app = router(state);
