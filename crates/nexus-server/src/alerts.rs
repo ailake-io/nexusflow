@@ -118,9 +118,8 @@ async fn send_failure_email(
     error: &str,
 ) -> Result<(), NexusError> {
     let subject = format!("[nexusflow] Pipeline '{pipeline_id}' run {run_id} failed");
-    let body = format!(
-        "Pipeline: {pipeline_id}\nRun: {run_id}\nError: {error}\n\n---\nSent by NexusFlow"
-    );
+    let body =
+        format!("Pipeline: {pipeline_id}\nRun: {run_id}\nError: {error}\n\n---\nSent by NexusFlow");
 
     let from: Mailbox = config
         .from
@@ -154,7 +153,7 @@ async fn send_failure_email(
 }
 
 /// Shared fire-and-forget POST used by every webhook-shaped channel (Slack,
-/// Teams, and — later — the generic Webhook channel): same logging
+/// Teams, PagerDuty, and the generic Webhook channel): same logging
 /// contract, same "never propagate a send failure" rule, just a different
 /// JSON body shape per channel.
 fn spawn_webhook_post(client: reqwest::Client, url: String, payload: Value, channel: &'static str) {
