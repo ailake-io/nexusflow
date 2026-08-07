@@ -22,6 +22,12 @@ pub struct AlertConfig {
     /// SMTP relay config — `None` means the Email channel is off, same
     /// contract as every other channel here.
     pub email: Option<EmailConfig>,
+    /// Generic outbound webhook — last channel in IMPLEMENTATION_PLAN.md
+    /// Marco 7 #10's priority order, for receivers not covered by the
+    /// named channels above (custom internal tooling, a receiver that
+    /// speaks neither Slack's Block Kit nor Teams' Adaptive Card format,
+    /// etc). Plain JSON body, no vendor-specific shape.
+    pub webhook_url: Option<String>,
 }
 
 /// SMTP over STARTTLS only (never sends credentials/mail unencrypted) —
@@ -96,6 +102,11 @@ impl AlertNotifier {
                     tracing::warn!(channel = "Email", error = %e, "failed to send alert");
                 }
             });
+        }
+        if let Some(url) = self.config.webhook_url.clone() {
+            let client = self.client.clone();
+            let payload = generic_webhook_failure_payload(pipeline_id, run_id, error);
+            spawn_webhook_post(client, url, payload, "Webhook");
         }
     }
 }
@@ -243,6 +254,19 @@ fn teams_failure_payload(pipeline_id: &str, run_id: i64, error: &str) -> Value {
     })
 }
 
+/// Plain JSON body for the generic Webhook channel — no vendor-specific
+/// shape, just the raw facts, so a receiver of any kind (internal tooling,
+/// a serverless function, a receiver not shaped like Slack/Teams) can
+/// consume it directly.
+fn generic_webhook_failure_payload(pipeline_id: &str, run_id: i64, error: &str) -> Value {
+    json!({
+        "event": "pipeline_failed",
+        "pipeline_id": pipeline_id,
+        "run_id": run_id,
+        "error": error
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,6 +313,15 @@ mod tests {
         assert!(summary.contains("p1"));
         assert!(summary.contains('7'));
         assert!(summary.contains("connector unreachable"));
+    }
+
+    #[test]
+    fn generic_webhook_payload_includes_pipeline_run_and_error() {
+        let payload = generic_webhook_failure_payload("p1", 7, "connector unreachable");
+        assert_eq!(payload["event"], "pipeline_failed");
+        assert_eq!(payload["pipeline_id"], "p1");
+        assert_eq!(payload["run_id"], 7);
+        assert_eq!(payload["error"], "connector unreachable");
     }
 
     #[tokio::test]
@@ -414,5 +447,22 @@ mod tests {
             ..Default::default()
         });
         notifier.notify_pipeline_failed("p4", 45, "email channel");
+    }
+
+    #[tokio::test]
+    async fn notify_posts_generic_webhook_payload_to_configured_url() {
+        let (addr, received) = capture_webhook().await;
+
+        let notifier = AlertNotifier::new(AlertConfig {
+            webhook_url: Some(format!("http://{addr}/webhook")),
+            ..Default::default()
+        });
+        notifier.notify_pipeline_failed("p5", 46, "generic webhook");
+
+        let body = wait_for_capture(&received).await;
+        assert_eq!(body["event"], "pipeline_failed");
+        assert_eq!(body["pipeline_id"], "p5");
+        assert_eq!(body["run_id"], 46);
+        assert_eq!(body["error"], "generic webhook");
     }
 }

@@ -806,6 +806,8 @@ pub struct ServerConfig {
     pub pagerduty_routing_key: Option<String>,
     /// Email alert channel config — `None` means the channel is off.
     pub email: Option<alerts::EmailConfig>,
+    /// `NEXUS_ALERT_WEBHOOK_URL` — same "off is fine" contract as Slack's.
+    pub webhook_url: Option<String>,
 }
 
 async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
@@ -835,6 +837,7 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
             teams_webhook_url: config.teams_webhook_url.clone(),
             pagerduty_routing_key: config.pagerduty_routing_key.clone(),
             email: config.email.clone(),
+            webhook_url: config.webhook_url.clone(),
         }),
         login_rate_limiter: std::sync::Arc::new(rate_limit::LoginRateLimiter::default()),
     })
@@ -948,6 +951,12 @@ pub async fn run() -> anyhow::Result<()> {
             "NEXUS_EMAIL_SMTP_HOST/NEXUS_EMAIL_TO not set — pipeline failures will not send email alerts"
         );
     }
+    let webhook_url = std::env::var("NEXUS_ALERT_WEBHOOK_URL").ok();
+    if webhook_url.is_none() {
+        tracing::warn!(
+            "NEXUS_ALERT_WEBHOOK_URL not set — pipeline failures will not raise a generic webhook alert"
+        );
+    }
 
     let state = build_state(&ServerConfig {
         checkpoint_database_url: database_url,
@@ -961,6 +970,7 @@ pub async fn run() -> anyhow::Result<()> {
         teams_webhook_url,
         pagerduty_routing_key,
         email,
+        webhook_url,
     })
     .await?;
 

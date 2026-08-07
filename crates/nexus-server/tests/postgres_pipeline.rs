@@ -124,6 +124,7 @@ fn test_server_config(checkpoint_database_url: String) -> ServerConfig {
         teams_webhook_url: None,
         pagerduty_routing_key: None,
         email: None,
+        webhook_url: None,
     }
 }
 
