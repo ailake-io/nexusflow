@@ -46,8 +46,8 @@ pub trait Sink {
 }
 
 #[async_trait]
-pub trait Transform {
-    fn apply(&self, batch: RecordBatch) -> Result<RecordBatch, NexusError>;
+pub trait Transform: Send + Sync {
+    async fn apply(&self, batch: RecordBatch) -> Result<RecordBatch, NexusError>;
 }
 ```
 

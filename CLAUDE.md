@@ -81,6 +81,8 @@ nexusflow/
 * **Suporte a CDC (Change Data Capture):** Leitura de logs de transação (WAL no Postgres, Binlog no MySQL) convertidos em eventos Arrow contendo opcodes (`I`, `U`, `D`) para cargas incrementais em tempo real.
 
 > **Estado real (ver `ROADMAP.md`)**: a matriz acima é a visão de produto, não o estado atual. Hoje só **Postgres** e **SQLite** existem como conectores ADBC fast-path (`crates/nexus-connectors/nexus-connector-postgres`/`-sqlite`); MySQL, DuckDB, Snowflake, BigQuery e ClickHouse ADBC **não têm crate implementado**. Nenhum conector Arrow Flight SQL existe ainda — ClickHouse/Dremio/Spark Flight SQL/Databricks são inteiramente aspiracionais. CDC hoje é só via Debezium+Kafka (`nexus-connector-kafka`, camada Híbrida) — o parser nativo de WAL/binlog descrito acima é condicional e não agendado (`ARCHITECTURE.md §7`, `ROADMAP.md` Marco 13).
+>
+> Atualizações recentes: RBAC com papel `Admin` funcional e API de gestão de usuários (`GET/POST/DELETE /users`); alertas Slack, MS Teams, PagerDuty e Email implementados (`nexus-server/src/alerts.rs`); rate-limit de login por IP; execução de runs em task destacada com 202 Accepted e reaper de runs órfãs no boot.
 
 ### 4.2. Engine de Streaming, Backpressure e Checkpointing
 O núcleo opera via canais assíncronos (`mpsc::channel`).
@@ -109,7 +111,7 @@ Módulo intermediário que converte colunas de texto em vetores float32 e anexa 
  [ AI LAKE / VECTOR DATABASE ]
 
 * **Chunking:** Fixed-size Window, Recursive Character e Semantic.
-* **Aceleração (Features):** `cpu` (SIMD), `cuda` (NVIDIA), `metal` (Apple), `api` (LLM Externa).
+* **Aceleração (Features):** `cpu` (SIMD), `cuda` (NVIDIA), `metal` (Apple), `api` (LLM Externa). **Ainda não exposto via feature flags no build** — hoje `nexus-ai` usa ONNX Runtime com execução CPU por padrão; CUDA/Metal/API são planejados (`ROADMAP.md`).
 * **Destinos:** LanceDB, Qdrant, Milvus, Pinecone, ChromaDB e pgvector.
 
 ### 4.4. Transformações Opcionais e ELT (dbt)
@@ -128,8 +130,8 @@ Módulo intermediário que converte colunas de texto em vetores float32 e anexa 
 ## 🔔 6. Observabilidade, Telemetria e Alertas
 
 * **Logs Estruturados:** Utilização da crate `tracing` formatando logs em JSON para captura via OpenTelemetry, permitindo rastrear gargalos em tasks assíncronas.
-* **Alertas Assíncronos (`tokio::spawn`):** Envio de notificações sem bloquear o fluxo principal para: Slack (Block Kit), MS Teams, PagerDuty (críticos), Email (SMTP) e Webhooks.
-* **UI Real-Time:** WebSockets transmitindo estatísticas de hardware, MB/s, linhas/segundo e logs do dbt diretamente para a UI.
+* **Alertas Assíncronos (`tokio::spawn`):** Slack (Block Kit), MS Teams (Adaptive Card), PagerDuty Events API v2 e Email (SMTP STARTTLS) estão implementados. Webhooks genéricos ainda não.
+* **UI Real-Time:** WebSockets transmitem progresso por partição (batches/rows/bytes escritos) e MB/s/rows/s são derivados no cliente. **Estatísticas de hardware (CPU/GPU/memória) ainda não são transmitidas.**
 
 ---
 

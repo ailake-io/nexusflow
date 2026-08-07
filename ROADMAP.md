@@ -11,7 +11,7 @@ Consolidado dos itens que ficaram faltando/incompletos ao longo das fases abaixo
 1. **Fase 12 — Enterprise connectors**: nada implementado ainda. Repo separado, mecanismo de license key (JWT), definir primeiro conector pago.
 2. **Marco 13 do `IMPLEMENTATION_PLAN.md` — CDC nativo sem Kafka/Debezium**: condicional, não agendado. Só entra se o overhead de operar Debezium+Kafka virar bloqueador real de adoção confirmado (não é especulativo). Parser de WAL nativo do Postgres, resume por LSN em vez de offset Kafka.
 3. **`nexus-ai`: features `cuda`/`metal` registram o execution provider ONNX Runtime correto (`ort::ep::CUDA`/`ort::ep::CoreML`), mas não validadas em hardware real** (sandbox é Linux sem GPU) — só confirmado que compilam e que o EP é registrado antes do load da sessão; runtime faz fallback silencioso pra CPU se o driver/hardware não estiver presente. `api` (embeddings via HTTP externa, endpoint compatível com OpenAI) implementada e testada (mock via `wiremock`) — sem chamada real contra OpenAI/Azure/etc neste sandbox. O perfil `cuda` do Docker já tem a infra de runtime pronta (base image + `--gpus all`).
-4. **Alertas: só Slack implementado** — MS Teams, PagerDuty, Email e Webhook genérico ainda faltam (ver `CLAUDE.md §6`).
+4. **Alertas: Slack, MS Teams, PagerDuty e Email implementados** — Webhook genérico ainda falta (ver `CLAUDE.md §6` e `nexus-server/src/alerts.rs`).
 5. **Windows (`.msi`/winget) e macOS (Homebrew/`.dmg`): specs escritos em `packaging/`, nunca validados em máquina real** (sandbox de dev é Linux). Falta também um build script dos drivers ADBC pra Windows (`.dll`) e macOS (`.dylib`) — os scripts atuais (`scripts/build-adbc-*.sh`) só geram `.so`.
 6. **`.rpm` nunca testado** — `scripts/package-rpm.sh` está escrito mas o sandbox não tem `rpmbuild` instalado pra validar.
 7. **Estatísticas de hardware (CPU/RAM/GPU) não implementadas** — o WebSocket de progresso (`ARCHITECTURE.md §12`) só transmite `batches_written`/`rows_written`/`bytes_written` por partição. `CLAUDE.md §6` menciona "estatísticas de hardware" na UI real-time; isso ainda não existe (nenhum uso de `sysinfo` ou equivalente em `nexus-server`).
@@ -72,9 +72,9 @@ Consolidado dos itens que ficaram faltando/incompletos ao longo das fases abaixo
 - [x] Painel de execução em tempo real (MB/s, linhas/s, logs)
 - [x] Tela de credenciais (sem exibir segredo em plain text)
 
-## Fase 9 — Observabilidade & Alertas ✅ (parcial — só Slack)
+## Fase 9 — Observabilidade & Alertas ✅ (parcial — falta Webhook genérico)
 - [x] `tracing` estruturado (JSON) + OpenTelemetry (traces via OTLP + métricas Prometheus em `/metrics`)
-- [x] Alertas assíncronos: Slack (Block Kit) — MS Teams/PagerDuty/Email/Webhook ainda não implementados
+- [x] Alertas assíncronos: Slack (Block Kit), MS Teams (Adaptive Card), PagerDuty (Events API v2), Email (SMTP STARTTLS) — Webhook genérico ainda não implementado
 
 ## Fase 10 — dbt (ELT opcional) ✅
 - [x] Subprocesso assíncrono invocando `dbt run`/`build`/`test` pós-carga (feature `dbt`), com resultado de lineage/qualidade no histórico de execução
