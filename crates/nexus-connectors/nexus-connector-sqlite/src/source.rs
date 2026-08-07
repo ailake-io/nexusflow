@@ -43,25 +43,27 @@ impl Source for SqliteSource {
         let table = quote_identifier(&self.table)?;
         let mut connection = self.connection.clone();
 
-        let batches =
-            tokio::task::spawn_blocking(move || -> Result<Vec<RecordBatch>, NexusError> {
+        // ADBC calls are blocking FFI; run off the async executor and yield
+        // each batch as it is produced instead of collecting the whole table.
+        let reader = tokio::task::spawn_blocking(
+            move || -> Result<Box<dyn arrow_array::RecordBatchReader + Send>, NexusError> {
                 let mut statement = connection
                     .new_statement()
                     .map_err(|e| NexusError::Connector(e.to_string()))?;
                 statement
                     .set_sql_query(format!("SELECT * FROM {table}"))
                     .map_err(|e| NexusError::Connector(e.to_string()))?;
-                let reader = statement
+                statement
                     .execute()
-                    .map_err(|e| NexusError::Connector(e.to_string()))?;
-                reader
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|e| NexusError::Serialization(e.to_string()))
-            })
-            .await
-            .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))??;
+                    .map_err(|e| NexusError::Connector(e.to_string()))
+            },
+        )
+        .await
+        .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))??;
 
-        Ok(Box::pin(stream::iter(batches.into_iter().map(Ok))))
+        Ok(Box::pin(stream::iter(reader.map(|r| {
+            r.map_err(|e| NexusError::Serialization(e.to_string()))
+        }))))
     }
 
     fn schema(&self) -> SchemaRef {
