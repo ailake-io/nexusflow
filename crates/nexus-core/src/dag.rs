@@ -73,16 +73,37 @@ pub struct EmbeddingSpec {
     pub chunking: ChunkingSpec,
 }
 
+/// Which backend embeds the text — a local ONNX model (features
+/// `cpu`/`cuda`/`metal`) or an external HTTP API (feature `api`). See
+/// CLAUDE.md §4.3. `nexus-ai::embedding::apply_embedding` dispatches on this
+/// tag at runtime; whichever variant is used still needs the matching
+/// Cargo feature compiled into the running binary, or it fails with a clear
+/// error instead of silently falling back to the other backend.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EmbeddingModelSpec {
-    /// Hugging Face repo id, e.g. "sentence-transformers/all-MiniLM-L6-v2".
-    pub repo: String,
-    /// ONNX model file name inside the repo/revision.
-    pub filename: String,
-    /// Tokenizer file name inside the repo/revision.
-    pub tokenizer_filename: String,
-    /// Max token sequence length fed to the model.
-    pub max_length: usize,
+#[serde(rename_all = "snake_case", tag = "backend")]
+pub enum EmbeddingModelSpec {
+    Onnx {
+        /// Hugging Face repo id, e.g. "sentence-transformers/all-MiniLM-L6-v2".
+        repo: String,
+        /// ONNX model file name inside the repo/revision.
+        filename: String,
+        /// Tokenizer file name inside the repo/revision.
+        tokenizer_filename: String,
+        /// Max token sequence length fed to the model.
+        max_length: usize,
+    },
+    Api {
+        /// Base URL of an OpenAI-compatible embeddings endpoint (no
+        /// trailing `/embeddings` — e.g. "https://api.openai.com/v1").
+        base_url: String,
+        /// Model name passed through to the API request body.
+        model: String,
+        /// Name of the environment variable holding the API key on the
+        /// machine running nexus-server — never the key itself (CLAUDE.md
+        /// §5: no secret lives in the persisted DAG JSON).
+        #[serde(default)]
+        api_key_env: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -214,25 +235,48 @@ impl PipelineSpec {
             if embedding.dimension == 0 {
                 return Err(NexusError::Schema("embedding.dimension must be > 0".into()));
             }
-            if embedding.model.repo.trim().is_empty() {
-                return Err(NexusError::Schema(
-                    "embedding.model.repo must not be empty".into(),
-                ));
-            }
-            if embedding.model.filename.trim().is_empty() {
-                return Err(NexusError::Schema(
-                    "embedding.model.filename must not be empty".into(),
-                ));
-            }
-            if embedding.model.tokenizer_filename.trim().is_empty() {
-                return Err(NexusError::Schema(
-                    "embedding.model.tokenizer_filename must not be empty".into(),
-                ));
-            }
-            if embedding.model.max_length == 0 {
-                return Err(NexusError::Schema(
-                    "embedding.model.max_length must be > 0".into(),
-                ));
+            match &embedding.model {
+                EmbeddingModelSpec::Onnx {
+                    repo,
+                    filename,
+                    tokenizer_filename,
+                    max_length,
+                } => {
+                    if repo.trim().is_empty() {
+                        return Err(NexusError::Schema(
+                            "embedding.model.repo must not be empty".into(),
+                        ));
+                    }
+                    if filename.trim().is_empty() {
+                        return Err(NexusError::Schema(
+                            "embedding.model.filename must not be empty".into(),
+                        ));
+                    }
+                    if tokenizer_filename.trim().is_empty() {
+                        return Err(NexusError::Schema(
+                            "embedding.model.tokenizer_filename must not be empty".into(),
+                        ));
+                    }
+                    if *max_length == 0 {
+                        return Err(NexusError::Schema(
+                            "embedding.model.max_length must be > 0".into(),
+                        ));
+                    }
+                }
+                EmbeddingModelSpec::Api {
+                    base_url, model, ..
+                } => {
+                    if base_url.trim().is_empty() {
+                        return Err(NexusError::Schema(
+                            "embedding.model.base_url must not be empty".into(),
+                        ));
+                    }
+                    if model.trim().is_empty() {
+                        return Err(NexusError::Schema(
+                            "embedding.model.model must not be empty".into(),
+                        ));
+                    }
+                }
             }
             match &embedding.chunking {
                 ChunkingSpec::FixedWindow { chunk_size, .. }
@@ -537,6 +581,7 @@ mod tests {
                 "output_column": "embedding",
                 "dimension": 384,
                 "model": {
+                    "backend": "onnx",
                     "repo": "sentence-transformers/all-MiniLM-L6-v2",
                     "filename": "model.onnx",
                     "tokenizer_filename": "tokenizer.json",
@@ -554,7 +599,50 @@ mod tests {
         let embedding = spec.embedding.unwrap();
         assert_eq!(embedding.source_column, "body");
         assert_eq!(embedding.dimension, 384);
-        assert_eq!(embedding.model.max_length, 128);
+        match &embedding.model {
+            EmbeddingModelSpec::Onnx { max_length, .. } => assert_eq!(*max_length, 128),
+            EmbeddingModelSpec::Api { .. } => panic!("expected onnx variant"),
+        }
+    }
+
+    #[test]
+    fn parses_pipeline_with_api_embedding_backend() {
+        let json = r#"{
+            "pipeline_id": "embed-api-demo",
+            "sources": [{"connector": "postgres", "config": {}}],
+            "transform": {"sql": "SELECT * FROM source0"},
+            "sinks": [{"connector": "lancedb", "config": {}}],
+            "embedding": {
+                "source_column": "body",
+                "output_column": "embedding",
+                "dimension": 1536,
+                "model": {
+                    "backend": "api",
+                    "base_url": "https://api.openai.com/v1",
+                    "model": "text-embedding-3-small",
+                    "api_key_env": "OPENAI_API_KEY"
+                },
+                "chunking": {
+                    "strategy": "fixed_window",
+                    "chunk_size": 256,
+                    "overlap": 32
+                }
+            }
+        }"#;
+        let spec = PipelineSpec::parse(json).expect("valid api embedding spec parses");
+        let embedding = spec.embedding.unwrap();
+        match &embedding.model {
+            EmbeddingModelSpec::Api {
+                base_url,
+                model,
+                api_key_env,
+            } => {
+                assert_eq!(base_url, "https://api.openai.com/v1");
+                assert_eq!(model, "text-embedding-3-small");
+                assert_eq!(api_key_env.as_deref(), Some("OPENAI_API_KEY"));
+            }
+            EmbeddingModelSpec::Onnx { .. } => panic!("expected api variant"),
+        }
     }
 
     #[test]
@@ -568,7 +656,7 @@ mod tests {
                 "source_column": "",
                 "output_column": "embedding",
                 "dimension": 384,
-                "model": {"repo": "r", "filename": "m.onnx", "tokenizer_filename": "t.json", "max_length": 128},
+                "model": {"backend": "onnx", "repo": "r", "filename": "m.onnx", "tokenizer_filename": "t.json", "max_length": 128},
                 "chunking": {"strategy": "fixed_window", "chunk_size": 256}
             }
         }"#;

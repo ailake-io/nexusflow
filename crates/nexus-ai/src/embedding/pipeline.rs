@@ -1,13 +1,91 @@
 use crate::chunking::{
     chunk_fixed_window, chunk_recursive_character, FixedWindowConfig, RecursiveCharacterConfig,
 };
-use crate::embedding::{
-    append_embedding_column, EmbeddingError, EmbeddingModel, EmbeddingModelConfig,
-};
+use crate::embedding::{append_embedding_column, EmbeddingError};
 use arrow_array::{Array, ArrayRef, FixedSizeListArray, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use nexus_core::{ChunkingSpec, EmbeddingModelSpec, EmbeddingSpec};
 use std::sync::Arc;
+
+/// Dispatches to whichever backend `model` selects. Each branch is only
+/// compiled when its matching Cargo feature is on; if the DAG spec asks for
+/// a backend this binary wasn't built with, that's a runtime config error
+/// (clear message), not a compile-time one — the same JSON DAG spec should
+/// be able to name either backend regardless of which feature the operator
+/// happened to compile in.
+async fn embed_with_selected_backend(
+    model: &EmbeddingModelSpec,
+    dimension: usize,
+    texts: &[String],
+) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+    match model {
+        EmbeddingModelSpec::Onnx {
+            repo,
+            filename,
+            tokenizer_filename,
+            max_length,
+        } => {
+            #[cfg(feature = "cpu")]
+            {
+                use crate::embedding::model::ModelConfig;
+                use crate::embedding::{EmbeddingModel, EmbeddingModelConfig};
+                let model_cfg = EmbeddingModelConfig {
+                    model: ModelConfig {
+                        repo_id: repo.clone(),
+                        // Pin to the repo's default revision (usually
+                        // "main") for now; reproducibility could be
+                        // enhanced by adding an explicit revision field to
+                        // EmbeddingModelSpec later.
+                        revision: "main".to_string(),
+                        filename: filename.clone(),
+                    },
+                    tokenizer_filename: tokenizer_filename.clone(),
+                    dimension,
+                    max_length: *max_length,
+                };
+                let mut loaded = EmbeddingModel::load(&model_cfg).await?;
+                loaded.embed_batch(texts)
+            }
+            #[cfg(not(feature = "cpu"))]
+            {
+                let _ = (
+                    repo,
+                    filename,
+                    tokenizer_filename,
+                    max_length,
+                    dimension,
+                    texts,
+                );
+                Err(EmbeddingError::UnsupportedBackend(
+                    "embedding model backend 'onnx' requires nexus-ai's `cpu` feature, which is not compiled into this binary".to_string(),
+                ))
+            }
+        }
+        EmbeddingModelSpec::Api {
+            base_url,
+            model,
+            api_key_env,
+        } => {
+            #[cfg(feature = "api")]
+            {
+                use crate::embedding::{ApiEmbeddingConfig, ApiEmbeddingModel};
+                let client = ApiEmbeddingModel::new(ApiEmbeddingConfig {
+                    base_url: base_url.clone(),
+                    model: model.clone(),
+                    api_key_env: api_key_env.clone(),
+                });
+                client.embed_batch(texts).await
+            }
+            #[cfg(not(feature = "api"))]
+            {
+                let _ = (base_url, model, api_key_env, dimension, texts);
+                Err(EmbeddingError::UnsupportedBackend(
+                    "embedding model backend 'api' requires nexus-ai's `api` feature, which is not compiled into this binary".to_string(),
+                ))
+            }
+        }
+    }
+}
 
 /// Applies chunking + ONNX embedding to one `RecordBatch`, returning a new
 /// batch where each input row may have become N chunk-rows. Non-text columns
@@ -117,15 +195,8 @@ pub async fn apply_embedding(
     let expanded = RecordBatch::try_new(schema_without_embedding, expanded_columns)
         .map_err(EmbeddingError::Arrow)?;
 
-    // 4. Load model and embed all chunks.
-    let model_cfg = EmbeddingModelConfig {
-        model: ModelConfig::from(&spec.model),
-        tokenizer_filename: spec.model.tokenizer_filename.clone(),
-        dimension: spec.dimension,
-        max_length: spec.model.max_length,
-    };
-    let mut model = EmbeddingModel::load(&model_cfg).await?;
-    let embeddings = model.embed_batch(&chunk_texts)?;
+    // 4. Embed all chunks via whichever backend the spec selects.
+    let embeddings = embed_with_selected_backend(&spec.model, spec.dimension, &chunk_texts).await?;
 
     // 5. Append the embedding column.
     append_embedding_column(&expanded, &embeddings, spec.dimension, &spec.output_column)
@@ -237,20 +308,5 @@ fn new_empty_array(data_type: &DataType) -> ArrayRef {
             ) as ArrayRef
         }
         other => panic!("new_empty_array not implemented for {other:?}"),
-    }
-}
-
-use crate::embedding::model::ModelConfig;
-
-impl From<&EmbeddingModelSpec> for ModelConfig {
-    fn from(spec: &EmbeddingModelSpec) -> Self {
-        Self {
-            repo_id: spec.repo.clone(),
-            // Pin to the repo's default revision (usually "main") for now;
-            // reproducibility could be enhanced by adding an explicit revision
-            // field to EmbeddingModelSpec later.
-            revision: "main".to_string(),
-            filename: spec.filename.clone(),
-        }
     }
 }

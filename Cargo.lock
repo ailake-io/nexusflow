@@ -6914,9 +6914,13 @@ dependencies = [
  "ndarray 0.17.2",
  "nexus-core",
  "ort",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
  "thiserror 2.0.19",
  "tokenizers",
  "tokio",
+ "wiremock",
 ]
 
 [[package]]

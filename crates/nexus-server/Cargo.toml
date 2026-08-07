@@ -17,6 +17,11 @@ dbt = ["tokio/process"]
 # default because it pulls in ort, hf-hub, tokenizers and ONNX binaries, which
 # significantly increases build time and binary size when not needed.
 embeddings = ["dep:nexus-ai", "nexus-ai/cpu"]
+# Same embedding pipeline stage, but backed by an external HTTP API
+# (nexus-ai's `api` feature) instead of a local ONNX model — no ort/hf-hub/
+# tokenizers in the binary. Independent of `embeddings`; both can be on at
+# once so a `PipelineSpec.embedding.model` of either backend tag works.
+embeddings-api = ["dep:nexus-ai", "nexus-ai/api"]
 # Single-binary deployment (Marco 11, CLAUDE.md §7): embeds frontend/dist
 # into the binary via rust-embed and serves it (with SPA fallback) for any
 # GET that doesn't match an API route. Off by default because rust-embed's
@@ -46,7 +51,7 @@ embed-ui = ["dep:rust-embed"]
 connectors-all = [
     "mongodb", "kafka", "rest", "odbc", "milvus", "qdrant", "lancedb",
     "pgvector", "pinecone", "chromadb", "deltalake", "iceberg", "parquet",
-    "ailake", "embeddings",
+    "ailake", "embeddings", "embeddings-api",
 ]
 mongodb = ["dep:nexus-connector-mongodb"]
 kafka = ["dep:nexus-connector-kafka", "nexus-connector-kafka/consumer"]

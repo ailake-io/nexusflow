@@ -9,9 +9,9 @@ use nexus_core::{
     PipelineSpec, ProgressSender, Transform,
 };
 
-#[cfg(feature = "embeddings")]
+#[cfg(any(feature = "embeddings", feature = "embeddings-api"))]
 use arrow_array::RecordBatch as ArrowRecordBatch;
-#[cfg(feature = "embeddings")]
+#[cfg(any(feature = "embeddings", feature = "embeddings-api"))]
 use arrow_schema::SchemaRef as ArrowSchemaRef;
 
 #[tracing::instrument(skip_all, fields(pipeline_id = %spec.pipeline_id))]
@@ -139,13 +139,13 @@ async fn run_transform_pipeline(
 
     let inputs = PipelineEngine::drain_sources(sources).await?;
 
-    #[cfg(feature = "embeddings")]
+    #[cfg(any(feature = "embeddings", feature = "embeddings-api"))]
     let inputs = apply_embedding_stage(inputs, spec.embedding.as_ref()).await?;
-    #[cfg(not(feature = "embeddings"))]
+    #[cfg(not(any(feature = "embeddings", feature = "embeddings-api")))]
     if spec.embedding.is_some() {
         anyhow::bail!(
             "pipeline contains an embedding node but the server was built without \
-             the 'embeddings' feature"
+             the 'embeddings' or 'embeddings-api' feature"
         );
     }
 
@@ -203,7 +203,7 @@ async fn run_transform_pipeline(
     Ok(stats)
 }
 
-#[cfg(feature = "embeddings")]
+#[cfg(any(feature = "embeddings", feature = "embeddings-api"))]
 async fn apply_embedding_stage(
     inputs: Vec<(String, ArrowSchemaRef, Vec<ArrowRecordBatch>)>,
     embedding_spec: Option<&nexus_core::EmbeddingSpec>,
