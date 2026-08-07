@@ -21,8 +21,8 @@ No entanto, existem **riscos críticos de segurança e dados** que precisam de a
 | # | Problema | Onde | Impacto | Ação |
 |---|---|---|---|---|
 | C1 | `validate_security()` não é chamado em create/update de pipelines | `nexus-server/src/lib.rs:505,561` | Usuário Write persiste spec inseguro; Execute executa depois | ✅ Resolvido: `validate_security()` é chamada em `create_pipeline_handler` e `update_pipeline_handler` |
-| C2 | Bypass de SSRF via `user:pass@host` em URL | `nexus-core/src/dag.rs:316-320` | Acesso a metadata endpoints de cloud | Usar `url::Url` para parsing robusto de host |
-| C3 | Path traversal relativo permitido em `dbt.project_dir` | `nexus-core/src/dag.rs:274` | Execução de dbt em diretório arbitrário | Rejeitar `..`, canonicalizar contra diretório base |
+| C2 | Bypass de SSRF via `user:pass@host` em URL | `nexus-core/src/dag.rs:316-320` | Acesso a metadata endpoints de cloud | ✅ Resolvido: teste `validate_security_rejects_ssrf_via_userinfo` cobre parsing robusto de host via `url::Url` |
+| C3 | Path traversal relativo permitido em `dbt.project_dir` | `nexus-core/src/dag.rs:274` | Execução de dbt em diretório arbitrário | ✅ Resolvido: teste `validate_security_rejects_dbt_path_traversal` cobre rejeição de `..` |
 | C4 | `validate_security()` só inspeciona chaves de primeiro nível | `nexus-core/src/dag.rs:292-314` | URLs internas em JSON aninhado/array passam | ✅ Resolvido: `validate_security()` percorre JSON recursivamente (objetos e arrays) |
 | C5 | `is_internal_host()` não cobre IPv6 link-local, CGNAT, `metadata.google.internal` etc. | `nexus-core/src/dag.rs:322-368` | SSRF para endpoints internos comuns | ✅ Resolvido: blocklist expandida para CGNAT, link-local, loopback e hostnames de metadata cloud |
 | C6 | Segredos literais no CI | `.github/workflows/ci.yml:125-126` | JWT secret e encryption key expostos em logs/YAML | ✅ Resolvido: segredos gerados dinamicamente via `openssl rand -hex 32` no step de smoke test |
@@ -33,16 +33,16 @@ No entanto, existem **riscos críticos de segurança e dados** que precisam de a
 | # | Problema | Onde | Impacto | Ação |
 |---|---|---|---|---|
 | C8 | `IcebergSink` é append-only → duplicatas em retries | `nexus-connector-iceberg/src/sink.rs:159-172` | Viola contrato de idempotência | Implementar `merge_insert` ou restringir uso |
-| C9 | `KafkaSource` comita offsets antes do processamento | `nexus-connector-kafka/src/source.rs:181` | Perda de dados em crash | Commitar offsets só após checkpoint do engine |
-| C10 | `KafkaSource` avança offset de mensagens com payload vazio | `nexus-connector-kafka/src/source.rs:154-159` | Dados reais podem ser pulados | Mover update de `last_offsets` para após parse |
-| C11 | `OdbcSink` sem transação | `nexus-connector-odbc/src/sink.rs:73-138` | Batch parcial em falha | Envolver em `BEGIN/COMMIT/ROLLBACK` |
+| C9 | `KafkaSource` comita offsets antes do processamento | `nexus-connector-kafka/src/source.rs:181` | Perda de dados em crash | ✅ Resolvido: commit manual só após as batches serem montadas com sucesso (`commit_offsets()` ao final de `read_batches`) |
+| C10 | `KafkaSource` avança offset de mensagens com payload vazio | `nexus-connector-kafka/src/source.rs:154-159` | Dados reais podem ser pulados | ✅ Resolvido: `continue` em payload vazio acontece antes do `last_offsets.insert`, offset só avança após parse OK |
+| C11 | `OdbcSink` sem transação | `nexus-connector-odbc/src/sink.rs:73-138` | Batch parcial em falha | ✅ Resolvido: mesma correção do A12 — cada batch roda dentro de `BEGIN/COMMIT/ROLLBACK` no worker thread dedicado |
 | C12 | `PgVectorSink` sem transação e connection task órfã | `nexus-connector-pgvector/src/sink.rs:33-37,48-103` | Estado parcial; erros não propagados | Usar `client.transaction()` e propagar erros |
 
 ### Performance / Operacional
 
 | # | Problema | Onde | Impacto | Ação |
 |---|---|---|---|---|
-| C13 | Modelo ONNX recarregado a cada batch | `nexus-ai/src/embedding/pipeline.rs:127`, `nexus-server/src/runner.rs:218` | Latência extrema; downloads repetidos | Carregar uma vez por run/pipeline |
+| C13 | Modelo ONNX recarregado a cada batch | `nexus-ai/src/embedding/pipeline.rs:127`, `nexus-server/src/runner.rs:218` | Latência extrema; downloads repetidos | ✅ Resolvido: `load_embedding_backend()` carrega modelo/cliente uma vez por run (commit `3f2c5d2`) |
 | C14 | Fontes materializam tabela inteira em memória; sinks fan-out serial | `nexus-core/src/pipeline.rs:213-275` | OOM em tabelas grandes; sinks lentos bloqueiam uns aos outros | ✅ Resolvido: `drain_sources` retém materialização apenas onde exigido pelo SQL transform; `fan_out_write` agora delega a `fan_out_write_stream`, que escreve para cada sink em paralelo via broadcast channel |
 | C15 | Ausência de timeouts em I/O de conectores | vários | Runtime bloqueado indefinidamente | `tokio::time::timeout` em conexões/queries |
 
@@ -62,7 +62,7 @@ No entanto, existem **riscos críticos de segurança e dados** que precisam de a
 | A6 | `alerts.rs` fire-and-forget sem observar tasks | `nexus-server/src/alerts.rs:35-46` | Logar falhas; aguardar JoinHandle em testes |
 | A7 | `pipeline_id` sem restrição de caracteres/comprimento | `nexus-core/src/dag.rs:162-164` | Validar `[A-Za-z0-9_-]{1,128}` |
 | A8 | `NodeSpec.name` não validado como identificador SQL seguro | `nexus-core/src/dag.rs:161-201` | Aplicar `validate_identifier` |
-| A9 | `split_by_opcode` trata opcode inválido como upsert | `nexus-core/src/cdc.rs:62-67` | Rejeitar opcodes desconhecidos |
+| A9 | `split_by_opcode` trata opcode inválido como upsert | `nexus-core/src/cdc.rs:62-67` | ⚠️ Parcial: opcode nulo agora é rejeitado com erro; uma string desconhecida (nem `I`/`U`/`D`) ainda cai em `!= Delete` e vira upsert silenciosamente — falta rejeitar valores fora do enum `Opcode` |
 
 ### Conectores
 
@@ -95,12 +95,12 @@ No entanto, existem **riscos críticos de segurança e dados** que precisam de a
 
 | # | Problema | Onde | Ação |
 |---|---|---|---|
-| A27 | Workflows sem `permissions` explícitas | `.github/workflows/*.yml` | Adicionar `permissions: contents: read` mínimas |
-| A28 | Workflows sem `timeout-minutes` | `.github/workflows/*.yml` | Definir timeouts por job |
+| A27 | Workflows sem `permissions` explícitas | `.github/workflows/*.yml` | ✅ Resolvido: `permissions: contents: read` (mínimo) declarado em `ci.yml`, `release.yml` e `connectors-heavy.yml` |
+| A28 | Workflows sem `timeout-minutes` | `.github/workflows/*.yml` | ✅ Resolvido: todo job dos 3 workflows tem `timeout-minutes` |
 | A29 | Tags flutuantes de imagens base no Dockerfile | `Dockerfile:17,26,37,46,80` | Pin por digest SHA-256 |
-| A30 | Actions de terceiros sem pin por SHA | todos workflows | Pin por SHA com Dependabot |
+| A30 | Actions de terceiros sem pin por SHA | todos workflows | ✅ Resolvido: 9 SHAs fabricados/inválidos corrigidos e verificados via `git ls-remote --tags` contra cada repo upstream |
 | A31 | Build ADBC sem pin de tag/commit | `scripts/build-adbc-*.sh:39-40` | Fixar `ADBC_REF` e verificar integridade |
-| A32 | Instalação Rust no Windows sem verificação | `.github/workflows/connectors-heavy.yml:39-40` | Verificar checksum/assinatura |
+| A32 | Instalação Rust no Windows sem verificação | `.github/workflows/connectors-heavy.yml:39-40` | ✅ Resolvido: `Get-FileHash -Algorithm SHA256` do `rustup-init.exe` comparado contra hash esperado antes de rodar |
 | A33 | Runners self-hosted sem isolamento para PRs | `.github/workflows/ci.yml` | Usar GitHub-hosted para PRs ou isolar |
 | A34 | Rebuilds redundantes de frontend/ADBC/binário | vários jobs | ✅ Resolvido: CI `ci.yml` agora faz upload de `frontend/dist` no job `frontend` e o reutiliza nos jobs `clippy` e `test` via `download-artifact` (A34). Release continua construindo ADBC drivers uma vez por tarball; Docker ainda recompila — melhoria adicional possível reaproveitando tarball no Dockerfile |
 | A35 | Releases sem assinatura | `.github/workflows/release.yml` | ✅ Resolvido: job `publish` importa chave GPG (`crazy-max/ghaction-import-gpg`) e gera assinaturas `.asc` para cada tarball e para `SHA256SUMS`; artefatos assinados são anexados ao release GitHub. Requer secrets `GPG_PRIVATE_KEY` e `GPG_PASSPHRASE` |
@@ -147,7 +147,7 @@ No entanto, existem **riscos críticos de segurança e dados** que precisam de a
 | D2 | Conectores MySQL, DuckDB, Snowflake, BigQuery, ClickHouse ADBC | Não existem crates | Atualizar matriz ou implementar |
 | D3 | Arrow Flight SQL connectors | Nenhum registrado | Atualizar matriz ou implementar |
 | D4 | Alertas Teams/PagerDuty/Email/Webhook | Slack implementado | ✅ Resolvido: Slack, MS Teams, PagerDuty, Email (SMTP STARTTLS) e Webhook genérico implementados; docs atualizadas |
-| D5 | Stats de hardware no WebSocket | Não implementado | Atualizar docs ou implementar |
+| D5 | Stats de hardware no WebSocket | Não implementado | ✅ Resolvido: `hardware_stats.rs` amostra CPU/memória a cada 2s e envia frame `{"hardware_stats": {...}}` pelo WS de progresso |
 | D6 | CDC nativo via WAL/binlog | Só Debezium+Kafka | Atualizar docs |
 | D7 | Features CUDA/Metal/API de embeddings | CPU apenas | ✅ Resolvido: features `api` (HTTP externo), `cuda` (ONNX CUDA EP) e `metal` (CoreML EP) registradas e compiláveis; validação em hardware real pendente |
 | D8 | Cron com 5 ou 6 campos (Quartz) | Verificar suporte real | Atualizar docs se só 5 campos |
