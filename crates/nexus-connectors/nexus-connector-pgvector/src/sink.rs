@@ -3,7 +3,9 @@ use crate::rows::{extract_embeddings, row_params};
 use crate::sql::{build_bulk_delete_sql, build_bulk_upsert_sql};
 use arrow_array::RecordBatch;
 use async_trait::async_trait;
-use nexus_core::{project_column, split_by_opcode, CheckpointCursor, NexusError, Sink};
+use nexus_core::{
+    project_column, split_by_opcode, with_timeout, CheckpointCursor, NexusError, Sink,
+};
 use tokio_postgres::types::ToSql;
 use tokio_postgres::{GenericClient, NoTls};
 
@@ -17,6 +19,7 @@ pub struct PgVectorSink {
     columns: Vec<String>,
     embedding_column: String,
     primary_key: String,
+    timeout_seconds: u64,
 }
 
 impl PgVectorSink {
@@ -27,9 +30,12 @@ impl PgVectorSink {
         cfg: &PgVectorConnectorConfig,
         columns: &[String],
     ) -> Result<Self, NexusError> {
-        let (client, connection) = tokio_postgres::connect(&cfg.uri, NoTls)
-            .await
-            .map_err(|e| NexusError::Connector(format!("pgvector connect failed: {e}")))?;
+        let (client, connection) = with_timeout(cfg.timeout_seconds, "pgvector connect", async {
+            tokio_postgres::connect(&cfg.uri, NoTls)
+                .await
+                .map_err(|e| NexusError::Connector(format!("pgvector connect failed: {e}")))
+        })
+        .await?;
         tokio::spawn(async move {
             if let Err(e) = connection.await {
                 tracing::error!(error = %e, "pgvector connection task exited");
@@ -42,6 +48,7 @@ impl PgVectorSink {
             columns: columns.to_vec(),
             embedding_column: cfg.embedding_column.clone(),
             primary_key: cfg.primary_key.clone(),
+            timeout_seconds: cfg.timeout_seconds,
         })
     }
 
@@ -124,40 +131,42 @@ impl Sink for PgVectorSink {
         // silently upserted. Both statements run inside one transaction (C12):
         // a batch that upserts some rows and fails to delete others must not
         // leave the table half-applied.
-        let txn = self
-            .client
-            .transaction()
-            .await
-            .map_err(|e| NexusError::Connector(format!("pgvector begin failed: {e}")))?;
-        match split_by_opcode(&batch)? {
-            None => {
-                Self::upsert(
-                    &txn,
-                    &self.table,
-                    &self.primary_key,
-                    &self.columns,
-                    &self.embedding_column,
-                    &batch,
-                )
-                .await?
+        with_timeout(self.timeout_seconds, "pgvector write_batch", async {
+            let txn = self
+                .client
+                .transaction()
+                .await
+                .map_err(|e| NexusError::Connector(format!("pgvector begin failed: {e}")))?;
+            match split_by_opcode(&batch)? {
+                None => {
+                    Self::upsert(
+                        &txn,
+                        &self.table,
+                        &self.primary_key,
+                        &self.columns,
+                        &self.embedding_column,
+                        &batch,
+                    )
+                    .await?
+                }
+                Some(split) => {
+                    Self::upsert(
+                        &txn,
+                        &self.table,
+                        &self.primary_key,
+                        &self.columns,
+                        &self.embedding_column,
+                        &split.upserts,
+                    )
+                    .await?;
+                    Self::delete(&txn, &self.table, &self.primary_key, &split.deletes).await?;
+                }
             }
-            Some(split) => {
-                Self::upsert(
-                    &txn,
-                    &self.table,
-                    &self.primary_key,
-                    &self.columns,
-                    &self.embedding_column,
-                    &split.upserts,
-                )
-                .await?;
-                Self::delete(&txn, &self.table, &self.primary_key, &split.deletes).await?;
-            }
-        }
-        txn.commit()
-            .await
-            .map_err(|e| NexusError::Connector(format!("pgvector commit failed: {e}")))?;
-        Ok(())
+            txn.commit()
+                .await
+                .map_err(|e| NexusError::Connector(format!("pgvector commit failed: {e}")))
+        })
+        .await
     }
 
     async fn commit_checkpoint(&mut self, _cursor: CheckpointCursor) -> Result<(), NexusError> {

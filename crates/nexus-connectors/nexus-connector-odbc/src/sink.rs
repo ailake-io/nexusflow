@@ -19,6 +19,7 @@ use std::sync::mpsc;
 /// channel and waits on a oneshot response.
 pub struct OdbcSink {
     tx: mpsc::Sender<BatchRequest>,
+    timeout_seconds: u64,
 }
 
 struct BatchRequest {
@@ -28,6 +29,7 @@ struct BatchRequest {
 
 impl OdbcSink {
     pub fn connect(config: &OdbcConnectorConfig) -> Result<Self, NexusError> {
+        let timeout_seconds = config.timeout_seconds;
         let config = config.clone();
         let (tx, rx) = mpsc::channel::<BatchRequest>();
 
@@ -41,7 +43,10 @@ impl OdbcSink {
             })
             .map_err(|e| NexusError::Connector(format!("failed to spawn odbc worker: {e}")))?;
 
-        Ok(Self { tx })
+        Ok(Self {
+            tx,
+            timeout_seconds,
+        })
     }
 }
 
@@ -198,8 +203,17 @@ impl Sink for OdbcSink {
             })
             .map_err(|_| NexusError::Connector("odbc sink worker has terminated".to_string()))?;
 
-        rx.await
-            .map_err(|e| NexusError::Connector(format!("odbc worker response dropped: {e}")))?
+        match tokio::time::timeout(std::time::Duration::from_secs(self.timeout_seconds), rx).await
+        {
+            Ok(Ok(result)) => result,
+            Ok(Err(e)) => Err(NexusError::Connector(format!(
+                "odbc worker response dropped: {e}"
+            ))),
+            Err(_) => Err(NexusError::Connector(format!(
+                "odbc worker did not respond within {}s (driver call still running on its own thread)",
+                self.timeout_seconds
+            ))),
+        }
     }
 
     async fn commit_checkpoint(&mut self, _cursor: CheckpointCursor) -> Result<(), NexusError> {

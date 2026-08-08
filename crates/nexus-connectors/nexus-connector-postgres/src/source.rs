@@ -6,7 +6,7 @@ use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use async_trait::async_trait;
 use futures::stream::{self, BoxStream};
-use nexus_core::{quote_identifier, NexusError, Source};
+use nexus_core::{quote_identifier, with_timeout, NexusError, Source};
 use std::sync::Arc;
 
 /// Bounds of one partition's primary-key range. `upper_exclusive: None` means
@@ -57,10 +57,11 @@ pub struct PostgresSource {
     /// text PK, for instance, can't be bounded by a numeric sentinel).
     range: Option<PartitionRange>,
     schema: SchemaRef,
+    timeout_seconds: u64,
 }
 
 impl PostgresSource {
-    pub fn connect(
+    pub async fn connect(
         cfg: &PostgresConnectorConfig,
         range: Option<PartitionRange>,
     ) -> Result<Self, NexusError> {
@@ -71,10 +72,22 @@ impl PostgresSource {
             quote_identifier(&cfg.primary_key)?;
         }
 
-        let connection = open_connection(&cfg.uri)?;
-        let schema = connection
-            .get_table_schema(None, None, &cfg.table)
-            .map_err(|e| NexusError::Schema(e.to_string()))?;
+        let uri = cfg.uri.clone();
+        let table = cfg.table.clone();
+        let (connection, schema) = with_timeout(cfg.timeout_seconds, "postgres connect", async {
+            tokio::task::spawn_blocking(
+                move || -> Result<(ManagedConnection, arrow_schema::Schema), NexusError> {
+                    let connection = open_connection(&uri)?;
+                    let schema = connection
+                        .get_table_schema(None, None, &table)
+                        .map_err(|e| NexusError::Schema(e.to_string()))?;
+                    Ok((connection, schema))
+                },
+            )
+            .await
+            .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))?
+        })
+        .await?;
 
         Ok(Self {
             connection,
@@ -82,6 +95,7 @@ impl PostgresSource {
             primary_key: cfg.primary_key.clone(),
             range,
             schema: Arc::new(schema),
+            timeout_seconds: cfg.timeout_seconds,
         })
     }
 
@@ -129,21 +143,24 @@ impl Source for PostgresSource {
         // ADBC calls are blocking FFI (libpq under the hood); run off the
         // async executor and yield each batch as it is produced instead of
         // collecting the whole partition before the downstream pipeline starts.
-        let reader = tokio::task::spawn_blocking(
-            move || -> Result<Box<dyn arrow_array::RecordBatchReader + Send>, NexusError> {
-                let mut statement = connection
-                    .new_statement()
-                    .map_err(|e| NexusError::Connector(e.to_string()))?;
-                statement
-                    .set_sql_query(&query)
-                    .map_err(|e| NexusError::Connector(e.to_string()))?;
-                statement
-                    .execute()
-                    .map_err(|e| NexusError::Connector(e.to_string()))
-            },
-        )
-        .await
-        .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))??;
+        let reader = with_timeout(self.timeout_seconds, "postgres query", async {
+            tokio::task::spawn_blocking(
+                move || -> Result<Box<dyn arrow_array::RecordBatchReader + Send>, NexusError> {
+                    let mut statement = connection
+                        .new_statement()
+                        .map_err(|e| NexusError::Connector(e.to_string()))?;
+                    statement
+                        .set_sql_query(&query)
+                        .map_err(|e| NexusError::Connector(e.to_string()))?;
+                    statement
+                        .execute()
+                        .map_err(|e| NexusError::Connector(e.to_string()))
+                },
+            )
+            .await
+            .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))?
+        })
+        .await?;
 
         Ok(Box::pin(stream::iter(reader.map(|r| {
             r.map_err(|e| NexusError::Serialization(e.to_string()))

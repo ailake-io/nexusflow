@@ -6,7 +6,7 @@ use deltalake::operations::create::CreateBuilder;
 use deltalake::table::builder::ensure_table_uri;
 use deltalake::writer::{DeltaWriter, RecordBatchWriter};
 use deltalake::{open_table, DeltaTable};
-use nexus_core::{split_by_opcode, CheckpointCursor, NexusError, Sink};
+use nexus_core::{split_by_opcode, with_timeout, CheckpointCursor, NexusError, Sink};
 
 /// Delta Lake sink (Marco 6 — `deltalake` crate directly). Table creation
 /// and appends use the lower-level `CreateBuilder`/`RecordBatchWriter` (no
@@ -20,6 +20,7 @@ use nexus_core::{split_by_opcode, CheckpointCursor, NexusError, Sink};
 pub struct DeltaSink {
     table_uri: String,
     primary_key: String,
+    timeout_seconds: u64,
 }
 
 impl DeltaSink {
@@ -27,16 +28,17 @@ impl DeltaSink {
         Ok(Self {
             table_uri: cfg.table_uri.clone(),
             primary_key: cfg.primary_key.clone(),
+            timeout_seconds: cfg.timeout_seconds,
         })
     }
 
     async fn open(&self) -> Result<Option<DeltaTable>, NexusError> {
         let url = ensure_table_uri(&self.table_uri)
             .map_err(|e| NexusError::Connector(format!("delta table uri invalid: {e}")))?;
-        match open_table(url).await {
-            Ok(table) => Ok(Some(table)),
-            Err(_) => Ok(None),
-        }
+        with_timeout(self.timeout_seconds, "delta open_table", async {
+            Ok(open_table(url).await.ok())
+        })
+        .await
     }
 
     async fn ensure_table(&self, batch: &RecordBatch) -> Result<DeltaTable, NexusError> {
@@ -44,11 +46,14 @@ impl DeltaSink {
             return Ok(table);
         }
         let fields = arrow_schema_to_delta_fields(&batch.schema())?;
-        CreateBuilder::new()
-            .with_location(&self.table_uri)
-            .with_columns(fields)
-            .await
-            .map_err(|e| NexusError::Connector(format!("delta create table failed: {e}")))
+        with_timeout(self.timeout_seconds, "delta create_table", async {
+            CreateBuilder::new()
+                .with_location(&self.table_uri)
+                .with_columns(fields)
+                .await
+                .map_err(|e| NexusError::Connector(format!("delta create table failed: {e}")))
+        })
+        .await
     }
 
     async fn delete_by_pks(
@@ -61,12 +66,15 @@ impl DeltaSink {
             return Ok(table);
         }
         let predicate = in_predicate(batch_for_types, &self.primary_key, pks)?;
-        let (table, _metrics) = table
-            .delete()
-            .with_predicate(predicate)
-            .await
-            .map_err(|e| NexusError::Connector(format!("delta delete failed: {e}")))?;
-        Ok(table)
+        with_timeout(self.timeout_seconds, "delta delete", async {
+            let (table, _metrics) = table
+                .delete()
+                .with_predicate(predicate)
+                .await
+                .map_err(|e| NexusError::Connector(format!("delta delete failed: {e}")))?;
+            Ok(table)
+        })
+        .await
     }
 
     async fn upsert(&self, batch: RecordBatch) -> Result<(), NexusError> {
@@ -80,16 +88,19 @@ impl DeltaSink {
         let pks = extract_pk_strings(&batch, &self.primary_key)?;
         table = self.delete_by_pks(table, &batch, &pks).await?;
 
-        let mut writer = RecordBatchWriter::for_table(&table)
-            .map_err(|e| NexusError::Connector(format!("delta writer init failed: {e}")))?;
-        writer
-            .write(batch)
-            .await
-            .map_err(|e| NexusError::Connector(format!("delta write failed: {e}")))?;
-        writer
-            .flush_and_commit(&mut table)
-            .await
-            .map_err(|e| NexusError::Connector(format!("delta commit failed: {e}")))?;
+        with_timeout(self.timeout_seconds, "delta write", async {
+            let mut writer = RecordBatchWriter::for_table(&table)
+                .map_err(|e| NexusError::Connector(format!("delta writer init failed: {e}")))?;
+            writer
+                .write(batch)
+                .await
+                .map_err(|e| NexusError::Connector(format!("delta write failed: {e}")))?;
+            writer
+                .flush_and_commit(&mut table)
+                .await
+                .map_err(|e| NexusError::Connector(format!("delta commit failed: {e}")))
+        })
+        .await?;
         Ok(())
     }
 

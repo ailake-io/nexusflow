@@ -39,4 +39,14 @@ pub struct IcebergConnectorConfig {
     /// that already exists.
     #[serde(default)]
     pub format_version: IcebergFormatVersion,
+    /// Timeout in seconds for each catalog/table call — both the SQLite
+    /// catalog and local warehouse are embedded today, but this still
+    /// guards against a locked catalog file or a future remote storage
+    /// backend stalling the pipeline indefinitely (C15).
+    #[serde(default = "default_timeout_seconds")]
+    pub timeout_seconds: u64,
+}
+
+fn default_timeout_seconds() -> u64 {
+    30
 }

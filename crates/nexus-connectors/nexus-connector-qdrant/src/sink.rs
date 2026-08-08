@@ -2,7 +2,9 @@ use crate::config::QdrantConnectorConfig;
 use crate::rows::{batch_to_qdrant_payloads, extract_embeddings, extract_ids};
 use arrow_array::RecordBatch;
 use async_trait::async_trait;
-use nexus_core::{split_by_opcode, CheckpointCursor, NexusError, Sink, OPCODE_COLUMN};
+use nexus_core::{
+    split_by_opcode, with_timeout, CheckpointCursor, NexusError, Sink, OPCODE_COLUMN,
+};
 use qdrant_client::qdrant::{DeletePointsBuilder, PointStruct, PointsIdsList, UpsertPointsBuilder};
 use qdrant_client::Qdrant;
 
@@ -14,6 +16,7 @@ pub struct QdrantSink {
     collection: String,
     primary_key: String,
     embedding_column: String,
+    timeout_seconds: u64,
 }
 
 impl QdrantSink {
@@ -26,6 +29,7 @@ impl QdrantSink {
             collection: cfg.collection.clone(),
             primary_key: cfg.primary_key.clone(),
             embedding_column: cfg.embedding_column.clone(),
+            timeout_seconds: cfg.timeout_seconds,
         })
     }
 
@@ -45,10 +49,13 @@ impl QdrantSink {
             .map(|((id, vector), payload)| PointStruct::new(id, vector, payload))
             .collect();
 
-        self.client
-            .upsert_points(UpsertPointsBuilder::new(&self.collection, points))
-            .await
-            .map_err(|e| NexusError::Connector(format!("qdrant upsert failed: {e}")))?;
+        with_timeout(self.timeout_seconds, "qdrant upsert", async {
+            self.client
+                .upsert_points(UpsertPointsBuilder::new(&self.collection, points))
+                .await
+                .map_err(|e| NexusError::Connector(format!("qdrant upsert failed: {e}")))
+        })
+        .await?;
         Ok(())
     }
 
@@ -57,14 +64,17 @@ impl QdrantSink {
             return Ok(());
         }
         let ids = extract_ids(batch, &self.primary_key)?;
-        self.client
-            .delete_points(
-                DeletePointsBuilder::new(&self.collection).points(PointsIdsList {
-                    ids: ids.into_iter().map(Into::into).collect(),
-                }),
-            )
-            .await
-            .map_err(|e| NexusError::Connector(format!("qdrant delete failed: {e}")))?;
+        with_timeout(self.timeout_seconds, "qdrant delete", async {
+            self.client
+                .delete_points(
+                    DeletePointsBuilder::new(&self.collection).points(PointsIdsList {
+                        ids: ids.into_iter().map(Into::into).collect(),
+                    }),
+                )
+                .await
+                .map_err(|e| NexusError::Connector(format!("qdrant delete failed: {e}")))
+        })
+        .await?;
         Ok(())
     }
 }

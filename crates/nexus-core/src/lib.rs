@@ -16,7 +16,7 @@ pub use dag::{
     ChunkingSpec, DbtCommand, DbtConfig, EmbeddingModelSpec, EmbeddingSpec, NodeSpec, PipelineSpec,
     TransformSpec,
 };
-pub use error::NexusError;
+pub use error::{with_timeout, NexusError};
 pub use pipeline::{
     PartitionHandle, PartitionStats, PipelineEngine, ProgressEvent, ProgressSender,
     TransformPipeline,

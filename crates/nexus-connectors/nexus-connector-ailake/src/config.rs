@@ -24,4 +24,13 @@ pub struct AilakeConnectorConfig {
     pub embedding_column: String,
     /// Vector size — must match the embedding column's actual length.
     pub dimension: u32,
+    /// Timeout in seconds for each catalog/store call — the warehouse is a
+    /// local filesystem today, but this still guards against a locked
+    /// catalog file or a slow disk stalling the pipeline indefinitely (C15).
+    #[serde(default = "default_timeout_seconds")]
+    pub timeout_seconds: u64,
+}
+
+fn default_timeout_seconds() -> u64 {
+    30
 }

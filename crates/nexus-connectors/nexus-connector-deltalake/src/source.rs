@@ -7,7 +7,7 @@ use deltalake::open_table;
 use deltalake::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use deltalake::table::builder::ensure_table_uri;
 use futures::stream::{self, BoxStream};
-use nexus_core::{NexusError, Source};
+use nexus_core::{with_timeout, NexusError, Source};
 use std::fs::File;
 
 /// Delta Lake source — reads every currently active data file of the table
@@ -20,6 +20,7 @@ use std::fs::File;
 pub struct DeltaSource {
     table_uri: String,
     schema: SchemaRef,
+    timeout_seconds: u64,
 }
 
 /// Strips a `file://` scheme some log stores prepend — `File::open` needs a
@@ -52,9 +53,12 @@ impl DeltaSource {
     pub async fn connect(cfg: &DeltaConnectorConfig) -> Result<Self, NexusError> {
         let url = ensure_table_uri(&cfg.table_uri)
             .map_err(|e| NexusError::Connector(format!("delta table uri invalid: {e}")))?;
-        let table = open_table(url)
-            .await
-            .map_err(|e| NexusError::Connector(format!("delta open_table failed: {e}")))?;
+        let table = with_timeout(cfg.timeout_seconds, "delta open_table", async {
+            open_table(url)
+                .await
+                .map_err(|e| NexusError::Connector(format!("delta open_table failed: {e}")))
+        })
+        .await?;
         // Derived from Delta's own declared table schema (metadata), not any
         // one physical file — see `delta_schema_to_arrow`'s doc for why a
         // file's physical type can't be trusted as the canonical schema.
@@ -67,6 +71,7 @@ impl DeltaSource {
         Ok(Self {
             table_uri: cfg.table_uri.clone(),
             schema,
+            timeout_seconds: cfg.timeout_seconds,
         })
     }
 }
@@ -81,9 +86,12 @@ impl Source for DeltaSource {
         // hit); this connector always reopens per call.
         let url = ensure_table_uri(&self.table_uri)
             .map_err(|e| NexusError::Connector(format!("delta table uri invalid: {e}")))?;
-        let table = open_table(url)
-            .await
-            .map_err(|e| NexusError::Connector(format!("delta open_table failed: {e}")))?;
+        let table = with_timeout(self.timeout_seconds, "delta open_table", async {
+            open_table(url)
+                .await
+                .map_err(|e| NexusError::Connector(format!("delta open_table failed: {e}")))
+        })
+        .await?;
         let uris: Vec<String> = table
             .get_file_uris()
             .map_err(|e| NexusError::Connector(format!("delta get_file_uris failed: {e}")))?

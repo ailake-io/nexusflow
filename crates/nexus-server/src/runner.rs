@@ -68,8 +68,8 @@ async fn run_linear_pipeline(
         None => return Ok(Vec::new()),
         Some(PkPartitionKind::NonNumeric) => {
             if !done.contains("p0") {
-                let source = PostgresSource::connect(&source_cfg, None)?;
-                let sink = PostgresSink::connect(&sink_cfg, &columns)?;
+                let source = PostgresSource::connect(&source_cfg, None).await?;
+                let sink = PostgresSink::connect(&sink_cfg, &columns).await?;
                 handles.push(PartitionHandle {
                     partition_id: "p0".to_string(),
                     source: Box::new(source),
@@ -84,8 +84,8 @@ async fn run_linear_pipeline(
                 if done.contains(&partition_id) {
                     continue;
                 }
-                let source = PostgresSource::connect(&source_cfg, Some(range))?;
-                let sink = PostgresSink::connect(&sink_cfg, &columns)?;
+                let source = PostgresSource::connect(&source_cfg, Some(range)).await?;
+                let sink = PostgresSink::connect(&sink_cfg, &columns).await?;
                 handles.push(PartitionHandle {
                     partition_id,
                     source: Box::new(source),

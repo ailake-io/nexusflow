@@ -7,7 +7,7 @@ use futures::stream::{self, StreamExt, TryStreamExt};
 use mongodb::bson::{doc, Bson, Document};
 use mongodb::options::{DeleteOneModel, ReplaceOneModel, WriteModel};
 use mongodb::{Client, Collection, Namespace};
-use nexus_core::{CheckpointCursor, NexusError, Opcode, Sink, OPCODE_COLUMN};
+use nexus_core::{with_timeout, CheckpointCursor, NexusError, Opcode, Sink, OPCODE_COLUMN};
 
 /// Number of MongoDB write operations to keep in flight at once. The driver's
 /// `bulk_write` API requires MongoDB 8.0+; while we target older servers, a
@@ -24,35 +24,48 @@ pub struct MongoSink {
     namespace: Namespace,
     primary_key: String,
     use_bulk_write: bool,
+    timeout_seconds: u64,
 }
 
 impl MongoSink {
     pub async fn connect(config: &MongoConnectorConfig) -> Result<Self, NexusError> {
-        let client = Client::with_uri_str(&config.uri)
-            .await
-            .map_err(|e| NexusError::Connector(format!("mongo connect failed: {e}")))?;
+        let client = with_timeout(config.timeout_seconds, "mongo connect", async {
+            Client::with_uri_str(&config.uri)
+                .await
+                .map_err(|e| NexusError::Connector(format!("mongo connect failed: {e}")))
+        })
+        .await?;
         let collection = client
             .database(&config.database)
             .collection::<Document>(&config.collection);
         let namespace = collection.namespace();
 
-        let use_bulk_write = detect_bulk_write_support(&client, &config.database).await?;
+        let use_bulk_write =
+            detect_bulk_write_support(&client, &config.database, config.timeout_seconds).await?;
 
         Ok(Self {
             client,
             namespace,
             primary_key: config.primary_key.clone(),
             use_bulk_write,
+            timeout_seconds: config.timeout_seconds,
         })
     }
 }
 
-async fn detect_bulk_write_support(client: &Client, db: &str) -> Result<bool, NexusError> {
-    let build_info: Document = client
-        .database(db)
-        .run_command(doc! { "buildInfo": 1 })
-        .await
-        .map_err(|e| NexusError::Connector(format!("mongo buildInfo failed: {e}")))?;
+async fn detect_bulk_write_support(
+    client: &Client,
+    db: &str,
+    timeout_seconds: u64,
+) -> Result<bool, NexusError> {
+    let build_info: Document = with_timeout(timeout_seconds, "mongo buildInfo", async {
+        client
+            .database(db)
+            .run_command(doc! { "buildInfo": 1 })
+            .await
+            .map_err(|e| NexusError::Connector(format!("mongo buildInfo failed: {e}")))
+    })
+    .await?;
     let major = build_info
         .get_array("versionArray")
         .ok()
@@ -168,36 +181,46 @@ impl Sink for MongoSink {
                 })
                 .collect();
 
-            self.client
-                .bulk_write(models)
-                .ordered(false)
-                .await
-                .map_err(|e| NexusError::Connector(format!("mongo bulk_write failed: {e}")))?;
+            with_timeout(self.timeout_seconds, "mongo bulk_write", async {
+                self.client
+                    .bulk_write(models)
+                    .ordered(false)
+                    .await
+                    .map_err(|e| NexusError::Connector(format!("mongo bulk_write failed: {e}")))
+            })
+            .await?;
         } else {
             let collection: Collection<Document> = self
                 .client
                 .database(&namespace.db)
                 .collection(&namespace.coll);
+            let timeout_seconds = self.timeout_seconds;
             stream::iter(ops)
                 .map(|(opcode, key_bson, document)| {
                     let collection = collection.clone();
                     let pk = pk.clone();
                     async move {
                         if opcode == Some(Opcode::Delete) {
-                            collection
-                                .delete_one(doc! { &pk: key_bson })
-                                .await
-                                .map_err(|e| {
-                                    NexusError::Connector(format!("mongo delete failed: {e}"))
-                                })?;
+                            with_timeout(timeout_seconds, "mongo delete_one", async {
+                                collection
+                                    .delete_one(doc! { &pk: key_bson })
+                                    .await
+                                    .map_err(|e| {
+                                        NexusError::Connector(format!("mongo delete failed: {e}"))
+                                    })
+                            })
+                            .await?;
                         } else {
-                            collection
-                                .replace_one(doc! { &pk: key_bson }, document)
-                                .upsert(true)
-                                .await
-                                .map_err(|e| {
-                                    NexusError::Connector(format!("mongo upsert failed: {e}"))
-                                })?;
+                            with_timeout(timeout_seconds, "mongo replace_one", async {
+                                collection
+                                    .replace_one(doc! { &pk: key_bson }, document)
+                                    .upsert(true)
+                                    .await
+                                    .map_err(|e| {
+                                        NexusError::Connector(format!("mongo upsert failed: {e}"))
+                                    })
+                            })
+                            .await?;
                         }
                         Ok::<(), NexusError>(())
                     }

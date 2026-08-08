@@ -13,7 +13,7 @@ use iceberg::writer::file_writer::rolling_writer::RollingFileWriterBuilder;
 use iceberg::writer::file_writer::ParquetWriterBuilder;
 use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
 use iceberg::{Catalog, NamespaceIdent, TableCreation, TableIdent};
-use nexus_core::{split_by_opcode, CheckpointCursor, NexusError, Sink};
+use nexus_core::{split_by_opcode, with_timeout, CheckpointCursor, NexusError, Sink};
 use parquet::file::properties::WriterProperties;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -48,6 +48,15 @@ impl IcebergSink {
         if batch.num_rows() == 0 {
             return Ok(());
         }
+        with_timeout(
+            self.cfg.timeout_seconds,
+            "iceberg append",
+            self.append_inner(batch),
+        )
+        .await
+    }
+
+    async fn append_inner(&self, batch: RecordBatch) -> Result<(), NexusError> {
         let catalog = catalog::connect(&self.cfg).await?;
         let namespace = NamespaceIdent::new(self.cfg.namespace.clone());
         if !catalog

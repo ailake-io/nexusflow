@@ -99,11 +99,11 @@ pub async fn build_source(
     let source: Box<dyn Source> = match node.connector.as_str() {
         "postgres" => {
             let cfg: PostgresConnectorConfig = serde_json::from_value(node.config.clone())?;
-            Box::new(PostgresSource::connect(&cfg, None)?)
+            Box::new(PostgresSource::connect(&cfg, None).await?)
         }
         "sqlite" => {
             let cfg: SqliteConnectorConfig = serde_json::from_value(node.config.clone())?;
-            Box::new(SqliteSource::connect(&cfg)?)
+            Box::new(SqliteSource::connect(&cfg).await?)
         }
         #[cfg(feature = "mongodb")]
         "mongodb" => {
@@ -237,11 +237,11 @@ pub async fn build_sink(
     let sink: Box<dyn Sink> = match node.connector.as_str() {
         "postgres" => {
             let cfg: PostgresConnectorConfig = serde_json::from_value(node.config.clone())?;
-            Box::new(PostgresSink::connect(&cfg, columns)?)
+            Box::new(PostgresSink::connect(&cfg, columns).await?)
         }
         "sqlite" => {
             let cfg: SqliteConnectorConfig = serde_json::from_value(node.config.clone())?;
-            Box::new(SqliteSink::connect(&cfg, columns)?)
+            Box::new(SqliteSink::connect(&cfg, columns).await?)
         }
         #[cfg(feature = "mongodb")]
         "mongodb" => {

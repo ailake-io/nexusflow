@@ -14,4 +14,15 @@ pub struct PostgresConnectorConfig {
     /// Column used to partition reads by range and to upsert on write —
     /// must be an indexed, orderable column (integer/UUID/timestamp).
     pub primary_key: String,
+    /// Timeout in seconds for each ADBC call (connect, query, insert) — the
+    /// driver is a blocking FFI call run via `spawn_blocking`, so a stalled
+    /// connection would otherwise block that call forever (though the
+    /// underlying blocking thread keeps running regardless — no
+    /// cancellation for in-flight libpq/ADBC calls) (C15).
+    #[serde(default = "default_timeout_seconds")]
+    pub timeout_seconds: u64,
+}
+
+fn default_timeout_seconds() -> u64 {
+    30
 }

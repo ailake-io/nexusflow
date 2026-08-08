@@ -7,7 +7,7 @@ use futures::stream::BoxStream;
 use futures::StreamExt;
 use iceberg::arrow::schema_to_arrow_schema;
 use iceberg::{Catalog, NamespaceIdent, TableIdent};
-use nexus_core::{NexusError, Source};
+use nexus_core::{with_timeout, NexusError, Source};
 use std::sync::Arc;
 
 /// Iceberg source — full-table scan via `Table::scan().select_all()`, using
@@ -26,10 +26,13 @@ impl IcebergSource {
             NamespaceIdent::new(cfg.namespace.clone()),
             cfg.table.clone(),
         );
-        let table = catalog
-            .load_table(&ident)
-            .await
-            .map_err(|e| NexusError::Connector(format!("iceberg load_table failed: {e}")))?;
+        let table = with_timeout(cfg.timeout_seconds, "iceberg load_table", async {
+            catalog
+                .load_table(&ident)
+                .await
+                .map_err(|e| NexusError::Connector(format!("iceberg load_table failed: {e}")))
+        })
+        .await?;
         let schema = Arc::new(
             schema_to_arrow_schema(table.metadata().current_schema()).map_err(|e| {
                 NexusError::Schema(format!("iceberg schema_to_arrow_schema failed: {e}"))
@@ -54,19 +57,24 @@ impl Source for IcebergSource {
             NamespaceIdent::new(self.cfg.namespace.clone()),
             self.cfg.table.clone(),
         );
-        let table = catalog
-            .load_table(&ident)
-            .await
-            .map_err(|e| NexusError::Connector(format!("iceberg load_table failed: {e}")))?;
+        let table = with_timeout(self.cfg.timeout_seconds, "iceberg load_table", async {
+            catalog
+                .load_table(&ident)
+                .await
+                .map_err(|e| NexusError::Connector(format!("iceberg load_table failed: {e}")))
+        })
+        .await?;
         let scan = table
             .scan()
             .select_all()
             .build()
             .map_err(|e| NexusError::Connector(format!("iceberg scan build failed: {e}")))?;
-        let stream = scan
-            .to_arrow()
-            .await
-            .map_err(|e| NexusError::Connector(format!("iceberg scan to_arrow failed: {e}")))?;
+        let stream = with_timeout(self.cfg.timeout_seconds, "iceberg scan to_arrow", async {
+            scan.to_arrow()
+                .await
+                .map_err(|e| NexusError::Connector(format!("iceberg scan to_arrow failed: {e}")))
+        })
+        .await?;
         let mapped = stream.map(|r| {
             r.map_err(|e| NexusError::Connector(format!("iceberg scan read failed: {e}")))
         });

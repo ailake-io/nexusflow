@@ -36,7 +36,7 @@ No entanto, existem **riscos críticos de segurança e dados** que precisam de a
 | C9 | `KafkaSource` comita offsets antes do processamento | `nexus-connector-kafka/src/source.rs:181` | Perda de dados em crash | ✅ Resolvido: commit manual só após as batches serem montadas com sucesso (`commit_offsets()` ao final de `read_batches`) |
 | C10 | `KafkaSource` avança offset de mensagens com payload vazio | `nexus-connector-kafka/src/source.rs:154-159` | Dados reais podem ser pulados | ✅ Resolvido: `continue` em payload vazio acontece antes do `last_offsets.insert`, offset só avança após parse OK |
 | C11 | `OdbcSink` sem transação | `nexus-connector-odbc/src/sink.rs:73-138` | Batch parcial em falha | ✅ Resolvido: mesma correção do A12 — cada batch roda dentro de `BEGIN/COMMIT/ROLLBACK` no worker thread dedicado |
-| C12 | `PgVectorSink` sem transação e connection task órfã | `nexus-connector-pgvector/src/sink.rs:33-37,48-103` | Estado parcial; erros não propagados | Usar `client.transaction()` e propagar erros |
+| C12 | `PgVectorSink` sem transação e connection task órfã | `nexus-connector-pgvector/src/sink.rs:33-37,48-103` | Estado parcial; erros não propagados | ✅ Resolvido: `write_batch` roda upsert+delete dentro de `client.transaction()`; erro da connection task vai pra `tracing::error!` em vez de `eprintln!` descartado |
 
 ### Performance / Operacional
 
@@ -44,7 +44,7 @@ No entanto, existem **riscos críticos de segurança e dados** que precisam de a
 |---|---|---|---|---|
 | C13 | Modelo ONNX recarregado a cada batch | `nexus-ai/src/embedding/pipeline.rs:127`, `nexus-server/src/runner.rs:218` | Latência extrema; downloads repetidos | ✅ Resolvido: `load_embedding_backend()` carrega modelo/cliente uma vez por run (commit `3f2c5d2`) |
 | C14 | Fontes materializam tabela inteira em memória; sinks fan-out serial | `nexus-core/src/pipeline.rs:213-275` | OOM em tabelas grandes; sinks lentos bloqueiam uns aos outros | ✅ Resolvido: `drain_sources` retém materialização apenas onde exigido pelo SQL transform; `fan_out_write` agora delega a `fan_out_write_stream`, que escreve para cada sink em paralelo via broadcast channel |
-| C15 | Ausência de timeouts em I/O de conectores | vários | Runtime bloqueado indefinidamente | `tokio::time::timeout` em conexões/queries |
+| C15 | Ausência de timeouts em I/O de conectores | vários | Runtime bloqueado indefinidamente | ✅ Resolvido: `nexus_core::with_timeout` (novo helper) envolve connect/query/write em todos os 14 conectores (postgres, sqlite, odbc, mongodb, pgvector, deltalake, iceberg, ailake, lancedb, milvus, qdrant, pinecone, chromadb — kafka e rest já tinham timeout próprio). ODBC/ADBC/SQLite locais só cancelam o lado async (a chamada bloqueante na thread/`spawn_blocking` continua rodando — sem cancelamento cross-thread para handles ODBC/ADBC brutos) |
 
 ---
 
