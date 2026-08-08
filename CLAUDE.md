@@ -82,7 +82,7 @@ nexusflow/
 
 > **Estado real (ver `ROADMAP.md`)**: a matriz acima é a visão de produto, não o estado atual. Hoje só **Postgres** e **SQLite** existem como conectores ADBC fast-path (`crates/nexus-connectors/nexus-connector-postgres`/`-sqlite`); MySQL, DuckDB, Snowflake, BigQuery e ClickHouse ADBC **não têm crate implementado**. Nenhum conector Arrow Flight SQL existe ainda — ClickHouse/Dremio/Spark Flight SQL/Databricks são inteiramente aspiracionais. CDC hoje é só via Debezium+Kafka (`nexus-connector-kafka`, camada Híbrida) — o parser nativo de WAL/binlog descrito acima é condicional e não agendado (`ARCHITECTURE.md §7`, `ROADMAP.md` Marco 13).
 >
-> Atualizações recentes: RBAC com papel `Admin` funcional e API de gestão de usuários (`GET/POST/DELETE /users`); alertas Slack, MS Teams, PagerDuty e Email implementados (`nexus-server/src/alerts.rs`); rate-limit de login por IP; execução de runs em task destacada com 202 Accepted e reaper de runs órfãs no boot.
+> Atualizações recentes: RBAC com papel `Admin` funcional e API de gestão de usuários (`GET/POST/DELETE /users`); alertas Slack, MS Teams, PagerDuty e Email implementados (`nexus-server/src/alerts.rs`); rate-limit de login por IP; execução de runs em task destacada com 202 Accepted e reaper de runs órfãs no boot; `GET /pipelines/{id}/preview` (primeiras N linhas de um source/sink persistido) e dbt como ETL real via `DbtConfig.output`/`PipelineSpec.post_dbt_sinks` (ver `ARCHITECTURE.md §13`); conectores `csv` (source+sink, delimitador configurável, local ou `s3://`/`gs://`/`az://`) e sink `webhook` genérico.
 
 ### 4.2. Engine de Streaming, Backpressure e Checkpointing
 O núcleo opera via canais assíncronos (`mpsc::channel`).
@@ -114,9 +114,10 @@ Módulo intermediário que converte colunas de texto em vetores float32 e anexa 
 * **Aceleração (Features):** `cpu` (SIMD), `cuda` (NVIDIA), `metal` (Apple), `api` (LLM Externa). **Ainda não exposto via feature flags no build** — hoje `nexus-ai` usa ONNX Runtime com execução CPU por padrão; CUDA/Metal/API são planejados (`ROADMAP.md`).
 * **Destinos:** LanceDB, Qdrant, Milvus, Pinecone, ChromaDB e pgvector.
 
-### 4.4. Transformações Opcionais e ELT (dbt)
+### 4.4. Transformações Opcionais e ELT/ETL (dbt)
 * **Modo Padrão (Sem dbt):** Movimentação com transformação leve SQL em memória via DataFusion.
 * **Modo Padrão ELT (Com dbt Opcional):** Após a carga dos dados brutos no destino, o backend Rust invoca via subprocesso assíncrono o `dbt-core` (`dbt run/build`) para transformações no Data Warehouse.
+* **Modo ETL real (opcional, extensão do ELT):** Se `DbtConfig.output` estiver setado, o backend lê de volta o resultado transformado pelo dbt (do mesmo warehouse) e grava em `PipelineSpec.post_dbt_sinks` — `[Source] → [carga bruta] → [dbt transforma] → [lê de volta] → [Sink final]` num único `run`, sem precisar encadear um segundo pipeline manualmente. Ver `ARCHITECTURE.md §13`.
 
 ---
 

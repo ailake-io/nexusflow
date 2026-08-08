@@ -117,11 +117,12 @@ Parte da arquitetura já revisada em `ARCHITECTURE.md` v2: crate-por-conector, b
 
 ---
 
-## Marco 10 — dbt (ELT opcional)
+## Marco 10 — dbt (ELT opcional) ✅ + extensão ETL real ✅ (fora do plano original)
 - Subprocesso assíncrono (`tokio::process::Command`) invocando `dbt run`/`dbt build` pós-carga, feature-gated (dbt é opcional, `CLAUDE.md §4.4`).
 - Capturar `manifest.json`/`run_results.json` do dbt pra alimentar observabilidade/lineage básico.
+- **Extensão ETL** (`DbtConfig.output` + `PipelineSpec.post_dbt_sinks`, ver `ARCHITECTURE.md §13`): lê o resultado transformado pelo dbt de volta do warehouse e grava num destino final, no mesmo `run` — dbt deixa de ser só um passo terminal ELT. Testado com integração real (Postgres via testcontainers + `dbt-fusion` CLI real, `crates/nexus-server/tests/dbt_etl_pipeline.rs`).
 
-**Critério de pronto:** pipeline com "modo ELT" ativado dispara `dbt build` após carga bruta, resultado aparece nos logs da execução.
+**Critério de pronto:** pipeline com "modo ELT" ativado dispara `dbt build` após carga bruta, resultado aparece nos logs da execução. **Atingido**, mais o caso ETL: `dbt.output` setado → resultado do dbt chega em `post_dbt_sinks` sem precisar de um segundo pipeline manual.
 
 ---
 
