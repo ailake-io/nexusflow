@@ -15,7 +15,7 @@ import {
   type OnSelectionChangeFunc,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { Code2, Layers } from 'lucide-react'
+import { Code2, Layers, Sparkles } from 'lucide-react'
 import { useI18n } from '@/lib/i18n'
 import { ConnectorPalette } from '@/components/ConnectorPalette'
 import { dagNodeTypes } from '@/components/dag-node-types'
@@ -33,6 +33,7 @@ import {
   type DagNode,
   type DagNodeData,
   type DbtNodeData,
+  type EmbeddingNodeData,
   type PipelineMeta,
   type PipelineSpec,
   type TransformNodeData,
@@ -126,10 +127,44 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
     ])
   }, [])
 
+  const addEmbeddingNode = useCallback(() => {
+    const id = `node-${nextNodeId++}`
+    setNodes((current) => [
+      ...current,
+      {
+        id,
+        type: 'embedding',
+        position: { x: 100, y: -100 },
+        data: {
+          kind: 'embedding',
+          sourceColumn: '',
+          outputColumn: 'embedding',
+          dimension: 384,
+          backend: 'onnx',
+          repo: '',
+          filename: '',
+          tokenizerFilename: '',
+          maxLength: 128,
+          baseUrl: '',
+          model: '',
+          apiKeyEnv: '',
+          strategy: 'fixed_window',
+          chunkSize: 256,
+          overlap: 0,
+          separators: '',
+        },
+      },
+    ])
+  }, [])
+
   const updateNodeData = useCallback(
     (
       id: string,
-      patch: Partial<ConnectorNodeData> | Partial<TransformNodeData> | Partial<DbtNodeData>,
+      patch:
+        | Partial<ConnectorNodeData>
+        | Partial<TransformNodeData>
+        | Partial<DbtNodeData>
+        | Partial<EmbeddingNodeData>,
     ) => {
       setNodes((current) =>
         current.map((n) =>
@@ -254,6 +289,14 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
             >
               <Layers className="h-3.5 w-3.5 text-emerald-400" />
               {t('canvas.addDbt')}
+            </button>
+            <button
+              type="button"
+              onClick={addEmbeddingNode}
+              className="flex items-center gap-2 rounded-lg border border-white/10 bg-card/90 px-3 py-2 text-sm font-medium text-foreground shadow-lg backdrop-blur transition-all hover:border-fuchsia-400/40 hover:bg-card"
+            >
+              <Sparkles className="h-3.5 w-3.5 text-fuchsia-400" />
+              {t('canvas.addEmbedding')}
             </button>
           </div>
         </div>
