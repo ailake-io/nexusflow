@@ -15,6 +15,9 @@ export interface JsonSchemaNode {
   required?: string[]
   enum?: string[]
   items?: JsonSchemaNode
+  /** Present (and `properties` absent) for a free-form `HashMap<String, V>`
+   *  Rust field — schemars emits this instead of a fixed `properties` set. */
+  additionalProperties?: JsonSchemaNode | boolean
   $ref?: string
   description?: string
   default?: unknown

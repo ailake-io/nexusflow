@@ -130,6 +130,18 @@ export function SchemaForm({ schema, defs, value, onChange, idPrefix }: SchemaFo
           )
         }
 
+        if (fieldSchema.type === 'object' && !fieldSchema.properties && fieldSchema.additionalProperties) {
+          return (
+            <MapField
+              key={key}
+              label={label}
+              description={fieldSchema.description}
+              value={(value[key] as Record<string, string>) ?? {}}
+              onChange={(next) => setField(key, next)}
+            />
+          )
+        }
+
         if (fieldSchema.type === 'object') {
           return (
             <fieldset key={key} className="rounded-lg border border-white/10 p-3">
@@ -165,6 +177,80 @@ export function SchemaForm({ schema, defs, value, onChange, idPrefix }: SchemaFo
         )
       })}
     </div>
+  )
+}
+
+interface MapFieldProps {
+  label: string
+  description?: string
+  value: Record<string, string>
+  onChange: (value: Record<string, string>) => void
+}
+
+/**
+ * Renders a free-form `HashMap<String, String>` Rust field (e.g. REST's
+ * `headers`, CSV's `storage_options`) as editable key/value rows — schemars
+ * emits `{type: "object", additionalProperties: {...}}` for these with no
+ * fixed `properties`, so the regular object branch above (which recurses
+ * into a known property set) has nothing to render for them.
+ */
+function MapField({ label, description, value, onChange }: MapFieldProps) {
+  const { t } = useI18n()
+  const entries = Object.entries(value)
+
+  const updateKey = (index: number, newKey: string) => {
+    const next = entries.map(([k, v], i) => (i === index ? [newKey, v] : [k, v]))
+    onChange(Object.fromEntries(next))
+  }
+
+  const updateValue = (index: number, newValue: string) => {
+    const next = entries.map(([k, v], i) => (i === index ? [k, newValue] : [k, v]))
+    onChange(Object.fromEntries(next))
+  }
+
+  const removeEntry = (index: number) => {
+    onChange(Object.fromEntries(entries.filter((_, i) => i !== index)))
+  }
+
+  const addEntry = () => {
+    onChange(Object.fromEntries([...entries, ['', '']]))
+  }
+
+  return (
+    <fieldset className="rounded-lg border border-white/10 p-3">
+      <legend className="flex items-center gap-1.5 px-1 text-xs text-muted-foreground">
+        {label}
+        {description && <FieldHint text={description} />}
+      </legend>
+      <div className="flex flex-col gap-2">
+        {entries.map(([entryKey, entryValue], index) => (
+          <div key={index} className="flex items-center gap-2">
+            <Input
+              placeholder={t('schemaForm.mapKey')}
+              value={entryKey}
+              onChange={(e) => updateKey(index, e.target.value)}
+              className="flex-1"
+            />
+            <Input
+              placeholder={t('schemaForm.mapValue')}
+              value={entryValue}
+              onChange={(e) => updateValue(index, e.target.value)}
+              className="flex-1"
+            />
+            <button
+              type="button"
+              onClick={() => removeEntry(index)}
+              className="text-xs text-red-400 hover:underline"
+            >
+              {t('common.remove')}
+            </button>
+          </div>
+        ))}
+      </div>
+      <button type="button" onClick={addEntry} className="mt-2 text-xs text-primary hover:underline">
+        {t('common.add')}
+      </button>
+    </fieldset>
   )
 }
 

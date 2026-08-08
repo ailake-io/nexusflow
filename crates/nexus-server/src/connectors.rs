@@ -31,7 +31,7 @@ use nexus_connector_pinecone::{PineconeConnectorConfig, PineconeSink};
 #[cfg(feature = "qdrant")]
 use nexus_connector_qdrant::{QdrantConnectorConfig, QdrantSink};
 #[cfg(feature = "rest")]
-use nexus_connector_rest::{RestConnectorConfig, RestSource};
+use nexus_connector_rest::{RestConnectorConfig, RestSource, WebhookSink, WebhookSinkConfig};
 
 /// The only place that knows which connector names exist and how to build
 /// them — `nexus-core`/`PipelineEngine` never hardcode a connector list, see
@@ -203,6 +203,10 @@ pub fn validate_sink_config(node: &NodeSpec) -> anyhow::Result<()> {
         "chromadb" => {
             let _: ChromaConnectorConfig = serde_json::from_value(node.config.clone())?;
         }
+        #[cfg(feature = "rest")]
+        "webhook" => {
+            let _: WebhookSinkConfig = serde_json::from_value(node.config.clone())?;
+        }
         #[cfg(feature = "deltalake")]
         "deltalake" => {
             let _: DeltaConnectorConfig = serde_json::from_value(node.config.clone())?;
@@ -297,6 +301,11 @@ pub async fn build_sink(
         "chromadb" => {
             let cfg: ChromaConnectorConfig = serde_json::from_value(node.config.clone())?;
             Box::new(ChromaSink::connect(&cfg).await?)
+        }
+        #[cfg(feature = "rest")]
+        "webhook" => {
+            let cfg: WebhookSinkConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(WebhookSink::connect(&cfg)?)
         }
         #[cfg(feature = "deltalake")]
         "deltalake" => {

@@ -174,6 +174,8 @@ export const translations = {
     },
     schemaForm: {
       select: 'select',
+      mapKey: 'key',
+      mapValue: 'value',
     },
     languages: {
       en: 'English',
@@ -353,6 +355,8 @@ export const translations = {
     },
     schemaForm: {
       select: 'selecione',
+      mapKey: 'chave',
+      mapValue: 'valor',
     },
     languages: {
       en: 'English',

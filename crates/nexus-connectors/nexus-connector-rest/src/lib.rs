@@ -5,13 +5,29 @@
 
 mod config;
 mod json_path;
+mod rows;
+mod sink;
 mod source;
 
-pub use config::{RestConnectorConfig, RestDataType, RestFieldSpec, RestPagination};
+pub use config::{
+    RestConnectorConfig, RestDataType, RestFieldSpec, RestPagination, WebhookBodyMode,
+    WebhookMethod, WebhookSinkConfig,
+};
+pub use sink::WebhookSink;
 pub use source::RestSource;
 
 nexus_core::submit_connector!(
     "rest",
     nexus_core::ConnectorCapability::Bridged,
     RestConnectorConfig
+);
+
+// Distinct connector name from "rest" (the paginated-GET source above) —
+// see `WebhookSinkConfig`'s doc comment for why they can't share a config
+// shape, and `nexus_core::registry`'s `ConnectorDescriptor` for why they
+// therefore can't share a catalog entry either (one name -> one schema).
+nexus_core::submit_connector!(
+    "webhook",
+    nexus_core::ConnectorCapability::Bridged,
+    WebhookSinkConfig
 );
