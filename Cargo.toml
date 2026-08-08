@@ -44,6 +44,7 @@ deltalake = ["nexus-server/deltalake"]
 iceberg = ["nexus-server/iceberg"]
 parquet = ["nexus-server/parquet"]
 ailake = ["nexus-server/ailake"]
+csv = ["nexus-server/csv"]
 
 [dependencies]
 anyhow = "1.0.104"

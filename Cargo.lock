@@ -7016,6 +7016,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexus-connector-csv"
+version = "0.1.0"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-csv",
+ "arrow-schema 58.4.0",
+ "arrow-select 58.4.0",
+ "async-trait",
+ "futures",
+ "nexus-core",
+ "object_store 0.10.2",
+ "schemars 1.2.2",
+ "serde",
+ "tempfile",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "nexus-connector-deltalake"
 version = "0.1.0"
 dependencies = [
@@ -7304,6 +7323,7 @@ dependencies = [
  "nexus-ai",
  "nexus-connector-ailake",
  "nexus-connector-chromadb",
+ "nexus-connector-csv",
  "nexus-connector-deltalake",
  "nexus-connector-iceberg",
  "nexus-connector-kafka",
@@ -7576,13 +7596,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6da452820c715ce78221e8202ccc599b4a52f3e1eb3eedb487b680c81a8e3f3"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "bytes",
  "chrono",
  "futures",
  "humantime",
+ "hyper 1.11.0",
  "itertools 0.13.0",
+ "md-5 0.10.6",
  "parking_lot",
  "percent-encoding",
+ "quick-xml 0.36.2",
+ "rand 0.8.7",
+ "reqwest 0.12.28",
+ "ring 0.17.14",
+ "rustls-pemfile 2.2.0",
+ "serde",
+ "serde_json",
  "snafu 0.7.5",
  "tokio",
  "tracing",
@@ -7613,7 +7643,7 @@ dependencies = [
  "md-5 0.10.6",
  "parking_lot",
  "percent-encoding",
- "quick-xml",
+ "quick-xml 0.39.4",
  "rand 0.10.2",
  "reqwest 0.12.28",
  "ring 0.17.14",
@@ -8637,6 +8667,16 @@ checksum = "5a651516ddc9168ebd67b24afd085a718be02f8858fe406591b013d101ce2f40"
 
 [[package]]
 name = "quick-xml"
+version = "0.36.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f7649a7b4df05aed9ea7ec6f628c67c9953a43869b8bc50929569b2999d443fe"
+dependencies = [
+ "memchr",
+ "serde",
+]
+
+[[package]]
+name = "quick-xml"
 version = "0.39.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cdcc8dd4e2f670d309a5f0e83fe36dfdc05af317008fea29144da1a2ac858e5e"
@@ -9401,7 +9441,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a9aace74cb666635c918e9c12bc0d348266037aa8eb599b5cba565709a8dff00"
 dependencies = [
  "openssl-probe 0.1.6",
- "rustls-pemfile",
+ "rustls-pemfile 1.0.4",
  "schannel",
  "security-framework 2.11.1",
 ]
@@ -9425,6 +9465,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c74cae0a4cf6ccbbf5f359f08efdf8ee7e1dc532573bf0db71968cb56b1448c"
 dependencies = [
  "base64 0.21.7",
+]
+
+[[package]]
+name = "rustls-pemfile"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dce314e5fee3f39953d46bb63bb8a46d40c2f8fb7cc5a3b6cab2bde9721d6e50"
+dependencies = [
+ "rustls-pki-types",
 ]
 
 [[package]]
@@ -11322,7 +11371,7 @@ dependencies = [
  "prost 0.11.9",
  "prost-derive 0.11.9",
  "rustls-native-certs 0.6.3",
- "rustls-pemfile",
+ "rustls-pemfile 1.0.4",
  "tokio",
  "tokio-rustls 0.23.4",
  "tokio-stream",

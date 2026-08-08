@@ -6,6 +6,8 @@ use nexus_core::{NodeSpec, PipelineSpec, Sink, Source};
 use nexus_connector_ailake::{AilakeConnectorConfig, AilakeSink, AilakeSource};
 #[cfg(feature = "chromadb")]
 use nexus_connector_chromadb::{ChromaConnectorConfig, ChromaSink};
+#[cfg(feature = "csv")]
+use nexus_connector_csv::{CsvConnectorConfig, CsvSink, CsvSource};
 #[cfg(feature = "deltalake")]
 use nexus_connector_deltalake::{DeltaConnectorConfig, DeltaSink, DeltaSource};
 #[cfg(feature = "iceberg")]
@@ -86,6 +88,10 @@ pub fn validate_source_config(node: &NodeSpec) -> anyhow::Result<()> {
         "ailake" => {
             let _: AilakeConnectorConfig = serde_json::from_value(node.config.clone())?;
         }
+        #[cfg(feature = "csv")]
+        "csv" => {
+            let _: CsvConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
         other => anyhow::bail!("unsupported source connector: {other:?}"),
     }
     Ok(())
@@ -144,6 +150,11 @@ pub async fn build_source(
         "ailake" => {
             let cfg: AilakeConnectorConfig = serde_json::from_value(node.config.clone())?;
             Box::new(AilakeSource::connect(&cfg).await?)
+        }
+        #[cfg(feature = "csv")]
+        "csv" => {
+            let cfg: CsvConnectorConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(CsvSource::connect(&cfg)?)
         }
         other => anyhow::bail!("unsupported source connector: {other:?}"),
     };
@@ -207,6 +218,10 @@ pub fn validate_sink_config(node: &NodeSpec) -> anyhow::Result<()> {
         #[cfg(feature = "ailake")]
         "ailake" => {
             let _: AilakeConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "csv")]
+        "csv" => {
+            let _: CsvConnectorConfig = serde_json::from_value(node.config.clone())?;
         }
         other => anyhow::bail!("unsupported sink connector: {other:?}"),
     }
@@ -302,6 +317,11 @@ pub async fn build_sink(
         "ailake" => {
             let cfg: AilakeConnectorConfig = serde_json::from_value(node.config.clone())?;
             Box::new(AilakeSink::connect(&cfg)?)
+        }
+        #[cfg(feature = "csv")]
+        "csv" => {
+            let cfg: CsvConnectorConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(CsvSink::connect(&cfg)?)
         }
         other => anyhow::bail!("unsupported sink connector: {other:?}"),
     };

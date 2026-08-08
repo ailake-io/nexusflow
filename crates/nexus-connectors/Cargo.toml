@@ -17,6 +17,7 @@ members = [
     "nexus-connector-parquet",
     "nexus-connector-deltalake",
     "nexus-connector-iceberg",
+    "nexus-connector-csv",
 ]
 
 [workspace.package]

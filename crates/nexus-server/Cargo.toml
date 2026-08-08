@@ -51,7 +51,7 @@ embed-ui = ["dep:rust-embed"]
 connectors-all = [
     "mongodb", "kafka", "rest", "odbc", "milvus", "qdrant", "lancedb",
     "pgvector", "pinecone", "chromadb", "deltalake", "iceberg", "parquet",
-    "ailake", "embeddings", "embeddings-api",
+    "ailake", "csv", "embeddings", "embeddings-api",
 ]
 mongodb = ["dep:nexus-connector-mongodb"]
 kafka = ["dep:nexus-connector-kafka", "nexus-connector-kafka/consumer"]
@@ -67,6 +67,7 @@ deltalake = ["dep:nexus-connector-deltalake"]
 iceberg = ["dep:nexus-connector-iceberg"]
 parquet = ["dep:nexus-connector-parquet"]
 ailake = ["dep:nexus-connector-ailake"]
+csv = ["dep:nexus-connector-csv"]
 
 [dependencies]
 aes-gcm = "0.10.3"
@@ -100,6 +101,7 @@ nexus-connector-deltalake = { version = "0.1.0", path = "../nexus-connectors/nex
 nexus-connector-iceberg = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-iceberg", optional = true }
 nexus-connector-parquet = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-parquet", optional = true }
 nexus-connector-ailake = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-ailake", optional = true }
+nexus-connector-csv = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-csv", optional = true }
 nexus-core = { version = "0.1.0", path = "../nexus-core" }
 nexus-ai = { version = "0.1.0", path = "../nexus-ai", optional = true }
 hex = "0.4.3"
