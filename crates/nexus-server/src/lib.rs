@@ -603,7 +603,10 @@ async fn preview_node_handler(
     Query(params): Query<PreviewParams>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let spec = state.pipelines.get_spec(&id, &state.secrets).await?;
-    let limit = params.limit.unwrap_or(DEFAULT_PREVIEW_LIMIT).min(MAX_PREVIEW_LIMIT);
+    let limit = params
+        .limit
+        .unwrap_or(DEFAULT_PREVIEW_LIMIT)
+        .min(MAX_PREVIEW_LIMIT);
 
     let node = find_node_by_resolved_name(&spec, &params.node).ok_or_else(|| {
         ApiError::not_found(format!(

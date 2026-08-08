@@ -236,7 +236,11 @@ async fn dbt_transforms_staged_data_and_writes_result_to_a_final_sink() {
     // — see dbt.rs's own doc comment on why it isn't part of DbtConfig).
     std::env::set_var("DBT_PROFILES_DIR", &dbt_dir);
     let (status, body) = post_run(app.clone(), "etl-pipeline", &spec, &token).await;
-    assert_eq!(status, StatusCode::ACCEPTED, "run was not accepted: {body:?}");
+    assert_eq!(
+        status,
+        StatusCode::ACCEPTED,
+        "run was not accepted: {body:?}"
+    );
     let run_id = body["run_id"].as_i64().expect("202 body carries run_id");
     let record = wait_for_run(&app, "etl-pipeline", run_id, &token).await;
     std::env::remove_var("DBT_PROFILES_DIR");
@@ -257,15 +261,19 @@ async fn dbt_transforms_staged_data_and_writes_result_to_a_final_sink() {
         .await
         .unwrap()
         .get(0);
-    assert_eq!(staged_count, 3, "raw load into staging must have landed all rows");
+    assert_eq!(
+        staged_count, 3,
+        "raw load into staging must have landed all rows"
+    );
 
-    let mut final_rows: Vec<(i64, String)> = sqlx::query("SELECT id, name_upper FROM final_events ORDER BY id")
-        .fetch_all(&pg_pool)
-        .await
-        .unwrap()
-        .iter()
-        .map(|r| (r.get::<i64, _>(0), r.get::<String, _>(1)))
-        .collect();
+    let mut final_rows: Vec<(i64, String)> =
+        sqlx::query("SELECT id, name_upper FROM final_events ORDER BY id")
+            .fetch_all(&pg_pool)
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| (r.get::<i64, _>(0), r.get::<String, _>(1)))
+            .collect();
     final_rows.sort();
     assert_eq!(
         final_rows,
