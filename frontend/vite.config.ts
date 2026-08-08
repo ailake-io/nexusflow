@@ -20,6 +20,7 @@ export default defineConfig({
       '/auth': 'http://localhost:8080',
       '/connectors': 'http://localhost:8080',
       '/pipelines': { target: 'http://localhost:8080', ws: true },
+      '/users': 'http://localhost:8080',
       '/health': 'http://localhost:8080',
     },
   },

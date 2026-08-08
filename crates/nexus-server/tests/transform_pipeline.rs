@@ -146,6 +146,13 @@ fn test_server_config(checkpoint_database_url: String) -> ServerConfig {
         bootstrap_admin: Some(("admin".to_string(), "test-password".to_string())),
         encryption_key_hex: "ab".repeat(32),
         slack_webhook_url: None,
+        teams_webhook_url: None,
+        pagerduty_routing_key: None,
+        email: None,
+        webhook_url: None,
+        // testcontainers exposes Postgres on localhost — see the identical
+        // note in postgres_pipeline.rs's test_server_config.
+        allow_internal_hosts: true,
     }
 }
 

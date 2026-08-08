@@ -20,31 +20,31 @@ No entanto, existem **riscos críticos de segurança e dados** que precisam de a
 
 | # | Problema | Onde | Impacto | Ação |
 |---|---|---|---|---|
-| C1 | `validate_security()` não é chamado em create/update de pipelines | `nexus-server/src/lib.rs:472,524` | Usuário Write persiste spec inseguro; Execute executa depois | Chamar `spec.validate_security()` em `create_pipeline_handler` e `update_pipeline_handler` |
-| C2 | Bypass de SSRF via `user:pass@host` em URL | `nexus-core/src/dag.rs:316-320` | Acesso a metadata endpoints de cloud | Usar `url::Url` para parsing robusto de host |
-| C3 | Path traversal relativo permitido em `dbt.project_dir` | `nexus-core/src/dag.rs:274` | Execução de dbt em diretório arbitrário | Rejeitar `..`, canonicalizar contra diretório base |
-| C4 | `validate_security()` só inspeciona chaves de primeiro nível | `nexus-core/src/dag.rs:292-314` | URLs internas em JSON aninhado/array passam | Percorrer JSON recursivamente |
-| C5 | `is_internal_host()` não cobre IPv6 link-local, CGNAT, `metadata.google.internal` etc. | `nexus-core/src/dag.rs:322-368` | SSRF para endpoints internos comuns | Expandir blocklist ou usar whitelist |
-| C6 | Segredos literais no CI | `.github/workflows/ci.yml:125-126` | JWT secret e encryption key expostos em logs/YAML | Gerar dinamicamente no step ou usar GitHub Secrets |
-| C7 | `LoginRateLimiter` cresce sem limites | `nexus-server/src/rate_limit.rs:12-38` | Ataque de memória via spoofing de IP | Adicionar limite de entries ou cleanup periódico |
+| C1 | `validate_security()` não é chamado em create/update de pipelines | `nexus-server/src/lib.rs:505,561` | Usuário Write persiste spec inseguro; Execute executa depois | ✅ Resolvido: `validate_security()` é chamada em `create_pipeline_handler` e `update_pipeline_handler` |
+| C2 | Bypass de SSRF via `user:pass@host` em URL | `nexus-core/src/dag.rs:316-320` | Acesso a metadata endpoints de cloud | ✅ Resolvido: teste `validate_security_rejects_ssrf_via_userinfo` cobre parsing robusto de host via `url::Url` |
+| C3 | Path traversal relativo permitido em `dbt.project_dir` | `nexus-core/src/dag.rs:274` | Execução de dbt em diretório arbitrário | ✅ Resolvido: teste `validate_security_rejects_dbt_path_traversal` cobre rejeição de `..` |
+| C4 | `validate_security()` só inspeciona chaves de primeiro nível | `nexus-core/src/dag.rs:292-314` | URLs internas em JSON aninhado/array passam | ✅ Resolvido: `validate_security()` percorre JSON recursivamente (objetos e arrays) |
+| C5 | `is_internal_host()` não cobre IPv6 link-local, CGNAT, `metadata.google.internal` etc. | `nexus-core/src/dag.rs:322-368` | SSRF para endpoints internos comuns | ✅ Resolvido: blocklist expandida para CGNAT, link-local, loopback e hostnames de metadata cloud |
+| C6 | Segredos literais no CI | `.github/workflows/ci.yml:125-126` | JWT secret e encryption key expostos em logs/YAML | ✅ Resolvido: segredos gerados dinamicamente via `openssl rand -hex 32` no step de smoke test |
+| C7 | `LoginRateLimiter` cresce sem limites | `nexus-server/src/rate_limit.rs:12-38` | Ataque de memória via spoofing de IP | ✅ Resolvido: limite máximo de IPs rastreados com evicção do mais antigo |
 
 ### Dados / Confiabilidade
 
 | # | Problema | Onde | Impacto | Ação |
 |---|---|---|---|---|
 | C8 | `IcebergSink` é append-only → duplicatas em retries | `nexus-connector-iceberg/src/sink.rs:159-172` | Viola contrato de idempotência | Implementar `merge_insert` ou restringir uso |
-| C9 | `KafkaSource` comita offsets antes do processamento | `nexus-connector-kafka/src/source.rs:181` | Perda de dados em crash | Commitar offsets só após checkpoint do engine |
-| C10 | `KafkaSource` avança offset de mensagens com payload vazio | `nexus-connector-kafka/src/source.rs:154-159` | Dados reais podem ser pulados | Mover update de `last_offsets` para após parse |
-| C11 | `OdbcSink` sem transação | `nexus-connector-odbc/src/sink.rs:73-138` | Batch parcial em falha | Envolver em `BEGIN/COMMIT/ROLLBACK` |
-| C12 | `PgVectorSink` sem transação e connection task órfã | `nexus-connector-pgvector/src/sink.rs:33-37,48-103` | Estado parcial; erros não propagados | Usar `client.transaction()` e propagar erros |
+| C9 | `KafkaSource` comita offsets antes do processamento | `nexus-connector-kafka/src/source.rs:181` | Perda de dados em crash | ✅ Resolvido: commit manual só após as batches serem montadas com sucesso (`commit_offsets()` ao final de `read_batches`) |
+| C10 | `KafkaSource` avança offset de mensagens com payload vazio | `nexus-connector-kafka/src/source.rs:154-159` | Dados reais podem ser pulados | ✅ Resolvido: `continue` em payload vazio acontece antes do `last_offsets.insert`, offset só avança após parse OK |
+| C11 | `OdbcSink` sem transação | `nexus-connector-odbc/src/sink.rs:73-138` | Batch parcial em falha | ✅ Resolvido: mesma correção do A12 — cada batch roda dentro de `BEGIN/COMMIT/ROLLBACK` no worker thread dedicado |
+| C12 | `PgVectorSink` sem transação e connection task órfã | `nexus-connector-pgvector/src/sink.rs:33-37,48-103` | Estado parcial; erros não propagados | ✅ Resolvido: `write_batch` roda upsert+delete dentro de `client.transaction()`; erro da connection task vai pra `tracing::error!` em vez de `eprintln!` descartado |
 
 ### Performance / Operacional
 
 | # | Problema | Onde | Impacto | Ação |
 |---|---|---|---|---|
-| C13 | Modelo ONNX recarregado a cada batch | `nexus-ai/src/embedding/pipeline.rs:127`, `nexus-server/src/runner.rs:218` | Latência extrema; downloads repetidos | Carregar uma vez por run/pipeline |
-| C14 | Fontes materializam tabela inteira em memória | `nexus-core/src/pipeline.rs:213-228` | OOM em tabelas grandes | Streaming lazy ou paginação |
-| C15 | Ausência de timeouts em I/O de conectores | vários | Runtime bloqueado indefinidamente | `tokio::time::timeout` em conexões/queries |
+| C13 | Modelo ONNX recarregado a cada batch | `nexus-ai/src/embedding/pipeline.rs:127`, `nexus-server/src/runner.rs:218` | Latência extrema; downloads repetidos | ✅ Resolvido: `load_embedding_backend()` carrega modelo/cliente uma vez por run (commit `3f2c5d2`) |
+| C14 | Fontes materializam tabela inteira em memória; sinks fan-out serial | `nexus-core/src/pipeline.rs:213-275` | OOM em tabelas grandes; sinks lentos bloqueiam uns aos outros | ✅ Resolvido: `drain_sources` retém materialização apenas onde exigido pelo SQL transform; `fan_out_write` agora delega a `fan_out_write_stream`, que escreve para cada sink em paralelo via broadcast channel |
+| C15 | Ausência de timeouts em I/O de conectores | vários | Runtime bloqueado indefinidamente | ✅ Resolvido: `nexus_core::with_timeout` (novo helper) envolve connect/query/write em todos os 14 conectores (postgres, sqlite, odbc, mongodb, pgvector, deltalake, iceberg, ailake, lancedb, milvus, qdrant, pinecone, chromadb — kafka e rest já tinham timeout próprio). ODBC/ADBC/SQLite locais só cancelam o lado async (a chamada bloqueante na thread/`spawn_blocking` continua rodando — sem cancelamento cross-thread para handles ODBC/ADBC brutos) |
 
 ---
 
@@ -54,26 +54,26 @@ No entanto, existem **riscos críticos de segurança e dados** que precisam de a
 
 | # | Problema | Onde | Ação |
 |---|---|---|---|
-| A1 | Sem revogação de JWT | `nexus-server/src/auth.rs:21-24` | Blocklist de tokens ou TTL curto + refresh |
-| A2 | Scheduler sem coordenação em multi-réplica | `nexus-server/src/scheduler.rs:19-29` | Lock distribuído ou documentar single-node |
-| A3 | `dbt.rs` sem timeout nem limite de saída | `nexus-server/src/dbt.rs:178-262` | `tokio::time::timeout` + limitar buffers stdout/stderr |
+| A1 | Sem revogação de JWT | `nexus-server/src/auth.rs:21-24` | ✅ Resolvido: `TokenBlocklist` em memória com `JwtCodec::with_blocklist`; `/auth/logout` adiciona token à blocklist |
+| A2 | Scheduler sem coordenação em multi-réplica | `nexus-server/src/scheduler.rs:19-29` | ✅ Escopo deliberado: documentado em `ARCHITECTURE.md §6` que o MVP/OSS é single-node; não é bug, é decisão de escopo |
+| A3 | `dbt.rs` sem timeout nem limite de saída | `nexus-server/src/dbt.rs:178-262` | ✅ Resolvido: timeout via `NEXUS_DBT_TIMEOUT_SECONDS` (default 300s) + truncamento de stdout/stderr em 1 MiB |
 | A4 | `sanitize_error` não remove credenciais em query strings | `nexus-server/src/error.rs:80-113` | Usar `url::Url` para sanitizar query params |
 | A5 | `ProgressHub` usa `std::sync::Mutex` em async | `nexus-server/src/progress.rs:14-37` | Migrar para `tokio::sync::Mutex` |
 | A6 | `alerts.rs` fire-and-forget sem observar tasks | `nexus-server/src/alerts.rs:35-46` | Logar falhas; aguardar JoinHandle em testes |
 | A7 | `pipeline_id` sem restrição de caracteres/comprimento | `nexus-core/src/dag.rs:162-164` | Validar `[A-Za-z0-9_-]{1,128}` |
 | A8 | `NodeSpec.name` não validado como identificador SQL seguro | `nexus-core/src/dag.rs:161-201` | Aplicar `validate_identifier` |
-| A9 | `split_by_opcode` trata opcode inválido como upsert | `nexus-core/src/cdc.rs:62-67` | Rejeitar opcodes desconhecidos |
+| A9 | `split_by_opcode` trata opcode inválido como upsert | `nexus-core/src/cdc.rs:62-67` | ⚠️ Parcial: opcode nulo agora é rejeitado com erro; uma string desconhecida (nem `I`/`U`/`D`) ainda cai em `!= Delete` e vira upsert silenciosamente — falta rejeitar valores fora do enum `Opcode` |
 
 ### Conectores
 
 | # | Problema | Onde | Ação |
 |---|---|---|---|
-| A10 | Materialização eager em fontes SQL/lakehouse | `postgres/source.rs`, `sqlite/source.rs`, `deltalake/source.rs`, `parquet/source.rs` | Retornar streams lazy |
-| A11 | `MongoSink` linha a linha | `nexus-connector-mongodb/src/sink.rs:72-98` | Usar `bulk_write` |
-| A12 | `OdbcSink` abre conexão por batch e N round-trips | `nexus-connector-odbc/src/sink.rs:73-138` | Reaproveitar conexão; usar bulk parameters |
-| A13 | `AilakeSource` carrega todos os deletes em memória | `nexus-connector-ailake/src/source.rs:99-126` | Aplicar deletes file-a-file ou usar filtro nativo |
-| A14 | `RestSource` sem timeout/retry/rate-limit | `nexus-connector-rest/src/source.rs:30-53` | Adicionar configuração de resiliência |
-| A15 | `PostgresSource` assume PK `Int64` | `nexus-connector-postgres/src/introspect.rs:29-75` | Suportar outros tipos ordinais ou validar |
+| A10 | Materialização eager em fontes SQL/lakehouse | `postgres/source.rs`, `sqlite/source.rs`, `deltalake/source.rs`, `parquet/source.rs`, `ailake/source.rs`, `rest/source.rs` | ✅ Resolvido: todas as sources listadas agora retornam streams lazy; Kafka e Iceberg já eram streaming |
+| A11 | `MongoSink` linha a linha | `nexus-connector-mongodb/src/sink.rs:72-98` | ✅ Resolvido: `MongoSink` detecta MongoDB >= 8.0 via `buildInfo` e usa `Client::bulk_write` com `ReplaceOne`/`DeleteOne`; servidores mais antigos mantêm o fallback concorrente com `buffer_unordered` |
+| A12 | `OdbcSink` abre conexão por batch e N round-trips | `nexus-connector-odbc/src/sink.rs:73-138` | ✅ Resolvido: worker thread dedicado mantém `Environment`/`Connection` abertos por toda a vida do sink; cada batch é enviado via channel e executado dentro de uma transação `BEGIN/COMMIT/ROLLBACK`; statements são pré-alocados por batch. Bulk parameters columnares permanecem como melhoria futura quando o driver/destino suportar `MERGE` nativo |
+| A13 | `AilakeSource` carrega todos os data files em memória antes do stream | `nexus-connector-ailake/src/source.rs:142-161` | ✅ Resolvido: `read_batches` agora retorna um stream lazy que lê e filtra cada arquivo de dados um a um; deletes continuam acumulados em `HashSet` porque são esperados pequenos comparados aos data files |
+| A14 | `RestSource` sem timeout/retry/rate-limit | `nexus-connector-rest/src/source.rs:30-53` | ✅ Resolvido: `RestConnectorConfig` adicionou `timeout_seconds`, `retries`, `retry_backoff_seconds` e `requests_per_second`; `reqwest::Client` usa timeout; `fetch_page_with_retry` faz backoff exponencial para erros transientes; `fetch_page_with_rate_limit` enforça RPM entre páginas |
+| A15 | `PostgresSource` assume PK `Int64` | `nexus-connector-postgres/src/introspect.rs:29-75` | ✅ Resolvido: `primary_key_bounds` retorna `PkPartitionKind::Int64` para colunas inteiras (Int8/16/32/64) e `PkPartitionKind::NonNumeric` para outros tipos; `nexus-server` cria uma única partição não-particionada (`range = None`) quando o PK não é inteiro |
 | A16 | `DeltaSink::open()` mascara erros | `nexus-connector-deltalake/src/sink.rs:33-39` | Distinguir `NotFound` de outros erros |
 | A17 | `IcebergSink` pode colidir nomes de arquivo | `nexus-connector-iceberg/src/sink.rs:36-37,115-119` | Usar timestamp/UUID no nome |
 
@@ -81,12 +81,12 @@ No entanto, existem **riscos críticos de segurança e dados** que precisam de a
 
 | # | Problema | Onde | Ação |
 |---|---|---|---|
-| A18 | `useRunProgress` não limpa WebSocket/timeout no desmonte | `frontend/src/hooks/useRunProgress.ts:47,67,73` | Adicionar cleanup e fechar socket |
-| A19 | `useRunProgress` pode aplicar estado de run anterior | `frontend/src/hooks/useRunProgress.ts:103-126` | Invalidar callbacks da run anterior |
-| A20 | WebSocket sem tratamento de erro/timeout | `frontend/src/hooks/useRunProgress.ts:73-99` | `ws.onerror`, timeout de inatividade |
-| A21 | Callback instável `onPipelineLoaded` no `App` | `frontend/src/App.tsx:52`, `DagCanvas.tsx:196-200` | Usar `useCallback` |
-| A22 | Deleção de pipeline sem confirmação | `frontend/src/components/PipelinesList.tsx:133-140` | Adicionar diálogo de confirmação |
-| A23 | JWT em `sessionStorage` sem CSP | `frontend/src/lib/auth.tsx:11`, `index.html` | Adicionar CSP; capturar 401 global |
+| A18 | `useRunProgress` não limpa WebSocket/timeout no desmonte | `frontend/src/hooks/useRunProgress.ts:47,67,73` | ✅ Resolvido: `useEffect` de cleanup fecha WebSocket, aborta fetch e limpa timer de inatividade |
+| A19 | `useRunProgress` pode aplicar estado de run anterior | `frontend/src/hooks/useRunProgress.ts:103-126` | ✅ Resolvido: `cleanupRun()` reseta estado e refs antes de iniciar nova run; callbacks usam refs estáveis |
+| A20 | WebSocket sem tratamento de erro/timeout | `frontend/src/hooks/useRunProgress.ts:73-99` | ✅ Resolvido: `ws.onerror`, `ws.onclose`, timeout de inatividade de 30s e fallback para polling do histórico |
+| A21 | Callback instável `onPipelineLoaded` no `App` | `frontend/src/App.tsx:52`, `DagCanvas.tsx:196-200` | ✅ Resolvido: `onPipelineLoaded` envolvido em `useCallback` no `App` |
+| A22 | Deleção de pipeline sem confirmação | `frontend/src/components/PipelinesList.tsx:133-140` | ✅ Resolvido: diálogo inline de confirmação com Cancelar/Confirmar |
+| A23 | JWT em `sessionStorage` sem CSP | `frontend/src/lib/auth.tsx:11`, `index.html` | ✅ Parcialmente resolvido: 401 global capturado em `api.ts` (`onUnauthorized`); CSP no `index.html` ainda pendente |
 | A24 | `radix-ui` inteiro como dependência | `frontend/package.json:20` | Trocar por pacotes individuais |
 | A25 | `shadcn` em dependencies | `frontend/package.json:23` | Mover para devDependencies ou remover |
 | A26 | Zero testes de comportamento | `frontend/src/lib/utils.test.ts` (único) | Adicionar testes para hooks e componentes |
@@ -95,15 +95,15 @@ No entanto, existem **riscos críticos de segurança e dados** que precisam de a
 
 | # | Problema | Onde | Ação |
 |---|---|---|---|
-| A27 | Workflows sem `permissions` explícitas | `.github/workflows/*.yml` | Adicionar `permissions: contents: read` mínimas |
-| A28 | Workflows sem `timeout-minutes` | `.github/workflows/*.yml` | Definir timeouts por job |
+| A27 | Workflows sem `permissions` explícitas | `.github/workflows/*.yml` | ✅ Resolvido: `permissions: contents: read` (mínimo) declarado em `ci.yml`, `release.yml` e `connectors-heavy.yml` |
+| A28 | Workflows sem `timeout-minutes` | `.github/workflows/*.yml` | ✅ Resolvido: todo job dos 3 workflows tem `timeout-minutes` |
 | A29 | Tags flutuantes de imagens base no Dockerfile | `Dockerfile:17,26,37,46,80` | Pin por digest SHA-256 |
-| A30 | Actions de terceiros sem pin por SHA | todos workflows | Pin por SHA com Dependabot |
+| A30 | Actions de terceiros sem pin por SHA | todos workflows | ✅ Resolvido: 9 SHAs fabricados/inválidos corrigidos e verificados via `git ls-remote --tags` contra cada repo upstream |
 | A31 | Build ADBC sem pin de tag/commit | `scripts/build-adbc-*.sh:39-40` | Fixar `ADBC_REF` e verificar integridade |
-| A32 | Instalação Rust no Windows sem verificação | `.github/workflows/connectors-heavy.yml:39-40` | Verificar checksum/assinatura |
+| A32 | Instalação Rust no Windows sem verificação | `.github/workflows/connectors-heavy.yml:39-40` | ✅ Resolvido: `Get-FileHash -Algorithm SHA256` do `rustup-init.exe` comparado contra hash esperado antes de rodar |
 | A33 | Runners self-hosted sem isolamento para PRs | `.github/workflows/ci.yml` | Usar GitHub-hosted para PRs ou isolar |
-| A34 | Rebuilds redundantes de frontend/ADBC/binário | vários jobs | Usar artifacts compartilhados |
-| A35 | Releases sem assinatura | `.github/workflows/release.yml` | Assinar com cosign/GPG |
+| A34 | Rebuilds redundantes de frontend/ADBC/binário | vários jobs | ✅ Resolvido: CI `ci.yml` agora faz upload de `frontend/dist` no job `frontend` e o reutiliza nos jobs `clippy` e `test` via `download-artifact` (A34). Release continua construindo ADBC drivers uma vez por tarball; Docker ainda recompila — melhoria adicional possível reaproveitando tarball no Dockerfile |
+| A35 | Releases sem assinatura | `.github/workflows/release.yml` | ✅ Resolvido: job `publish` importa chave GPG (`crazy-max/ghaction-import-gpg`) e gera assinaturas `.asc` para cada tarball e para `SHA256SUMS`; artefatos assinados são anexados ao release GitHub. Requer secrets `GPG_PRIVATE_KEY` e `GPG_PASSPHRASE` |
 
 ---
 
@@ -132,7 +132,7 @@ No entanto, existem **riscos críticos de segurança e dados** que precisam de a
 | M19 | IDs de node globais e mutáveis | `frontend/src/components/DagCanvas.tsx:39`, `lib/dag.ts:191` | Usar `crypto.randomUUID()` ou contador no componente |
 | M20 | `handleImport` não valida JSON | `frontend/src/components/DagCanvas.tsx:188-191` | Validar schema mínimo |
 | M21 | Ausência de Error Boundary | `frontend/src/main.tsx` | Adicionar Error Boundary |
-| M22 | Bundle carrega DAG em todas as views | `frontend/src/App.tsx` | `React.lazy` + `Suspense` |
+| M22 | Bundle carrega DAG em todas as views | `frontend/src/App.tsx` | ✅ Resolvido: `DagCanvas`, `PipelinesList`, `PipelineStatusBoard` e `UsersPanel` são carregados via `React.lazy`; `Suspense` exibe fallback enquanto a view é carregada; build gera chunks separados para cada rota |
 | M23 | `index.html` lang="en" fixo | `frontend/index.html:2` | Sincronizar com idioma selecionado |
 | M24 | Falta de smoke test nos releases | `.github/workflows/release.yml` | Extrair tarball e rodar `--version` |
 | M25 | Build de Windows/macOS inacabado | `packaging/windows/`, `packaging/macos/` | Validar e finalizar scripts |
@@ -146,10 +146,10 @@ No entanto, existem **riscos críticos de segurança e dados** que precisam de a
 | D1 | Stack inclui "Next.js (TypeScript) ou Vite" | Usa Vite apenas | Atualizar `CLAUDE.md` |
 | D2 | Conectores MySQL, DuckDB, Snowflake, BigQuery, ClickHouse ADBC | Não existem crates | Atualizar matriz ou implementar |
 | D3 | Arrow Flight SQL connectors | Nenhum registrado | Atualizar matriz ou implementar |
-| D4 | Alertas Teams/PagerDuty/Email/Webhook | Só Slack implementado | Atualizar docs ou implementar |
-| D5 | Stats de hardware no WebSocket | Não implementado | Atualizar docs ou implementar |
+| D4 | Alertas Teams/PagerDuty/Email/Webhook | Slack implementado | ✅ Resolvido: Slack, MS Teams, PagerDuty, Email (SMTP STARTTLS) e Webhook genérico implementados; docs atualizadas |
+| D5 | Stats de hardware no WebSocket | Não implementado | ✅ Resolvido: `hardware_stats.rs` amostra CPU/memória a cada 2s e envia frame `{"hardware_stats": {...}}` pelo WS de progresso |
 | D6 | CDC nativo via WAL/binlog | Só Debezium+Kafka | Atualizar docs |
-| D7 | Features CUDA/Metal/API de embeddings | CPU apenas | Atualizar docs ou implementar |
+| D7 | Features CUDA/Metal/API de embeddings | CPU apenas | ✅ Resolvido: features `api` (HTTP externo), `cuda` (ONNX CUDA EP) e `metal` (CoreML EP) registradas e compiláveis; validação em hardware real pendente |
 | D8 | Cron com 5 ou 6 campos (Quartz) | Verificar suporte real | Atualizar docs se só 5 campos |
 | D9 | GETTING_STARTED exemplo `postgres → sqlite` com path absoluto | `runner.rs:37-44` rejeita path absoluto | Corrigir exemplo ou regra |
 | D10 | README: "MVP completo e além" | Muitos itens aspiracionais | Atenuar declaração ou listar gaps |

@@ -49,6 +49,7 @@ async fn source_reads_documents_as_record_batches() {
         primary_key: "id".into(),
         fields: fields(),
         batch_size: 1000,
+        timeout_seconds: 30,
     };
 
     let mut source = MongoSource::connect(&config)
@@ -78,6 +79,7 @@ async fn sink_upsert_is_idempotent_on_replay() {
         primary_key: "id".into(),
         fields: fields(),
         batch_size: 1000,
+        timeout_seconds: 30,
     };
 
     let schema = arrow_schema::Schema::new(vec![

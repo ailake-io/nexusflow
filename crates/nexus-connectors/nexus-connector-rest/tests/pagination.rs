@@ -43,6 +43,10 @@ async fn no_pagination_reads_single_page() {
         rows_path: None,
         pagination: RestPagination::None,
         max_pages: 10,
+        timeout_seconds: 5,
+        retries: 0,
+        retry_backoff_seconds: 0,
+        requests_per_second: 0,
     };
 
     let mut source = RestSource::connect(&config).unwrap();
@@ -90,6 +94,10 @@ async fn offset_pagination_stops_on_short_page() {
             limit: 2,
         },
         max_pages: 10,
+        timeout_seconds: 5,
+        retries: 0,
+        retry_backoff_seconds: 0,
+        requests_per_second: 0,
     };
 
     let mut source = RestSource::connect(&config).unwrap();
@@ -138,6 +146,10 @@ async fn cursor_pagination_stops_when_next_cursor_absent() {
             next_cursor_path: "next_cursor".into(),
         },
         max_pages: 10,
+        timeout_seconds: 5,
+        retries: 0,
+        retry_backoff_seconds: 0,
+        requests_per_second: 0,
     };
 
     let mut source = RestSource::connect(&config).unwrap();

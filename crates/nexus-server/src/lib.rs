@@ -8,6 +8,7 @@ mod dbt;
 #[cfg(feature = "embed-ui")]
 mod embedded_ui;
 mod error;
+mod hardware_stats;
 mod pipeline_store;
 mod progress;
 mod rate_limit;
@@ -15,7 +16,7 @@ mod runner;
 mod scheduler;
 pub mod telemetry;
 
-use alerts::AlertNotifier;
+use alerts::{AlertConfig, AlertNotifier};
 use auth::{require_role, Claims, JwtCodec, Role, TokenBlocklist};
 use auth_store::AuthStore;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -71,6 +72,8 @@ struct AppState {
     progress: ProgressHub,
     alerts: AlertNotifier,
     login_rate_limiter: std::sync::Arc<rate_limit::LoginRateLimiter>,
+    /// `NEXUS_ALLOW_INTERNAL_HOSTS` — see `PipelineSpec::validate_security_with`.
+    allow_internal_hosts: bool,
 }
 
 impl From<PipelineStoreError> for ApiError {
@@ -385,7 +388,7 @@ async fn run_pipeline_handler(
     let effective_spec = if let Some(spec) = persisted {
         spec
     } else if claims.role >= Role::Write {
-        spec.validate_security()
+        spec.validate_security_with(state.allow_internal_hosts)
             .map_err(|e| ApiError::bad_request(e.to_string()))?;
         spec
     } else {
@@ -502,7 +505,7 @@ async fn create_pipeline_handler(
 ) -> Result<(StatusCode, Json<PipelineSummary>), ApiError> {
     spec.validate()
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
-    spec.validate_security()
+    spec.validate_security_with(state.allow_internal_hosts)
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
     connectors::validate_pipeline_configs(&spec)
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
@@ -556,7 +559,7 @@ async fn update_pipeline_handler(
     }
     spec.validate()
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
-    spec.validate_security()
+    spec.validate_security_with(state.allow_internal_hosts)
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
     connectors::validate_pipeline_configs(&spec)
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
@@ -750,10 +753,23 @@ async fn authorize_progress_subscription(
         .ok_or_else(|| ApiError::not_found(format!("run {run_id} not found or already finished")))
 }
 
+/// How often a `hardware_stats` frame is interleaved into the progress
+/// stream — frequent enough to feel "live" without meaningfully competing
+/// with `ProgressEvent` traffic for bandwidth.
+const HARDWARE_STATS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
 async fn forward_progress(
     mut socket: WebSocket,
     mut rx: tokio::sync::broadcast::Receiver<nexus_core::ProgressEvent>,
 ) {
+    let mut hardware = hardware_stats::HardwareMonitor::new();
+    let mut hardware_ticker = tokio::time::interval(HARDWARE_STATS_INTERVAL);
+    // The first tick fires immediately; sysinfo's CPU usage is only
+    // meaningful as a delta between two refreshes, so the first sample sent
+    // to the client is discarded rather than shipped as a misleading 0%.
+    hardware_ticker.tick().await;
+    hardware.sample();
+
     loop {
         tokio::select! {
             event = rx.recv() => {
@@ -769,6 +785,14 @@ async fn forward_progress(
                     // mean the next one it does get is still consistent.
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            _ = hardware_ticker.tick() => {
+                let stats = hardware.sample();
+                let json = serde_json::to_string(&serde_json::json!({ "hardware_stats": stats }))
+                    .expect("HardwareStats always serializes");
+                if socket.send(Message::Text(json.into())).await.is_err() {
+                    break;
                 }
             }
             incoming = socket.recv() => {
@@ -798,6 +822,23 @@ pub struct ServerConfig {
     /// `NEXUS_SLACK_WEBHOOK_URL` — `None` just means alerting is off, not a
     /// startup failure (see `alerts.rs`).
     pub slack_webhook_url: Option<String>,
+    /// `NEXUS_TEAMS_WEBHOOK_URL` — same "off is fine" contract as Slack's.
+    pub teams_webhook_url: Option<String>,
+    /// `NEXUS_PAGERDUTY_ROUTING_KEY` — same "off is fine" contract as
+    /// Slack's. PagerDuty's Events API posts to one fixed endpoint for
+    /// every account, so this is a routing key, not a URL (see alerts.rs).
+    pub pagerduty_routing_key: Option<String>,
+    /// Email alert channel config — `None` means the channel is off.
+    pub email: Option<alerts::EmailConfig>,
+    /// `NEXUS_ALERT_WEBHOOK_URL` — same "off is fine" contract as Slack's.
+    pub webhook_url: Option<String>,
+    /// `NEXUS_ALLOW_INTERNAL_HOSTS` — opt-in for self-hosted deployments that
+    /// need pipelines to reach their own private network. See
+    /// `PipelineSpec::validate_security_with`'s doc for why this defaults to
+    /// `false`. Off by default even in this struct: every other field here
+    /// documents an env var that degrades gracefully when unset (alerts just
+    /// stay off); this one weakens SSRF protection, so it's opt-in only.
+    pub allow_internal_hosts: bool,
 }
 
 async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
@@ -822,8 +863,15 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         secrets,
         pipelines,
         progress: ProgressHub::default(),
-        alerts: AlertNotifier::new(config.slack_webhook_url.clone()),
+        alerts: AlertNotifier::new(AlertConfig {
+            slack_webhook_url: config.slack_webhook_url.clone(),
+            teams_webhook_url: config.teams_webhook_url.clone(),
+            pagerduty_routing_key: config.pagerduty_routing_key.clone(),
+            email: config.email.clone(),
+            webhook_url: config.webhook_url.clone(),
+        }),
         login_rate_limiter: std::sync::Arc::new(rate_limit::LoginRateLimiter::default()),
+        allow_internal_hosts: config.allow_internal_hosts,
     })
 }
 
@@ -837,6 +885,36 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
 pub async fn build_app(config: &ServerConfig) -> anyhow::Result<Router> {
     let state = build_state(config).await?;
     Ok(router(state))
+}
+
+/// Parses the optional Email alert channel from environment variables.
+/// Returns `None` if the minimum required fields (`SMTP_HOST`, `FROM`, `TO`)
+/// are not all present — same "channel is off" contract as the webhook
+/// channels.
+fn parse_email_config_from_env() -> Option<alerts::EmailConfig> {
+    let smtp_host = std::env::var("NEXUS_EMAIL_SMTP_HOST").ok()?;
+    let smtp_port = std::env::var("NEXUS_EMAIL_SMTP_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(587);
+    let from = std::env::var("NEXUS_EMAIL_FROM").ok()?;
+    let to = std::env::var("NEXUS_EMAIL_TO")
+        .ok()?
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
+    if to.is_empty() {
+        return None;
+    }
+    Some(alerts::EmailConfig {
+        smtp_host,
+        smtp_port,
+        username: std::env::var("NEXUS_EMAIL_SMTP_USERNAME").ok(),
+        password: std::env::var("NEXUS_EMAIL_SMTP_PASSWORD").ok(),
+        from,
+        to,
+    })
 }
 
 /// Boots the server. This is the only orchestration entrypoint — `src/main.rs`
@@ -887,6 +965,39 @@ pub async fn run() -> anyhow::Result<()> {
             "NEXUS_SLACK_WEBHOOK_URL not set — pipeline failures will not raise a Slack alert"
         );
     }
+    let teams_webhook_url = std::env::var("NEXUS_TEAMS_WEBHOOK_URL").ok();
+    if teams_webhook_url.is_none() {
+        tracing::warn!(
+            "NEXUS_TEAMS_WEBHOOK_URL not set — pipeline failures will not raise a Teams alert"
+        );
+    }
+    let pagerduty_routing_key = std::env::var("NEXUS_PAGERDUTY_ROUTING_KEY").ok();
+    if pagerduty_routing_key.is_none() {
+        tracing::warn!(
+            "NEXUS_PAGERDUTY_ROUTING_KEY not set — pipeline failures will not page PagerDuty"
+        );
+    }
+    let email = parse_email_config_from_env();
+    if email.is_none() {
+        tracing::warn!(
+            "NEXUS_EMAIL_SMTP_HOST/NEXUS_EMAIL_TO not set — pipeline failures will not send email alerts"
+        );
+    }
+    let webhook_url = std::env::var("NEXUS_ALERT_WEBHOOK_URL").ok();
+    if webhook_url.is_none() {
+        tracing::warn!(
+            "NEXUS_ALERT_WEBHOOK_URL not set — pipeline failures will not raise a generic webhook alert"
+        );
+    }
+    let allow_internal_hosts = std::env::var("NEXUS_ALLOW_INTERNAL_HOSTS")
+        .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+    if allow_internal_hosts {
+        tracing::warn!(
+            "NEXUS_ALLOW_INTERNAL_HOSTS=true — pipelines may target this deployment's private \
+             network (10.0.0.0/8, 192.168.0.0/16, 127.0.0.1, etc). Only set this on trusted \
+             self-hosted deployments, never on a multi-tenant/shared instance."
+        );
+    }
 
     let state = build_state(&ServerConfig {
         checkpoint_database_url: database_url,
@@ -897,6 +1008,11 @@ pub async fn run() -> anyhow::Result<()> {
         bootstrap_admin,
         encryption_key_hex,
         slack_webhook_url,
+        teams_webhook_url,
+        pagerduty_routing_key,
+        email,
+        webhook_url,
+        allow_internal_hosts,
     })
     .await?;
 
@@ -986,11 +1102,12 @@ mod tests {
             secrets: SecretCipher::from_hex_key(&"ab".repeat(32)).unwrap(),
             pipelines: PipelineStore::connect("sqlite::memory:").await.unwrap(),
             progress: ProgressHub::default(),
-            alerts: AlertNotifier::new(None),
+            alerts: AlertNotifier::new(AlertConfig::default()),
             login_rate_limiter: std::sync::Arc::new(rate_limit::LoginRateLimiter::new(
                 std::time::Duration::from_secs(60),
                 10_000,
             )),
+            allow_internal_hosts: false,
         }
     }
 
@@ -1457,9 +1574,12 @@ mod tests {
         let token = bearer(&state, Role::Write);
         let app = router(state);
 
+        // "rest", not "sqlite" — sqlite/lancedb/ailake/iceberg/deltalake are
+        // exempt from the absolute-path check, their config is local-path-
+        // based by design (see dag.rs's `is_local_path_connector`).
         let body = serde_json::json!({
             "pipeline_id": "p1",
-            "sources": [{"connector": "sqlite", "config": {"path": "/etc/passwd"}}],
+            "sources": [{"connector": "rest", "config": {"path": "/etc/passwd"}}],
             "sinks": [{"connector": "sqlite", "config": {"path": "out.db"}}]
         });
 
@@ -2025,8 +2145,9 @@ mod tests {
             secrets: SecretCipher::from_hex_key(&"ab".repeat(32)).unwrap(),
             pipelines: PipelineStore::connect("sqlite::memory:").await.unwrap(),
             progress: ProgressHub::default(),
-            alerts: AlertNotifier::new(None),
+            alerts: AlertNotifier::new(AlertConfig::default()),
             login_rate_limiter: limiter,
+            allow_internal_hosts: false,
         };
         let app = router(state);
 

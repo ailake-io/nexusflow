@@ -12,4 +12,13 @@ pub struct DeltaConnectorConfig {
     pub table_uri: String,
     /// Column used to upsert on write.
     pub primary_key: String,
+    /// Timeout in seconds for each call to the table's storage backend
+    /// (open, create, write, delete) — matters most for ADLS/S3/GCS URIs,
+    /// the only case where a call can actually stall on the network (C15).
+    #[serde(default = "default_timeout_seconds")]
+    pub timeout_seconds: u64,
+}
+
+fn default_timeout_seconds() -> u64 {
+    30
 }

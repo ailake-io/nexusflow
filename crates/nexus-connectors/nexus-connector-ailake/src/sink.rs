@@ -11,7 +11,7 @@ use ailake_store::local::LocalStore;
 use ailake_store::store::Store;
 use arrow_array::RecordBatch;
 use async_trait::async_trait;
-use nexus_core::{split_by_opcode, CheckpointCursor, NexusError, Sink};
+use nexus_core::{split_by_opcode, with_timeout, CheckpointCursor, NexusError, Sink};
 use std::sync::Arc;
 
 /// AI-Lake sink — writes into the self-contained Parquet+HNSW vector-native
@@ -28,6 +28,7 @@ pub struct AilakeSink {
     policy: VectorStoragePolicy,
     primary_key: String,
     embedding_column: String,
+    timeout_seconds: u64,
 }
 
 const FORMAT_VERSION: u8 = 2;
@@ -50,6 +51,7 @@ impl AilakeSink {
             policy,
             primary_key: cfg.primary_key.clone(),
             embedding_column: cfg.embedding_column.clone(),
+            timeout_seconds: cfg.timeout_seconds,
         })
     }
 
@@ -57,31 +59,34 @@ impl AilakeSink {
         if batch.num_rows() == 0 {
             return Ok(());
         }
-        let embeddings = extract_embeddings(&batch, &self.embedding_column)?;
-        // ailake_query::writer::TableWriter appends its own vector column
-        // from `embeddings` — the tabular batch handed to it must not
-        // already carry one under the same name (see `drop_column`'s doc).
-        let tabular = drop_column(&batch, &self.embedding_column)?;
-        // Bridge across the arrow-array version boundary (see bridge.rs).
-        let tabular = to_old_batch(&tabular)?;
-        let mut writer = TableWriter::create_or_open(
-            self.catalog.clone(),
-            self.store.clone(),
-            self.policy.clone(),
-            self.table.clone(),
-            FORMAT_VERSION,
-        )
+        with_timeout(self.timeout_seconds, "ailake upsert", async {
+            let embeddings = extract_embeddings(&batch, &self.embedding_column)?;
+            // ailake_query::writer::TableWriter appends its own vector column
+            // from `embeddings` — the tabular batch handed to it must not
+            // already carry one under the same name (see `drop_column`'s doc).
+            let tabular = drop_column(&batch, &self.embedding_column)?;
+            // Bridge across the arrow-array version boundary (see bridge.rs).
+            let tabular = to_old_batch(&tabular)?;
+            let mut writer = TableWriter::create_or_open(
+                self.catalog.clone(),
+                self.store.clone(),
+                self.policy.clone(),
+                self.table.clone(),
+                FORMAT_VERSION,
+            )
+            .await
+            .map_err(|e| NexusError::Connector(format!("ailake create_or_open failed: {e}")))?;
+            writer
+                .write_batch(&tabular, &embeddings)
+                .await
+                .map_err(|e| NexusError::Connector(format!("ailake write_batch failed: {e}")))?;
+            writer
+                .commit()
+                .await
+                .map_err(|e| NexusError::Connector(format!("ailake commit failed: {e}")))?;
+            Ok(())
+        })
         .await
-        .map_err(|e| NexusError::Connector(format!("ailake create_or_open failed: {e}")))?;
-        writer
-            .write_batch(&tabular, &embeddings)
-            .await
-            .map_err(|e| NexusError::Connector(format!("ailake write_batch failed: {e}")))?;
-        writer
-            .commit()
-            .await
-            .map_err(|e| NexusError::Connector(format!("ailake commit failed: {e}")))?;
-        Ok(())
     }
 
     async fn delete(&self, batch: &RecordBatch) -> Result<(), NexusError> {
@@ -90,15 +95,18 @@ impl AilakeSink {
         }
         let ids = extract_pk_strings(batch, &self.primary_key)?;
         let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
-        delete_where(
-            self.catalog.clone(),
-            self.store.clone(),
-            &self.table,
-            &self.primary_key,
-            &refs,
-        )
-        .await
-        .map_err(|e| NexusError::Connector(format!("ailake delete_where failed: {e}")))?;
+        with_timeout(self.timeout_seconds, "ailake delete_where", async {
+            delete_where(
+                self.catalog.clone(),
+                self.store.clone(),
+                &self.table,
+                &self.primary_key,
+                &refs,
+            )
+            .await
+            .map_err(|e| NexusError::Connector(format!("ailake delete_where failed: {e}")))
+        })
+        .await?;
         Ok(())
     }
 }

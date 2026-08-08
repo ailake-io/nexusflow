@@ -1,26 +1,37 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState, lazy, Suspense } from 'react'
 import {
   Workflow,
   List,
   Activity,
   LogOut,
   Sparkles,
+  ShieldCheck,
 } from 'lucide-react'
 import { useAuth } from '@/lib/auth-context'
 import { useI18n } from '@/lib/i18n'
 import { LoginForm } from '@/components/LoginForm'
-import { DagCanvas } from '@/components/DagCanvas'
-import { PipelinesList } from '@/components/PipelinesList'
-import { PipelineStatusBoard } from '@/components/PipelineStatusBoard'
 import { Logo } from '@/components/Logo'
 import { LanguageToggle } from '@/components/LanguageToggle'
 import { Button } from '@/components/ui/button'
 import type { PipelineSpec } from '@/lib/dag'
 
-type View = 'canvas' | 'pipelines' | 'status'
+const DagCanvas = lazy(() => import('@/components/DagCanvas'))
+const PipelinesList = lazy(() => import('@/components/PipelinesList'))
+const PipelineStatusBoard = lazy(() => import('@/components/PipelineStatusBoard'))
+const UsersPanel = lazy(() => import('@/components/UsersPanel'))
+
+type View = 'canvas' | 'pipelines' | 'status' | 'admin'
+
+function ViewFallback() {
+  return (
+    <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+      <span className="animate-pulse">Loading…</span>
+    </div>
+  )
+}
 
 function App() {
-  const { token, logout } = useAuth()
+  const { token, role, logout } = useAuth()
   const { t } = useI18n()
   const [view, setView] = useState<View>('canvas')
   const [pipelineToLoad, setPipelineToLoad] = useState<PipelineSpec | null>(null)
@@ -32,12 +43,28 @@ function App() {
 
   const handlePipelineLoaded = useCallback(() => setPipelineToLoad(null), [])
 
+  // `view` is plain component state, not a route — it doesn't reset on its
+  // own when a different (non-Admin) user logs in on the same tab, which
+  // would otherwise leave them staring at a 403'd Admin panel instead of
+  // Canvas. The /users routes are still Admin-enforced server-side either
+  // way; this only fixes the UX of the stale client-side state.
+  useEffect(() => {
+    if (role !== 'admin' && view === 'admin') {
+      setView('canvas')
+    }
+  }, [role, view])
+
   if (!token) return <LoginForm />
 
   const navItems: { id: View; label: string; icon: typeof Workflow }[] = [
     { id: 'canvas', label: t('nav.canvas'), icon: Workflow },
     { id: 'pipelines', label: t('nav.pipelines'), icon: List },
     { id: 'status', label: t('nav.status'), icon: Activity },
+    // Client-side gating only decides visibility of the nav item — the
+    // /users routes are Admin-enforced server-side regardless (auth.rs).
+    ...(role === 'admin'
+      ? [{ id: 'admin' as const, label: t('nav.admin'), icon: ShieldCheck }]
+      : []),
   ]
 
   return (
@@ -109,14 +136,17 @@ function App() {
           </div>
         </div>
         <div className="h-[calc(100vh-3.5rem)] animate-fade-in">
-          {view === 'canvas' && (
-            <DagCanvas
-              pipelineToLoad={pipelineToLoad}
-              onPipelineLoaded={handlePipelineLoaded}
-            />
-          )}
-          {view === 'pipelines' && <PipelinesList onEdit={handleEdit} />}
-          {view === 'status' && <PipelineStatusBoard />}
+          <Suspense fallback={<ViewFallback />}>
+            {view === 'canvas' && (
+              <DagCanvas
+                pipelineToLoad={pipelineToLoad}
+                onPipelineLoaded={handlePipelineLoaded}
+              />
+            )}
+            {view === 'pipelines' && <PipelinesList onEdit={handleEdit} />}
+            {view === 'status' && <PipelineStatusBoard />}
+            {view === 'admin' && <UsersPanel />}
+          </Suspense>
         </div>
       </main>
     </div>

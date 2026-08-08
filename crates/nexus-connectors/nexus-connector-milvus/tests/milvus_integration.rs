@@ -194,6 +194,7 @@ async fn text_chunk_embed_milvus_end_to_end() {
         primary_key: "id".to_string(),
         embedding_column: "embedding".to_string(),
         dimension: 384,
+        timeout_seconds: 30,
     };
     let mut sink = MilvusSink::connect(&sink_cfg).await.expect("sink connects");
     sink.write_batch(batch).await.expect("writes batch");

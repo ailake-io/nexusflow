@@ -25,6 +25,11 @@ pub struct ChromaConnectorConfig {
     pub embedding_column: String,
     /// Vector size — must match the collection's configured dimension.
     pub dimension: usize,
+    /// Per-request timeout in seconds — `reqwest::Client` has no timeout by
+    /// default, so a stalled connection to ChromaDB would otherwise block
+    /// the pipeline indefinitely (C15).
+    #[serde(default = "default_timeout_seconds")]
+    pub timeout_seconds: u64,
 }
 
 fn default_tenant() -> String {
@@ -33,4 +38,8 @@ fn default_tenant() -> String {
 
 fn default_database() -> String {
     "default_database".to_string()
+}
+
+fn default_timeout_seconds() -> u64 {
+    30
 }

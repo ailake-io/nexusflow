@@ -1,17 +1,17 @@
 use crate::checkpoint_store::CheckpointStore;
 use crate::connectors::{build_sink, build_source};
 use nexus_connector_postgres::{
-    primary_key_bounds, split_into_partitions, table_schema, PostgresConnectorConfig, PostgresSink,
-    PostgresSource,
+    primary_key_bounds, split_into_partitions, table_schema, PkPartitionKind,
+    PostgresConnectorConfig, PostgresSink, PostgresSource,
 };
 use nexus_core::{
     CheckpointCursor, DataFusionTransform, PartitionHandle, PartitionStats, PipelineEngine,
     PipelineSpec, ProgressSender, Transform,
 };
 
-#[cfg(feature = "embeddings")]
+#[cfg(any(feature = "embeddings", feature = "embeddings-api"))]
 use arrow_array::RecordBatch as ArrowRecordBatch;
-#[cfg(feature = "embeddings")]
+#[cfg(any(feature = "embeddings", feature = "embeddings-api"))]
 use arrow_schema::SchemaRef as ArrowSchemaRef;
 
 #[tracing::instrument(skip_all, fields(pipeline_id = %spec.pipeline_id))]
@@ -61,26 +61,38 @@ async fn run_linear_pipeline(
     let schema = table_schema(&source_cfg).await?;
     let columns: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
 
-    let Some((min, max)) = primary_key_bounds(&source_cfg).await? else {
-        return Ok(Vec::new());
-    };
-
-    let ranges = split_into_partitions(min, max, spec.partitions);
     let done = checkpoints.done_partitions(&spec.pipeline_id).await?;
-
     let mut handles = Vec::new();
-    for (i, range) in ranges.into_iter().enumerate() {
-        let partition_id = format!("p{i}");
-        if done.contains(&partition_id) {
-            continue;
+
+    match primary_key_bounds(&source_cfg).await? {
+        None => return Ok(Vec::new()),
+        Some(PkPartitionKind::NonNumeric) => {
+            if !done.contains("p0") {
+                let source = PostgresSource::connect(&source_cfg, None).await?;
+                let sink = PostgresSink::connect(&sink_cfg, &columns).await?;
+                handles.push(PartitionHandle {
+                    partition_id: "p0".to_string(),
+                    source: Box::new(source),
+                    sink: Box::new(sink),
+                });
+            }
         }
-        let source = PostgresSource::connect(&source_cfg, Some(range))?;
-        let sink = PostgresSink::connect(&sink_cfg, &columns)?;
-        handles.push(PartitionHandle {
-            partition_id,
-            source: Box::new(source),
-            sink: Box::new(sink),
-        });
+        Some(PkPartitionKind::Int64(min, max)) => {
+            let ranges = split_into_partitions(min, max, spec.partitions);
+            for (i, range) in ranges.into_iter().enumerate() {
+                let partition_id = format!("p{i}");
+                if done.contains(&partition_id) {
+                    continue;
+                }
+                let source = PostgresSource::connect(&source_cfg, Some(range)).await?;
+                let sink = PostgresSink::connect(&sink_cfg, &columns).await?;
+                handles.push(PartitionHandle {
+                    partition_id,
+                    source: Box::new(source),
+                    sink: Box::new(sink),
+                });
+            }
+        }
     }
 
     let engine = PipelineEngine::new(spec.channel_capacity);
@@ -139,13 +151,13 @@ async fn run_transform_pipeline(
 
     let inputs = PipelineEngine::drain_sources(sources).await?;
 
-    #[cfg(feature = "embeddings")]
+    #[cfg(any(feature = "embeddings", feature = "embeddings-api"))]
     let inputs = apply_embedding_stage(inputs, spec.embedding.as_ref()).await?;
-    #[cfg(not(feature = "embeddings"))]
+    #[cfg(not(any(feature = "embeddings", feature = "embeddings-api")))]
     if spec.embedding.is_some() {
         anyhow::bail!(
             "pipeline contains an embedding node but the server was built without \
-             the 'embeddings' feature"
+             the 'embeddings' or 'embeddings-api' feature"
         );
     }
 
@@ -203,7 +215,7 @@ async fn run_transform_pipeline(
     Ok(stats)
 }
 
-#[cfg(feature = "embeddings")]
+#[cfg(any(feature = "embeddings", feature = "embeddings-api"))]
 async fn apply_embedding_stage(
     inputs: Vec<(String, ArrowSchemaRef, Vec<ArrowRecordBatch>)>,
     embedding_spec: Option<&nexus_core::EmbeddingSpec>,
@@ -211,11 +223,17 @@ async fn apply_embedding_stage(
     let Some(spec) = embedding_spec else {
         return Ok(inputs);
     };
+
+    // Load the embedding backend once per run, not once per batch — ONNX
+    // model loading and tokenizer initialization are expensive and must not
+    // repeat for every RecordBatch (REVIEW_ACTION_PLAN C13).
+    let mut backend = nexus_ai::embedding::load_embedding_backend(spec).await?;
+
     let mut out = Vec::with_capacity(inputs.len());
     for (name, schema, batches) in inputs {
         let mut embedded = Vec::with_capacity(batches.len());
         for batch in &batches {
-            embedded.push(nexus_ai::embedding::apply_embedding(batch, spec).await?);
+            embedded.push(nexus_ai::embedding::apply_embedding(batch, spec, &mut backend).await?);
         }
         out.push((name, schema, embedded));
     }

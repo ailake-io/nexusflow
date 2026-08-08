@@ -4,7 +4,9 @@ import {
   progressSocketUrl,
   runPipeline,
   type DbtRunSummary,
+  type HardwareStats,
   type ProgressEvent,
+  type ProgressSocketMessage,
   type RunRecord,
 } from '@/lib/api'
 import type { PipelineSpec } from '@/lib/dag'
@@ -20,6 +22,7 @@ interface UseRunProgressResult {
   status: ExecutionStatus
   runId: number | null
   partitions: Record<string, PartitionProgress>
+  hardwareStats: HardwareStats | null
   error: string | null
   dbtSummary: DbtRunSummary | null
   run: (token: string, spec: PipelineSpec) => void
@@ -42,6 +45,7 @@ export function useRunProgress(): UseRunProgressResult {
   const [status, setStatus] = useState<ExecutionStatus>('idle')
   const [runId, setRunId] = useState<number | null>(null)
   const [partitions, setPartitions] = useState<Record<string, PartitionProgress>>({})
+  const [hardwareStats, setHardwareStats] = useState<HardwareStats | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [dbtSummary, setDbtSummary] = useState<DbtRunSummary | null>(null)
   const lastSample = useRef<Record<string, { event: ProgressEvent; at: number }>>({})
@@ -113,7 +117,11 @@ export function useRunProgress(): UseRunProgressResult {
 
       ws.onmessage = (event) => {
         resetInactivityTimer()
-        const data = JSON.parse(event.data as string) as ProgressEvent
+        const data = JSON.parse(event.data as string) as ProgressSocketMessage
+        if ('hardware_stats' in data) {
+          setHardwareStats(data.hardware_stats)
+          return
+        }
         const now = performance.now()
         const prev = lastSample.current[data.partition_id]
         const elapsedSeconds = prev ? (now - prev.at) / 1000 : 0
@@ -151,6 +159,7 @@ export function useRunProgress(): UseRunProgressResult {
       cleanupRun()
       setStatus('starting')
       setPartitions({})
+      setHardwareStats(null)
       setError(null)
       setDbtSummary(null)
       setRunId(null)
@@ -171,5 +180,5 @@ export function useRunProgress(): UseRunProgressResult {
     [connectSocket, cleanupRun],
   )
 
-  return { status, runId, partitions, error, dbtSummary, run }
+  return { status, runId, partitions, hardwareStats, error, dbtSummary, run }
 }

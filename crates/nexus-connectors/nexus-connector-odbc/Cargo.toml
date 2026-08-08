@@ -25,4 +25,5 @@ odbc-api = { version = "29.0.0", optional = true, default-features = false, feat
 serde = { version = "1.0.229", features = ["derive"] }
 schemars = "1.2.2"
 serde_json = "1.0.151"
-tokio = { version = "1.53.1", features = ["rt"], optional = true }
+tokio = { version = "1.53.1", features = ["rt", "sync", "time"], optional = true }
+tracing = "0.1.41"

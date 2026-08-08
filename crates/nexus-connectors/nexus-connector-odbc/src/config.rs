@@ -20,6 +20,18 @@ pub struct OdbcConnectorConfig {
     /// How many rows to fold into a single `RecordBatch` while scanning.
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
+    /// Timeout in seconds for each batch write to fail if the ODBC worker
+    /// thread doesn't respond in time (a stalled driver call would
+    /// otherwise block the pipeline indefinitely — C15). Only unblocks the
+    /// async side: the blocking ODBC call itself, and the OS thread running
+    /// it, keeps running regardless (no cross-thread cancellation for raw
+    /// ODBC handles).
+    #[serde(default = "default_timeout_seconds")]
+    pub timeout_seconds: u64,
+}
+
+fn default_timeout_seconds() -> u64 {
+    30
 }
 
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]

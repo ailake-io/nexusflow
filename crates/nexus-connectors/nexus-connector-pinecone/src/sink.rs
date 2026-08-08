@@ -22,8 +22,12 @@ pub struct PineconeSink {
 
 impl PineconeSink {
     pub fn connect(cfg: &PineconeConnectorConfig) -> Result<Self, NexusError> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(cfg.timeout_seconds))
+            .build()
+            .map_err(|e| NexusError::Connector(format!("pinecone client build failed: {e}")))?;
         Ok(Self {
-            client: reqwest::Client::new(),
+            client,
             host: cfg.host.trim_end_matches('/').to_string(),
             api_key: cfg.api_key.clone(),
             primary_key: cfg.primary_key.clone(),

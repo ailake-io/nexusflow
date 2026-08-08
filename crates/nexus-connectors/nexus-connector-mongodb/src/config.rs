@@ -21,6 +21,15 @@ pub struct MongoConnectorConfig {
     /// How many documents to fold into a single `RecordBatch` while scanning.
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
+    /// Timeout in seconds for each call to MongoDB (connect, buildInfo,
+    /// bulk_write/replace_one/delete_one) — a stalled connection would
+    /// otherwise block the pipeline indefinitely (C15).
+    #[serde(default = "default_timeout_seconds")]
+    pub timeout_seconds: u64,
+}
+
+fn default_timeout_seconds() -> u64 {
+    30
 }
 
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]

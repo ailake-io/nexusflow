@@ -73,16 +73,37 @@ pub struct EmbeddingSpec {
     pub chunking: ChunkingSpec,
 }
 
+/// Which backend embeds the text — a local ONNX model (features
+/// `cpu`/`cuda`/`metal`) or an external HTTP API (feature `api`). See
+/// CLAUDE.md §4.3. `nexus-ai::embedding::apply_embedding` dispatches on this
+/// tag at runtime; whichever variant is used still needs the matching
+/// Cargo feature compiled into the running binary, or it fails with a clear
+/// error instead of silently falling back to the other backend.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EmbeddingModelSpec {
-    /// Hugging Face repo id, e.g. "sentence-transformers/all-MiniLM-L6-v2".
-    pub repo: String,
-    /// ONNX model file name inside the repo/revision.
-    pub filename: String,
-    /// Tokenizer file name inside the repo/revision.
-    pub tokenizer_filename: String,
-    /// Max token sequence length fed to the model.
-    pub max_length: usize,
+#[serde(rename_all = "snake_case", tag = "backend")]
+pub enum EmbeddingModelSpec {
+    Onnx {
+        /// Hugging Face repo id, e.g. "sentence-transformers/all-MiniLM-L6-v2".
+        repo: String,
+        /// ONNX model file name inside the repo/revision.
+        filename: String,
+        /// Tokenizer file name inside the repo/revision.
+        tokenizer_filename: String,
+        /// Max token sequence length fed to the model.
+        max_length: usize,
+    },
+    Api {
+        /// Base URL of an OpenAI-compatible embeddings endpoint (no
+        /// trailing `/embeddings` — e.g. "https://api.openai.com/v1").
+        base_url: String,
+        /// Model name passed through to the API request body.
+        model: String,
+        /// Name of the environment variable holding the API key on the
+        /// machine running nexus-server — never the key itself (CLAUDE.md
+        /// §5: no secret lives in the persisted DAG JSON).
+        #[serde(default)]
+        api_key_env: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -214,25 +235,48 @@ impl PipelineSpec {
             if embedding.dimension == 0 {
                 return Err(NexusError::Schema("embedding.dimension must be > 0".into()));
             }
-            if embedding.model.repo.trim().is_empty() {
-                return Err(NexusError::Schema(
-                    "embedding.model.repo must not be empty".into(),
-                ));
-            }
-            if embedding.model.filename.trim().is_empty() {
-                return Err(NexusError::Schema(
-                    "embedding.model.filename must not be empty".into(),
-                ));
-            }
-            if embedding.model.tokenizer_filename.trim().is_empty() {
-                return Err(NexusError::Schema(
-                    "embedding.model.tokenizer_filename must not be empty".into(),
-                ));
-            }
-            if embedding.model.max_length == 0 {
-                return Err(NexusError::Schema(
-                    "embedding.model.max_length must be > 0".into(),
-                ));
+            match &embedding.model {
+                EmbeddingModelSpec::Onnx {
+                    repo,
+                    filename,
+                    tokenizer_filename,
+                    max_length,
+                } => {
+                    if repo.trim().is_empty() {
+                        return Err(NexusError::Schema(
+                            "embedding.model.repo must not be empty".into(),
+                        ));
+                    }
+                    if filename.trim().is_empty() {
+                        return Err(NexusError::Schema(
+                            "embedding.model.filename must not be empty".into(),
+                        ));
+                    }
+                    if tokenizer_filename.trim().is_empty() {
+                        return Err(NexusError::Schema(
+                            "embedding.model.tokenizer_filename must not be empty".into(),
+                        ));
+                    }
+                    if *max_length == 0 {
+                        return Err(NexusError::Schema(
+                            "embedding.model.max_length must be > 0".into(),
+                        ));
+                    }
+                }
+                EmbeddingModelSpec::Api {
+                    base_url, model, ..
+                } => {
+                    if base_url.trim().is_empty() {
+                        return Err(NexusError::Schema(
+                            "embedding.model.base_url must not be empty".into(),
+                        ));
+                    }
+                    if model.trim().is_empty() {
+                        return Err(NexusError::Schema(
+                            "embedding.model.model must not be empty".into(),
+                        ));
+                    }
+                }
             }
             match &embedding.chunking {
                 ChunkingSpec::FixedWindow { chunk_size, .. }
@@ -263,18 +307,80 @@ impl PipelineSpec {
     /// internal networks (SSRF) via connector configs. Intended for ad-hoc
     /// runs submitted by callers with `Write`/`Admin`; callers with lower
     /// roles should not be allowed to submit arbitrary specs at all.
+    /// Defaults to blocking internal/private hosts — see
+    /// `validate_security_with` for the self-hosted opt-out.
     pub fn validate_security(&self) -> Result<(), NexusError> {
+        self.validate_security_with(false)
+    }
+
+    /// Same as `validate_security`, but `allow_internal_hosts` lets a
+    /// deployment opt out of the internal/private-host block (source of
+    /// `NEXUS_ALLOW_INTERNAL_HOSTS` — ARCHITECTURE.md §10). NexusFlow is
+    /// self-hosted/on-prem software: its own database infrastructure lives
+    /// on a private network by default, so the multi-tenant-SaaS-style SSRF
+    /// block on `10.0.0.0/8`/`192.168.0.0/16`/`127.0.0.1`/etc otherwise makes
+    /// it impossible to point a pipeline at the deployment's own network.
+    /// Path-traversal and absolute-path checks (dbt project dir, connector
+    /// config strings) still apply regardless — those protect the local
+    /// filesystem, not network topology, and aren't safe to opt out of.
+    pub fn validate_security_with(&self, allow_internal_hosts: bool) -> Result<(), NexusError> {
         for (i, node) in self.sources.iter().enumerate() {
-            validate_node_security(&node.config, &node.connector, "sources", i)?;
+            validate_node_security(
+                &node.config,
+                &node.connector,
+                "sources",
+                i,
+                allow_internal_hosts,
+            )?;
         }
         for (i, node) in self.sinks.iter().enumerate() {
-            validate_node_security(&node.config, &node.connector, "sinks", i)?;
+            validate_node_security(
+                &node.config,
+                &node.connector,
+                "sinks",
+                i,
+                allow_internal_hosts,
+            )?;
         }
         if let Some(dbt) = &self.dbt {
             validate_dbt_project_dir(&dbt.project_dir)?;
         }
+        if let Some(embedding) = &self.embedding {
+            validate_embedding_security(&embedding.model, allow_internal_hosts)?;
+        }
         Ok(())
     }
+}
+
+/// `embedding.model`'s `Api` variant carries a `base_url` the server will
+/// both send requests to *and* attach a real secret (`api_key_env`) to as a
+/// Bearer token — unlike the JSON connector configs above, this field is a
+/// typed Rust struct, not a `serde_json::Value`, so it never went through
+/// `validate_node_security`'s recursive SSRF scan. Without this check, a
+/// `Write`-role pipeline spec could point `base_url` at an internal service
+/// (or attacker-controlled host) and have this server exfiltrate whatever
+/// secret `api_key_env` names straight to it.
+fn validate_embedding_security(
+    model: &EmbeddingModelSpec,
+    allow_internal_hosts: bool,
+) -> Result<(), NexusError> {
+    if let EmbeddingModelSpec::Api { base_url, .. } = model {
+        if base_url.starts_with('/') {
+            return Err(NexusError::Schema(
+                "embedding.model.base_url must not be an absolute path".into(),
+            ));
+        }
+        if !allow_internal_hosts {
+            if let Some(host) = http_host(base_url) {
+                if is_internal_host(&host) {
+                    return Err(NexusError::Schema(
+                        "embedding.model.base_url points to an internal host".into(),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Rejects absolute local paths and internal/private URLs anywhere inside a
@@ -285,27 +391,50 @@ fn validate_node_security(
     connector: &str,
     context: &str,
     index: usize,
+    allow_internal_hosts: bool,
 ) -> Result<(), NexusError> {
     match config {
-        Value::String(s) => validate_string_security(s, connector, context, index, "value"),
+        Value::String(s) => {
+            validate_string_security(s, connector, context, index, "value", allow_internal_hosts)
+        }
         Value::Object(map) => {
             for (key, value) in map {
                 if let Value::String(s) = value {
-                    validate_string_security(s, connector, context, index, key)?;
+                    validate_string_security(
+                        s,
+                        connector,
+                        context,
+                        index,
+                        key,
+                        allow_internal_hosts,
+                    )?;
                 } else {
-                    validate_node_security(value, connector, context, index)?;
+                    validate_node_security(value, connector, context, index, allow_internal_hosts)?;
                 }
             }
             Ok(())
         }
         Value::Array(items) => {
             for item in items {
-                validate_node_security(item, connector, context, index)?;
+                validate_node_security(item, connector, context, index, allow_internal_hosts)?;
             }
             Ok(())
         }
         _ => Ok(()),
     }
+}
+
+/// These connectors' entire config is local-filesystem-based by design —
+/// `uri`/`warehouse`/`table_uri`/`catalog_uri` is documented as a plain path
+/// (or `:memory:`), not a URL a remote caller could redirect. The absolute-
+/// path guard below exists to stop a URL-shaped field (REST/embedding
+/// `base_url`, say) from secretly being a local path instead; it isn't
+/// meant to block these connectors' own, expected, use of one.
+fn is_local_path_connector(connector: &str) -> bool {
+    matches!(
+        connector,
+        "sqlite" | "lancedb" | "ailake" | "iceberg" | "deltalake"
+    )
 }
 
 fn validate_string_security(
@@ -314,21 +443,26 @@ fn validate_string_security(
     context: &str,
     index: usize,
     key: &str,
+    allow_internal_hosts: bool,
 ) -> Result<(), NexusError> {
     // Absolute local path -> reject. URIs with schemes (postgres://,
     // http://, etc.) don't start with '/', so this only catches
-    // filesystem paths.
-    if s.starts_with('/') {
+    // filesystem paths. Exempt connectors whose config is local-path-based
+    // by design (see `is_local_path_connector`).
+    if s.starts_with('/') && !is_local_path_connector(connector) {
         return Err(NexusError::Schema(format!(
             "{context}[{index}] ({connector}): {key} must not be an absolute path"
         )));
     }
-    // HTTP(S) URLs pointing to internal/reserved endpoints -> reject.
-    if let Some(host) = http_host(s) {
-        if is_internal_host(&host) {
-            return Err(NexusError::Schema(format!(
-                "{context}[{index}] ({connector}): {key} points to an internal host"
-            )));
+    // HTTP(S) URLs pointing to internal/reserved endpoints -> reject, unless
+    // this deployment opted into reaching its own private network.
+    if !allow_internal_hosts {
+        if let Some(host) = http_host(s) {
+            if is_internal_host(&host) {
+                return Err(NexusError::Schema(format!(
+                    "{context}[{index}] ({connector}): {key} points to an internal host"
+                )));
+            }
         }
     }
     Ok(())
@@ -537,6 +671,7 @@ mod tests {
                 "output_column": "embedding",
                 "dimension": 384,
                 "model": {
+                    "backend": "onnx",
                     "repo": "sentence-transformers/all-MiniLM-L6-v2",
                     "filename": "model.onnx",
                     "tokenizer_filename": "tokenizer.json",
@@ -554,7 +689,50 @@ mod tests {
         let embedding = spec.embedding.unwrap();
         assert_eq!(embedding.source_column, "body");
         assert_eq!(embedding.dimension, 384);
-        assert_eq!(embedding.model.max_length, 128);
+        match &embedding.model {
+            EmbeddingModelSpec::Onnx { max_length, .. } => assert_eq!(*max_length, 128),
+            EmbeddingModelSpec::Api { .. } => panic!("expected onnx variant"),
+        }
+    }
+
+    #[test]
+    fn parses_pipeline_with_api_embedding_backend() {
+        let json = r#"{
+            "pipeline_id": "embed-api-demo",
+            "sources": [{"connector": "postgres", "config": {}}],
+            "transform": {"sql": "SELECT * FROM source0"},
+            "sinks": [{"connector": "lancedb", "config": {}}],
+            "embedding": {
+                "source_column": "body",
+                "output_column": "embedding",
+                "dimension": 1536,
+                "model": {
+                    "backend": "api",
+                    "base_url": "https://api.openai.com/v1",
+                    "model": "text-embedding-3-small",
+                    "api_key_env": "OPENAI_API_KEY"
+                },
+                "chunking": {
+                    "strategy": "fixed_window",
+                    "chunk_size": 256,
+                    "overlap": 32
+                }
+            }
+        }"#;
+        let spec = PipelineSpec::parse(json).expect("valid api embedding spec parses");
+        let embedding = spec.embedding.unwrap();
+        match &embedding.model {
+            EmbeddingModelSpec::Api {
+                base_url,
+                model,
+                api_key_env,
+            } => {
+                assert_eq!(base_url, "https://api.openai.com/v1");
+                assert_eq!(model, "text-embedding-3-small");
+                assert_eq!(api_key_env.as_deref(), Some("OPENAI_API_KEY"));
+            }
+            EmbeddingModelSpec::Onnx { .. } => panic!("expected api variant"),
+        }
     }
 
     #[test]
@@ -568,7 +746,7 @@ mod tests {
                 "source_column": "",
                 "output_column": "embedding",
                 "dimension": 384,
-                "model": {"repo": "r", "filename": "m.onnx", "tokenizer_filename": "t.json", "max_length": 128},
+                "model": {"backend": "onnx", "repo": "r", "filename": "m.onnx", "tokenizer_filename": "t.json", "max_length": 128},
                 "chunking": {"strategy": "fixed_window", "chunk_size": 256}
             }
         }"#;
@@ -591,14 +769,37 @@ mod tests {
 
     #[test]
     fn validate_security_rejects_absolute_path() {
+        // "rest", not "sqlite" — sqlite/lancedb/ailake/iceberg/deltalake are
+        // exempt from this check, their config is local-path-based by
+        // design (see `is_local_path_connector`). This test exercises the
+        // generic recursive scanner on a connector that isn't.
         let json = r#"{
             "pipeline_id": "p",
-            "sources": [{"connector": "sqlite", "config": {"path": "/etc/passwd"}}],
+            "sources": [{"connector": "rest", "config": {"path": "/etc/passwd"}}],
             "sinks": [{"connector": "postgres", "config": {}}]
         }"#;
         let spec = PipelineSpec::parse(json).unwrap();
-        let err = spec.validate_security().expect_err("absolute path must be rejected");
+        let err = spec
+            .validate_security()
+            .expect_err("absolute path must be rejected");
         assert!(err.to_string().contains("absolute path"));
+    }
+
+    #[test]
+    fn validate_security_allows_absolute_path_for_local_path_connectors() {
+        for connector in ["sqlite", "lancedb", "ailake", "iceberg", "deltalake"] {
+            let json = format!(
+                r#"{{
+                    "pipeline_id": "p",
+                    "sources": [{{"connector": "{connector}", "config": {{"uri": "/data/db.sqlite"}}}}],
+                    "sinks": [{{"connector": "postgres", "config": {{}}}}]
+                }}"#
+            );
+            let spec = PipelineSpec::parse(&json).unwrap();
+            spec.validate_security().unwrap_or_else(|e| {
+                panic!("{connector}'s own local path must not be rejected: {e}")
+            });
+        }
     }
 
     #[test]
@@ -609,7 +810,9 @@ mod tests {
             "sinks": [{"connector": "postgres", "config": {}}]
         }"#;
         let spec = PipelineSpec::parse(json).unwrap();
-        let err = spec.validate_security().expect_err("nested internal URL must be rejected");
+        let err = spec
+            .validate_security()
+            .expect_err("nested internal URL must be rejected");
         assert!(err.to_string().contains("internal host"));
     }
 
@@ -621,7 +824,9 @@ mod tests {
             "sinks": [{"connector": "postgres", "config": {}}]
         }"#;
         let spec = PipelineSpec::parse(json).unwrap();
-        let err = spec.validate_security().expect_err("internal URL in array must be rejected");
+        let err = spec
+            .validate_security()
+            .expect_err("internal URL in array must be rejected");
         assert!(err.to_string().contains("internal host"));
     }
 
@@ -634,7 +839,9 @@ mod tests {
             "dbt": {"project_dir": "../etc", "command": "run"}
         }"#;
         let spec = PipelineSpec::parse(json).unwrap();
-        let err = spec.validate_security().expect_err("dbt path traversal must be rejected");
+        let err = spec
+            .validate_security()
+            .expect_err("dbt path traversal must be rejected");
         assert!(err.to_string().contains("parent-dir"));
     }
 
@@ -646,7 +853,8 @@ mod tests {
             "sinks": [{"connector": "postgres", "config": {}}]
         }"#;
         let spec = PipelineSpec::parse(json).unwrap();
-        spec.validate_security().expect("external URL must be accepted");
+        spec.validate_security()
+            .expect("external URL must be accepted");
     }
 
     #[test]
@@ -657,7 +865,59 @@ mod tests {
             "sinks": [{"connector": "postgres", "config": {}}]
         }"#;
         let spec = PipelineSpec::parse(json).unwrap();
-        let err = spec.validate_security().expect_err("CGNAT host must be rejected");
+        let err = spec
+            .validate_security()
+            .expect_err("CGNAT host must be rejected");
         assert!(err.to_string().contains("internal host"));
+    }
+
+    #[test]
+    fn validate_security_rejects_ssrf_via_embedding_api_base_url() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "postgres", "config": {}}],
+            "sinks": [{"connector": "lancedb", "config": {}}],
+            "embedding": {
+                "source_column": "body",
+                "output_column": "embedding",
+                "dimension": 8,
+                "model": {
+                    "backend": "api",
+                    "base_url": "http://169.254.169.254/latest/meta-data",
+                    "model": "text-embedding-3-small",
+                    "api_key_env": "OPENAI_API_KEY"
+                },
+                "chunking": {"strategy": "fixed_window", "chunk_size": 256}
+            }
+        }"#;
+        let spec = PipelineSpec::parse(json).unwrap();
+        let err = spec.validate_security().expect_err(
+            "embedding API base_url pointing at a cloud metadata endpoint must be rejected",
+        );
+        assert!(err.to_string().contains("internal host"));
+    }
+
+    #[test]
+    fn validate_security_accepts_external_embedding_api_base_url() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "postgres", "config": {}}],
+            "sinks": [{"connector": "lancedb", "config": {}}],
+            "embedding": {
+                "source_column": "body",
+                "output_column": "embedding",
+                "dimension": 8,
+                "model": {
+                    "backend": "api",
+                    "base_url": "https://api.openai.com/v1",
+                    "model": "text-embedding-3-small",
+                    "api_key_env": "OPENAI_API_KEY"
+                },
+                "chunking": {"strategy": "fixed_window", "chunk_size": 256}
+            }
+        }"#;
+        let spec = PipelineSpec::parse(json).unwrap();
+        spec.validate_security()
+            .expect("external embedding API base_url must be accepted");
     }
 }

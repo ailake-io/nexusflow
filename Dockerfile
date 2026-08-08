@@ -55,11 +55,16 @@ ARG FEATURES
 # well-known types that protoc needs to resolve `import "google/protobuf/
 # empty.proto"` — --no-install-recommends drops it otherwise since it's
 # only a Recommends of protobuf-compiler, not a Depends), libsqlite3-dev
-# for iceberg's sqlx "sqlite" feature — kept unconditional since this whole
-# stage is discarded after the build (see the `runtime` stage below), so it
-# costs build time, not final image size.
+# for iceberg's sqlx "sqlite" feature, libcurl4-openssl-dev for kafka's
+# rdkafka-sys vendored librdkafka CMake build (unconditionally probes for
+# libcurl at build time — CI's `connectors` job never hits this because its
+# self-hosted host has libcurl-dev installed system-wide already, outside
+# anything the workflow itself installs; a fresh container image has no
+# such thing) — kept unconditional since this whole stage is discarded
+# after the build (see the `runtime` stage below), so it costs build time,
+# not final image size.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      pkg-config libssl-dev cmake make g++ zlib1g-dev protobuf-compiler libprotobuf-dev libsqlite3-dev python3 \
+      pkg-config libssl-dev cmake make g++ zlib1g-dev protobuf-compiler libprotobuf-dev libsqlite3-dev libcurl4-openssl-dev python3 \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY . .

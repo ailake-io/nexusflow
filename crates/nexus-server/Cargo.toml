@@ -17,6 +17,11 @@ dbt = ["tokio/process"]
 # default because it pulls in ort, hf-hub, tokenizers and ONNX binaries, which
 # significantly increases build time and binary size when not needed.
 embeddings = ["dep:nexus-ai", "nexus-ai/cpu"]
+# Same embedding pipeline stage, but backed by an external HTTP API
+# (nexus-ai's `api` feature) instead of a local ONNX model — no ort/hf-hub/
+# tokenizers in the binary. Independent of `embeddings`; both can be on at
+# once so a `PipelineSpec.embedding.model` of either backend tag works.
+embeddings-api = ["dep:nexus-ai", "nexus-ai/api"]
 # Single-binary deployment (Marco 11, CLAUDE.md §7): embeds frontend/dist
 # into the binary via rust-embed and serves it (with SPA fallback) for any
 # GET that doesn't match an API route. Off by default because rust-embed's
@@ -46,7 +51,7 @@ embed-ui = ["dep:rust-embed"]
 connectors-all = [
     "mongodb", "kafka", "rest", "odbc", "milvus", "qdrant", "lancedb",
     "pgvector", "pinecone", "chromadb", "deltalake", "iceberg", "parquet",
-    "ailake", "embeddings",
+    "ailake", "csv", "embeddings", "embeddings-api",
 ]
 mongodb = ["dep:nexus-connector-mongodb"]
 kafka = ["dep:nexus-connector-kafka", "nexus-connector-kafka/consumer"]
@@ -62,6 +67,7 @@ deltalake = ["dep:nexus-connector-deltalake"]
 iceberg = ["dep:nexus-connector-iceberg"]
 parquet = ["dep:nexus-connector-parquet"]
 ailake = ["dep:nexus-connector-ailake"]
+csv = ["dep:nexus-connector-csv"]
 
 [dependencies]
 aes-gcm = "0.10.3"
@@ -95,6 +101,7 @@ nexus-connector-deltalake = { version = "0.1.0", path = "../nexus-connectors/nex
 nexus-connector-iceberg = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-iceberg", optional = true }
 nexus-connector-parquet = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-parquet", optional = true }
 nexus-connector-ailake = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-ailake", optional = true }
+nexus-connector-csv = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-csv", optional = true }
 nexus-core = { version = "0.1.0", path = "../nexus-core" }
 nexus-ai = { version = "0.1.0", path = "../nexus-ai", optional = true }
 hex = "0.4.3"
@@ -105,6 +112,16 @@ hex = "0.4.3"
 chrono = { version = "0.4.45", features = ["serde"] }
 cron = "0.17.0"
 dashmap = "6.2.1"
+# Hardware stats (CPU/RAM) in the progress WebSocket — CLAUDE.md §6 "UI
+# Real-Time: WebSockets transmitindo estatísticas de hardware".
+sysinfo = "0.37.2"
+# Email alert channel (alerts.rs) — rustls-tls, no native OpenSSL build,
+# consistent with reqwest's own TLS choice elsewhere in this crate.
+lettre = { version = "0.11.19", default-features = false, features = [
+    "tokio1-rustls-tls",
+    "smtp-transport",
+    "builder",
+] }
 reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"

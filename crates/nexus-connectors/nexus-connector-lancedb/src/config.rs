@@ -18,4 +18,13 @@ pub struct LanceDbConnectorConfig {
     pub embedding_column: String,
     /// Vector size — must match the embedding column's actual length.
     pub dimension: usize,
+    /// Timeout in seconds for each call to LanceDB — matters most when
+    /// `uri` points at an object store (S3 etc.) rather than local disk, the
+    /// only case where a call can actually stall on the network (C15).
+    #[serde(default = "default_timeout_seconds")]
+    pub timeout_seconds: u64,
+}
+
+fn default_timeout_seconds() -> u64 {
+    30
 }

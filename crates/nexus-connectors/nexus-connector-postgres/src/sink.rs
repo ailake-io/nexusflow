@@ -5,20 +5,32 @@ use adbc_driver_manager::ManagedConnection;
 use arrow_array::RecordBatch;
 use async_trait::async_trait;
 use nexus_core::quote_identifier;
-use nexus_core::{project_column, split_by_opcode, CheckpointCursor, NexusError, Sink};
+use nexus_core::{
+    project_column, split_by_opcode, with_timeout, CheckpointCursor, NexusError, Sink,
+};
 
 pub struct PostgresSink {
     connection: ManagedConnection,
     upsert_sql: String,
     delete_sql: String,
     primary_key: String,
+    timeout_seconds: u64,
 }
 
 impl PostgresSink {
     /// `columns` must match the column order of every `RecordBatch` passed to
     /// `write_batch` — ADBC binds parameters positionally.
-    pub fn connect(cfg: &PostgresConnectorConfig, columns: &[String]) -> Result<Self, NexusError> {
-        let connection = open_connection(&cfg.uri)?;
+    pub async fn connect(
+        cfg: &PostgresConnectorConfig,
+        columns: &[String],
+    ) -> Result<Self, NexusError> {
+        let uri = cfg.uri.clone();
+        let connection = with_timeout(cfg.timeout_seconds, "postgres connect", async {
+            tokio::task::spawn_blocking(move || open_connection(&uri))
+                .await
+                .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))?
+        })
+        .await?;
         let upsert_sql = build_upsert_sql(&cfg.table, &cfg.primary_key, columns)?;
         let delete_sql = build_delete_sql(&cfg.table, &cfg.primary_key)?;
         Ok(Self {
@@ -26,6 +38,7 @@ impl PostgresSink {
             upsert_sql,
             delete_sql,
             primary_key: cfg.primary_key.clone(),
+            timeout_seconds: cfg.timeout_seconds,
         })
     }
 }
@@ -82,26 +95,29 @@ impl PostgresSink {
         let mut connection = self.connection.clone();
         let sql = sql.to_string();
 
-        tokio::task::spawn_blocking(move || -> Result<(), NexusError> {
-            let mut statement = connection
-                .new_statement()
-                .map_err(|e| NexusError::Connector(e.to_string()))?;
-            statement
-                .set_sql_query(&sql)
-                .map_err(|e| NexusError::Connector(e.to_string()))?;
-            statement
-                .prepare()
-                .map_err(|e| NexusError::Connector(e.to_string()))?;
-            statement
-                .bind(batch)
-                .map_err(|e| NexusError::Connector(e.to_string()))?;
-            statement
-                .execute_update()
-                .map_err(|e| NexusError::Connector(e.to_string()))?;
-            Ok(())
+        with_timeout(self.timeout_seconds, "postgres execute", async {
+            tokio::task::spawn_blocking(move || -> Result<(), NexusError> {
+                let mut statement = connection
+                    .new_statement()
+                    .map_err(|e| NexusError::Connector(e.to_string()))?;
+                statement
+                    .set_sql_query(&sql)
+                    .map_err(|e| NexusError::Connector(e.to_string()))?;
+                statement
+                    .prepare()
+                    .map_err(|e| NexusError::Connector(e.to_string()))?;
+                statement
+                    .bind(batch)
+                    .map_err(|e| NexusError::Connector(e.to_string()))?;
+                statement
+                    .execute_update()
+                    .map_err(|e| NexusError::Connector(e.to_string()))?;
+                Ok(())
+            })
+            .await
+            .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))?
         })
-        .await
-        .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))??;
+        .await?;
 
         Ok(())
     }

@@ -1,4 +1,5 @@
 use nexus_core::{DbtCommand, DbtConfig};
+#[cfg(feature = "dbt")]
 use std::time::Duration;
 
 /// One model/test result from dbt's `target/run_results.json` (schema
@@ -114,6 +115,7 @@ impl DbtOutcome {
     }
 }
 
+#[cfg(feature = "dbt")]
 fn truncate_utf8(bytes: &[u8], max_len: usize) -> String {
     if bytes.len() <= max_len {
         return String::from_utf8_lossy(bytes).into_owned();

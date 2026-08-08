@@ -6,6 +6,8 @@ use nexus_core::{NodeSpec, PipelineSpec, Sink, Source};
 use nexus_connector_ailake::{AilakeConnectorConfig, AilakeSink, AilakeSource};
 #[cfg(feature = "chromadb")]
 use nexus_connector_chromadb::{ChromaConnectorConfig, ChromaSink};
+#[cfg(feature = "csv")]
+use nexus_connector_csv::{CsvConnectorConfig, CsvSink, CsvSource};
 #[cfg(feature = "deltalake")]
 use nexus_connector_deltalake::{DeltaConnectorConfig, DeltaSink, DeltaSource};
 #[cfg(feature = "iceberg")]
@@ -29,7 +31,7 @@ use nexus_connector_pinecone::{PineconeConnectorConfig, PineconeSink};
 #[cfg(feature = "qdrant")]
 use nexus_connector_qdrant::{QdrantConnectorConfig, QdrantSink};
 #[cfg(feature = "rest")]
-use nexus_connector_rest::{RestConnectorConfig, RestSource};
+use nexus_connector_rest::{RestConnectorConfig, RestSource, WebhookSink, WebhookSinkConfig};
 
 /// The only place that knows which connector names exist and how to build
 /// them — `nexus-core`/`PipelineEngine` never hardcode a connector list, see
@@ -86,6 +88,10 @@ pub fn validate_source_config(node: &NodeSpec) -> anyhow::Result<()> {
         "ailake" => {
             let _: AilakeConnectorConfig = serde_json::from_value(node.config.clone())?;
         }
+        #[cfg(feature = "csv")]
+        "csv" => {
+            let _: CsvConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
         other => anyhow::bail!("unsupported source connector: {other:?}"),
     }
     Ok(())
@@ -99,11 +105,11 @@ pub async fn build_source(
     let source: Box<dyn Source> = match node.connector.as_str() {
         "postgres" => {
             let cfg: PostgresConnectorConfig = serde_json::from_value(node.config.clone())?;
-            Box::new(PostgresSource::connect(&cfg, None)?)
+            Box::new(PostgresSource::connect(&cfg, None).await?)
         }
         "sqlite" => {
             let cfg: SqliteConnectorConfig = serde_json::from_value(node.config.clone())?;
-            Box::new(SqliteSource::connect(&cfg)?)
+            Box::new(SqliteSource::connect(&cfg).await?)
         }
         #[cfg(feature = "mongodb")]
         "mongodb" => {
@@ -144,6 +150,11 @@ pub async fn build_source(
         "ailake" => {
             let cfg: AilakeConnectorConfig = serde_json::from_value(node.config.clone())?;
             Box::new(AilakeSource::connect(&cfg).await?)
+        }
+        #[cfg(feature = "csv")]
+        "csv" => {
+            let cfg: CsvConnectorConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(CsvSource::connect(&cfg)?)
         }
         other => anyhow::bail!("unsupported source connector: {other:?}"),
     };
@@ -192,6 +203,10 @@ pub fn validate_sink_config(node: &NodeSpec) -> anyhow::Result<()> {
         "chromadb" => {
             let _: ChromaConnectorConfig = serde_json::from_value(node.config.clone())?;
         }
+        #[cfg(feature = "rest")]
+        "webhook" => {
+            let _: WebhookSinkConfig = serde_json::from_value(node.config.clone())?;
+        }
         #[cfg(feature = "deltalake")]
         "deltalake" => {
             let _: DeltaConnectorConfig = serde_json::from_value(node.config.clone())?;
@@ -207,6 +222,10 @@ pub fn validate_sink_config(node: &NodeSpec) -> anyhow::Result<()> {
         #[cfg(feature = "ailake")]
         "ailake" => {
             let _: AilakeConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "csv")]
+        "csv" => {
+            let _: CsvConnectorConfig = serde_json::from_value(node.config.clone())?;
         }
         other => anyhow::bail!("unsupported sink connector: {other:?}"),
     }
@@ -237,11 +256,11 @@ pub async fn build_sink(
     let sink: Box<dyn Sink> = match node.connector.as_str() {
         "postgres" => {
             let cfg: PostgresConnectorConfig = serde_json::from_value(node.config.clone())?;
-            Box::new(PostgresSink::connect(&cfg, columns)?)
+            Box::new(PostgresSink::connect(&cfg, columns).await?)
         }
         "sqlite" => {
             let cfg: SqliteConnectorConfig = serde_json::from_value(node.config.clone())?;
-            Box::new(SqliteSink::connect(&cfg, columns)?)
+            Box::new(SqliteSink::connect(&cfg, columns).await?)
         }
         #[cfg(feature = "mongodb")]
         "mongodb" => {
@@ -283,6 +302,11 @@ pub async fn build_sink(
             let cfg: ChromaConnectorConfig = serde_json::from_value(node.config.clone())?;
             Box::new(ChromaSink::connect(&cfg).await?)
         }
+        #[cfg(feature = "rest")]
+        "webhook" => {
+            let cfg: WebhookSinkConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(WebhookSink::connect(&cfg)?)
+        }
         #[cfg(feature = "deltalake")]
         "deltalake" => {
             let cfg: DeltaConnectorConfig = serde_json::from_value(node.config.clone())?;
@@ -302,6 +326,11 @@ pub async fn build_sink(
         "ailake" => {
             let cfg: AilakeConnectorConfig = serde_json::from_value(node.config.clone())?;
             Box::new(AilakeSink::connect(&cfg)?)
+        }
+        #[cfg(feature = "csv")]
+        "csv" => {
+            let cfg: CsvConnectorConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(CsvSink::connect(&cfg)?)
         }
         other => anyhow::bail!("unsupported sink connector: {other:?}"),
     };

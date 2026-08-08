@@ -86,7 +86,11 @@ impl JwtCodec {
         Self::with_blocklist(secret, token_ttl_seconds, TokenBlocklist::new())
     }
 
-    pub fn with_blocklist(secret: &[u8], token_ttl_seconds: u64, blocklist: TokenBlocklist) -> Self {
+    pub fn with_blocklist(
+        secret: &[u8],
+        token_ttl_seconds: u64,
+        blocklist: TokenBlocklist,
+    ) -> Self {
         Self {
             encoding_key: EncodingKey::from_secret(secret),
             decoding_key: DecodingKey::from_secret(secret),

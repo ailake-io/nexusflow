@@ -1,7 +1,9 @@
 import { createContext, use } from 'react'
+import type { Role } from '@/lib/api'
 
 export interface AuthContextValue {
   token: string | null
+  role: Role | null
   login: (username: string, password: string) => Promise<void>
   logout: () => void
 }

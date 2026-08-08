@@ -8,6 +8,7 @@ use nexus_core::{NexusError, RecordBatchBuilder, Source};
 use odbc_api::{Bit, ConnectionOptions, Cursor, Environment, Nullable};
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc::Sender;
 
 /// Batches in flight between the blocking ODBC cursor thread and the async
@@ -178,8 +179,25 @@ impl Source for OdbcSource {
         // collecting them first.
         tokio::task::spawn_blocking(move || fetch_all(&config, &schema, &tx));
 
-        Ok(Box::pin(stream::unfold(rx, |mut rx| async move {
-            rx.recv().await.map(|item| (item, rx))
+        // Idle cutoff, not a total-scan timeout: `deadline` resets every
+        // time a batch actually arrives, so a large-but-healthy scan never
+        // trips it — only a cursor thread wedged on the driver does (C15).
+        // Only unblocks this async side; the blocking `fetch_all` call and
+        // its OS thread keep running regardless (no cross-thread
+        // cancellation for raw ODBC handles, same trade-off as the sink).
+        let idle_timeout = Duration::from_secs(self.config.timeout_seconds);
+        Ok(Box::pin(stream::unfold(rx, move |mut rx| async move {
+            match tokio::time::timeout(idle_timeout, rx.recv()).await {
+                Ok(Some(item)) => Some((item, rx)),
+                Ok(None) => None,
+                Err(_) => Some((
+                    Err(NexusError::Connector(format!(
+                        "odbc cursor stalled for more than {}s",
+                        idle_timeout.as_secs()
+                    ))),
+                    rx,
+                )),
+            }
         })))
     }
 

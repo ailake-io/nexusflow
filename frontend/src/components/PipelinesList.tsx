@@ -261,3 +261,5 @@ export function PipelinesList({ onEdit }: PipelinesListProps) {
     </div>
   )
 }
+
+export default PipelinesList

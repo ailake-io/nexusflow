@@ -15,6 +15,9 @@ export interface JsonSchemaNode {
   required?: string[]
   enum?: string[]
   items?: JsonSchemaNode
+  /** Present (and `properties` absent) for a free-form `HashMap<String, V>`
+   *  Rust field — schemars emits this instead of a fixed `properties` set. */
+  additionalProperties?: JsonSchemaNode | boolean
   $ref?: string
   description?: string
   default?: unknown
@@ -89,6 +92,20 @@ export interface ProgressEvent {
   rows_written: number
   bytes_written: number
 }
+
+/** Matches nexus-server::hardware_stats::HardwareStats. Sent every ~2s on
+ * the same WebSocket as ProgressEvent, wrapped as `{ hardware_stats: ... }`
+ * so the client can tell the two message shapes apart (CLAUDE.md §6). */
+export interface HardwareStats {
+  cpu_percent: number
+  memory_used_bytes: number
+  memory_total_bytes: number
+}
+
+/** A frame on the progress WebSocket is either a bare ProgressEvent or a
+ * `{ hardware_stats }` wrapper — never both, discriminated by the presence
+ * of the `hardware_stats` key. */
+export type ProgressSocketMessage = ProgressEvent | { hardware_stats: HardwareStats }
 
 /** Matches nexus-server::dbt::DbtOutcome::summary_json's shape (Marco 10
  * task #26) — `undefined` when the pipeline has no `dbt` step, or the
@@ -226,4 +243,63 @@ export function deletePipeline(token: string, pipelineId: string): Promise<void>
     { method: 'DELETE' },
     token,
   )
+}
+
+/** Matches nexus-server's Role enum (`#[serde(rename_all = "lowercase")]`) —
+ * `Read < Execute < Write < Admin`, ARCHITECTURE.md §10. */
+export type Role = 'read' | 'execute' | 'write' | 'admin'
+
+/** Matches nexus-server::UserResponse, as returned by the /users routes
+ * (all Admin-only). */
+export interface UserRecord {
+  username: string
+  role: Role
+}
+
+export function listUsers(token: string): Promise<UserRecord[]> {
+  return request<UserRecord[]>('/users', {}, token)
+}
+
+export function createUser(
+  token: string,
+  username: string,
+  password: string,
+  role: Role,
+): Promise<UserRecord> {
+  return request<UserRecord>(
+    '/users',
+    { method: 'POST', body: JSON.stringify({ username, password, role }) },
+    token,
+  )
+}
+
+export function updateUserRole(token: string, username: string, role: Role): Promise<UserRecord> {
+  return request<UserRecord>(
+    `/users/${encodeURIComponent(username)}/role`,
+    { method: 'PUT', body: JSON.stringify({ role }) },
+    token,
+  )
+}
+
+export function deleteUser(token: string, username: string): Promise<void> {
+  return request<void>(`/users/${encodeURIComponent(username)}`, { method: 'DELETE' }, token)
+}
+
+/** Decodes the `role` claim from a JWT's payload without verifying the
+ * signature — the server is the actual enforcement point on every request
+ * this is only used to decide whether to show the Admin nav item at all.
+ * Returns `null` on any malformed/unexpected token instead of throwing, so
+ * a UI-only decode issue never blocks login. */
+export function decodeRoleFromToken(token: string): Role | null {
+  try {
+    const payload = token.split('.')[1]
+    const json = atob(payload.replace(/-/g, '+').replace(/_/g, '/'))
+    const claims = JSON.parse(json) as { role?: unknown }
+    const role = claims.role
+    return role === 'read' || role === 'execute' || role === 'write' || role === 'admin'
+      ? role
+      : null
+  } catch {
+    return null
+  }
 }

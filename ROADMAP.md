@@ -10,14 +10,15 @@ Consolidado dos itens que ficaram faltando/incompletos ao longo das fases abaixo
 
 1. **Fase 12 — Enterprise connectors**: nada implementado ainda. Repo separado, mecanismo de license key (JWT), definir primeiro conector pago.
 2. **Marco 13 do `IMPLEMENTATION_PLAN.md` — CDC nativo sem Kafka/Debezium**: condicional, não agendado. Só entra se o overhead de operar Debezium+Kafka virar bloqueador real de adoção confirmado (não é especulativo). Parser de WAL nativo do Postgres, resume por LSN em vez de offset Kafka.
-3. **`nexus-ai`: só a feature `cpu` existe** — `cuda`/`metal`/`api` (aceleração de embeddings) não implementados. O perfil `cuda` do Docker já tem a infra de runtime pronta (base image + `--gpus all`), mas não acelera nada até isso ser feito.
-4. **Alertas: só Slack implementado** — MS Teams, PagerDuty, Email e Webhook genérico ainda faltam (ver `CLAUDE.md §6`).
+3. **`nexus-ai`: features `cuda`/`metal` registram o execution provider ONNX Runtime correto (`ort::ep::CUDA`/`ort::ep::CoreML`), mas não validadas em hardware real** (sandbox é Linux sem GPU) — só confirmado que compilam e que o EP é registrado antes do load da sessão; runtime faz fallback silencioso pra CPU se o driver/hardware não estiver presente. `api` (embeddings via HTTP externa, endpoint compatível com OpenAI) implementada e testada (mock via `wiremock`) — sem chamada real contra OpenAI/Azure/etc neste sandbox. O perfil `cuda` do Docker já tem a infra de runtime pronta (base image + `--gpus all`).
+4. **Alertas: Slack, MS Teams, PagerDuty, Email e Webhook genérico — todos os 5 canais de `CLAUDE.md §6` implementados** (ver `nexus-server/src/alerts.rs`).
 5. **Windows (`.msi`/winget) e macOS (Homebrew/`.dmg`): specs escritos em `packaging/`, nunca validados em máquina real** (sandbox de dev é Linux). Falta também um build script dos drivers ADBC pra Windows (`.dll`) e macOS (`.dylib`) — os scripts atuais (`scripts/build-adbc-*.sh`) só geram `.so`.
-6. **`.rpm` nunca testado** — `scripts/package-rpm.sh` está escrito mas o sandbox não tem `rpmbuild` instalado pra validar.
-7. **Estatísticas de hardware (CPU/RAM/GPU) não implementadas** — o WebSocket de progresso (`ARCHITECTURE.md §12`) só transmite `batches_written`/`rows_written`/`bytes_written` por partição. `CLAUDE.md §6` menciona "estatísticas de hardware" na UI real-time; isso ainda não existe (nenhum uso de `sysinfo` ou equivalente em `nexus-server`).
-8. **Imagens Docker: build+smoke-test no CI (`docker-image` job), mas nunca publicadas** — `.github/workflows/release.yml` só produz tarballs Linux/macOS; não há passo de `docker push` pra nenhum registry (GHCR ou outro) num tag de release. "Prontas" na Fase 11 abaixo quer dizer "buildam e passam no smoke test", não "publicadas pra usuário final puxar".
-9. **Admin (gestão de usuários) só existe no backend** — rotas `GET/POST /users`, `GET/DELETE /users/{username}`, `PUT /users/{username}/role` existem em `nexus-server` (ver `crates/nexus-server/src/lib.rs`), mas o Canvas (Fase 8) não tem nenhuma tela pra elas — só dá pra gerenciar usuários via API direta.
+6. **`.rpm` validado com `rpmbuild` real** — `scripts/package-rpm.sh` buildou `nexusflow-0.1.0-1.x86_64.rpm` de ponta a ponta; corrigido de brinde um `Requires:` incompleto (faltava `unixODBC`/`cyrus-sasl-lib`, equivalentes RPM do `unixodbc`/`libsasl2-2` que o `.deb` já lista — não pegos pelo scanner automático do rpmbuild porque são dlopen'd, não linkados direto no ELF).
+7. **Estatísticas de hardware (CPU/RAM) implementadas** — `sysinfo` via `nexus-server::hardware_stats`, frame `{"hardware_stats": {...}}` intercalado no WebSocket de progresso a cada 2s (mesmo canal do `ProgressEvent`, discriminado pela chave). Sem GPU — `sysinfo` não expõe utilização de GPU (é vendor-specific, NVML pra NVIDIA etc.) e nada no código depende disso ainda.
+8. **Imagens Docker: publicadas no GHCR a cada tag de release, multi-arch (amd64+arm64)** (`docker-publish` job em `.github/workflows/release.yml`, `ghcr.io/<owner>/<repo>` com tags semver via `GITHUB_TOKEN` — sem credencial externa). arm64 builda via QEMU emulado (`docker/setup-qemu-action`), não runner ARM nativo como o job `build` (tarballs) usa — cargo compila mais lento sob emulação, timeout do job em 180min pra acomodar; não validado ainda com uma tag `v*` real (só revisão de config).
+9. **Admin (gestão de usuários) tem tela no Canvas** — `UsersPanel.tsx` cobre criar/promover/excluir contra as rotas já existentes (`GET/POST /users`, `GET/DELETE /users/{username}`, `PUT /users/{username}/role`). Nav item só aparece pra role Admin (decodificado do JWT client-side, sem verificar assinatura) — enforcement real continua 100% no servidor (`auth.rs`).
 10. Ver também a seção **Débitos conhecidos** no fim deste arquivo (secrets sem KMS, RBAC sem escopo por recurso, versões de dependência pinadas, advisories RustSec aceitos).
+11. **Estágio `embedding` do `PipelineSpec` sem UI no Canvas** — o backend já suporta os dois backends (Onnx local via HF Hub, API paga tipo OpenAI), mas `frontend/src/lib/dag.ts`'s `PipelineSpec` nem declara o campo `embedding`: `toPipelineSpec`/`fromPipelineSpec` nunca leem/escrevem esse campo, então abrir no Canvas um pipeline com `embedding` já configurado via API e salvar de volta **perde essa config silenciosamente**. Não dá pra expor isso dentro da caixa de config de um sink vetorial específico (ex. ailake) — `embedding` é um estágio único do pipeline, roda antes do transform/sinks e pode alimentar vários sinks vetoriais ao mesmo tempo, misturar os dois conceitos quebraria a separação que o Rust já modela. Solução correta: node dedicado tipo `kind: 'embedding'` no Canvas, mesmo padrão do node `dbt` (estágio de pipeline único com painel próprio em `NodeInspector.tsx`, não uma config genérica JSON-Schema-driven de conector).
 
 ## Fase 0 — Fundação (workspace) ✅
 - [x] `Cargo.toml` workspace + crates vazios: `nexus-core`, `nexus-ai`, `nexus-server`, e `crates/nexus-connectors/` já como workspace de sub-crates (não crate único) — ver `CLAUDE.md §3` e `ARCHITECTURE.md §3`
@@ -44,15 +45,17 @@ Consolidado dos itens que ficaram faltando/incompletos ao longo das fases abaixo
 - [x] `nexus-connector-mongodb` (bson → Arrow)
 - [x] `nexus-connector-odbc` bridging (legado, feature `legacy`)
 - [x] `nexus-connector-kafka` (base pra CDC da Fase 4, feature `consumer`)
+- [x] `nexus-connector-csv` — source+sink de texto delimitado (CSV/TSV/TXT com separador configurável), `uri` local ou `s3://`/`gs://`/`az://` via `object_store` (feature `csv`)
+- [x] Conector sink `webhook` (dentro de `nexus-connector-rest`, feature `rest`) — API/webhook genérico de saída, method configurável (POST/PUT/PATCH/DELETE), `body_mode` array ou per-row, sem consciência de CDC (API arbitrária não tem semântica acordada pra `__opcode`)
 
 ## Fase 4 — CDC (escopo faseado, ver `ARCHITECTURE.md §7`) ✅ (parcial — nativo é condicional)
 - [x] CDC via Debezium + Kafka: consumir eventos já decodificados (JSON/Avro) através de `nexus-connector-kafka`, converter pra `RecordBatch` com opcode (I/U/D) via `RecordBatchBuilder`
 - [x] Resume automático a partir do checkpoint por partição em falha
 - [ ] (Pós-MVP, sob demanda) Parser nativo de WAL Postgres / binlog MySQL — condicional, ver Marco 13 do `IMPLEMENTATION_PLAN.md`; só entra se overhead de operar Debezium+Kafka virar bloqueador real de adoção
 
-## Fase 5 — AI Lakehouse (`nexus-ai`) ✅ (GPU/API acceleration pendente)
+## Fase 5 — AI Lakehouse (`nexus-ai`) ✅ (GPU não validada em hardware real)
 - [x] Chunking (fixed-size, recursive, semantic)
-- [x] Embeddings via `ort` (feature `cpu`) — `cuda`/`metal`/`api` ainda não implementados (`crates/nexus-ai/Cargo.toml` só define `cpu`)
+- [x] Embeddings via `ort` (feature `cpu`) — `cuda`/`metal` registram o execution provider certo (compilam, não validados em GPU/Apple Silicon real) — `api` (endpoint HTTP compatível com OpenAI, feature independente de `cpu`) implementada e testada com mock
 - [x] Sinks vetoriais: pgvector → Qdrant → LanceDB → Milvus → Pinecone → ChromaDB (nessa ordem, do mais simples de operar ao mais complexo)
 
 ## Fase 6 — Data Lake formats ✅
@@ -71,18 +74,20 @@ Consolidado dos itens que ficaram faltando/incompletos ao longo das fases abaixo
 - [x] Canvas node-based: criar/editar DAG, source of truth em JSON
 - [x] Painel de execução em tempo real (MB/s, linhas/s, logs)
 - [x] Tela de credenciais (sem exibir segredo em plain text)
+- [x] Admin: gestão de usuários (criar/promover/excluir), visível só pra role Admin
 
-## Fase 9 — Observabilidade & Alertas ✅ (parcial — só Slack)
+## Fase 9 — Observabilidade & Alertas ✅
 - [x] `tracing` estruturado (JSON) + OpenTelemetry (traces via OTLP + métricas Prometheus em `/metrics`)
-- [x] Alertas assíncronos: Slack (Block Kit) — MS Teams/PagerDuty/Email/Webhook ainda não implementados
+- [x] Alertas assíncronos: Slack (Block Kit), MS Teams (Adaptive Card), PagerDuty (Events API v2), Email (SMTP STARTTLS), Webhook genérico (JSON puro)
+- [x] Estatísticas de hardware (CPU/RAM via `sysinfo`) intercaladas no WebSocket de progresso a cada 2s — sem GPU (vendor-specific, nada depende disso ainda)
 
 ## Fase 10 — dbt (ELT opcional) ✅
 - [x] Subprocesso assíncrono invocando `dbt run`/`build`/`test` pós-carga (feature `dbt`), com resultado de lineage/qualidade no histórico de execução
 
 ## Fase 11 — Distribuição multiplataforma ✅ (Windows/macOS não validados)
 - [x] Single binary com frontend embutido (`rust-embed`, feature `embed-ui`)
-- [x] Empacotamento: AppImage/deb (Linux, testado) — rpm (spec pronto, sem `rpmbuild` local) — `.msi`/winget (Windows) e Homebrew/dmg (macOS) têm specs em `packaging/` mas não foram validados em máquina real
-- [x] Imagem Docker com perfil `cuda` selecionável via `--build-arg RUNTIME_IMAGE` (base image + `--gpus all` prontos; aceleração real pendente da Fase 5's `cuda` feature) — **não multi-arch ainda**: `Dockerfile`/CI não passam `platforms:` pro build, então só builda pra arquitetura do runner (amd64); ver item 8 das Pendências ativas acima sobre a imagem também nunca ser publicada num registry
+- [x] Empacotamento: AppImage/deb/rpm (Linux, todos testados) — `.msi`/winget (Windows) e Homebrew/dmg (macOS) têm specs em `packaging/` mas não foram validados em máquina real
+- [x] Imagem Docker com perfil `cuda` selecionável via `--build-arg RUNTIME_IMAGE` (base image + `--gpus all` prontos; aceleração real pendente da Fase 5's `cuda` feature), publicada no GHCR a cada tag de release, multi-arch (amd64 nativo + arm64 via QEMU) — ver item 8 das Pendências ativas acima sobre o trade-off de build sob emulação
 - [x] Script de instalação `curl | sh` (`scripts/install.sh`) + `.github/workflows/release.yml`
 
 ## Fase 12 — Enterprise connectors (paralelo, repo separado)

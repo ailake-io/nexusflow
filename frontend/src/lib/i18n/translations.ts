@@ -14,6 +14,7 @@ export const translations = {
       canvas: 'Canvas',
       pipelines: 'Pipelines',
       status: 'Status',
+      admin: 'Admin',
       signOut: 'Sign out',
     },
     auth: {
@@ -53,6 +54,29 @@ export const translations = {
       sink: 'sink',
       transform: 'transform',
       runsOn: 'Runs on cron: {schedule}',
+    },
+    admin: {
+      title: 'User Management',
+      subtitle: 'Create, promote, or remove accounts. Admin role required.',
+      username: 'Username',
+      password: 'Password',
+      role: 'Role',
+      createUser: 'Create user',
+      creating: 'Creating…',
+      loading: 'Loading users…',
+      emptyTitle: 'No users yet',
+      emptyDescription: 'Create the first account above.',
+      delete: 'Delete',
+      deleting: 'Deleting…',
+      deleteConfirm: 'Delete this user?',
+      confirmDelete: 'Yes, delete',
+      cancelDelete: 'Cancel',
+      roles: {
+        read: 'Read',
+        execute: 'Execute',
+        write: 'Write',
+        admin: 'Admin',
+      },
     },
     status: {
       title: 'Pipeline Status',
@@ -131,6 +155,8 @@ export const translations = {
       lineage: 'lineage: {count} nodes',
       elapsed: '{seconds}s',
       dbtCommand: 'dbt {command}',
+      cpu: 'CPU',
+      memory: 'Memory',
     },
     common: {
       loading: 'Loading…',
@@ -148,6 +174,8 @@ export const translations = {
     },
     schemaForm: {
       select: 'select',
+      mapKey: 'key',
+      mapValue: 'value',
     },
     languages: {
       en: 'English',
@@ -167,6 +195,7 @@ export const translations = {
       canvas: 'Canvas',
       pipelines: 'Pipelines',
       status: 'Status',
+      admin: 'Admin',
       signOut: 'Sair',
     },
     auth: {
@@ -206,6 +235,29 @@ export const translations = {
       sink: 'destino',
       transform: 'transform',
       runsOn: 'Roda no cron: {schedule}',
+    },
+    admin: {
+      title: 'Gestão de Usuários',
+      subtitle: 'Crie, promova ou remova contas. Exige role Admin.',
+      username: 'Usuário',
+      password: 'Senha',
+      role: 'Role',
+      createUser: 'Criar usuário',
+      creating: 'Criando…',
+      loading: 'Carregando usuários…',
+      emptyTitle: 'Nenhum usuário ainda',
+      emptyDescription: 'Crie a primeira conta acima.',
+      delete: 'Excluir',
+      deleting: 'Excluindo…',
+      deleteConfirm: 'Excluir este usuário?',
+      confirmDelete: 'Sim, excluir',
+      cancelDelete: 'Cancelar',
+      roles: {
+        read: 'Leitura',
+        execute: 'Execução',
+        write: 'Escrita',
+        admin: 'Admin',
+      },
     },
     status: {
       title: 'Status dos Pipelines',
@@ -284,6 +336,8 @@ export const translations = {
       lineage: 'linhagem: {count} nodes',
       elapsed: '{seconds}s',
       dbtCommand: 'dbt {command}',
+      cpu: 'CPU',
+      memory: 'Memória',
     },
     common: {
       loading: 'Carregando…',
@@ -301,6 +355,8 @@ export const translations = {
     },
     schemaForm: {
       select: 'selecione',
+      mapKey: 'chave',
+      mapValue: 'valor',
     },
     languages: {
       en: 'English',

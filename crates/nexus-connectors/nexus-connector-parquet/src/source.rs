@@ -4,6 +4,7 @@ use arrow_schema::SchemaRef;
 use async_trait::async_trait;
 use futures::stream::{self, BoxStream};
 use nexus_core::{NexusError, Source};
+use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use std::fs::File;
 use std::path::PathBuf;
@@ -34,17 +35,27 @@ impl Source for ParquetSource {
     async fn read_batches(
         &mut self,
     ) -> Result<BoxStream<'_, Result<RecordBatch, NexusError>>, NexusError> {
-        let file = File::open(&self.path)
-            .map_err(|e| NexusError::Connector(format!("parquet open failed: {e}")))?;
-        let builder = ParquetRecordBatchReaderBuilder::try_new(file)
-            .map_err(|e| NexusError::Connector(format!("parquet reader build failed: {e}")))?;
-        let reader = builder
-            .build()
-            .map_err(|e| NexusError::Connector(format!("parquet reader build failed: {e}")))?;
-        let batches: Vec<Result<RecordBatch, NexusError>> = reader
-            .map(|r| r.map_err(|e| NexusError::Connector(format!("parquet read failed: {e}"))))
-            .collect();
-        Ok(Box::pin(stream::iter(batches)))
+        let path = self.path.clone();
+        // Parquet reads are synchronous file I/O; build the reader off the
+        // async executor, then yield each batch as it is produced instead of
+        // collecting the whole file before the downstream pipeline can start.
+        let reader =
+            tokio::task::spawn_blocking(move || -> Result<ParquetRecordBatchReader, NexusError> {
+                let file = File::open(&path)
+                    .map_err(|e| NexusError::Connector(format!("parquet open failed: {e}")))?;
+                let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| {
+                    NexusError::Connector(format!("parquet reader build failed: {e}"))
+                })?;
+                builder
+                    .build()
+                    .map_err(|e| NexusError::Connector(format!("parquet reader build failed: {e}")))
+            })
+            .await
+            .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))??;
+
+        Ok(Box::pin(stream::iter(reader.map(|r| {
+            r.map_err(|e| NexusError::Connector(format!("parquet read failed: {e}")))
+        }))))
     }
 
     fn schema(&self) -> SchemaRef {

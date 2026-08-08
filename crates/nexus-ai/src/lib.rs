@@ -6,7 +6,7 @@
 //! + cache local, ver ARCHITECTURE.md §8) e chega em seguida.
 
 pub mod chunking;
-#[cfg(feature = "cpu")]
+#[cfg(any(feature = "cpu", feature = "api"))]
 pub mod embedding;
 
 pub use chunking::{
