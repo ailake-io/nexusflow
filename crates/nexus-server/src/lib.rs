@@ -29,7 +29,8 @@ use axum::{Json, Router};
 use checkpoint_store::CheckpointStore;
 use crypto::SecretCipher;
 use error::ApiError;
-use nexus_core::{ConnectorRegistry, PipelineSpec, ProgressSender};
+use futures_util::StreamExt;
+use nexus_core::{ConnectorRegistry, NodeSpec, PipelineSpec, ProgressSender};
 use pipeline_store::{PipelineStore, PipelineStoreError, PipelineSummary, RunRecord};
 use progress::ProgressHub;
 use serde::{Deserialize, Serialize};
@@ -37,6 +38,8 @@ use std::net::SocketAddr;
 
 const DEFAULT_PAGE_LIMIT: i64 = 50;
 const MAX_PAGE_LIMIT: i64 = 1000;
+const DEFAULT_PREVIEW_LIMIT: usize = 50;
+const MAX_PREVIEW_LIMIT: usize = 500;
 
 /// Query parameters for paginated list endpoints.
 #[derive(Debug, Deserialize)]
@@ -120,6 +123,9 @@ fn router(state: AppState) -> Router {
     // missing-extension rejection instead of getting a real 401/403.
     let execute_protected = Router::new()
         .route("/pipelines/{id}/run", post(run_pipeline_handler))
+        // Same role as running the pipeline: a real, live connection to an
+        // external system with a decrypted credential, same trust bar.
+        .route("/pipelines/{id}/preview", get(preview_node_handler))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_role::<AppState>,
@@ -444,7 +450,7 @@ async fn execute_pipeline_run(
     run_id: i64,
     progress_tx: ProgressSender,
 ) {
-    let result = runner::run_pipeline(&spec, &state.checkpoints, Some(progress_tx)).await;
+    let result = runner::run_pipeline(&spec, &state.checkpoints, Some(progress_tx.clone())).await;
     state.progress.finish(run_id);
 
     match result {
@@ -454,6 +460,7 @@ async fn execute_pipeline_run(
             // same recording/alerting as a load failure, not a separate
             // "partial success" state.
             let mut dbt_summary = None;
+            let mut stats = stats;
             if let Some(dbt_config) = &spec.dbt {
                 match dbt::run(dbt_config).await {
                     Ok(outcome) => {
@@ -463,6 +470,29 @@ async fn execute_pipeline_run(
                     Err(e) => {
                         record_run_failure(&state, run_id, &spec.pipeline_id, &e).await;
                         return;
+                    }
+                }
+                // True ETL (approved plan): dbt.output + post_dbt_sinks lets a
+                // pipeline read dbt's transformed result back out and write it
+                // to a final destination, instead of dbt staying a terminal
+                // ELT step. A failure here fails the whole run, same as a dbt
+                // failure itself.
+                if let Some(output_node) = &dbt_config.output {
+                    if !spec.post_dbt_sinks.is_empty() {
+                        match runner::run_post_dbt_stage(
+                            &spec,
+                            output_node,
+                            &state.checkpoints,
+                            Some(progress_tx.clone()),
+                        )
+                        .await
+                        {
+                            Ok(post_dbt_stats) => stats.extend(post_dbt_stats),
+                            Err(e) => {
+                                record_run_failure(&state, run_id, &spec.pipeline_id, &e).await;
+                                return;
+                            }
+                        }
                     }
                 }
             }
@@ -544,6 +574,104 @@ async fn get_pipeline_spec_handler(
     Path(id): Path<String>,
 ) -> Result<Json<PipelineSpec>, ApiError> {
     Ok(Json(state.pipelines.get_spec(&id, &state.secrets).await?))
+}
+
+/// Query parameters for `GET /pipelines/{id}/preview`.
+#[derive(Debug, Deserialize)]
+struct PreviewParams {
+    /// Resolved name of the source/sink node to preview — same string
+    /// `NodeSpec::resolved_name` produces (`source0`, `sink0`, or an
+    /// explicit `name` if the node has one).
+    node: String,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// Reads the first `limit` rows of a saved pipeline's source or sink node,
+/// for inspecting data without leaving the app. Reuses `build_source` —
+/// the exact function a real pipeline run uses — so it only works for
+/// connectors that can act as a `Source` (every bidirectional connector,
+/// e.g. postgres/sqlite/mongodb/csv, on either their `sources` or `sinks`
+/// entry) and clearly rejects the sink-only ones (milvus/qdrant/lancedb/
+/// pgvector/pinecone/chromadb/webhook) via that same function's existing
+/// "unsupported source connector" error — no per-connector code needed
+/// here. Ad-hoc (unsaved) pipelines aren't supported, same restriction as
+/// `get_pipeline_spec_handler` above.
+async fn preview_node_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(params): Query<PreviewParams>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let spec = state.pipelines.get_spec(&id, &state.secrets).await?;
+    let limit = params.limit.unwrap_or(DEFAULT_PREVIEW_LIMIT).min(MAX_PREVIEW_LIMIT);
+
+    let node = find_node_by_resolved_name(&spec, &params.node).ok_or_else(|| {
+        ApiError::not_found(format!(
+            "node {:?} not found in pipeline {id:?}",
+            params.node
+        ))
+    })?;
+
+    let (_, mut source) = crate::connectors::build_source(node, 0)
+        .await
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+
+    let mut stream = source.read_batches().await.map_err(ApiError::internal)?;
+    let mut collected = Vec::new();
+    let mut row_count = 0usize;
+    while row_count < limit {
+        match stream.next().await {
+            Some(Ok(batch)) => {
+                row_count += batch.num_rows();
+                collected.push(batch);
+            }
+            Some(Err(e)) => return Err(ApiError::internal(e)),
+            None => break,
+        }
+    }
+    drop(stream);
+
+    // The last batch pulled may have overshot `limit` — trim it back.
+    let total: usize = collected.iter().map(|b| b.num_rows()).sum();
+    if total > limit {
+        if let Some(last) = collected.pop() {
+            let already: usize = collected.iter().map(|b| b.num_rows()).sum();
+            collected.push(last.slice(0, limit.saturating_sub(already)));
+        }
+    }
+
+    let rows: Vec<serde_json::Value> = if collected.is_empty() {
+        Vec::new()
+    } else {
+        let mut buf = Vec::new();
+        {
+            let mut writer = arrow_json::writer::ArrayWriter::new(&mut buf);
+            for batch in &collected {
+                writer.write(batch).map_err(ApiError::internal)?;
+            }
+            writer.finish().map_err(ApiError::internal)?;
+        }
+        serde_json::from_slice(&buf).map_err(ApiError::internal)?
+    };
+
+    Ok(Json(serde_json::json!({ "rows": rows })))
+}
+
+/// Finds a source or sink node by its resolved name (`source0`/`sink0`, or
+/// an explicit `name` — see `NodeSpec::resolved_name`), searching sources
+/// first, then sinks.
+fn find_node_by_resolved_name<'a>(spec: &'a PipelineSpec, name: &str) -> Option<&'a NodeSpec> {
+    spec.sources
+        .iter()
+        .enumerate()
+        .find(|(i, n)| n.resolved_name(*i, "source") == name)
+        .or_else(|| {
+            spec.sinks
+                .iter()
+                .enumerate()
+                .find(|(i, n)| n.resolved_name(*i, "sink") == name)
+        })
+        .map(|(_, n)| n)
 }
 
 async fn update_pipeline_handler(
@@ -1835,6 +1963,149 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn preview_requires_execute_role() {
+        let state = test_state().await;
+        let token = bearer(&state, Role::Read);
+        let app = router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/pipelines/does-not-exist/preview?node=source0")
+                    .header("authorization", token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn preview_rejects_unknown_node_name() {
+        let state = test_state().await;
+        let write_token = bearer(&state, Role::Write);
+        let execute_token = bearer(&state, Role::Execute);
+        let app = router(state);
+
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                "/pipelines",
+                &write_token,
+                sample_pipeline("p1"),
+            ))
+            .await
+            .unwrap();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/pipelines/p1/preview?node=does-not-exist")
+                    .header("authorization", execute_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[cfg(feature = "milvus")]
+    #[tokio::test]
+    async fn preview_rejects_connector_with_no_source_impl() {
+        let state = test_state().await;
+        let write_token = bearer(&state, Role::Write);
+        let execute_token = bearer(&state, Role::Execute);
+        let app = router(state);
+
+        // milvus is sink-only (no `Source` impl exists for it anywhere in
+        // the registry) — `preview` must surface `build_source`'s own
+        // "unsupported source connector" error, not a 500.
+        let spec = serde_json::json!({
+            "pipeline_id": "p1",
+            "sources": [{"connector": "postgres", "config": {
+                "uri": "postgres://user:pw@host/db", "table": "src", "primary_key": "id"
+            }}],
+            "sinks": [{"connector": "milvus", "config": {
+                "url": "http://milvus.example.com:19530", "collection": "docs",
+                "primary_key": "id", "embedding_column": "embedding", "dimension": 8
+            }}]
+        });
+        let create = app
+            .clone()
+            .oneshot(json_request("POST", "/pipelines", &write_token, spec))
+            .await
+            .unwrap();
+        assert_eq!(create.status(), StatusCode::CREATED);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/pipelines/p1/preview?node=sink0")
+                    .header("authorization", execute_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[cfg(feature = "csv")]
+    #[tokio::test]
+    async fn preview_reads_first_n_rows_of_a_real_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let csv_path = dir.path().join("events.csv");
+        std::fs::write(&csv_path, "id,status\n1,pending\n2,paid\n3,pending\n").unwrap();
+
+        let state = test_state().await;
+        let write_token = bearer(&state, Role::Write);
+        let execute_token = bearer(&state, Role::Execute);
+        let app = router(state);
+
+        let spec = serde_json::json!({
+            "pipeline_id": "p1",
+            "sources": [{"connector": "csv", "config": {
+                "uri": csv_path.to_str().unwrap(),
+                "fields": [
+                    {"name": "id", "data_type": "int64"},
+                    {"name": "status", "data_type": "utf8"}
+                ]
+            }}],
+            "sinks": [{"connector": "sqlite", "config": {
+                "uri": dir.path().join("out.db").to_str().unwrap(),
+                "table": "dst",
+                "primary_key": "id"
+            }}]
+        });
+        let create = app
+            .clone()
+            .oneshot(json_request("POST", "/pipelines", &write_token, spec))
+            .await
+            .unwrap();
+        assert_eq!(create.status(), StatusCode::CREATED);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/pipelines/p1/preview?node=source0&limit=2")
+                    .header("authorization", execute_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = body_json(response).await;
+        let rows = body["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 2, "limit=2 must cap the row count: {rows:?}");
+        assert_eq!(rows[0]["id"], 1);
+        assert_eq!(rows[0]["status"], "pending");
     }
 
     #[tokio::test]

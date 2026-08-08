@@ -455,6 +455,7 @@ mod tests {
             channel_capacity: 100,
             partitions: 1,
             dbt: None,
+            post_dbt_sinks: Vec::new(),
             schedule: None,
         }
     }

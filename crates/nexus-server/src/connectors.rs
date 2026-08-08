@@ -244,6 +244,16 @@ pub fn validate_pipeline_configs(spec: &PipelineSpec) -> anyhow::Result<()> {
         validate_sink_config(node)
             .map_err(|e| anyhow::anyhow!("sink[{i}] ({}): {e}", node.connector))?;
     }
+    if let Some(dbt) = &spec.dbt {
+        if let Some(output) = &dbt.output {
+            validate_source_config(output)
+                .map_err(|e| anyhow::anyhow!("dbt.output ({}): {e}", output.connector))?;
+        }
+    }
+    for (i, node) in spec.post_dbt_sinks.iter().enumerate() {
+        validate_sink_config(node)
+            .map_err(|e| anyhow::anyhow!("post_dbt_sinks[{i}] ({}): {e}", node.connector))?;
+    }
     Ok(())
 }
 

@@ -54,6 +54,14 @@ pub struct DbtConfig {
     /// Optional `--select` model selector.
     #[serde(default)]
     pub select: Option<String>,
+    /// Where to read dbt's transformed result back from (same warehouse the
+    /// pipeline's own `sinks` just loaded, pointed at dbt's output
+    /// table/model) — enables true ETL: extract -> load raw -> dbt
+    /// transforms in place -> read the transformed result back out -> write
+    /// it to `PipelineSpec::post_dbt_sinks`. `None` (the default) keeps
+    /// today's ELT-only behavior, where dbt is a terminal step.
+    #[serde(default)]
+    pub output: Option<NodeSpec>,
 }
 
 /// Configuration for the optional embedding/chunking stage. Defined in
@@ -147,6 +155,12 @@ pub struct PipelineSpec {
     /// step", the same as before this field existed.
     #[serde(default)]
     pub dbt: Option<DbtConfig>,
+    /// Final destination(s) for dbt's transformed result — only valid when
+    /// `dbt.output` is set (true ETL, see `DbtConfig::output`). Empty (the
+    /// default) means dbt stays a terminal ELT step, same as before this
+    /// field existed.
+    #[serde(default)]
+    pub post_dbt_sinks: Vec<NodeSpec>,
     /// Cron expression controlling automatic runs — see
     /// `schedule::parse_cron_expression` for the accepted formats. `None`
     /// (the default) means no automatic schedule: the pipeline only runs
@@ -290,6 +304,30 @@ impl PipelineSpec {
             }
         }
 
+        if !self.post_dbt_sinks.is_empty() {
+            let has_output = self.dbt.as_ref().is_some_and(|d| d.output.is_some());
+            if !has_output {
+                return Err(NexusError::Schema(
+                    "post_dbt_sinks requires dbt.output to be set".into(),
+                ));
+            }
+            for (i, node) in self.post_dbt_sinks.iter().enumerate() {
+                if node.connector.trim().is_empty() {
+                    return Err(NexusError::Schema(format!(
+                        "post_dbt_sinks[{i}].connector must not be empty"
+                    )));
+                }
+            }
+        }
+        if let Some(dbt) = &self.dbt {
+            if let Some(output) = &dbt.output {
+                if output.connector.trim().is_empty() {
+                    return Err(NexusError::Schema(
+                        "dbt.output.connector must not be empty".into(),
+                    ));
+                }
+            }
+        }
         if self.channel_capacity == 0 {
             return Err(NexusError::Schema("channel_capacity must be > 0".into()));
         }
@@ -344,6 +382,24 @@ impl PipelineSpec {
         }
         if let Some(dbt) = &self.dbt {
             validate_dbt_project_dir(&dbt.project_dir)?;
+            if let Some(output) = &dbt.output {
+                validate_node_security(
+                    &output.config,
+                    &output.connector,
+                    "dbt.output",
+                    0,
+                    allow_internal_hosts,
+                )?;
+            }
+        }
+        for (i, node) in self.post_dbt_sinks.iter().enumerate() {
+            validate_node_security(
+                &node.config,
+                &node.connector,
+                "post_dbt_sinks",
+                i,
+                allow_internal_hosts,
+            )?;
         }
         if let Some(embedding) = &self.embedding {
             validate_embedding_security(&embedding.model, allow_internal_hosts)?;
@@ -433,7 +489,7 @@ fn validate_node_security(
 fn is_local_path_connector(connector: &str) -> bool {
     matches!(
         connector,
-        "sqlite" | "lancedb" | "ailake" | "iceberg" | "deltalake"
+        "sqlite" | "lancedb" | "ailake" | "iceberg" | "deltalake" | "csv"
     )
 }
 
@@ -787,7 +843,7 @@ mod tests {
 
     #[test]
     fn validate_security_allows_absolute_path_for_local_path_connectors() {
-        for connector in ["sqlite", "lancedb", "ailake", "iceberg", "deltalake"] {
+        for connector in ["sqlite", "lancedb", "ailake", "iceberg", "deltalake", "csv"] {
             let json = format!(
                 r#"{{
                     "pipeline_id": "p",
@@ -843,6 +899,55 @@ mod tests {
             .validate_security()
             .expect_err("dbt path traversal must be rejected");
         assert!(err.to_string().contains("parent-dir"));
+    }
+
+    #[test]
+    fn validate_rejects_post_dbt_sinks_without_dbt_output() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "postgres", "config": {}}],
+            "sinks": [{"connector": "postgres", "config": {}}],
+            "dbt": {"project_dir": "dbt_proj", "command": "run"},
+            "post_dbt_sinks": [{"connector": "csv", "config": {"uri": "/tmp/out.csv"}}]
+        }"#;
+        let err = PipelineSpec::parse(json).expect_err("must require dbt.output");
+        assert!(err.to_string().contains("dbt.output"));
+    }
+
+    #[test]
+    fn validate_accepts_post_dbt_sinks_with_dbt_output() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "postgres", "config": {}}],
+            "sinks": [{"connector": "postgres", "config": {}}],
+            "dbt": {
+                "project_dir": "dbt_proj",
+                "command": "run",
+                "output": {"connector": "postgres", "config": {"table": "stg_model"}}
+            },
+            "post_dbt_sinks": [{"connector": "csv", "config": {"uri": "/tmp/out.csv"}}]
+        }"#;
+        PipelineSpec::parse(json).expect("post_dbt_sinks with dbt.output must be valid");
+    }
+
+    #[test]
+    fn validate_security_scans_dbt_output_and_post_dbt_sinks() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "postgres", "config": {}}],
+            "sinks": [{"connector": "postgres", "config": {}}],
+            "dbt": {
+                "project_dir": "dbt_proj",
+                "command": "run",
+                "output": {"connector": "rest", "config": {"uri": "http://localhost:9999"}}
+            },
+            "post_dbt_sinks": [{"connector": "postgres", "config": {}}]
+        }"#;
+        let spec = PipelineSpec::parse(json).unwrap();
+        let err = spec
+            .validate_security()
+            .expect_err("dbt.output internal host must be rejected");
+        assert!(err.to_string().contains("dbt.output"));
     }
 
     #[test]
