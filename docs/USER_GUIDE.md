@@ -404,7 +404,7 @@ O resultado é escrito em **todos** os `sinks` (fan-out) — mesma tabela final 
 
 ## 6. Embeddings (chunking + vetorização)
 
-Node `embedding` opcional, roda **antes** do transform (ou antes dos sinks, se não houver transform), expande cada linha da source em chunks e anexa uma coluna `FixedSizeList<Float32>` com os vetores. Dois backends de modelo e duas estratégias de chunking, combináveis livremente:
+Node `embedding` opcional, roda **antes** do transform (ou antes dos sinks, se não houver transform), expande cada linha da source em chunks e anexa uma coluna `FixedSizeList<Float32>` com os vetores. Dois backends de modelo e duas estratégias de chunking, combináveis livremente. Configurável tanto via API/JSON (abaixo) quanto direto no Canvas — botão **+ Embedding** na barra do editor, painel lateral troca os campos exibidos conforme o backend/estratégia escolhidos.
 
 ```jsonc
 "embedding": {
@@ -437,7 +437,11 @@ Baixa o modelo do Hugging Face Hub em runtime (cache local). CUDA/Metal ainda n�
   "api_key_env": "OPENAI_API_KEY"
 }
 ```
-`api_key_env` é o **nome** da variável de ambiente com a chave (nunca a chave em si — segredos não vivem no JSON persistido do pipeline). `base_url` sem `/embeddings` no final.
+`api_key_env` é o **nome** da variável de ambiente com a chave (nunca a chave em si — segredos não vivem no JSON persistido do pipeline). `base_url` sem `/embeddings` no final — o backend chama `POST {base_url}/embeddings` no formato OpenAI (`{"model","input"}` → `{"data":[{"index","embedding"}]}`), então qualquer servidor que sirva essa rota nesse formato funciona, não só OpenAI/Azure: `vLLM`, `text-embeddings-inference`, `LM Studio`, ou **Ollama local** via sua rota compatível com OpenAI:
+```json
+"model": {"backend": "api", "base_url": "http://localhost:11434/v1", "model": "nomic-embed-text"}
+```
+(sem `api_key_env` — servidor local não exige auth; atenção: é a rota `/v1/embeddings` do Ollama, não a API nativa dele em `/api/embeddings`, que usa outro formato).
 
 **Chunking — `fixed_window`:**
 ```json
