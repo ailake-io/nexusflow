@@ -1,14 +1,21 @@
 use arrow_array::{Array, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::DataType;
 use nexus_core::NexusError;
+#[cfg(feature = "legacy")]
 use odbc_api::parameter::InputParameter;
+#[cfg(feature = "legacy")]
 use odbc_api::{Bit, IntoParameter, Nullable};
 use serde_json::Value;
 
+#[cfg(feature = "legacy")]
 use crate::config::OdbcDataType;
 
 /// Converts a single Arrow cell into an ODBC input parameter. Kept here (with
 /// the rest of the row mapping) so it can be unit-tested without a driver.
+/// Behind `legacy` — the only caller (`sink.rs`) is too, and `Box<dyn
+/// InputParameter>` is an `odbc-api` type, which isn't even a compiled
+/// dependency without the feature (see the crate's `lib.rs` doc comment).
+#[cfg(feature = "legacy")]
 pub(crate) fn cell_to_param(
     batch: &RecordBatch,
     row: usize,

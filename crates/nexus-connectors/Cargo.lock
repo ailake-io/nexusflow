@@ -6913,6 +6913,7 @@ dependencies = [
  "testcontainers-modules",
  "tokio",
  "tokio-postgres",
+ "tracing",
 ]
 
 [[package]]
