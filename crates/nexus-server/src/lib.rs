@@ -72,6 +72,8 @@ struct AppState {
     progress: ProgressHub,
     alerts: AlertNotifier,
     login_rate_limiter: std::sync::Arc<rate_limit::LoginRateLimiter>,
+    /// `NEXUS_ALLOW_INTERNAL_HOSTS` — see `PipelineSpec::validate_security_with`.
+    allow_internal_hosts: bool,
 }
 
 impl From<PipelineStoreError> for ApiError {
@@ -386,7 +388,7 @@ async fn run_pipeline_handler(
     let effective_spec = if let Some(spec) = persisted {
         spec
     } else if claims.role >= Role::Write {
-        spec.validate_security()
+        spec.validate_security_with(state.allow_internal_hosts)
             .map_err(|e| ApiError::bad_request(e.to_string()))?;
         spec
     } else {
@@ -503,7 +505,7 @@ async fn create_pipeline_handler(
 ) -> Result<(StatusCode, Json<PipelineSummary>), ApiError> {
     spec.validate()
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
-    spec.validate_security()
+    spec.validate_security_with(state.allow_internal_hosts)
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
     connectors::validate_pipeline_configs(&spec)
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
@@ -557,7 +559,7 @@ async fn update_pipeline_handler(
     }
     spec.validate()
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
-    spec.validate_security()
+    spec.validate_security_with(state.allow_internal_hosts)
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
     connectors::validate_pipeline_configs(&spec)
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
@@ -830,6 +832,13 @@ pub struct ServerConfig {
     pub email: Option<alerts::EmailConfig>,
     /// `NEXUS_ALERT_WEBHOOK_URL` — same "off is fine" contract as Slack's.
     pub webhook_url: Option<String>,
+    /// `NEXUS_ALLOW_INTERNAL_HOSTS` — opt-in for self-hosted deployments that
+    /// need pipelines to reach their own private network. See
+    /// `PipelineSpec::validate_security_with`'s doc for why this defaults to
+    /// `false`. Off by default even in this struct: every other field here
+    /// documents an env var that degrades gracefully when unset (alerts just
+    /// stay off); this one weakens SSRF protection, so it's opt-in only.
+    pub allow_internal_hosts: bool,
 }
 
 async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
@@ -862,6 +871,7 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
             webhook_url: config.webhook_url.clone(),
         }),
         login_rate_limiter: std::sync::Arc::new(rate_limit::LoginRateLimiter::default()),
+        allow_internal_hosts: config.allow_internal_hosts,
     })
 }
 
@@ -979,6 +989,15 @@ pub async fn run() -> anyhow::Result<()> {
             "NEXUS_ALERT_WEBHOOK_URL not set — pipeline failures will not raise a generic webhook alert"
         );
     }
+    let allow_internal_hosts = std::env::var("NEXUS_ALLOW_INTERNAL_HOSTS")
+        .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+    if allow_internal_hosts {
+        tracing::warn!(
+            "NEXUS_ALLOW_INTERNAL_HOSTS=true — pipelines may target this deployment's private \
+             network (10.0.0.0/8, 192.168.0.0/16, 127.0.0.1, etc). Only set this on trusted \
+             self-hosted deployments, never on a multi-tenant/shared instance."
+        );
+    }
 
     let state = build_state(&ServerConfig {
         checkpoint_database_url: database_url,
@@ -993,6 +1012,7 @@ pub async fn run() -> anyhow::Result<()> {
         pagerduty_routing_key,
         email,
         webhook_url,
+        allow_internal_hosts,
     })
     .await?;
 
@@ -1087,6 +1107,7 @@ mod tests {
                 std::time::Duration::from_secs(60),
                 10_000,
             )),
+            allow_internal_hosts: false,
         }
     }
 
@@ -1553,9 +1574,12 @@ mod tests {
         let token = bearer(&state, Role::Write);
         let app = router(state);
 
+        // "rest", not "sqlite" — sqlite/lancedb/ailake/iceberg/deltalake are
+        // exempt from the absolute-path check, their config is local-path-
+        // based by design (see dag.rs's `is_local_path_connector`).
         let body = serde_json::json!({
             "pipeline_id": "p1",
-            "sources": [{"connector": "sqlite", "config": {"path": "/etc/passwd"}}],
+            "sources": [{"connector": "rest", "config": {"path": "/etc/passwd"}}],
             "sinks": [{"connector": "sqlite", "config": {"path": "out.db"}}]
         });
 
@@ -2123,6 +2147,7 @@ mod tests {
             progress: ProgressHub::default(),
             alerts: AlertNotifier::new(AlertConfig::default()),
             login_rate_limiter: limiter,
+            allow_internal_hosts: false,
         };
         let app = router(state);
 

@@ -307,18 +307,46 @@ impl PipelineSpec {
     /// internal networks (SSRF) via connector configs. Intended for ad-hoc
     /// runs submitted by callers with `Write`/`Admin`; callers with lower
     /// roles should not be allowed to submit arbitrary specs at all.
+    /// Defaults to blocking internal/private hosts — see
+    /// `validate_security_with` for the self-hosted opt-out.
     pub fn validate_security(&self) -> Result<(), NexusError> {
+        self.validate_security_with(false)
+    }
+
+    /// Same as `validate_security`, but `allow_internal_hosts` lets a
+    /// deployment opt out of the internal/private-host block (source of
+    /// `NEXUS_ALLOW_INTERNAL_HOSTS` — ARCHITECTURE.md §10). NexusFlow is
+    /// self-hosted/on-prem software: its own database infrastructure lives
+    /// on a private network by default, so the multi-tenant-SaaS-style SSRF
+    /// block on `10.0.0.0/8`/`192.168.0.0/16`/`127.0.0.1`/etc otherwise makes
+    /// it impossible to point a pipeline at the deployment's own network.
+    /// Path-traversal and absolute-path checks (dbt project dir, connector
+    /// config strings) still apply regardless — those protect the local
+    /// filesystem, not network topology, and aren't safe to opt out of.
+    pub fn validate_security_with(&self, allow_internal_hosts: bool) -> Result<(), NexusError> {
         for (i, node) in self.sources.iter().enumerate() {
-            validate_node_security(&node.config, &node.connector, "sources", i)?;
+            validate_node_security(
+                &node.config,
+                &node.connector,
+                "sources",
+                i,
+                allow_internal_hosts,
+            )?;
         }
         for (i, node) in self.sinks.iter().enumerate() {
-            validate_node_security(&node.config, &node.connector, "sinks", i)?;
+            validate_node_security(
+                &node.config,
+                &node.connector,
+                "sinks",
+                i,
+                allow_internal_hosts,
+            )?;
         }
         if let Some(dbt) = &self.dbt {
             validate_dbt_project_dir(&dbt.project_dir)?;
         }
         if let Some(embedding) = &self.embedding {
-            validate_embedding_security(&embedding.model)?;
+            validate_embedding_security(&embedding.model, allow_internal_hosts)?;
         }
         Ok(())
     }
@@ -332,18 +360,23 @@ impl PipelineSpec {
 /// `Write`-role pipeline spec could point `base_url` at an internal service
 /// (or attacker-controlled host) and have this server exfiltrate whatever
 /// secret `api_key_env` names straight to it.
-fn validate_embedding_security(model: &EmbeddingModelSpec) -> Result<(), NexusError> {
+fn validate_embedding_security(
+    model: &EmbeddingModelSpec,
+    allow_internal_hosts: bool,
+) -> Result<(), NexusError> {
     if let EmbeddingModelSpec::Api { base_url, .. } = model {
         if base_url.starts_with('/') {
             return Err(NexusError::Schema(
                 "embedding.model.base_url must not be an absolute path".into(),
             ));
         }
-        if let Some(host) = http_host(base_url) {
-            if is_internal_host(&host) {
-                return Err(NexusError::Schema(
-                    "embedding.model.base_url points to an internal host".into(),
-                ));
+        if !allow_internal_hosts {
+            if let Some(host) = http_host(base_url) {
+                if is_internal_host(&host) {
+                    return Err(NexusError::Schema(
+                        "embedding.model.base_url points to an internal host".into(),
+                    ));
+                }
             }
         }
     }
@@ -358,27 +391,50 @@ fn validate_node_security(
     connector: &str,
     context: &str,
     index: usize,
+    allow_internal_hosts: bool,
 ) -> Result<(), NexusError> {
     match config {
-        Value::String(s) => validate_string_security(s, connector, context, index, "value"),
+        Value::String(s) => {
+            validate_string_security(s, connector, context, index, "value", allow_internal_hosts)
+        }
         Value::Object(map) => {
             for (key, value) in map {
                 if let Value::String(s) = value {
-                    validate_string_security(s, connector, context, index, key)?;
+                    validate_string_security(
+                        s,
+                        connector,
+                        context,
+                        index,
+                        key,
+                        allow_internal_hosts,
+                    )?;
                 } else {
-                    validate_node_security(value, connector, context, index)?;
+                    validate_node_security(value, connector, context, index, allow_internal_hosts)?;
                 }
             }
             Ok(())
         }
         Value::Array(items) => {
             for item in items {
-                validate_node_security(item, connector, context, index)?;
+                validate_node_security(item, connector, context, index, allow_internal_hosts)?;
             }
             Ok(())
         }
         _ => Ok(()),
     }
+}
+
+/// These connectors' entire config is local-filesystem-based by design —
+/// `uri`/`warehouse`/`table_uri`/`catalog_uri` is documented as a plain path
+/// (or `:memory:`), not a URL a remote caller could redirect. The absolute-
+/// path guard below exists to stop a URL-shaped field (REST/embedding
+/// `base_url`, say) from secretly being a local path instead; it isn't
+/// meant to block these connectors' own, expected, use of one.
+fn is_local_path_connector(connector: &str) -> bool {
+    matches!(
+        connector,
+        "sqlite" | "lancedb" | "ailake" | "iceberg" | "deltalake"
+    )
 }
 
 fn validate_string_security(
@@ -387,21 +443,26 @@ fn validate_string_security(
     context: &str,
     index: usize,
     key: &str,
+    allow_internal_hosts: bool,
 ) -> Result<(), NexusError> {
     // Absolute local path -> reject. URIs with schemes (postgres://,
     // http://, etc.) don't start with '/', so this only catches
-    // filesystem paths.
-    if s.starts_with('/') {
+    // filesystem paths. Exempt connectors whose config is local-path-based
+    // by design (see `is_local_path_connector`).
+    if s.starts_with('/') && !is_local_path_connector(connector) {
         return Err(NexusError::Schema(format!(
             "{context}[{index}] ({connector}): {key} must not be an absolute path"
         )));
     }
-    // HTTP(S) URLs pointing to internal/reserved endpoints -> reject.
-    if let Some(host) = http_host(s) {
-        if is_internal_host(&host) {
-            return Err(NexusError::Schema(format!(
-                "{context}[{index}] ({connector}): {key} points to an internal host"
-            )));
+    // HTTP(S) URLs pointing to internal/reserved endpoints -> reject, unless
+    // this deployment opted into reaching its own private network.
+    if !allow_internal_hosts {
+        if let Some(host) = http_host(s) {
+            if is_internal_host(&host) {
+                return Err(NexusError::Schema(format!(
+                    "{context}[{index}] ({connector}): {key} points to an internal host"
+                )));
+            }
         }
     }
     Ok(())
@@ -708,9 +769,13 @@ mod tests {
 
     #[test]
     fn validate_security_rejects_absolute_path() {
+        // "rest", not "sqlite" — sqlite/lancedb/ailake/iceberg/deltalake are
+        // exempt from this check, their config is local-path-based by
+        // design (see `is_local_path_connector`). This test exercises the
+        // generic recursive scanner on a connector that isn't.
         let json = r#"{
             "pipeline_id": "p",
-            "sources": [{"connector": "sqlite", "config": {"path": "/etc/passwd"}}],
+            "sources": [{"connector": "rest", "config": {"path": "/etc/passwd"}}],
             "sinks": [{"connector": "postgres", "config": {}}]
         }"#;
         let spec = PipelineSpec::parse(json).unwrap();
@@ -718,6 +783,23 @@ mod tests {
             .validate_security()
             .expect_err("absolute path must be rejected");
         assert!(err.to_string().contains("absolute path"));
+    }
+
+    #[test]
+    fn validate_security_allows_absolute_path_for_local_path_connectors() {
+        for connector in ["sqlite", "lancedb", "ailake", "iceberg", "deltalake"] {
+            let json = format!(
+                r#"{{
+                    "pipeline_id": "p",
+                    "sources": [{{"connector": "{connector}", "config": {{"uri": "/data/db.sqlite"}}}}],
+                    "sinks": [{{"connector": "postgres", "config": {{}}}}]
+                }}"#
+            );
+            let spec = PipelineSpec::parse(&json).unwrap();
+            spec.validate_security().unwrap_or_else(|e| {
+                panic!("{connector}'s own local path must not be rejected: {e}")
+            });
+        }
     }
 
     #[test]

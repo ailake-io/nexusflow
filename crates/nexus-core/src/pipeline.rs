@@ -261,6 +261,13 @@ impl PipelineEngine {
         sinks: Vec<(String, Box<dyn Sink>)>,
         progress: Option<ProgressSender>,
     ) -> Vec<Result<PartitionStats, NexusError>> {
+        // Every sink was already committed by a prior (partial) run of this
+        // pipeline_id — nothing left to write. Without this, broadcasting
+        // the first batch to zero subscribers fails with "all sinks dropped"
+        // and a fully-resumed run is reported as failed instead of a no-op.
+        if sinks.is_empty() {
+            return Vec::new();
+        }
         let (batch_tx, _) = tokio::sync::broadcast::channel::<Result<RecordBatch, NexusError>>(
             self.channel_capacity.max(1),
         );

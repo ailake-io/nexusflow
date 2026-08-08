@@ -150,6 +150,9 @@ fn test_server_config(checkpoint_database_url: String) -> ServerConfig {
         pagerduty_routing_key: None,
         email: None,
         webhook_url: None,
+        // testcontainers exposes Postgres on localhost — see the identical
+        // note in postgres_pipeline.rs's test_server_config.
+        allow_internal_hosts: true,
     }
 }
 

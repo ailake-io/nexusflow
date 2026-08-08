@@ -1,13 +1,38 @@
 use crate::config::PostgresConnectorConfig;
 use crate::driver::open_connection;
 use adbc_core::{Connection as _, Statement as _};
-use adbc_driver_manager::ManagedConnection;
+use adbc_driver_manager::{ManagedConnection, ManagedStatement};
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use async_trait::async_trait;
 use futures::stream::{self, BoxStream};
 use nexus_core::{quote_identifier, with_timeout, NexusError, Source};
 use std::sync::Arc;
+
+/// The postgresql ADBC driver's returned reader isn't actually independent
+/// of the `Statement` it came from, despite `Statement::execute`'s `'static`
+/// bound promising otherwise — dropping the statement while the reader is
+/// still being pulled fails with "C Data interface error: [libpq] Reader
+/// invalidated (statement or reader was closed)". Bundling them keeps the
+/// statement alive for exactly as long as the reader is.
+struct StatementBoundReader {
+    _statement: ManagedStatement,
+    reader: Box<dyn arrow_array::RecordBatchReader + Send>,
+}
+
+impl Iterator for StatementBoundReader {
+    type Item = Result<RecordBatch, arrow_schema::ArrowError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.reader.next()
+    }
+}
+
+impl arrow_array::RecordBatchReader for StatementBoundReader {
+    fn schema(&self) -> SchemaRef {
+        self.reader.schema()
+    }
+}
 
 /// Bounds of one partition's primary-key range. `upper_exclusive: None` means
 /// "to the end" — the last partition. Partitioning is the unit of parallelism,
@@ -152,9 +177,14 @@ impl Source for PostgresSource {
                     statement
                         .set_sql_query(&query)
                         .map_err(|e| NexusError::Connector(e.to_string()))?;
-                    statement
+                    let reader = statement
                         .execute()
-                        .map_err(|e| NexusError::Connector(e.to_string()))
+                        .map_err(|e| NexusError::Connector(e.to_string()))?;
+                    Ok(Box::new(StatementBoundReader {
+                        _statement: statement,
+                        reader,
+                    })
+                        as Box<dyn arrow_array::RecordBatchReader + Send>)
                 },
             )
             .await
