@@ -5,8 +5,8 @@ use nexus_connector_postgres::{
     PostgresConnectorConfig, PostgresSink, PostgresSource,
 };
 use nexus_core::{
-    CheckpointCursor, DataFusionTransform, PartitionHandle, PartitionStats, PipelineEngine,
-    PipelineSpec, ProgressSender, Transform,
+    CheckpointCursor, DataFusionTransform, NodeSpec, PartitionHandle, PartitionStats,
+    PipelineEngine, PipelineSpec, ProgressSender, Transform,
 };
 
 #[cfg(any(feature = "embeddings", feature = "embeddings-api"))]
@@ -207,6 +207,83 @@ async fn run_transform_pipeline(
     if !errors.is_empty() {
         anyhow::bail!(
             "{} of {} sink(s) failed: {errors:?}",
+            errors.len(),
+            errors.len() + stats.len()
+        );
+    }
+
+    Ok(stats)
+}
+
+/// True ETL extension of the ELT dbt step (Marco 10 follow-up): once
+/// `dbt::run` succeeds, reads its transformed result back out of
+/// `dbt.output` (the same warehouse `run_pipeline`'s own sinks just loaded)
+/// and fans it out to `spec.post_dbt_sinks`. Reuses the same
+/// drain/build_sink/fan_out_write tail as `run_transform_pipeline` — the
+/// only difference is a single already-built source instead of N.
+///
+/// Checkpoint names are prefixed with `post_dbt_` because `build_sink`
+/// resolves unnamed nodes to `sink0`, `sink1`, ... — the same names
+/// `spec.sinks` resolves to. Without the prefix, a fully-resumed run's
+/// checkpoint lookup for this stage would collide with (and appear
+/// satisfied by) the main load stage's checkpoints.
+#[tracing::instrument(skip_all, fields(pipeline_id = %spec.pipeline_id))]
+pub async fn run_post_dbt_stage(
+    spec: &PipelineSpec,
+    output_node: &NodeSpec,
+    checkpoints: &CheckpointStore,
+    progress: Option<ProgressSender>,
+) -> anyhow::Result<Vec<PartitionStats>> {
+    let done = checkpoints.done_partitions(&spec.pipeline_id).await?;
+
+    let source = build_source(output_node, 0).await?;
+    let inputs = PipelineEngine::drain_sources(vec![source]).await?;
+    let batches: Vec<_> = inputs.into_iter().flat_map(|(_, _, b)| b).collect();
+
+    let columns: Vec<String> = batches
+        .first()
+        .map(|b| {
+            b.schema()
+                .fields()
+                .iter()
+                .map(|f| f.name().clone())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut sinks = Vec::with_capacity(spec.post_dbt_sinks.len());
+    for (i, node) in spec.post_dbt_sinks.iter().enumerate() {
+        let (raw_name, sink) = build_sink(node, i, &columns).await?;
+        let name = format!("post_dbt_{raw_name}");
+        if done.contains(&name) {
+            continue; // already committed in a prior run of this pipeline_id
+        }
+        sinks.push((name, sink));
+    }
+
+    let engine = PipelineEngine::new(spec.channel_capacity);
+    let results = engine.fan_out_write(&batches, sinks, progress).await;
+
+    let mut stats = Vec::new();
+    let mut errors = Vec::new();
+    for result in results {
+        match result {
+            Ok(stat) => {
+                checkpoints
+                    .commit(
+                        &spec.pipeline_id,
+                        &CheckpointCursor::new(stat.partition_id.clone()),
+                    )
+                    .await?;
+                stats.push(stat);
+            }
+            Err(e) => errors.push(e),
+        }
+    }
+
+    if !errors.is_empty() {
+        anyhow::bail!(
+            "{} of {} post-dbt sink(s) failed: {errors:?}",
             errors.len(),
             errors.len() + stats.len()
         );

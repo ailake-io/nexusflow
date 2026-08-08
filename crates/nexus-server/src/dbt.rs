@@ -380,6 +380,7 @@ nexus_fixture:
             project_dir: dir.path().to_string_lossy().into_owned(),
             command: DbtCommand::Run,
             select: None,
+            output: None,
         };
 
         // `--profiles-dir` isn't part of DbtConfig (that would leak
@@ -420,6 +421,7 @@ nexus_fixture:
             project_dir: dir.path().to_string_lossy().into_owned(),
             command: DbtCommand::Run,
             select: None,
+            output: None,
         };
 
         std::env::set_var("DBT_PROFILES_DIR", dir.path());
@@ -463,6 +465,7 @@ models:
             project_dir: dir.path().to_string_lossy().into_owned(),
             command: DbtCommand::Build,
             select: None,
+            output: None,
         };
 
         std::env::set_var("DBT_PROFILES_DIR", dir.path());
@@ -515,6 +518,7 @@ mod feature_disabled_tests {
             project_dir: "/tmp/does-not-matter".to_string(),
             command: DbtCommand::Run,
             select: None,
+            output: None,
         };
         let err = run(&config)
             .await

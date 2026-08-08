@@ -7309,6 +7309,7 @@ dependencies = [
  "anyhow",
  "argon2",
  "arrow-array 58.4.0",
+ "arrow-json",
  "arrow-schema 58.4.0",
  "async-trait",
  "axum 0.8.9",

@@ -19,6 +19,7 @@ Consolidado dos itens que ficaram faltando/incompletos ao longo das fases abaixo
 9. **Admin (gestão de usuários) tem tela no Canvas** — `UsersPanel.tsx` cobre criar/promover/excluir contra as rotas já existentes (`GET/POST /users`, `GET/DELETE /users/{username}`, `PUT /users/{username}/role`). Nav item só aparece pra role Admin (decodificado do JWT client-side, sem verificar assinatura) — enforcement real continua 100% no servidor (`auth.rs`).
 10. Ver também a seção **Débitos conhecidos** no fim deste arquivo (secrets sem KMS, RBAC sem escopo por recurso, versões de dependência pinadas, advisories RustSec aceitos).
 11. **Estágio `embedding` do `PipelineSpec` sem UI no Canvas** — o backend já suporta os dois backends (Onnx local via HF Hub, API paga tipo OpenAI), mas `frontend/src/lib/dag.ts`'s `PipelineSpec` nem declara o campo `embedding`: `toPipelineSpec`/`fromPipelineSpec` nunca leem/escrevem esse campo, então abrir no Canvas um pipeline com `embedding` já configurado via API e salvar de volta **perde essa config silenciosamente**. Não dá pra expor isso dentro da caixa de config de um sink vetorial específico (ex. ailake) — `embedding` é um estágio único do pipeline, roda antes do transform/sinks e pode alimentar vários sinks vetoriais ao mesmo tempo, misturar os dois conceitos quebraria a separação que o Rust já modela. Solução correta: node dedicado tipo `kind: 'embedding'` no Canvas, mesmo padrão do node `dbt` (estágio de pipeline único com painel próprio em `NodeInspector.tsx`, não uma config genérica JSON-Schema-driven de conector).
+12. **Fase 16 (Preview + dbt ETL) é backend-only** — `GET /pipelines/{id}/preview` não tem botão/tabela no Canvas ainda (só curl/Postman); o node dbt (`DbtNodeView`) só tem handle de entrada, sem handle de saída pra desenhar visualmente `post_dbt_sinks` nem painel de config pra `dbt.output` — hoje só configurável via API/JSON direto. Ambos deliberadamente adiados até validar se o formato backend-only já resolve o suficiente.
 
 ## Fase 0 — Fundação (workspace) ✅
 - [x] `Cargo.toml` workspace + crates vazios: `nexus-core`, `nexus-ai`, `nexus-server`, e `crates/nexus-connectors/` já como workspace de sub-crates (não crate único) — ver `CLAUDE.md §3` e `ARCHITECTURE.md §3`
@@ -106,9 +107,13 @@ Consolidado dos itens que ficaram faltando/incompletos ao longo das fases abaixo
 - [x] Canvas ganha **Save** (criar/atualizar), **Edit** (recarrega config completa de um pipeline salvo, incl. segredos de conector, via `GET /pipelines/{id}/spec` — role `Write`) e mantém **Delete** — antes só dava pra montar/rodar um pipeline no Canvas sem nunca conseguir persisti-lo.
 - [x] Aba "Status": lista todos os pipelines salvos com flag verde/amarelo/vermelho/cinza (sucesso/em execução/falha/nunca rodou), baseado em `last_run_status`/`last_run_at` novos em `PipelineSummary`.
 
+## Fase 16 — Preview de dados + dbt como ETL real (fora do plano original)
+- [x] `GET /pipelines/{id}/preview?node={resolved_name}&limit={n}` — primeiras N linhas (default 50, teto 500) de qualquer node source/sink de um pipeline persistido, reusando `build_source`; conector sink-only devolve 400 com mensagem clara. Backend-only por ora, sem botão no Canvas. Ver `ARCHITECTURE.md §13`.
+- [x] dbt deixa de ser só ELT: `DbtConfig.output` + `PipelineSpec.post_dbt_sinks` fecham o ciclo `Source → carga bruta → dbt transforma → lê resultado de volta → Sink final` num `run` só, sem precisar de um segundo pipeline manual. Testado com Postgres real (testcontainers) + `dbt-fusion` CLI real end-to-end (`crates/nexus-server/tests/dbt_etl_pipeline.rs`). Canvas (handle de saída no node dbt, painel de config do destino) ainda não implementado — configuração via API/JSON só.
+
 ---
 
-**Critério de "MVP pronto"**: Fases 0–3 + 7 (parcial: auth básica) + 8 (canvas mínimo) funcionando end-to-end — mover dados de Postgres pra Postgres via canvas visual, com checkpoint por partição, retry e escrita idempotente. **Atingido e superado** — Fases 0–11, 13 e 14 completas, só falta Fase 12 (enterprise, repo separado) e os itens condicionais/parciais marcados acima.
+**Critério de "MVP pronto"**: Fases 0–3 + 7 (parcial: auth básica) + 8 (canvas mínimo) funcionando end-to-end — mover dados de Postgres pra Postgres via canvas visual, com checkpoint por partição, retry e escrita idempotente. **Atingido e superado** — Fases 0–11 e 13–16 completas, só falta Fase 12 (enterprise, repo separado) e os itens condicionais/parciais marcados acima.
 
 ## Débitos conhecidos (aceitos pro MVP, resolver antes de vender enterprise)
 

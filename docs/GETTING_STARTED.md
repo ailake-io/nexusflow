@@ -197,13 +197,35 @@ curl -s http://localhost:8080/pipelines/meu-pipeline/runs -H "authorization: Bea
 
 # spec completo, configs de conector inclusas — só pra recarregar/editar, exige Write
 curl -s http://localhost:8080/pipelines/meu-pipeline/spec -H "authorization: Bearer $TOKEN"
+
+# preview: primeiras linhas de um node source/sink do pipeline, sem rodar o pipeline inteiro
+curl -s "http://localhost:8080/pipelines/meu-pipeline/preview?node=source0&limit=20" \
+  -H "authorization: Bearer $TOKEN"
 ```
 
 Papéis RBAC (`Read < Execute < Write < Admin`): criar/editar pipeline (`POST`/`PUT`/`DELETE /pipelines`, e `GET /pipelines/{id}/spec`) exige `Write`; rodar exige `Execute`; listar catálogo/histórico/resumo (`GET /pipelines`) exige `Read`.
 
-## 5. ELT com dbt (opcional)
+## 5. ELT (ou ETL real) com dbt (opcional)
 
 Precisa do build com a feature `dbt` (`cargo build --features embed-ui,dbt`) e do CLI `dbt` (dbt-fusion) no `PATH` do processo em runtime — não é instalado automaticamente. Um pipeline com um node `dbt` roda `dbt run`/`build`/`test` contra o warehouse de destino **depois** que a carga bruta termina (ELT clássico, não transforma os `RecordBatch` do pipeline em si). Resultado (models/tests passados, lineage) aparece no histórico da execução e no painel da UI.
+
+Se `dbt.output` estiver setado no spec (aponta pro model/tabela que o dbt acabou de gerar), o pipeline vira ETL de verdade: depois do `dbt run`/`build`, o backend lê esse resultado de volta e grava em `post_dbt_sinks` — tudo no mesmo `run`, sem precisar montar um segundo pipeline manualmente pra "buscar o que o dbt gerou". Configuração hoje só via API/JSON (sem UI dedicada no Canvas ainda):
+
+```json
+{
+  "pipeline_id": "etl-com-dbt",
+  "sources": [{"connector": "postgres", "config": {"uri": "...", "table": "raw_events", "primary_key": "id"}}],
+  "sinks": [{"connector": "postgres", "config": {"uri": "...", "table": "staging_events", "primary_key": "id"}}],
+  "dbt": {
+    "project_dir": "meu_projeto_dbt",
+    "command": "run",
+    "output": {"connector": "postgres", "config": {"uri": "...", "table": "transformed_events", "primary_key": "id"}}
+  },
+  "post_dbt_sinks": [
+    {"connector": "postgres", "config": {"uri": "...", "table": "final_events", "primary_key": "id"}}
+  ]
+}
+```
 
 ## 6. Observabilidade
 
