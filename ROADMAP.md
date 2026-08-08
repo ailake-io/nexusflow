@@ -46,6 +46,7 @@ Consolidado dos itens que ficaram faltando/incompletos ao longo das fases abaixo
 - [x] `nexus-connector-odbc` bridging (legado, feature `legacy`)
 - [x] `nexus-connector-kafka` (base pra CDC da Fase 4, feature `consumer`)
 - [x] `nexus-connector-csv` — source+sink de texto delimitado (CSV/TSV/TXT com separador configurável), `uri` local ou `s3://`/`gs://`/`az://` via `object_store` (feature `csv`)
+- [x] Conector sink `webhook` (dentro de `nexus-connector-rest`, feature `rest`) — API/webhook genérico de saída, method configurável (POST/PUT/PATCH/DELETE), `body_mode` array ou per-row, sem consciência de CDC (API arbitrária não tem semântica acordada pra `__opcode`)
 
 ## Fase 4 — CDC (escopo faseado, ver `ARCHITECTURE.md §7`) ✅ (parcial — nativo é condicional)
 - [x] CDC via Debezium + Kafka: consumir eventos já decodificados (JSON/Avro) através de `nexus-connector-kafka`, converter pra `RecordBatch` com opcode (I/U/D) via `RecordBatchBuilder`
