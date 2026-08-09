@@ -296,7 +296,9 @@ struct ConnectorCatalogEntry {
     licensed: bool,
 }
 
-async fn list_connectors_handler(State(state): State<AppState>) -> Json<Vec<ConnectorCatalogEntry>> {
+async fn list_connectors_handler(
+    State(state): State<AppState>,
+) -> Json<Vec<ConnectorCatalogEntry>> {
     let active_license = state.license_store.active().await.ok().flatten();
     Json(
         ConnectorRegistry::all()
@@ -868,7 +870,12 @@ async fn install_license_handler(
 async fn license_status_handler(
     State(state): State<AppState>,
 ) -> Result<Json<LicenseStatusResponse>, ApiError> {
-    let status = match state.license_store.active().await.map_err(ApiError::internal)? {
+    let status = match state
+        .license_store
+        .active()
+        .await
+        .map_err(ApiError::internal)?
+    {
         Some(claims) => LicenseStatusResponse {
             active: true,
             connectors: claims.connectors,

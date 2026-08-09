@@ -59,10 +59,7 @@ pub fn verify(jwt: &str) -> Result<LicenseClaims, LicenseError> {
     let mut validation = Validation::new(Algorithm::EdDSA);
     validation.set_required_spec_claims(&["exp"]);
     let data = decode::<LicenseClaims>(jwt, &decoding_key, &validation).map_err(|e| {
-        if matches!(
-            e.kind(),
-            jsonwebtoken::errors::ErrorKind::ExpiredSignature
-        ) {
+        if matches!(e.kind(), jsonwebtoken::errors::ErrorKind::ExpiredSignature) {
             LicenseError::Expired
         } else {
             LicenseError::Invalid(e.to_string())
@@ -85,8 +82,8 @@ MC4CAQAwBQYDK2VwBCIEIPByldYeti11Ln8Z2hkQXRrST+PoTsO/sycPsIAI24gm\n\
 -----END PRIVATE KEY-----\n";
 
     pub fn sign(claims: &LicenseClaims) -> String {
-        let key = EncodingKey::from_ed_pem(TEST_PRIVATE_KEY_PEM.as_bytes())
-            .expect("valid test PEM");
+        let key =
+            EncodingKey::from_ed_pem(TEST_PRIVATE_KEY_PEM.as_bytes()).expect("valid test PEM");
         encode(&Header::new(Algorithm::EdDSA), claims, &key).expect("signing test claims")
     }
 

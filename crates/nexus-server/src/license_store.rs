@@ -97,8 +97,14 @@ mod tests {
     #[tokio::test]
     async fn installing_a_second_license_replaces_the_first() {
         let store = LicenseStore::connect("sqlite::memory:").await.unwrap();
-        store.install(&sign(&claims(vec!["salesforce"]))).await.unwrap();
-        store.install(&sign(&claims(vec!["snowflake"]))).await.unwrap();
+        store
+            .install(&sign(&claims(vec!["salesforce"])))
+            .await
+            .unwrap();
+        store
+            .install(&sign(&claims(vec!["snowflake"])))
+            .await
+            .unwrap();
 
         let active = store.active().await.unwrap().unwrap();
         assert!(!active.covers("salesforce"));
