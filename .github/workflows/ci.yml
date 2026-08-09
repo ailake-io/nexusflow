@@ -10,6 +10,22 @@ on:
 permissions:
   contents: read
 
+# All 7 jobs below run on the same self-hosted machine (a shared dev
+# desktop, not a dedicated runner — see the `test`/`connectors` jobs'
+# comments) and are chained via `needs:` into one strict sequence so at
+# most one is ever alive at a time. That alone isn't enough: two different
+# pushes/PRs each start their own independent instance of this whole
+# workflow, and their two chains can still run side by side, each spawning
+# heavy cargo/docker builds that together exceed this machine's RAM (this
+# OOM-killed the runner's own systemd service more than once). A single
+# fixed group with no `github.ref`/`github.sha` in the key serializes
+# across every branch/PR, not just concurrent runs of the same one;
+# `cancel-in-progress: false` queues the new run instead of cancelling
+# in-progress work, so nothing gets thrown away.
+concurrency:
+  group: ci-self-hosted-runner
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -17,15 +33,17 @@ jobs:
   # Checks both Cargo.lock files (root + crates/nexus-connectors' own nested
   # workspace — see the `connectors` job's comment below on why that one is
   # gitignored and only exists as a build byproduct) against the RustSec
-  # advisory database. ubuntu-latest, not self-hosted: this doesn't need the
-  # connector crates' native build deps, just cargo-audit itself. The
-  # nested workspace's own Cargo.lock is generated fresh by this step's own
-  # `cargo audit` run (nothing to check out for it), unlike the drift check
-  # against the root lockfile (see the `connectors` job), which needs a
-  # `cargo check` to have run first.
+  # advisory database. The nested workspace's own Cargo.lock is generated
+  # fresh by this step's own `cargo audit` run (nothing to check out for
+  # it), unlike the drift check against the root lockfile (see the
+  # `connectors` job), which needs a `cargo check` to have run first.
+  # Self-hosted (see the workflow-level `concurrency` comment above) — no
+  # `needs:` since it doesn't touch the Rust *build* graph, but it still
+  # only runs after `fmt` releases the machine, same as every other job here.
   cargo-audit:
     name: cargo-audit
-    runs-on: ubuntu-latest
+    needs: fmt
+    runs-on: [self-hosted, Linux]
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -54,9 +72,11 @@ jobs:
         run: cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195 --ignore RUSTSEC-2025-0009 --ignore RUSTSEC-2024-0336
         working-directory: crates/nexus-connectors
 
+  # Self-hosted, first in the chain (no `needs:`) — see the workflow-level
+  # `concurrency` comment above for why every job here shares one machine.
   fmt:
     name: fmt
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -65,14 +85,19 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
-  # Self-hosted, not ubuntu-latest: --all-features now covers embed-ui,
-  # nexus-ai's `cpu` feature (ort/hf-hub/tokenizers) and connectors-all
-  # (mongodb/kafka/milvus/lancedb/... all linked into nexus-server, not
-  # just the nested crates/nexus-connectors workspace) — this combination
-  # already ran ubuntu-latest out of its ~14GB disk cap mid-link ("ld
-  # terminated with signal 7 [Bus error]", 39MB free). Same root cause the
-  # `connectors` job below already solved by moving to self-hosted
-  # (052e26c); root-workspace jobs now share that same rationale.
+  # --all-features covers embed-ui, nexus-ai's `cpu` feature (ort/hf-hub/
+  # tokenizers) and connectors-all (mongodb/kafka/milvus/lancedb/... all
+  # linked into nexus-server, not just the nested crates/nexus-connectors
+  # workspace) — this combination already ran a GitHub-hosted runner out of
+  # its ~14GB disk cap mid-link ("ld terminated with signal 7 [Bus error]",
+  # 39MB free); self-hosted has real disk, no such cap.
+  #
+  # needs: docker-image (not just fmt/frontend) — every job in this
+  # workflow chains to the previous one so only one is ever alive on this
+  # shared machine at a time (see the workflow-level `concurrency` comment).
+  # Still downloads frontend's artifact directly below since that's what
+  # embed-ui's RustEmbed derive needs at compile time, regardless of how
+  # many other jobs ran in between.
   #
   # -p nexus-core -p nexus-ai -p nexus-server, not --workspace: `cargo
   # metadata --no-deps` from the repo root shows every crate under
@@ -84,7 +109,7 @@ jobs:
   # owns that.
   clippy:
     name: clippy
-    needs: [fmt, frontend]
+    needs: docker-image
     runs-on: [self-hosted, Linux]
     timeout-minutes: 60
     steps:
@@ -105,13 +130,15 @@ jobs:
 
   # Marco 11's done criterion, checked for real rather than just documented:
   # "docker run sobe binário único servindo UI em localhost:8080, sem
-  # dependência externa além do container." Independent job (no `needs:`) —
-  # builds its own image from scratch (frontend -> ADBC drivers -> release
-  # binary w/ embed-ui -> runtime, see ../../Dockerfile), so it doesn't
-  # share any state with the fmt/clippy/test chain above.
+  # dependência externa além do container." Builds its own image from
+  # scratch (frontend -> ADBC drivers -> release binary w/ embed-ui ->
+  # runtime, see ../../Dockerfile) — doesn't share build state with the
+  # fmt/clippy/test chain, but still runs after `frontend` in the machine's
+  # one-at-a-time queue (see the workflow-level `concurrency` comment).
   docker-image:
     name: docker-image
-    runs-on: ubuntu-latest
+    needs: frontend
+    runs-on: [self-hosted, Linux]
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -146,14 +173,17 @@ jobs:
           [ "$status" = "200" ] || { echo "GET / returned $status, expected 200"; exit 1; }
           [ "$health" = "ok" ] || { echo "GET /health returned '$health', expected ok"; exit 1; }
 
-  # frontend/ (Marco 8) doesn't touch the Rust workspace or the self-hosted
-  # runner — no `needs:`, runs independently on GitHub-hosted infra instead
-  # of joining the fmt -> clippy -> test -> connectors chain (that chain is
-  # sequential specifically to avoid overloading the self-hosted machine,
-  # see 052e26c; this job never runs there).
+  # frontend/ (Marco 8) doesn't touch the Rust workspace, but still runs on
+  # the same self-hosted machine as everything else and slots into the
+  # fmt -> cargo-audit -> frontend -> docker-image -> clippy -> test ->
+  # connectors chain (see the workflow-level `concurrency` comment) — its
+  # own build is light, but node_modules/npm briefly adds to whatever else
+  # is resident, so it still gets its own turn rather than running
+  # alongside a cargo build.
   frontend:
     name: frontend
-    runs-on: ubuntu-latest
+    needs: cargo-audit
+    runs-on: [self-hosted, Linux]
     timeout-minutes: 15
     defaults:
       run:
@@ -180,10 +210,11 @@ jobs:
           path: frontend/dist
           retention-days: 1
 
-  # Self-hosted for the same reason as clippy above.
+  # Self-hosted for the same reason as clippy above; needs: clippy is enough
+  # since frontend is already an ancestor of clippy in this chain.
   test:
     name: test
-    needs: [clippy, frontend]
+    needs: clippy
     runs-on: [self-hosted, Linux]
     timeout-minutes: 90
     steps:
