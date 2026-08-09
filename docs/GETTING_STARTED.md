@@ -91,7 +91,7 @@ cargo build --release -p nexusflow --features embed-ui,connectors-all
 
 ### Embeddings (chunking + ONNX)
 
-Para gerar embeddings no pipeline, adicione um nó `embedding` ao spec — ele roda **antes** do transform SQL, expandindo cada linha da source em chunks e adicionando uma coluna `FixedSizeList<Float32>` com os vetores:
+Para gerar embeddings no pipeline, adicione um nó `embedding` ao spec (ou arraste o node **+ Embedding** no Canvas — ambos editam o mesmo campo) — ele roda **antes** do transform SQL, expandindo cada linha da source em chunks e adicionando uma coluna `FixedSizeList<Float32>` com os vetores:
 
 ```json
 {

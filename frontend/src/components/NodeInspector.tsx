@@ -1,9 +1,12 @@
 import type {
+  ChunkingStrategy,
   ConnectorNodeData,
   ConnectorRole,
   DagNode,
   DbtCommand,
   DbtNodeData,
+  EmbeddingBackend,
+  EmbeddingNodeData,
   TransformNodeData,
 } from '@/lib/dag'
 import type { ConnectorDescriptor } from '@/lib/api'
@@ -11,14 +14,18 @@ import { useI18n } from '@/lib/i18n'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { SchemaForm } from '@/components/SchemaForm'
-import { Database, Code2, Layers } from 'lucide-react'
+import { Database, Code2, Layers, Sparkles } from 'lucide-react'
 
 interface NodeInspectorProps {
   node: DagNode
   connectors: ConnectorDescriptor[]
   onChange: (
     id: string,
-    data: Partial<ConnectorNodeData> | Partial<TransformNodeData> | Partial<DbtNodeData>,
+    data:
+      | Partial<ConnectorNodeData>
+      | Partial<TransformNodeData>
+      | Partial<DbtNodeData>
+      | Partial<EmbeddingNodeData>,
   ) => void
 }
 
@@ -143,56 +150,291 @@ export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps
     )
   }
 
+  if (data.kind === 'dbt') {
+    return (
+      <aside className="flex w-80 shrink-0 flex-col border-l bg-card">
+        <div className="border-b border-white/10 px-4 py-3">
+          <div className="flex items-center gap-2">
+            <Layers className="h-4 w-4 text-emerald-400" />
+            <h2 className="text-sm font-semibold text-foreground">{t('canvas.dbt')}</h2>
+          </div>
+          <p className="mt-0.5 text-[10px] text-muted-foreground">{t('canvas.dbtDesc')}</p>
+        </div>
+        <div className="flex-1 overflow-auto p-4">
+          <div className="flex flex-col gap-4">
+            <div>
+              <Label htmlFor="dbt-project-dir" className="text-xs font-medium">
+                {t('canvas.projectDir')}
+              </Label>
+              <Input
+                id="dbt-project-dir"
+                value={data.projectDir}
+                placeholder={t('canvas.projectDirPlaceholder')}
+                onChange={(e) => onChange(node.id, { projectDir: e.target.value })}
+                className="mt-1.5"
+              />
+            </div>
+            <div>
+              <Label htmlFor="dbt-command" className="text-xs font-medium">
+                {t('canvas.command')}
+              </Label>
+              <select
+                id="dbt-command"
+                value={data.command}
+                onChange={(e) => onChange(node.id, { command: e.target.value as DbtCommand })}
+                className="mt-1.5 flex h-9 w-full rounded-lg border border-input bg-transparent px-3 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring"
+              >
+                <option value="run">{t('canvas.dbtRun')}</option>
+                <option value="build">{t('canvas.dbtBuild')}</option>
+                <option value="test">{t('canvas.dbtTest')}</option>
+              </select>
+            </div>
+            <div>
+              <Label htmlFor="dbt-select" className="text-xs font-medium">
+                {t('canvas.selectOptional')}
+              </Label>
+              <Input
+                id="dbt-select"
+                value={data.select}
+                placeholder={t('canvas.selectPlaceholder')}
+                onChange={(e) => onChange(node.id, { select: e.target.value })}
+                className="mt-1.5"
+              />
+            </div>
+          </div>
+        </div>
+      </aside>
+    )
+  }
+
   return (
     <aside className="flex w-80 shrink-0 flex-col border-l bg-card">
       <div className="border-b border-white/10 px-4 py-3">
         <div className="flex items-center gap-2">
-          <Layers className="h-4 w-4 text-emerald-400" />
-          <h2 className="text-sm font-semibold text-foreground">{t('canvas.dbt')}</h2>
+          <Sparkles className="h-4 w-4 text-fuchsia-400" />
+          <h2 className="text-sm font-semibold text-foreground">{t('canvas.embedding')}</h2>
         </div>
-        <p className="mt-0.5 text-[10px] text-muted-foreground">{t('canvas.dbtDesc')}</p>
+        <p className="mt-0.5 text-[10px] text-muted-foreground">{t('canvas.embeddingDesc')}</p>
       </div>
       <div className="flex-1 overflow-auto p-4">
         <div className="flex flex-col gap-4">
           <div>
-            <Label htmlFor="dbt-project-dir" className="text-xs font-medium">
-              {t('canvas.projectDir')}
+            <Label htmlFor="embedding-source-column" className="text-xs font-medium">
+              {t('canvas.embeddingSourceColumn')}
             </Label>
             <Input
-              id="dbt-project-dir"
-              value={data.projectDir}
-              placeholder={t('canvas.projectDirPlaceholder')}
-              onChange={(e) => onChange(node.id, { projectDir: e.target.value })}
+              id="embedding-source-column"
+              value={data.sourceColumn}
+              placeholder="body"
+              onChange={(e) => onChange(node.id, { sourceColumn: e.target.value })}
               className="mt-1.5"
             />
           </div>
           <div>
-            <Label htmlFor="dbt-command" className="text-xs font-medium">
-              {t('canvas.command')}
+            <Label htmlFor="embedding-output-column" className="text-xs font-medium">
+              {t('canvas.embeddingOutputColumn')}
+            </Label>
+            <Input
+              id="embedding-output-column"
+              value={data.outputColumn}
+              placeholder="embedding"
+              onChange={(e) => onChange(node.id, { outputColumn: e.target.value })}
+              className="mt-1.5"
+            />
+          </div>
+          <div>
+            <Label htmlFor="embedding-dimension" className="text-xs font-medium">
+              {t('canvas.embeddingDimension')}
+            </Label>
+            <Input
+              id="embedding-dimension"
+              type="number"
+              min={1}
+              value={data.dimension || ''}
+              placeholder="384"
+              onChange={(e) => onChange(node.id, { dimension: Number(e.target.value) || 0 })}
+              className="mt-1.5"
+            />
+          </div>
+
+          <div className="h-px bg-white/10" />
+
+          <div>
+            <Label htmlFor="embedding-backend" className="text-xs font-medium">
+              {t('canvas.embeddingBackend')}
             </Label>
             <select
-              id="dbt-command"
-              value={data.command}
-              onChange={(e) => onChange(node.id, { command: e.target.value as DbtCommand })}
+              id="embedding-backend"
+              value={data.backend}
+              onChange={(e) => onChange(node.id, { backend: e.target.value as EmbeddingBackend })}
               className="mt-1.5 flex h-9 w-full rounded-lg border border-input bg-transparent px-3 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring"
             >
-              <option value="run">{t('canvas.dbtRun')}</option>
-              <option value="build">{t('canvas.dbtBuild')}</option>
-              <option value="test">{t('canvas.dbtTest')}</option>
+              <option value="onnx">{t('canvas.embeddingBackendOnnx')}</option>
+              <option value="api">{t('canvas.embeddingBackendApi')}</option>
             </select>
           </div>
+
+          {data.backend === 'onnx' ? (
+            <>
+              <div>
+                <Label htmlFor="embedding-repo" className="text-xs font-medium">
+                  {t('canvas.embeddingRepo')}
+                </Label>
+                <Input
+                  id="embedding-repo"
+                  value={data.repo}
+                  placeholder="sentence-transformers/all-MiniLM-L6-v2"
+                  onChange={(e) => onChange(node.id, { repo: e.target.value })}
+                  className="mt-1.5"
+                />
+              </div>
+              <div>
+                <Label htmlFor="embedding-filename" className="text-xs font-medium">
+                  {t('canvas.embeddingFilename')}
+                </Label>
+                <Input
+                  id="embedding-filename"
+                  value={data.filename}
+                  placeholder="model.onnx"
+                  onChange={(e) => onChange(node.id, { filename: e.target.value })}
+                  className="mt-1.5"
+                />
+              </div>
+              <div>
+                <Label htmlFor="embedding-tokenizer" className="text-xs font-medium">
+                  {t('canvas.embeddingTokenizer')}
+                </Label>
+                <Input
+                  id="embedding-tokenizer"
+                  value={data.tokenizerFilename}
+                  placeholder="tokenizer.json"
+                  onChange={(e) => onChange(node.id, { tokenizerFilename: e.target.value })}
+                  className="mt-1.5"
+                />
+              </div>
+              <div>
+                <Label htmlFor="embedding-max-length" className="text-xs font-medium">
+                  {t('canvas.embeddingMaxLength')}
+                </Label>
+                <Input
+                  id="embedding-max-length"
+                  type="number"
+                  min={1}
+                  value={data.maxLength || ''}
+                  placeholder="128"
+                  onChange={(e) => onChange(node.id, { maxLength: Number(e.target.value) || 0 })}
+                  className="mt-1.5"
+                />
+              </div>
+            </>
+          ) : (
+            <>
+              <div>
+                <Label htmlFor="embedding-base-url" className="text-xs font-medium">
+                  {t('canvas.embeddingBaseUrl')}
+                </Label>
+                <Input
+                  id="embedding-base-url"
+                  value={data.baseUrl}
+                  placeholder="https://api.openai.com/v1"
+                  onChange={(e) => onChange(node.id, { baseUrl: e.target.value })}
+                  className="mt-1.5"
+                />
+              </div>
+              <div>
+                <Label htmlFor="embedding-model" className="text-xs font-medium">
+                  {t('canvas.embeddingModel')}
+                </Label>
+                <Input
+                  id="embedding-model"
+                  value={data.model}
+                  placeholder="text-embedding-3-small"
+                  onChange={(e) => onChange(node.id, { model: e.target.value })}
+                  className="mt-1.5"
+                />
+              </div>
+              <div>
+                <Label htmlFor="embedding-api-key-env" className="text-xs font-medium">
+                  {t('canvas.embeddingApiKeyEnv')}{' '}
+                  <span className="text-muted-foreground">({t('common.optional')})</span>
+                </Label>
+                <Input
+                  id="embedding-api-key-env"
+                  value={data.apiKeyEnv}
+                  placeholder="OPENAI_API_KEY"
+                  onChange={(e) => onChange(node.id, { apiKeyEnv: e.target.value })}
+                  className="mt-1.5"
+                />
+              </div>
+            </>
+          )}
+
+          <div className="h-px bg-white/10" />
+
           <div>
-            <Label htmlFor="dbt-select" className="text-xs font-medium">
-              {t('canvas.selectOptional')}
+            <Label htmlFor="embedding-strategy" className="text-xs font-medium">
+              {t('canvas.embeddingStrategy')}
             </Label>
-            <Input
-              id="dbt-select"
-              value={data.select}
-              placeholder={t('canvas.selectPlaceholder')}
-              onChange={(e) => onChange(node.id, { select: e.target.value })}
-              className="mt-1.5"
-            />
+            <select
+              id="embedding-strategy"
+              value={data.strategy}
+              onChange={(e) => onChange(node.id, { strategy: e.target.value as ChunkingStrategy })}
+              className="mt-1.5 flex h-9 w-full rounded-lg border border-input bg-transparent px-3 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring"
+            >
+              <option value="fixed_window">{t('canvas.embeddingStrategyFixed')}</option>
+              <option value="recursive_character">{t('canvas.embeddingStrategyRecursive')}</option>
+            </select>
           </div>
+          <div className="flex gap-3">
+            <div className="flex-1">
+              <Label htmlFor="embedding-chunk-size" className="text-xs font-medium">
+                {t('canvas.embeddingChunkSize')}
+              </Label>
+              <Input
+                id="embedding-chunk-size"
+                type="number"
+                min={1}
+                value={data.chunkSize || ''}
+                placeholder="256"
+                onChange={(e) => onChange(node.id, { chunkSize: Number(e.target.value) || 0 })}
+                className="mt-1.5"
+              />
+            </div>
+            <div className="flex-1">
+              <Label htmlFor="embedding-overlap" className="text-xs font-medium">
+                {t('canvas.embeddingOverlap')}
+              </Label>
+              <Input
+                id="embedding-overlap"
+                type="number"
+                min={0}
+                value={data.overlap}
+                placeholder="0"
+                onChange={(e) => onChange(node.id, { overlap: Number(e.target.value) || 0 })}
+                className="mt-1.5"
+              />
+            </div>
+          </div>
+          {data.strategy === 'recursive_character' && (
+            <div>
+              <Label htmlFor="embedding-separators" className="text-xs font-medium">
+                {t('canvas.embeddingSeparators')}{' '}
+                <span className="text-muted-foreground">({t('common.optional')})</span>
+              </Label>
+              <textarea
+                id="embedding-separators"
+                value={data.separators}
+                onChange={(e) => onChange(node.id, { separators: e.target.value })}
+                rows={4}
+                spellCheck={false}
+                placeholder={'\\n\\n\\n " "'}
+                className="mt-1.5 w-full rounded-lg border border-input bg-transparent p-3 font-mono text-xs text-foreground outline-none focus:ring-2 focus:ring-ring"
+              />
+              <p className="mt-1 text-[10px] text-muted-foreground">
+                {t('canvas.embeddingSeparatorsHint')}
+              </p>
+            </div>
+          )}
         </div>
       </div>
     </aside>
