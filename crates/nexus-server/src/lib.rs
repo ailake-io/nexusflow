@@ -4,11 +4,13 @@ mod auth_store;
 mod checkpoint_store;
 mod connectors;
 mod crypto;
+mod db;
 mod dbt;
 #[cfg(feature = "embed-ui")]
 mod embedded_ui;
 mod error;
 mod hardware_stats;
+pub mod migrate;
 mod pipeline_store;
 mod progress;
 mod rate_limit;
