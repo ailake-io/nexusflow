@@ -1,0 +1,23 @@
+[package]
+name = "nexus-connector-mysql"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+arrow-array = "58.4.0"
+arrow-schema = "58.4.0"
+async-trait = "0.1.91"
+futures = "0.3.33"
+nexus-core = { version = "0.1.0", path = "../../nexus-core" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+schemars = "1.2.2"
+tokio = { version = "1.53.1", features = ["rt", "sync", "time"] }
+mysql_cdc = "0.2.1"
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time"] }
+mysql_async = { version = "0.36.1", default-features = false, features = ["default-rustls"] }
+testcontainers = "0.27.3"
+testcontainers-modules = { version = "0.15.0", features = ["mysql"] }

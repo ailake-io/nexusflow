@@ -144,22 +144,24 @@ Parte da arquitetura já revisada em `ARCHITECTURE.md` v2: crate-por-conector, b
 
 ---
 
-## Marco 13 — CDC nativo (WAL/binlog, condicional — sob demanda)
+## Marco 13 — CDC nativo (WAL/binlog/change streams) ✅ ver ROADMAP.md Fase 18
 
-**Não agendado.** Só entra em execução se o overhead operacional de manter Debezium+Kafka como dependência do Marco 4 virar bloqueador real de adoção confirmado — não é trabalho especulativo, é resposta a sinal de mercado (ver ARCHITECTURE.md §7, débito registrado desde o Marco 4).
+**Deixou de ser condicional**: o overhead operacional de manter Debezium+Kafka+Zookeeper (3 JVMs) como dependência do Marco 4 virou bloqueador real de adoção confirmado em hardware mais simples (ver ARCHITECTURE.md §7).
 
-- Parser binário do protocolo de replicação lógica do Postgres (WAL, formato `pgoutput` ou `wal2json` direto via `libpq` streaming replication) — sem passar por Kafka/Debezium. Primeiro candidato: Postgres, por já ser o fast-path (Marco 1).
-- Elimina a dependência de infra externa (Kafka+Debezium) só pra CDC — trade-off é reimplementar dentro do nexusflow um subsistema do tamanho do Debezium: gestão de replication slot, resume por LSN, decodificação binária do WAL, mapeamento de tipos Postgres → Arrow sem o schema registry que o Debezium já resolve.
-- `nexus-connector-postgres` ganha um modo de leitura CDC nativo, opcode (`I`/`U`/`D`) como coluna extra do `RecordBatch` — mesma convenção do Marco 4 (`ARCHITECTURE.md §5`), pra manter os dois modos (Debezium e nativo) intercambiáveis do ponto de vista do resto do pipeline.
-- MySQL (binlog) e outros bancos só entram depois, cada um é um parser de protocolo binário próprio — não reaproveita nada do parser Postgres além da convenção de opcode/checkpoint.
+- Postgres (`postgres-cdc`): lê direto do protocolo de replicação lógica (`pgoutput`, crate `pg_walstream` — nem `postgres-protocol` nem `tokio-postgres` mainline têm isso hoje). Slot criado automaticamente; publicação precisa existir de antemão. Resume via o próprio slot (Postgres guarda o ponto server-side), não por LSN salvo externamente.
+- MongoDB (`mongodb-cdc`): Change Streams nativo do driver oficial, sem dependência nova. `full_document: updateLookup` pode vir `null` (comportamento real do Mongo, não bug) — cai pra `document_key` em vez de descartar a linha.
+- MySQL (`mysql-cdc`): novo crate, lê o binlog direto (`mysql_cdc`), CDC-only. Colunas casadas posicionalmente (protocolo binlog não carrega nome de coluna por padrão), diferente de Postgres/MongoDB.
+- Os 3 produzem opcode (`I`/`U`/`D`) como coluna extra do `RecordBatch` — mesma convenção do Marco 4 (`ARCHITECTURE.md §5`), sinks não precisam mudar nada (`split_by_opcode` já é agnóstico à origem).
+- Debezium+Kafka continua suportado como alternativa, não removido.
+- Canvas ainda não tem toggle Batch/CDC no mesmo node (pendência aberta, ver `ROADMAP.md`).
 
-**Critério de pronto:** pipeline CDC nativo Postgres, sem Kafka/Debezium na frente, com resume por LSN (não por offset de partição Kafka) e opcode correto — validado com teste de integração contra Postgres real gerando INSERT/UPDATE/DELETE.
+**Critério de pronto:** pipeline CDC nativo Postgres/MongoDB/MySQL, sem Kafka/Debezium na frente, opcode correto — validado com teste de integração real contra cada banco gerando INSERT/UPDATE/DELETE. **Atingido.**
 
 ---
 
 ## Ordem de execução e paralelização
 
-Sequencial obrigatório: Marco 0 → 1 → (2 e 3 podem ser paralelos entre si) → 4. Marco 5, 6 podem rodar em paralelo com 7 (times/momentos diferentes, sem dependência forte — todos consomem só os traits do Marco 0-1). Marco 8 depende de 7 (precisa da API/WS prontos). Marco 9 pode começar cedo (instrumentar desde o Marco 1) mas "critério de pronto" formal só fecha depois do Marco 7. Marco 10 e 11 são independentes, podem entrar a qualquer momento após Marco 1. Marco 12 é paralelo ao resto, em repo separado. Marco 13 não tem posição na sequência — é condicional, só entra se confirmado por sinal de adoção (ver Marco 13).
+Sequencial obrigatório: Marco 0 → 1 → (2 e 3 podem ser paralelos entre si) → 4. Marco 5, 6 podem rodar em paralelo com 7 (times/momentos diferentes, sem dependência forte — todos consomem só os traits do Marco 0-1). Marco 8 depende de 7 (precisa da API/WS prontos). Marco 9 pode começar cedo (instrumentar desde o Marco 1) mas "critério de pronto" formal só fecha depois do Marco 7. Marco 10 e 11 são independentes, podem entrar a qualquer momento após Marco 1. Marco 12 é paralelo ao resto, em repo separado. Marco 13 rodou em paralelo ao resto (independente, só dependia dos traits do Marco 0-1) — concluído (ver Marco 13).
 
 ## Verificação
 

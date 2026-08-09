@@ -26,3 +26,50 @@ pub struct PostgresConnectorConfig {
 fn default_timeout_seconds() -> u64 {
     30
 }
+
+/// Config for the native logical-replication CDC source (`"postgres-cdc"`) —
+/// a separate connector name from `"postgres"` rather than a mode flag, so
+/// the batch connector's config/behavior never changes. See
+/// `ARCHITECTURE.md §7`.
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct PostgresCdcConfig {
+    /// Same `postgres://user:pass@host:port/db` shape as the batch
+    /// connector — `?replication=database` is appended automatically, no
+    /// need to include it here.
+    pub uri: String,
+    /// Table this connector reads changes for. The publication (see
+    /// `publication_name`) must already cover this table — run
+    /// `CREATE PUBLICATION <publication_name> FOR TABLE <table>` by hand
+    /// once before starting this connector; it isn't created automatically.
+    pub table: String,
+    pub publication_name: String,
+    /// Replication slot name — created automatically on first connect if it
+    /// doesn't exist yet. Reconnecting later with the same name resumes
+    /// from where this connector last left off: Postgres tracks the
+    /// confirmed position server-side, so there's no separate LSN/offset to
+    /// persist on the nexus-server side for this to work.
+    pub slot_name: String,
+    /// Target schema for each change event's row — same 4-primitive-type
+    /// ceiling as every other bridging connector (Kafka/MongoDB); Postgres
+    /// column types beyond these aren't supported yet.
+    pub fields: Vec<PostgresCdcFieldSpec>,
+    #[serde(default = "default_timeout_seconds")]
+    pub timeout_seconds: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct PostgresCdcFieldSpec {
+    pub name: String,
+    pub data_type: PostgresCdcDataType,
+    #[serde(default)]
+    pub nullable: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PostgresCdcDataType {
+    Int64,
+    Float64,
+    Boolean,
+    Utf8,
+}

@@ -4,8 +4,11 @@ Ambiente de exemplo/teste pra validar o modo `Debezium` do
 `nexus-connector-kafka` (ver `ARCHITECTURE.md §7`, `IMPLEMENTATION_PLAN.md`
 Marco 4). **Não é infra de produção** — sem persistência, sem TLS, sem auth.
 
-Escopo: MVP de CDC via Debezium+Kafka. Parser nativo de WAL/binlog fica fora
-(débito registrado em `ROADMAP.md`, só entra se virar prioridade confirmada).
+**Caminho alternativo, não mais o único**: desde a Fase 18 (`ROADMAP.md`),
+CDC nativo (`postgres-cdc`/`mongodb-cdc`/`mysql-cdc`) não depende de
+Kafka/Debezium/Zookeeper — recomendado por padrão, mais leve. Esse stack
+Debezium+Kafka continua útil pra quem já opera essa infra ou quer centralizar
+CDC de vários bancos por um único broker.
 
 ## Subir o stack
 

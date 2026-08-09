@@ -52,8 +52,18 @@ connectors-all = [
     "mongodb", "kafka", "rest", "odbc", "milvus", "qdrant", "lancedb",
     "pgvector", "pinecone", "chromadb", "deltalake", "iceberg", "parquet",
     "ailake", "csv", "embeddings", "embeddings-api",
+    "postgres-cdc", "mysql-cdc",
 ]
+# Native logical-replication CDC for the always-linked "postgres" connector
+# — forwards to that crate's own `cdc` feature (ARCHITECTURE.md §7), which
+# is what actually gates its heavier pg_walstream/rustls-tls dependency.
+postgres-cdc = ["nexus-connector-postgres/cdc"]
+# MongoDB's Change Streams CDC source needs no extra dependency beyond the
+# driver "mongodb" already pulls in, so it has no Cargo feature of its own
+# in that crate — enabling "mongodb" here is enough to get "mongodb-cdc" in
+# the connector catalog too.
 mongodb = ["dep:nexus-connector-mongodb"]
+mysql-cdc = ["dep:nexus-connector-mysql"]
 kafka = ["dep:nexus-connector-kafka", "nexus-connector-kafka/consumer"]
 rest = ["dep:nexus-connector-rest"]
 odbc = ["dep:nexus-connector-odbc", "nexus-connector-odbc/legacy"]
@@ -88,6 +98,7 @@ rand_core = { version = "0.6.4", features = ["getrandom"] }
 nexus-connector-postgres = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-postgres" }
 nexus-connector-sqlite = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-sqlite" }
 nexus-connector-mongodb = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-mongodb", optional = true }
+nexus-connector-mysql = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-mysql", optional = true }
 nexus-connector-kafka = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-kafka", optional = true }
 nexus-connector-rest = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-rest", optional = true }
 nexus-connector-odbc = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-odbc", optional = true }
