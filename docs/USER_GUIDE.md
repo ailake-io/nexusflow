@@ -511,7 +511,7 @@ O scheduler faz *poll* a cada 30s e dispara via o mesmo caminho de execução do
 
 - `GET /health` — liveness, sem auth.
 - `GET /metrics` — Prometheus, sem auth (segurança via segmentação de rede).
-- `GET /pipelines/{id}/runs` — histórico de execuções, inclui as disparadas pelo scheduler.
+- `GET /pipelines/{id}/runs` — histórico de execuções, inclui as disparadas pelo scheduler. Botão **Histórico** na aba Pipelines do Canvas mostra a mesma lista com duração calculada (`finished_at - started_at`), linhas gravadas e erro completo por execução — não só a última.
 - WebSocket `/pipelines/{id}/runs/{run_id}/progress` — batches/linhas/bytes escritos por partição, em tempo real, mais um frame `{"hardware_stats": {...}}` intercalado a cada 2s com CPU/memória do processo.
 - Alertas em falha de pipeline: Slack, MS Teams, PagerDuty, Email e webhook genérico — configurados via variáveis de ambiente (`NEXUS_SLACK_WEBHOOK_URL` etc., ver [`GETTING_STARTED.md` §3](./GETTING_STARTED.md#3-variáveis-de-ambiente)).
 - Logs estruturados em JSON no stdout; `NEXUS_OTLP_ENDPOINT` exporta traces pra um coletor OTel.

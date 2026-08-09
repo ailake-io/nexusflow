@@ -3,6 +3,7 @@ import {
   Edit2,
   Trash2,
   Clock,
+  History,
   ArrowRight,
   Database,
   Workflow,
@@ -12,6 +13,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { StatusBadge } from '@/components/ui/status-badge'
 import { EmptyState } from '@/components/EmptyState'
+import { RunHistoryPanel } from '@/components/RunHistoryPanel'
 import { useI18n } from '@/lib/i18n'
 import { deletePipeline, getPipelineSpec, type NodeSummary } from '@/lib/api'
 import { useAuth } from '@/lib/auth-context'
@@ -66,6 +68,7 @@ export function PipelinesList({ onEdit }: PipelinesListProps) {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editError, setEditError] = useState<string | null>(null)
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
+  const [historyId, setHistoryId] = useState<string | null>(null)
 
   const handleDelete = async (pipelineId: string) => {
     if (!token) return
@@ -171,6 +174,18 @@ export function PipelinesList({ onEdit }: PipelinesListProps) {
                   type="button"
                   variant="outline"
                   size="sm"
+                  onClick={() =>
+                    setHistoryId(historyId === p.pipeline_id ? null : p.pipeline_id)
+                  }
+                  className="gap-1.5"
+                >
+                  <History className="h-3.5 w-3.5" />
+                  {t('pipelines.history.toggle')}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
                   disabled={editingId === p.pipeline_id}
                   onClick={() => handleEdit(p.pipeline_id)}
                   className="gap-1.5"
@@ -255,6 +270,8 @@ export function PipelinesList({ onEdit }: PipelinesListProps) {
               {t('pipelines.updatedAt', { updated: p.updated_at })} ·{' '}
               {t('pipelines.createdAt', { created: p.created_at })}
             </p>
+
+            {historyId === p.pipeline_id && <RunHistoryPanel pipelineId={p.pipeline_id} />}
           </div>
         ))}
       </div>
