@@ -102,10 +102,26 @@ export interface HardwareStats {
   memory_total_bytes: number
 }
 
-/** A frame on the progress WebSocket is either a bare ProgressEvent or a
- * `{ hardware_stats }` wrapper — never both, discriminated by the presence
- * of the `hardware_stats` key. */
-export type ProgressSocketMessage = ProgressEvent | { hardware_stats: HardwareStats }
+/** Matches nexus-server::progress::RunLogEvent. Persisted server-side (`GET
+ * .../logs`, see `listRunLogs`) as well as broadcast live over the same
+ * WebSocket as ProgressEvent — the `type: 'log'` tag is only added on the
+ * wire for this variant, distinguishing it from the untagged ProgressEvent/
+ * hardware_stats shapes below (nexus-server/src/progress.rs's doc comment
+ * explains why those two stayed untagged). */
+export interface RunLogEvent {
+  type: 'log'
+  ts: string
+  level: 'info' | 'warn' | 'error'
+  message: string
+}
+
+/** A frame on the progress WebSocket is a bare ProgressEvent, a `{
+ * hardware_stats }` wrapper, or a tagged `RunLogEvent` — discriminated by
+ * `type === 'log'` first, then the presence of the `hardware_stats` key. */
+export type ProgressSocketMessage =
+  | ProgressEvent
+  | { hardware_stats: HardwareStats }
+  | RunLogEvent
 
 /** Matches nexus-server::dbt::DbtOutcome::summary_json's shape (Marco 10
  * task #26) — `undefined` when the pipeline has no `dbt` step, or the
@@ -155,6 +171,26 @@ export function runPipeline(
 
 export function listRuns(token: string, pipelineId: string): Promise<RunRecord[]> {
   return request<RunRecord[]>(`/pipelines/${encodeURIComponent(pipelineId)}/runs`, {}, token)
+}
+
+/**
+ * Replays a run's execution log after the fact — works whether the run is
+ * still going, already finished, or (the reason this exists) was triggered
+ * by the scheduler and nobody had the live WebSocket open for it. Same
+ * `RunLogEvent` shape as the live `type: 'log'` WebSocket frames, just
+ * without the `type` tag (the endpoint returns a plain array, no
+ * discrimination needed).
+ */
+export function listRunLogs(
+  token: string,
+  pipelineId: string,
+  runId: number,
+): Promise<Omit<RunLogEvent, 'type'>[]> {
+  return request<Omit<RunLogEvent, 'type'>[]>(
+    `/pipelines/${encodeURIComponent(pipelineId)}/runs/${runId}/logs`,
+    {},
+    token,
+  )
 }
 
 /**

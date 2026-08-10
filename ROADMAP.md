@@ -135,6 +135,19 @@ O Marco 13 do `IMPLEMENTATION_PLAN.md` deixava CDC nativo condicional — só en
 
 ---
 
+## Fase 20 — Logs de execução por run no Canvas
+
+- [x] `nexus_server::progress::RunLogEvent`/`RunLogger` — narração textual (info/warn/error) de um run, emitida via broadcast (ao vivo) **e** persistida em `RunLogStore` (tabela nova `pipeline_run_logs`, mesmo padrão dual-dialeto do `MetadataPool`). A persistência acontece na emissão, não no forwarding pro WebSocket — evita duplicar linha por subscriber conectado. Ver `ARCHITECTURE.md §15`.
+- [x] Motivador: um run disparado pelo scheduler não tinha ninguém com o WebSocket de progresso aberto pra ver o que aconteceu, e o canal de broadcast morre junto com o run — sem persistência, não tinha como inspecionar depois.
+- [x] `GET /pipelines/{id}/runs/{run_id}/logs` (role `Read`) — replay completo, funciona pra run em andamento, terminado ou agendado.
+- [x] `nexus-core` intocado de propósito: em vez de mudar o tipo público `ProgressEvent`/`ProgressSender` (usado em ~10 testes do crate), o log viaja num `broadcast::channel` separado só dentro de `nexus-server`.
+- [x] Pontos de emissão: início/fim de run, contagem de partições/sources/sinks, falha de connect por partição/source/sink, etapas do dbt, resumo final (linhas/partições ou erro sanitizado — mesmo `error::sanitize_error` de sempre).
+- [x] Canvas: `ExecutionPanel` ganhou modo terminal expansível (frames `type: "log"` do mesmo WebSocket, sem socket novo); `RunHistoryPanel` ganhou botão "Logs" por execução, alimentado por `GET .../logs` (`useRunLogs`) — funciona pra qualquer run, inclusive um agendado que ninguém acompanhou ao vivo.
+
+**Critério de pronto:** log de execução visível no Canvas pra um run manual (ao vivo) e pra um run agendado inspecionado depois pelo histórico — testado via integração real (`run_logs_endpoint_replays_start_and_failure_lines_after_the_run_finished`). **Atingido.**
+
+---
+
 **Critério de "MVP pronto"**: Fases 0–3 + 7 (parcial: auth básica) + 8 (canvas mínimo) funcionando end-to-end — mover dados de Postgres pra Postgres via canvas visual, com checkpoint por partição, retry e escrita idempotente. **Atingido e superado** — Fases 0–11 e 13–17 completas, só falta Fase 12 (enterprise, repo separado) e os itens condicionais/parciais marcados acima.
 
 ## Débitos conhecidos (aceitos pro MVP, resolver antes de vender enterprise)

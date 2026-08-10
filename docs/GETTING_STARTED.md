@@ -170,7 +170,7 @@ Manifests k8s (Deployment/Service/PVC/HPA) prontos ainda não existem — essa s
 5. Opcional: adicione um node de transform (SQL via DataFusion) entre source e sink, ou um node `dbt` depois do(s) sink(s) pra rodar ELT pós-carga. **Sem transform, o runner só suporta `postgres → postgres`; cross-connector ou outros conectores exigem um nó transform.**
 6. Clique **Save** pra persistir o pipeline (cria na primeira vez, atualiza nas seguintes) — sem isso ele só existe nessa aba do navegador e o scheduler (próximo item) não tem o que agendar. Opcional: preencha o campo **schedule** (cron) pra rodar automaticamente, sem precisar clicar Run de novo.
 7. Rode manualmente e acompanhe linhas/s, MB/s e logs em tempo real no painel de execução (WebSocket), ou deixe o schedule disparar sozinho.
-8. Na aba **Pipelines**: veja tudo que já foi salvo, clique **Edit** pra recarregar um pipeline de volta no canvas (inclusive configs de conector), **Histórico** pra ver todas as execuções (não só a última) com duração calculada, linhas gravadas e erro completo em caso de falha, ou **Delete** pra remover. Na aba **Status**: visão rápida de todos os pipelines com um flag por linha — verde (sucesso), amarelo (em execução), vermelho (falha), cinza (nunca rodou).
+8. Na aba **Pipelines**: veja tudo que já foi salvo, clique **Edit** pra recarregar um pipeline de volta no canvas (inclusive configs de conector), **Histórico** pra ver todas as execuções (não só a última) com duração calculada, linhas gravadas, erro completo em caso de falha e um botão **Logs** por execução (funciona pra qualquer run, inclusive um disparado pelo scheduler que ninguém acompanhou ao vivo), ou **Delete** pra remover. Na aba **Status**: visão rápida de todos os pipelines com um flag por linha — verde (sucesso), amarelo (em execução), vermelho (falha), cinza (nunca rodou).
 
 ### Via API direto
 
@@ -219,6 +219,11 @@ curl -s -X POST http://localhost:8080/pipelines/meu-pipeline/run \
 
 # histórico de execuções (inclui as disparadas pelo scheduler, indistinguíveis de um run manual)
 curl -s http://localhost:8080/pipelines/meu-pipeline/runs -H "authorization: Bearer $TOKEN"
+
+# log de execução de um run específico (id vindo da resposta acima ou do POST /run) —
+# funciona pra um run já terminado ou disparado pelo scheduler sem ninguém olhando o
+# WebSocket ao vivo, já que fica persistido (ARCHITECTURE.md §15)
+curl -s http://localhost:8080/pipelines/meu-pipeline/runs/1/logs -H "authorization: Bearer $TOKEN"
 
 # spec completo, configs de conector inclusas — só pra recarregar/editar, exige Write
 curl -s http://localhost:8080/pipelines/meu-pipeline/spec -H "authorization: Bearer $TOKEN"

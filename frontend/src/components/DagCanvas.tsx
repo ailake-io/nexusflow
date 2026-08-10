@@ -311,6 +311,7 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
         hardwareStats={execution.hardwareStats}
         error={execution.error}
         dbtSummary={execution.dbtSummary}
+        logs={execution.logs}
       />
     </div>
   )
