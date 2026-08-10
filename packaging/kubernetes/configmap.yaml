@@ -1,0 +1,26 @@
+# Non-secret configuration. Pair with secret.yaml for the sensitive values
+# (NEXUS_JWT_SECRET, NEXUS_ENCRYPTION_KEY, NEXUS_ADMIN_PASSWORD, DB URIs,
+# SMTP password, alert webhook URLs) — see packaging/kubernetes/README.md.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nexusflow-config
+  labels:
+    app.kubernetes.io/name: nexusflow
+data:
+  # First-boot admin account username — paired with NEXUS_ADMIN_PASSWORD
+  # (Secret). Only takes effect once, when the users table is empty.
+  NEXUS_ADMIN_USERNAME: "admin"
+  # "true" only if every pipeline source/sink config is fully trusted (no
+  # user-supplied URLs) — see ARCHITECTURE.md §10 (SSRF guard). Leave unset
+  # (omit the key) to keep the guard on, the safe default.
+  # NEXUS_ALLOW_INTERNAL_HOSTS: "false"
+  NEXUS_DBT_TIMEOUT_SECONDS: "300"
+  # OTLP/HTTP traces exporter — omit to keep traces as local JSON logs only
+  # (Prometheus metrics at /metrics work regardless).
+  # NEXUS_OTLP_ENDPOINT: "http://otel-collector.observability:4318"
+  NEXUS_EMAIL_FROM: ""
+  NEXUS_EMAIL_TO: ""
+  NEXUS_EMAIL_SMTP_HOST: ""
+  NEXUS_EMAIL_SMTP_PORT: "587"
+  NEXUS_EMAIL_SMTP_USERNAME: ""

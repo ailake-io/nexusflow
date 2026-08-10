@@ -1,0 +1,17 @@
+# kubectl apply -k packaging/kubernetes/
+#
+# secret.yaml is a TEMPLATE with placeholder values — edit it (or better,
+# replace the secret with `kubectl create secret generic nexusflow-secrets
+# --from-literal=...` / a real secrets manager) before applying for real.
+# hpa.yaml and pvc.yaml are optional — remove them from `resources` below if
+# you don't want autoscaling or a persistent embeddings cache. See README.md.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - configmap.yaml
+  - secret.yaml
+  - deployment.yaml
+  - service.yaml
+  - pvc.yaml
+  - hpa.yaml
