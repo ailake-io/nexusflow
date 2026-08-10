@@ -5,7 +5,7 @@
 //! `docs/cdc-reference/README.md`. Mirrors the assertions of
 //! `nexus-connector-kafka`'s `cdc_debezium_integration.rs` (opcode sequence
 //! + before/after values) but against a single plain Postgres container
-//! instead of a 3-JVM Debezium+Kafka+Zookeeper stack.
+//!   instead of a 3-JVM Debezium+Kafka+Zookeeper stack.
 
 use arrow_array::{Int64Array, StringArray};
 use futures::StreamExt;
