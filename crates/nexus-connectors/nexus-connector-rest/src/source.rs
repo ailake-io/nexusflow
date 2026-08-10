@@ -9,6 +9,7 @@ use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::Instant;
+use url::Url;
 
 /// Generic bridging connector for REST/SaaS APIs — see ARCHITECTURE.md §2/§4.1
 /// and `CLAUDE.md §8.2`. No native partitioning: this is the degenerate
@@ -24,6 +25,10 @@ impl RestSource {
         let schema = build_schema(&config.fields);
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(config.timeout_seconds))
+            // Disable automatic redirects: the DAG's validate_security() only
+            // inspects the configured base_url/path. A redirect to an internal
+            // or attacker-controlled host would bypass that check.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| NexusError::Connector(format!("REST client build failed: {e}")))?;
         Ok(Self {
@@ -70,11 +75,26 @@ async fn fetch_page(
     config: &RestConnectorConfig,
     query: &[(String, String)],
 ) -> Result<Value, NexusError> {
+    if config.path.starts_with("//") {
+        return Err(NexusError::Schema(
+            "REST path must not be protocol-relative (//host)".to_string(),
+        ));
+    }
     let url = format!(
         "{}/{}",
         config.base_url.trim_end_matches('/'),
         config.path.trim_start_matches('/')
     );
+    // Defence in depth: parse and reject non-HTTP(S) schemes that could
+    // emerge from a misconfigured or malicious base_url/path.
+    let url = Url::parse(&url)
+        .map_err(|e| NexusError::Schema(format!("REST URL is invalid: {e}")))?;
+    if url.scheme() != "http" && url.scheme() != "https" {
+        return Err(NexusError::Schema(format!(
+            "REST URL must use http(s), got {} scheme",
+            url.scheme()
+        )));
+    }
 
     let mut request = client.get(url).query(query);
     for (key, value) in &config.headers {
