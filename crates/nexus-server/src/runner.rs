@@ -7,7 +7,7 @@ use nexus_connector_postgres::{
 };
 use nexus_core::{
     CheckpointCursor, DataFusionTransform, NodeSpec, PartitionHandle, PartitionStats,
-    PipelineEngine, PipelineSpec, ProgressSender, Transform,
+    PipelineEngine, PipelineSpec, ProgressEvent, ProgressSender, Transform,
 };
 
 #[cfg(any(feature = "embeddings", feature = "embeddings-api"))]
@@ -51,6 +51,57 @@ async fn log_info(log: Option<&RunLogger>, message: impl Into<String>) {
     if let Some(logger) = log {
         logger.info(message).await;
     }
+}
+
+async fn log_error(log: Option<&RunLogger>, message: impl Into<String>) {
+    if let Some(logger) = log {
+        logger.error(message).await;
+    }
+}
+
+/// Wraps a `ProgressSender` so the engine's progress events are still
+/// forwarded to live WebSocket subscribers while also driving user-facing
+/// percentage logs. `total_units` is the number of partitions/sinks that must
+/// report `done = true` to reach 100%.
+fn log_progress(
+    log: Option<&RunLogger>,
+    progress: Option<ProgressSender>,
+    total_units: usize,
+    unit_name: &'static str,
+) -> (Option<ProgressSender>, tokio::task::JoinHandle<()>) {
+    let Some(logger) = log else {
+        // No logger: forward progress directly without spawning a task.
+        return (progress, tokio::spawn(async {}));
+    };
+    let logger = logger.clone();
+    let (tx, mut rx) = tokio::sync::broadcast::channel::<ProgressEvent>(1024);
+
+    let handle = tokio::spawn(async move {
+        let mut done = 0usize;
+        let mut last_milestone = 0usize;
+        while let Ok(event) = rx.recv().await {
+            let is_done = event.done;
+            if let Some(p) = &progress {
+                let _ = p.send(event);
+            }
+            if is_done {
+                done += 1;
+                let percent = (done * 100) / total_units.max(1);
+                let milestone = (percent / 10) * 10;
+                if milestone > last_milestone || percent == 100 {
+                    logger
+                        .info(format!(
+                            "progress: {percent}% ({done}/{total} {unit_name} completed)",
+                            total = total_units
+                        ))
+                        .await;
+                    last_milestone = milestone;
+                }
+            }
+        }
+    });
+
+    (Some(tx), handle)
 }
 
 #[tracing::instrument(skip_all, fields(pipeline_id = %spec.pipeline_id))]
@@ -158,8 +209,11 @@ async fn run_linear_pipeline(
 
     log_info(log, format!("{} partition(s) to process", handles.len())).await;
 
+    let total_partitions = handles.len();
     let engine = PipelineEngine::new(spec.channel_capacity);
+    let (progress, progress_handle) = log_progress(log, progress, total_partitions, "partitions");
     let results = engine.run(handles, progress).await;
+    let _ = progress_handle.await;
 
     let mut stats = Vec::new();
     let mut errors = Vec::new();
@@ -174,13 +228,23 @@ async fn run_linear_pipeline(
                     .await?;
                 stats.push(stat);
             }
-            Err(e) => errors.push(e),
+            Err(e) => {
+                log_error(
+                    log,
+                    format!(
+                        "partition failed: {}",
+                        crate::error::sanitize_error(&e.to_string())
+                    ),
+                )
+                .await;
+                errors.push(e);
+            }
         }
     }
 
     if !errors.is_empty() {
         anyhow::bail!(
-            "{} of {} partition(s) failed: {errors:?}",
+            "{} of {} partition(s) failed",
             errors.len(),
             errors.len() + stats.len()
         );
@@ -261,8 +325,11 @@ async fn run_transform_pipeline(
     }
     log_info(log, format!("{} sink(s) connected", sinks.len())).await;
 
+    let total_sinks = sinks.len();
     let engine = PipelineEngine::new(spec.channel_capacity);
+    let (progress, progress_handle) = log_progress(log, progress, total_sinks, "sinks");
     let results = engine.fan_out_write(&output, sinks, progress).await;
+    let _ = progress_handle.await;
 
     let mut stats = Vec::new();
     let mut errors = Vec::new();
@@ -277,13 +344,23 @@ async fn run_transform_pipeline(
                     .await?;
                 stats.push(stat);
             }
-            Err(e) => errors.push(e),
+            Err(e) => {
+                log_error(
+                    log,
+                    format!(
+                        "sink failed: {}",
+                        crate::error::sanitize_error(&e.to_string())
+                    ),
+                )
+                .await;
+                errors.push(e);
+            }
         }
     }
 
     if !errors.is_empty() {
         anyhow::bail!(
-            "{} of {} sink(s) failed: {errors:?}",
+            "{} of {} sink(s) failed",
             errors.len(),
             errors.len() + stats.len()
         );
@@ -348,9 +425,13 @@ pub async fn run_post_dbt_stage(
         }
         sinks.push((name, sink));
     }
+    log_info(log, format!("{} post-dbt sink(s) connected", sinks.len())).await;
 
+    let total_sinks = sinks.len();
     let engine = PipelineEngine::new(spec.channel_capacity);
+    let (progress, progress_handle) = log_progress(log, progress, total_sinks, "post-dbt sinks");
     let results = engine.fan_out_write(&batches, sinks, progress).await;
+    let _ = progress_handle.await;
 
     let mut stats = Vec::new();
     let mut errors = Vec::new();
@@ -365,13 +446,23 @@ pub async fn run_post_dbt_stage(
                     .await?;
                 stats.push(stat);
             }
-            Err(e) => errors.push(e),
+            Err(e) => {
+                log_error(
+                    log,
+                    format!(
+                        "post-dbt sink failed: {}",
+                        crate::error::sanitize_error(&e.to_string())
+                    ),
+                )
+                .await;
+                errors.push(e);
+            }
         }
     }
 
     if !errors.is_empty() {
         anyhow::bail!(
-            "{} of {} post-dbt sink(s) failed: {errors:?}",
+            "{} of {} post-dbt sink(s) failed",
             errors.len(),
             errors.len() + stats.len()
         );
