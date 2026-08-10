@@ -21,7 +21,7 @@ Consolidado dos itens que ficaram faltando/incompletos ao longo das fases abaixo
 11. ~~**Estágio `embedding` do `PipelineSpec` sem UI no Canvas**~~ — resolvido: node dedicado `kind: 'embedding'` no Canvas (mesmo padrão do node `dbt`, painel próprio em `NodeInspector.tsx` já que `EmbeddingModelSpec`/`ChunkingSpec` são unions com tag que o `SchemaForm` genérico não resolve). `lib/dag.ts`'s `PipelineSpec` agora declara `embedding`; `toPipelineSpec`/`fromPipelineSpec` fazem o round-trip completo (Onnx↔Api, fixed_window↔recursive_character) sem perder config ao editar/salvar.
 12. **Fase 16 (Preview + dbt ETL) é backend-only** — `GET /pipelines/{id}/preview` não tem botão/tabela no Canvas ainda (só curl/Postman); o node dbt tem handle de saída (Fase 18 adicionou, consistência visual), mas painel de config pra `dbt.output` — hoje só configurável via API/JSON direto. Ambos deliberadamente adiados até validar se o formato backend-only já resolve o suficiente.
 13. ~~**Fase 18 (CDC nativo) sem toggle no Canvas**~~ — resolvido: `NodeInspector` tem switch Batch/CDC pra Postgres/MongoDB (MySQL é CDC-only, sem batch pra alternar).
-14. **Manifests k8s reais (Deployment/Service/PVC/Secret/HPA) ainda não escritos** — Fase 17 resolveu o pré-requisito (storage Postgres + leader election), não a implantação em si. Ver `ARCHITECTURE.md §14`.
+14. ~~**Manifests k8s reais (Deployment/Service/PVC/Secret/HPA) ainda não escritos**~~ — resolvido: Fase 19, `packaging/kubernetes/` + `packaging/swarm/`.
 
 ## Fase 0 — Fundação (workspace) ✅
 - [x] `Cargo.toml` workspace + crates vazios: `nexus-core`, `nexus-ai`, `nexus-server`, e `crates/nexus-connectors/` já como workspace de sub-crates (não crate único) — ver `CLAUDE.md §3` e `ARCHITECTURE.md §3`
@@ -131,7 +131,19 @@ O Marco 13 do `IMPLEMENTATION_PLAN.md` deixava CDC nativo condicional — só en
 - [x] Leader election do scheduler de cron via `pg_try_advisory_lock` do Postgres (sem infra nova tipo etcd/Redis) — sem isso, >1 réplica lendo o mesmo Postgres dispararia cada pipeline agendado em dobro. No-op em SQLite.
 - [x] Ferramenta de migração (`cargo run --bin migrate-metadata`) copia usuários/pipelines/histórico/checkpoints de SQLite pra Postgres preservando IDs, idempotente. `spec_ciphertext` copiado byte a byte — exige mesma `NEXUS_ENCRYPTION_KEY` nos dois lados.
 - [x] Testado com Postgres real via testcontainers: os 3 stores, leader election (2 "réplicas" disputando o lock, failover ao perder conexão) e a ferramenta de migração (IDs não-sequenciais + `setval` da sequence).
-- [ ] **Manifests k8s reais (Deployment/Service/PVC/Secret/HPA) ainda não escritos** — essa fase resolve só o pré-requisito de storage/coordenação, não a implantação em si. Ver pendência nova abaixo.
+- [x] Manifests k8s reais escritos na Fase 19, ver abaixo.
+
+---
+
+## Fase 19 — Manifests de deployment: Kubernetes e Docker Swarm
+
+- [x] `packaging/kubernetes/`: Deployment (2 réplicas, `securityContext` não-root uid 1001 alinhado ao Dockerfile, liveness/readiness em `/health`), Service (ClusterIP), ConfigMap + Secret (template) pras env vars do `GETTING_STARTED.md §3`, PVC opcional pro cache de embeddings (`XDG_CACHE_HOME`, `hf_hub` já honra essa env var sem mudança de código), HPA (CPU, requer metrics-server), `kustomization.yaml` amarrando tudo. Validado offline com `kubeconform` (schema K8s 1.29) — não testado num cluster gerenciado real.
+- [x] `packaging/swarm/docker-stack.yml`: mesmo binário/imagem, `replicas: 2`, healthcheck herdado do Dockerfile, `update_config`/`restart_policy`. Sem secret nativo do Swarm (monta como arquivo, `nexus-server` só lê env var) — usa substituição `${VAR}` do compose, injetado no shell do `docker stack deploy`. Validado com `docker compose config` — não testado num swarm multi-node real.
+- [x] Nenhuma mudança em `nexus-server`/`nexus-core` — só manifests de infra em cima do que a Fase 17 (Postgres + leader election) já tornou seguro.
+- [x] Documentado o trade-off do HPA/autoscaling: escalar pra baixo mata runs de pipeline em voo daquele pod/container (`shutdown_signal` não espera supervisors de run já disparados) — recuperável via checkpoint por partição (`ARCHITECTURE.md §5`), não é perda de dado, mas não é limpo.
+- [x] Sem Helm chart, sem Ingress/TLS, sem manifest de Postgres — de propósito (specific ao ambiente do operador); ver `packaging/kubernetes/README.md`/`packaging/swarm/README.md`.
+
+**Critério de pronto:** manifests aplicáveis (`kubectl apply -k` / `docker stack deploy`) sem erro de schema, documentação do pré-requisito Postgres + trade-offs de autoscaling. **Atingido** (validação offline; validação num cluster/swarm real fica pro operador, fora do escopo de CI deste repo).
 
 ---
 

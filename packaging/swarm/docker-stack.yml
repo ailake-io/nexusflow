@@ -1,0 +1,63 @@
+# docker stack deploy -c docker-stack.yml nexusflow
+#
+# Unlike Kubernetes Secrets, Swarm secrets mount as files under
+# /run/secrets/<name> — nexus-server reads its config from env vars only
+# (no `_FILE`-suffix convention), so Swarm's native secret store doesn't
+# plug in directly here. Values below come from the shell environment or an
+# `.env` file next to this one (compose's standard `${VAR}` substitution) —
+# inject them at deploy time (e.g. from your CI/CD secret store into the
+# shell that runs `docker stack deploy`), don't hardcode real values into a
+# committed `.env`. The `:?err` suffix makes `docker stack deploy` fail
+# fast with a clear message instead of deploying with an empty secret.
+#
+# Multi-replica here is only safe once NEXUS_*_DB point at Postgres — see
+# GETTING_STARTED.md §3 and this repo's ARCHITECTURE.md §14 (same
+# leader-election/shared-metadata requirement as the Kubernetes manifests
+# in packaging/kubernetes/).
+version: "3.8"
+
+services:
+  nexusflow:
+    image: ghcr.io/ailake-io/nexusflow:${NEXUSFLOW_VERSION:-latest}
+    ports:
+      - "8080:8080"
+    environment:
+      NEXUS_JWT_SECRET: ${NEXUS_JWT_SECRET:?NEXUS_JWT_SECRET must be set}
+      NEXUS_ENCRYPTION_KEY: ${NEXUS_ENCRYPTION_KEY:?NEXUS_ENCRYPTION_KEY must be set}
+      NEXUS_ADMIN_USERNAME: ${NEXUS_ADMIN_USERNAME:-admin}
+      NEXUS_ADMIN_PASSWORD: ${NEXUS_ADMIN_PASSWORD:-}
+      NEXUS_CHECKPOINT_DB: ${NEXUS_CHECKPOINT_DB:?NEXUS_CHECKPOINT_DB must point at Postgres for >1 replica}
+      NEXUS_AUTH_DB: ${NEXUS_AUTH_DB:?NEXUS_AUTH_DB must point at Postgres for >1 replica}
+      NEXUS_PIPELINES_DB: ${NEXUS_PIPELINES_DB:?NEXUS_PIPELINES_DB must point at Postgres for >1 replica}
+      NEXUS_SLACK_WEBHOOK_URL: ${NEXUS_SLACK_WEBHOOK_URL:-}
+      NEXUS_OTLP_ENDPOINT: ${NEXUS_OTLP_ENDPOINT:-}
+      # hf_hub (crates/nexus-ai) resolves its cache dir via
+      # dirs::cache_dir(), which honors $XDG_CACHE_HOME.
+      XDG_CACHE_HOME: /data/cache
+    volumes:
+      - nexusflow-cache:/data/cache
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    deploy:
+      replicas: 2
+      update_config:
+        order: start-first
+        failure_action: rollback
+      restart_policy:
+        condition: on-failure
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+        reservations:
+          cpus: "0.25"
+          memory: 512M
+
+volumes:
+  # Per-node cache, not shared across replicas — see packaging/kubernetes/pvc.yaml
+  # for the equivalent note. Not load-bearing data, safe to lose.
+  nexusflow-cache:
