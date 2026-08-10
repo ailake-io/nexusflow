@@ -65,7 +65,7 @@ Ponto de partida do usuário: Excel, Oracle, Snowflake, ClickHouse, BigQuery, Re
 
 | Conector | Por quê é pago |
 |---|---|
-| **Confluent Cloud** | Kafka gerenciado com Schema Registry + RBAC — o Kafka OSS via Debezium já existe, isso é a camada enterprise |
+| **Confluent Cloud** | Kafka gerenciado com Schema Registry + RBAC — o Kafka OSS genérico (`nexus-connector-kafka`) já existe, isso é a camada enterprise |
 | **Amazon Kinesis** | Streaming nativo AWS |
 | **Azure Event Hubs** | Streaming nativo Azure |
 | **Apache Pulsar** | Alternativa enterprise ao Kafka em alguns setores (telco/financeiro) |

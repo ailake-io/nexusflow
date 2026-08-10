@@ -59,13 +59,13 @@ Parte da arquitetura já revisada em `ARCHITECTURE.md` v2: crate-por-conector, b
 
 ---
 
-## Marco 4 — CDC via Debezium+Kafka (não parser nativo)
+## Marco 4 — CDC via Debezium+Kafka (não parser nativo) — ⚠️ removido, ver Marco 13
 - Documentar/prover `docker-compose` de referência (Debezium connector + Kafka) em `docs/cdc-reference/` — não é infra de produção, é ambiente de teste/exemplo.
 - `nexus-connector-kafka` ganha modo "Debezium envelope" — decodifica JSON/Avro do Debezium, extrai `op` (`c`/`u`/`d`/`r`) e mapeia pro `Opcode` interno (`I`/`U`/`D`), gera `RecordBatch` com coluna de opcode.
 - Teste de integração: `testcontainers` subindo Postgres + Debezium + Kafka, gerar INSERT/UPDATE/DELETE na fonte, validar que chegam como eventos com opcode certo no `RecordBatch`.
 - Parser nativo de WAL/binlog **fica fora deste marco** (só entra se virar prioridade de negócio confirmada — ver débito em `ROADMAP.md`).
 
-**Critério de pronto:** pipeline CDC end-to-end Postgres→Kafka(Debezium)→sink, com opcode correto e resume por partição.
+**Critério de pronto:** pipeline CDC end-to-end Postgres→Kafka(Debezium)→sink, com opcode correto e resume por partição. **Atingido, e depois removido por completo** (código, teste, docs) quando o Marco 13 tornou esse caminho desnecessário — `nexus-connector-kafka` ficou só como fonte genérica de Kafka.
 
 ---
 
@@ -152,7 +152,7 @@ Parte da arquitetura já revisada em `ARCHITECTURE.md` v2: crate-por-conector, b
 - MongoDB (`mongodb-cdc`): Change Streams nativo do driver oficial, sem dependência nova. `full_document: updateLookup` pode vir `null` (comportamento real do Mongo, não bug) — cai pra `document_key` em vez de descartar a linha.
 - MySQL (`mysql-cdc`): novo crate, lê o binlog direto (`mysql_cdc`), CDC-only. Colunas casadas posicionalmente (protocolo binlog não carrega nome de coluna por padrão), diferente de Postgres/MongoDB.
 - Os 3 produzem opcode (`I`/`U`/`D`) como coluna extra do `RecordBatch` — mesma convenção do Marco 4 (`ARCHITECTURE.md §5`), sinks não precisam mudar nada (`split_by_opcode` já é agnóstico à origem).
-- Debezium+Kafka continua suportado como alternativa, não removido.
+- Debezium+Kafka foi removido em seguida (código, teste de integração de 3 JVMs, `docs/cdc-reference/`) — nenhum usuário dependia dele; `nexus-connector-kafka` ficou só como fonte genérica de Kafka.
 - Canvas tem toggle Batch/CDC no mesmo node pra Postgres/MongoDB (`NodeInspector`), detectado dinamicamente contra o catálogo real (não hardcoded). MySQL não tem, por ser CDC-only.
 
 **Critério de pronto:** pipeline CDC nativo Postgres/MongoDB/MySQL, sem Kafka/Debezium na frente, opcode correto — validado com teste de integração real contra cada banco gerando INSERT/UPDATE/DELETE. **Atingido.**

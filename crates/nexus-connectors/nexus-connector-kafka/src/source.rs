@@ -1,4 +1,4 @@
-use crate::config::{KafkaConnectorConfig, KafkaEnvelope};
+use crate::config::KafkaConnectorConfig;
 use crate::payload::{build_schema, parse_payload};
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
@@ -14,14 +14,12 @@ use rdkafka::{ClientConfig, Offset};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-/// Kafka consumer — decodes each message payload per `KafkaEnvelope` and
-/// projects it onto the configured schema. `envelope: Debezium` is Marco 4's
-/// CDC mode (opcode extraction) — see ARCHITECTURE.md §4.1/§7.
+/// Kafka consumer — decodes each message payload as JSON and projects it
+/// onto the configured schema. See ARCHITECTURE.md §4.1.
 pub struct KafkaSource {
     consumer: StreamConsumer,
     topic: String,
     schema: SchemaRef,
-    envelope: KafkaEnvelope,
     batch_size: usize,
     poll_timeout: Duration,
     max_messages: usize,
@@ -74,8 +72,7 @@ impl KafkaSource {
         Ok(Self {
             consumer,
             topic: config.topic.clone(),
-            schema: build_schema(&config.fields, config.envelope),
-            envelope: config.envelope,
+            schema: build_schema(&config.fields),
             batch_size: config.batch_size,
             poll_timeout: Duration::from_millis(config.poll_timeout_ms),
             max_messages: config.max_messages,
@@ -120,11 +117,10 @@ impl Source for KafkaSource {
         let mut batches = Vec::new();
         let mut buffer = Vec::with_capacity(self.batch_size);
         let mut consumed = 0usize;
-        // A CDC topic is often created lazily by the producer (e.g. Debezium
-        // creates it on its first change event) — a consumer that subscribes
-        // first sees UnknownTopicOrPartition until then. Tolerate it for up
-        // to the same idle-cutoff budget as "no message arrived", instead of
-        // hard-failing the whole read.
+        // A topic is often created lazily by its producer on first message —
+        // a consumer that subscribes first sees UnknownTopicOrPartition until
+        // then. Tolerate it for up to the same idle-cutoff budget as "no
+        // message arrived", instead of hard-failing the whole read.
         let mut waiting_for_topic_since: Option<Instant> = None;
 
         while consumed < self.max_messages {
@@ -154,7 +150,7 @@ impl Source for KafkaSource {
             let Some(bytes) = message.payload() else {
                 continue;
             };
-            buffer.push(parse_payload(bytes, self.envelope)?);
+            buffer.push(parse_payload(bytes)?);
             self.last_offsets
                 .insert(message.partition(), message.offset());
             consumed += 1;

@@ -175,11 +175,10 @@ Requer `ADBC_DRIVER_SQLITE_PATH`. `uri` aceita `:memory:`. Tabela criada automat
   "batch_size": 500,
   "poll_timeout_ms": 2000,
   "max_messages": 100000,
-  "envelope": "raw",
   "start_offsets": {}
 }}
 ```
-`envelope`: `"raw"` (default, payload é a própria row em JSON) ou `"debezium"` (evento de CDC — o `topic` vira o tópico do Kafka Connect, ex. `"{server}.{schema}.{table}"`, não o nome da tabela; a coluna `__opcode` é adicionada automaticamente com `I`/`U`/`D`). Offsets são commitados manualmente ao final de cada leitura, alinhado com o checkpoint do pipeline (`enable.auto.commit` desligado).
+Payload de cada mensagem é decodificado como JSON e projetado sobre `fields` — fonte genérica de Kafka, sem semântica de CDC (CDC é nativo por banco: `postgres-cdc`/`mongodb-cdc`/`mysql-cdc`, ver `ARCHITECTURE.md §7`). Offsets são commitados manualmente ao final de cada leitura, alinhado com o checkpoint do pipeline (`enable.auto.commit` desligado).
 
 ### 4.3 APIs REST/SaaS (bridging genérico)
 
@@ -363,7 +362,7 @@ Chaves de `storage_options` por provedor:
 | `postgres` | ✅ | ✅ | ADBC nativo |
 | `sqlite` | ✅ | ✅ | ADBC nativo |
 | `mongodb` | ✅ | ✅ | schema explícito |
-| `kafka` | ✅ | — | só leitura, CDC via Debezium |
+| `kafka` | ✅ | — | só leitura, genérico (sem CDC) |
 | `rest` | ✅ | — | genérico, paginação offset/cursor |
 | `webhook` | — | ✅ | mesmo crate do `rest` |
 | `odbc` | ✅ | ✅ | legado, driver nativo |

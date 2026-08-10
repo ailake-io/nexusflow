@@ -148,7 +148,7 @@ No entanto, existem **riscos críticos de segurança e dados** que precisam de a
 | D3 | Arrow Flight SQL connectors | Nenhum registrado | Atualizar matriz ou implementar |
 | D4 | Alertas Teams/PagerDuty/Email/Webhook | Slack implementado | ✅ Resolvido: Slack, MS Teams, PagerDuty, Email (SMTP STARTTLS) e Webhook genérico implementados; docs atualizadas |
 | D5 | Stats de hardware no WebSocket | Não implementado | ✅ Resolvido: `hardware_stats.rs` amostra CPU/memória a cada 2s e envia frame `{"hardware_stats": {...}}` pelo WS de progresso |
-| D6 | CDC nativo via WAL/binlog | Só Debezium+Kafka | Atualizar docs |
+| D6 | CDC nativo via WAL/binlog | Só Debezium+Kafka | ✅ Resolvido: `postgres-cdc`/`mongodb-cdc`/`mysql-cdc` nativos implementados (Fase 18); Debezium+Kafka removido em seguida |
 | D7 | Features CUDA/Metal/API de embeddings | CPU apenas | ✅ Resolvido: features `api` (HTTP externo), `cuda` (ONNX CUDA EP) e `metal` (CoreML EP) registradas e compiláveis; validação em hardware real pendente |
 | D8 | Cron com 5 ou 6 campos (Quartz) | Verificar suporte real | Atualizar docs se só 5 campos |
 | D9 | GETTING_STARTED exemplo `postgres → sqlite` com path absoluto | `runner.rs:37-44` rejeita path absoluto | Corrigir exemplo ou regra |
