@@ -140,6 +140,7 @@ thiserror = "2.0.19"
 sqlx = { version = "0.9.0", default-features = false, features = [
     "runtime-tokio",
     "sqlite",
+    "postgres",
     "chrono",
 ] }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
