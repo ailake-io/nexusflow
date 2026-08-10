@@ -101,7 +101,7 @@ Os 3 produzem `RecordBatch` com coluna `__opcode` (`I`/`U`/`D`) na mesma conven�
 
 **Debezium + Kafka continua suportado como alternativa** — útil pra quem já opera essa infra ou precisa centralizar CDC de múltiplos bancos por um único broker Kafka. `nexus-connector-kafka` continua existindo como fonte genérica de Kafka pra qualquer uso, CDC ou não (`docs/cdc-reference/` documenta esse caminho).
 
-**Canvas**: os 3 conectores aparecem automaticamente no catálogo (`GET /connectors` é dinâmico via `ConnectorRegistry`), mas ainda não tem um toggle Batch/CDC dentro do mesmo node — hoje é escolher o conector `-cdc` em vez do normal na lista.
+**Canvas**: os 3 conectores aparecem automaticamente no catálogo (`GET /connectors` é dinâmico via `ConnectorRegistry`), e o `NodeInspector` tem um toggle Batch/CDC dentro do mesmo node pra Postgres/MongoDB — troca `data.connector` e limpa o config (os dois modos não compartilham forma de config). Detecta a variante `-cdc` dinamicamente contra o catálogo real, não hardcoded. MySQL não tem toggle (`mysql-cdc` não tem batch equivalente).
 
 ## 8. Pipeline de embeddings (`nexus-ai`)
 

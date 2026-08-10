@@ -153,7 +153,7 @@ Parte da arquitetura já revisada em `ARCHITECTURE.md` v2: crate-por-conector, b
 - MySQL (`mysql-cdc`): novo crate, lê o binlog direto (`mysql_cdc`), CDC-only. Colunas casadas posicionalmente (protocolo binlog não carrega nome de coluna por padrão), diferente de Postgres/MongoDB.
 - Os 3 produzem opcode (`I`/`U`/`D`) como coluna extra do `RecordBatch` — mesma convenção do Marco 4 (`ARCHITECTURE.md §5`), sinks não precisam mudar nada (`split_by_opcode` já é agnóstico à origem).
 - Debezium+Kafka continua suportado como alternativa, não removido.
-- Canvas ainda não tem toggle Batch/CDC no mesmo node (pendência aberta, ver `ROADMAP.md`).
+- Canvas tem toggle Batch/CDC no mesmo node pra Postgres/MongoDB (`NodeInspector`), detectado dinamicamente contra o catálogo real (não hardcoded). MySQL não tem, por ser CDC-only.
 
 **Critério de pronto:** pipeline CDC nativo Postgres/MongoDB/MySQL, sem Kafka/Debezium na frente, opcode correto — validado com teste de integração real contra cada banco gerando INSERT/UPDATE/DELETE. **Atingido.**
 
