@@ -588,9 +588,7 @@ async fn record_run_failure(
     // version: connector errors routinely embed connection URIs with
     // credentials.
     let sanitized = error::sanitize_error(&error.to_string());
-    logger
-        .error(format!("run failed: {sanitized}"))
-        .await;
+    logger.error(format!("run failed: {sanitized}")).await;
     if let Err(record_err) = state.pipelines.finish_run_failure(run_id, &sanitized).await {
         tracing::warn!(error = %record_err, "failed to record failed pipeline run");
     }

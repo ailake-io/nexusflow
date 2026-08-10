@@ -156,11 +156,7 @@ async fn run_linear_pipeline(
         }
     }
 
-    log_info(
-        log,
-        format!("{} partition(s) to process", handles.len()),
-    )
-    .await;
+    log_info(log, format!("{} partition(s) to process", handles.len())).await;
 
     let engine = PipelineEngine::new(spec.channel_capacity);
     let results = engine.run(handles, progress).await;
@@ -441,6 +437,8 @@ mod tests {
             "credential must never reach the persisted run log: {}",
             logs[0].message
         );
-        assert!(logs[0].message.contains("postgres://***@db.internal:5432/app"));
+        assert!(logs[0]
+            .message
+            .contains("postgres://***@db.internal:5432/app"));
     }
 }

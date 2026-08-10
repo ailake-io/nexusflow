@@ -72,7 +72,8 @@ impl RunLogStore {
     /// line) — this method itself still surfaces the real error so the
     /// caller can decide that.
     pub async fn insert(&self, run_id: i64, event: &RunLogEvent) -> anyhow::Result<()> {
-        let sql = self.q("INSERT INTO pipeline_run_logs (run_id, ts, level, message) VALUES (?, ?, ?, ?)");
+        let sql = self
+            .q("INSERT INTO pipeline_run_logs (run_id, ts, level, message) VALUES (?, ?, ?, ?)");
         match &self.pool {
             MetadataPool::Sqlite(p) => {
                 sqlx::query(sqlx::AssertSqlSafe(sql.into_owned()))
@@ -100,7 +101,8 @@ impl RunLogStore {
     /// same guarantee `pipeline_run_logs.ts` alone wouldn't give under clock
     /// coarseness on very fast successive log lines.
     pub async fn list(&self, run_id: i64) -> anyhow::Result<Vec<RunLogEvent>> {
-        let sql = self.q("SELECT ts, level, message FROM pipeline_run_logs WHERE run_id = ? ORDER BY id ASC");
+        let sql = self
+            .q("SELECT ts, level, message FROM pipeline_run_logs WHERE run_id = ? ORDER BY id ASC");
         let rows: Vec<(String, String, String)> = match &self.pool {
             MetadataPool::Sqlite(p) => {
                 sqlx::query_as(sqlx::AssertSqlSafe(sql.into_owned()))
