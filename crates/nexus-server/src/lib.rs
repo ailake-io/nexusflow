@@ -551,8 +551,10 @@ async fn record_run_failure(
     pipeline_id: &str,
     error: &anyhow::Error,
 ) {
-    // Full detail (cause chain included) stays in the server log…
-    tracing::error!(error = format!("{error:?}"), "pipeline run failed");
+    let error_debug = format!("{error:?}");
+    // Full detail (cause chain included) stays in the server log, but the
+    // log itself is scrubbed so credentials don't end up in log aggregators.
+    tracing::error!(error = %error::sanitize_error(&error_debug), "pipeline run failed");
     // …what gets persisted (readable by any `Read` role via GET
     // /pipelines/{id}/runs) and forwarded to Slack is the sanitized
     // version: connector errors routinely embed connection URIs with
