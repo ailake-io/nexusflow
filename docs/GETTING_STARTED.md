@@ -26,7 +26,7 @@ docker build --build-arg FEATURES=embed-ui,connectors-all -t nexusflow:full .
 
 Não validado como build Docker completo nesta sessão (cada conector foi validado via `cargo build` direto, não através do Dockerfile) — se faltar alguma lib no runtime (ex. `zlib1g` pro rdkafka do kafka), adicione no `apt-get install` do estágio `runtime` do `Dockerfile`.
 
-Perfil com base CUDA (`--gpus all`) — hoje é só a mesma imagem numa base `nvidia/cuda`; aceleração de GPU real ainda não está implementada no pipeline de embeddings (ver `crates/nexus-ai/Cargo.toml`):
+Perfil com base CUDA (`--gpus all`) — usa a mesma imagem numa base `nvidia/cuda`; as features `cuda`/`metal` registram o execution provider ONNX correto, mas **não foram validadas em hardware real** (fallback silencioso pra CPU se driver/GPU não estiver presente):
 
 ```bash
 docker build --build-arg RUNTIME_IMAGE=nvidia/cuda:12.4.1-runtime-ubuntu22.04 -t nexusflow:cuda .
@@ -39,7 +39,7 @@ docker run --gpus all -d -p 8080:8080 -e NEXUS_JWT_SECRET=... -e NEXUS_ENCRYPTIO
 curl -fsSL https://raw.githubusercontent.com/ailake-io/nexusflow/develop/scripts/install.sh | sh
 ```
 
-Baixa o binário + drivers ADBC pra `~/.local/share/nexusflow` e cria `~/.local/bin/nexusflow`. Precisa de um [release](https://github.com/ailake-io/nexusflow/releases) publicado — ver `.github/workflows/release.yml`. O binário do release já vem com **todos** os 16 conectores linkados (`embed-ui,connectors-all`, não só postgres/sqlite — ver seção 2 abaixo); pra `odbc`/`kafka` funcionarem, precisa de `unixodbc`/`libsasl2` no sistema (o instalador avisa no final se faltar).
+Baixa o binário + drivers ADBC pra `~/.local/share/nexusflow` e cria `~/.local/bin/nexusflow`. Precisa de um [release](https://github.com/ailake-io/nexusflow/releases) publicado — ver `.github/workflows/release.yml`. O binário do release já vem com **todos** os 18 conectores linkados (`embed-ui,connectors-all`, não só postgres/sqlite — ver seção 2 abaixo); pra `odbc`/`kafka` funcionarem, precisa de `unixodbc`/`libsasl2` no sistema (o instalador avisa no final se faltar).
 
 ### Pacotes nativos (Linux)
 
@@ -77,7 +77,7 @@ export NEXUS_ADMIN_PASSWORD="troque-isto"
 
 Isso só se aplica a quem builda a partir do source (seção 1, "Build a partir do source") — os binários pré-buildados (script de instalação, `.deb`/AppImage/rpm, imagem Docker `:full`) já vêm com `connectors-all` ligado, ver seção 1.
 
-Por padrão um `cargo build` sem flags só liga `postgres` e `sqlite`. Os outros 14 conectores (mongodb, kafka, rest, odbc, milvus, qdrant, lancedb, pgvector, pinecone, chromadb, deltalake, iceberg, parquet, ailake) são features Cargo opcionais — cada um só entra no binário se for pedido:
+Por padrão um `cargo build` sem flags só liga `postgres` e `sqlite`. Os outros 16 conectores (mongodb, kafka, rest, odbc, milvus, qdrant, lancedb, pgvector, pinecone, chromadb, deltalake, iceberg, parquet, ailake, csv, webhook) são features Cargo opcionais — cada um só entra no binário se for pedido:
 
 ```bash
 # um conector específico
@@ -271,7 +271,7 @@ Se `dbt.output` estiver setado no spec (aponta pro model/tabela que o dbt acabou
 
 | Arquivo | Conteúdo |
 |---|---|
-| [`USER_GUIDE.md`](./USER_GUIDE.md) | Referência completa: config exata de cada um dos 17 conectores, transform SQL, embeddings, dbt ELT/ETL, preview, agendamento |
+| [`USER_GUIDE.md`](./USER_GUIDE.md) | Referência completa: config exata de cada um dos 18 conectores, transform SQL, embeddings, dbt ELT/ETL, preview, agendamento |
 | [`ARCHITECTURE.md`](../ARCHITECTURE.md) | Roteador de conectores, streaming/backpressure, checkpointing |
 | [`IMPLEMENTATION_PLAN.md`](../IMPLEMENTATION_PLAN.md) | Detalhamento marco a marco |
 | [`ROADMAP.md`](../ROADMAP.md) | Fases e critério de "pronto" |

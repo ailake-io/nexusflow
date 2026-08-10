@@ -10,7 +10,7 @@ Inclui:
 - `nexus-core` — traits, modelos Arrow, DAG parser
 - `nexus-server` — API Axum, Auth/RBAC, Scheduler, WebSockets
 - `nexus-ai` — pipeline de embeddings (chunking, ONNX/ort, destinos vetoriais mainstream)
-- `nexus-connectors` (subset OSS) — conectores fast-path (Postgres, MySQL, DuckDB, SQLite, ClickHouse ADBC) e híbridos comuns (REST genérico, MongoDB, Kafka)
+- `nexus-connectors` (subset OSS) — conectores fast-path ADBC (Postgres, SQLite); bridging (REST genérico, MongoDB, Kafka genérico, ODBC, CSV, webhook); data lake (Delta Lake, Iceberg, Parquet, AI Lake); vetoriais (LanceDB, Qdrant, Milvus, pgvector, Pinecone, ChromaDB); e CDC nativo (Postgres WAL, MongoDB Change Streams, MySQL binlog)
 - Frontend (React Flow canvas)
 
 Por que Apache-2.0 e não MIT: cláusula de patente protege contribuidores e usuários enterprise — mesmo racional do Arrow, DataFusion e Tokio (stack que o NexusFlow já depende).

@@ -18,7 +18,7 @@ O sistema conta com uma interface gráfica visual baseada em nós (*Node-based C
 ### 🦀 Backend (Core Engine em Rust)
 * **Linguagem:** Rust (Edition 2021)
 * **Formato Universal em Memória:** Apache Arrow (`arrow`, `arrow-array`, `arrow-flight`)
-* **Conectividade Fast-Path (ADBC/Flight):** `adbc_core`, `adbc_driver_manager`, `arrow-flight` (gRPC)
+* **Conectividade Fast-Path (ADBC):** `adbc_core`, `adbc_driver_manager` (Postgres/SQLite hoje; Arrow Flight SQL é aspiracional, nenhum conector implementado ainda)
 * **Conectividade Híbrida (Fallback/Bridging):** `odbc-api`, `mongodb`, `rdkafka`, `reqwest`
 * **Conectividade Data Lake:** `deltalake`, `iceberg-rust`, `parquet`
 * **Conectividade Vetorial (AI):** SDKs (`qdrant-client`, `milvus-sdk-rust`, `lancedb`, `pgvector`, Pinecone)
@@ -27,7 +27,7 @@ O sistema conta com uma interface gráfica visual baseada em nós (*Node-based C
 * **API Server & Metadados:** `axum` (REST & WebSockets), `sqlx` (Postgres/SQLite), `jsonwebtoken`, `aes-gcm`
 
 ### 🎨 Frontend (UI)
-* **Framework:** React / Next.js (TypeScript) ou Vite
+* **Framework:** React + Vite (TypeScript)
 * **Canvas Visual:** React Flow (Drag-and-drop de nós)
 * **Estilização e Componentes:** Tailwind CSS + Shadcn/ui
 * **Comunicação em Tempo Real:** WebSockets (para métricas MB/s, progresso e logs)
@@ -45,8 +45,7 @@ nexusflow/
 │   ├── nexus-core/                # Traits base (Source/Sink/Transform), modelos Arrow, DAG parser, registry de conectores
 │   ├── nexus-connectors/          # Workspace de sub-crates, um crate por conector (NÃO monolítico):
 │   │   ├── nexus-connector-postgres/
-│   │   ├── nexus-connector-mysql/
-│   │   ├── nexus-connector-duckdb/
+│   │   ├── nexus-connector-mysql/     # CDC-only (mysql-cdc); batch via mysql ADBC ainda não implementado
 │   │   ├── nexus-connector-mongodb/
 │   │   ├── nexus-connector-rest/      # Bridging genérico REST/SaaS
 │   │   └── ...                        # 1 crate novo por conector, feature-flag controla o que entra no binário final
@@ -64,6 +63,13 @@ nexusflow/
 ## 🏗️ 4. Arquitetura do Sistema e Conectores Híbridos
 
 ### 4.1. Roteador de Conectores (Matrix de Conectividade)
+
+> **Estado real vs. visão de produto**: a matriz abaixo mostra o que está
+> implementado **hoje**. Conectores marcados como *não implementado* existem
+> apenas no roadmap/enterprise — não são expostos em `GET /connectors` e não
+> têm crate em `crates/nexus-connectors/`.
+
+```text
                       +-----------------------------------+
                       |    ROUTER DE CONECTORES (RUST)    |
                       +-----------------------------------+
@@ -72,17 +78,25 @@ nexusflow/
     |                                   |                                   |
     v                                   v                                   v
 [ FAST-PATH (ADBC) ]            [ FAST-PATH (ARROW FLIGHT) ]        [ HÍBRIDO (BRIDGING) ]
-- Postgres, DuckDB, MySQL       - ClickHouse, Dremio,               - APIs REST / SaaS
-- Snowflake, BigQuery           - Spark Flight SQL,                 - NoSQL (MongoDB)
-- ClickHouse ADBC, SQLite       - Databricks                        - Filas / ODBC Legados
+- Postgres ✅                   - (nenhum implementado)             - REST / SaaS ✅ (reqwest)
+- SQLite ✅                                                         - MongoDB ✅
+- MySQL (batch) ❌ não impl.                                        - Kafka ✅ (genérico, sem CDC)
+- DuckDB ❌ não impl.                                               - ODBC ✅
+- Snowflake ❌ não impl.                                            - CSV ✅
+- BigQuery ❌ não impl.                                             - Webhook ✅ (sink)
+- ClickHouse ADBC ❌ não impl.
 
-* **Entrada (Source):** Lê via ADBC binário. Fontes sem ADBC são convertidas via `RecordBatchBuilder`.
+[ CDC NATIVO — sem Debezium/Kafka ]
+- Postgres WAL (`postgres-cdc`) ✅
+- MongoDB Change Streams (`mongodb-cdc`) ✅
+- MySQL binlog (`mysql-cdc`) ✅
+```
+
+* **Entrada (Source):** Lê via ADBC binário quando disponível. Fontes sem ADBC são convertidas via `RecordBatchBuilder`.
 * **Saída (Destination):** Descarrega via ADBC ou converte batch Arrow para queries parametrizadas (batch insert).
-* **Suporte a CDC (Change Data Capture):** Leitura de logs de transação (WAL no Postgres, Binlog no MySQL) convertidos em eventos Arrow contendo opcodes (`I`, `U`, `D`) para cargas incrementais em tempo real.
-
-> **Estado real (ver `ROADMAP.md`)**: a matriz acima é a visão de produto, não o estado atual. Hoje só **Postgres** e **SQLite** existem como conectores ADBC fast-path (`crates/nexus-connectors/nexus-connector-postgres`/`-sqlite`); MySQL, DuckDB, Snowflake, BigQuery e ClickHouse ADBC **não têm crate implementado**. Nenhum conector Arrow Flight SQL existe ainda — ClickHouse/Dremio/Spark Flight SQL/Databricks são inteiramente aspiracionais. CDC hoje é nativo — WAL (Postgres, `postgres-cdc`), Change Streams (MongoDB, `mongodb-cdc`) e binlog (MySQL, `mysql-cdc`), sem Debezium/Kafka na frente (removido, ver `ARCHITECTURE.md §7`, `ROADMAP.md` Fase 18). `nexus-connector-kafka` continua existindo só como fonte genérica de Kafka, sem semântica de CDC.
+* **Suporte a CDC (Change Data Capture):** Leitura de logs de transação nativos (WAL no Postgres, binlog no MySQL, Change Streams no MongoDB) convertidos em eventos Arrow contendo opcodes (`I`, `U`, `D`) para cargas incrementais. Debezium+Kafka foi removido (ver `ARCHITECTURE.md §7`, `ROADMAP.md` Fase 18).
 >
-> Atualizações recentes: RBAC com papel `Admin` funcional e API de gestão de usuários (`GET/POST/DELETE /users`); alertas Slack, MS Teams, PagerDuty e Email implementados (`nexus-server/src/alerts.rs`); rate-limit de login por IP; execução de runs em task destacada com 202 Accepted e reaper de runs órfãs no boot; `GET /pipelines/{id}/preview` (primeiras N linhas de um source/sink persistido) e dbt como ETL real via `DbtConfig.output`/`PipelineSpec.post_dbt_sinks` (ver `ARCHITECTURE.md §13`); conectores `csv` (source+sink, delimitador configurável, local ou `s3://`/`gs://`/`az://`) e sink `webhook` genérico.
+> Atualizações recentes: RBAC com papel `Admin` funcional e API de gestão de usuários (`GET/POST/DELETE /users`); alertas Slack, MS Teams, PagerDuty, Email e webhook genérico implementados (`nexus-server/src/alerts.rs`); rate-limit de login por IP; execução de runs em task destacada com 202 Accepted e reaper de runs órfãs no boot; `GET /pipelines/{id}/preview` (primeiras N linhas de um source/sink persistido) e dbt como ETL real via `DbtConfig.output`/`PipelineSpec.post_dbt_sinks` (ver `ARCHITECTURE.md §13`); conectores `csv` (source+sink, delimitador configurável, local ou `s3://`/`gs://`/`az://`) e sink `webhook` genérico; logs de execução por run com marcos percentuais (10%, 20%, ..., 100%) no painel do Canvas.
 
 ### 4.2. Engine de Streaming, Backpressure e Checkpointing
 O núcleo opera via canais assíncronos (`mpsc::channel`).
@@ -111,8 +125,12 @@ Módulo intermediário que converte colunas de texto em vetores float32 e anexa 
  [ AI LAKE / VECTOR DATABASE ]
 
 * **Chunking:** Fixed-size Window, Recursive Character e Semantic.
-* **Aceleração (Features):** `cpu` (SIMD), `cuda` (NVIDIA), `metal` (Apple), `api` (LLM Externa). **Ainda não exposto via feature flags no build** — hoje `nexus-ai` usa ONNX Runtime com execução CPU por padrão; CUDA/Metal/API são planejados (`ROADMAP.md`).
+* **Backends de modelo:**
+  - `cpu` / `embeddings` (ONNX local via `ort`) — implementado e testado; baixa modelo do Hugging Face Hub em runtime, cache local.
+  - `api` / `embeddings-api` (HTTP externo compatível com OpenAI) — implementado e testado com mock.
+  - `cuda` (NVIDIA) e `metal` (Apple) registram o execution provider correto no ONNX Runtime, compilam, mas **não foram validados em hardware real** (sandbox é Linux sem GPU) — fallback silencioso pra CPU se driver/hardware não estiver presente.
 * **Destinos:** LanceDB, Qdrant, Milvus, Pinecone, ChromaDB e pgvector.
+* **Integração com `nexus-server`:** o estágio de embedding é uma feature opcional do servidor (`embeddings` para ONNX local, `embeddings-api` para HTTP externo); o catálogo de conectores e o Canvas já expõem o node de embedding quando a feature está ligada.
 
 ### 4.4. Transformações Opcionais e ELT/ETL (dbt)
 * **Modo Padrão (Sem dbt):** Movimentação com transformação leve SQL em memória via DataFusion.
@@ -132,17 +150,17 @@ Módulo intermediário que converte colunas de texto em vetores float32 e anexa 
 
 * **Logs Estruturados:** Utilização da crate `tracing` formatando logs em JSON para captura via OpenTelemetry, permitindo rastrear gargalos em tasks assíncronas.
 * **Alertas Assíncronos (`tokio::spawn`):** Slack (Block Kit), MS Teams (Adaptive Card), PagerDuty Events API v2, Email (SMTP STARTTLS) e Webhook genérico (JSON) estão implementados.
-* **UI Real-Time:** WebSockets transmitem progresso por partição (batches/rows/bytes escritos) e MB/s/rows/s são derivados no cliente. **Estatísticas de hardware (CPU/GPU/memória) ainda não são transmitidas.**
+* **UI Real-Time:** WebSockets transmitem progresso por partição (batches/rows/bytes escritos), MB/s/rows/s são derivados no cliente e um frame `{"hardware_stats": {...}}` com CPU e memória do processo é intercalado a cada 2s. **GPU ainda não é transmitida** (vendor-specific, nada no código depende disso ainda).
 
 ---
 
 ## 📦 7. Deploy e Distribuição Multiplataforma
 
 O NexusFlow é cross-platform com compilação estática sempre que possível:
-* **Windows:** `.exe` independente. Instalação via `winget` ou pacote `.msi`. Hardware: CPU ou DirectML/CUDA.
-* **Linux:** AppImage, `.deb`, `.rpm`. Hardware: CPU ou CUDA.
-* **macOS:** `Homebrew` ou `.dmg`. Hardware: Apple Silicon (Metal) e Intel.
-* **Docker / K8s:** Imagens multi-arch otimizadas com suporte a GPUs (`--gpus all`).
+* **Linux:** AppImage, `.deb`, `.rpm` — todos validados de ponta a ponta. Hardware: CPU; CUDA runtime pronto via imagem Docker `nvidia/cuda`, mas aceleração real depende da feature `cuda` ainda não validada em GPU real.
+* **Windows:** `.exe` independente, `winget` e `.msi` — specs em `packaging/windows/`, **não validados em máquina real** (sandbox de dev é Linux). Faltam scripts de build dos drivers ADBC pra `.dll`.
+* **macOS:** `Homebrew` e `.dmg` — specs em `packaging/macos/`, **não validados em máquina real**. Faltam scripts de build dos drivers ADBC pra `.dylib`.
+* **Docker / K8s:** Imagem Docker multi-arch (amd64 + arm64 via QEMU) publicada no GHCR a cada tag de release; container roda como usuário não-root (`nexusflow`, uid 1001) com `HEALTHCHECK` em `/health`. Suporte a GPU via `--gpus all` com base image `nvidia/cuda`, mas aceleração real ainda não validada.
 * *Single Binary Deployment:* A interface React compilada é embutida no binário Rust via `rust-embed`. Executar o binário inicia o backend e serve a UI web em `http://localhost:8080`.
 
 ---
