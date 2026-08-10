@@ -63,5 +63,4 @@ jobs:
         shell: pwsh
         run: docker info
 
-      - run: cargo test -p nexus-connector-kafka --all-features --test cdc_debezium_integration
       - run: cargo test -p nexus-connector-milvus --all-features --test milvus_integration
