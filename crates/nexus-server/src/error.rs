@@ -95,29 +95,39 @@ const MAX_SANITIZED_LEN: usize = 500;
 /// role) and to forward to Slack. The full, unsanitized error must still go
 /// to the server log — this is strictly for copies that leave the process.
 ///
-/// Currently redacts URI userinfo (`postgres://user:pass@host/db` becomes
-/// `postgres://***@host/db`) and truncates anything pathologically long.
+/// Redacts:
+///
+///   - URI userinfo (`postgres://user:pass@host/db` becomes
+///     `postgres://***@host/db`);
+///   - query parameters whose names look like secrets (`token`, `password`,
+///     `api_key`, `secret`, ...) — replaced with `***`.
+///
+/// Also truncates anything pathologically long.
 pub(crate) fn sanitize_error(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let mut rest = raw;
-    while let Some(scheme_end) = rest.find("://") {
-        let authority_start = scheme_end + 3;
-        let authority_end = rest[authority_start..]
-            .find(['/', ' ', '\t', '\n', '"', '\''])
-            .map(|i| authority_start + i)
+
+    while let Some(scheme_colon) = rest.find("://") {
+        // Find the start of the scheme (first alphanumeric/+/-/.
+        // character before "://"). Schemes start at the beginning of the
+        // string or after whitespace/a delimiter.
+        let url_start = rest[..scheme_colon]
+            .rfind(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '(' || c == '[' || c == '<')
+            .map(|i| i + 1)
+            .unwrap_or(0);
+
+        // Copy everything before the URL as-is.
+        out.push_str(&rest[..url_start]);
+
+        // Find where this URL ends in free-form text.
+        let url_end = rest[scheme_colon + 3..]
+            .find([' ', '\t', '\n', '"', '\'', ')', ']', ',', ';', '<'])
+            .map(|i| scheme_colon + 3 + i)
             .unwrap_or(rest.len());
-        let authority = &rest[authority_start..authority_end];
-        match authority.find('@') {
-            // `scheme://user:pass@host` -> `scheme://***@host` (the `@host`
-            // part is kept so the message still says *where* it failed).
-            Some(at) => {
-                out.push_str(&rest[..authority_start]);
-                out.push_str("***");
-                out.push_str(&authority[at..]);
-            }
-            None => out.push_str(&rest[..authority_end]),
-        }
-        rest = &rest[authority_end..];
+        let url_str = &rest[url_start..url_end];
+
+        out.push_str(&sanitize_url(url_str));
+        rest = &rest[url_end..];
     }
     out.push_str(rest);
 
@@ -130,6 +140,76 @@ pub(crate) fn sanitize_error(raw: &str) -> String {
         out.push_str("…[truncated]");
     }
     out
+}
+
+/// Sanitizes a single URL string: redacts userinfo and sensitive query
+/// parameters. If parsing fails, falls back to the original text so no
+/// information is lost.
+fn sanitize_url(url_str: &str) -> String {
+    let Ok(mut url) = url::Url::parse(url_str) else {
+        return url_str.to_string();
+    };
+
+    // Redact userinfo, keeping the `@host` portion so logs still say *where*
+    // the failure happened.
+    if !url.username().is_empty() || url.password().is_some() {
+        let _ = url.set_username("");
+        let _ = url.set_password(None);
+        // `url::Url` keeps the port in `after_host`, so don't add it again.
+        let host = url.host_str().unwrap_or("").to_string();
+        let after_host = url[url::Position::AfterHost..].to_string();
+        return format!("{}://***@{host}{after_host}", url.scheme());
+    }
+
+    // Redact sensitive query parameters.
+    if url.query().is_some() {
+        let pairs: Vec<(String, String)> = url
+            .query_pairs()
+            .map(|(k, v)| {
+                let key = k.into_owned();
+                let value = if is_sensitive_query_key(&key) {
+                    "***".to_string()
+                } else {
+                    v.into_owned()
+                };
+                (key, value)
+            })
+            .collect();
+        if pairs.iter().any(|(_, v)| v == "***") {
+            let new_query = pairs
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("&");
+            url.set_query(Some(&new_query));
+        }
+    }
+
+    url.to_string()
+}
+
+fn is_sensitive_query_key(key: &str) -> bool {
+    let lower = key.to_lowercase();
+    matches!(
+        lower.as_str(),
+        "token"
+            | "access_token"
+            | "refresh_token"
+            | "api_key"
+            | "apikey"
+            | "key"
+            | "secret"
+            | "password"
+            | "passwd"
+            | "pwd"
+            | "credentials"
+            | "auth"
+            | "authorization"
+    ) || lower.ends_with("_token")
+        || lower.ends_with("_key")
+        || lower.ends_with("_secret")
+        || lower.ends_with("_password")
+        || lower.ends_with("_pwd")
 }
 
 #[cfg(test)]
@@ -149,6 +229,22 @@ mod tests {
         assert_eq!(
             sanitize_error("src postgres://u:p@h1/db sink mongodb://u2:p2@h2/db"),
             "src postgres://***@h1/db sink mongodb://***@h2/db"
+        );
+    }
+
+    #[test]
+    fn redacts_sensitive_query_parameters() {
+        assert_eq!(
+            sanitize_error("GET https://api.example.com/v1?api_key=supersecret&foo=bar failed"),
+            "GET https://api.example.com/v1?api_key=***&foo=bar failed"
+        );
+    }
+
+    #[test]
+    fn redacts_token_suffix_query_parameters() {
+        assert_eq!(
+            sanitize_error("request to https://x.com/?my_service_token=abc&ok=yes"),
+            "request to https://x.com/?my_service_token=***&ok=yes"
         );
     }
 
