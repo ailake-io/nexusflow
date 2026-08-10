@@ -4,17 +4,30 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+# Native CDC via Delta Lake's built-in Change Data Feed (`deltalake-cdc`) —
+# no Debezium/Kafka, no new dependency (`DeltaOps::load_cdf` and the
+# `datafusion` re-export are already pulled in below for the batch sink's
+# CDC-delete predicate). Gated behind its own feature (CLAUDE.md §8 rule 5)
+# purely so a build that doesn't need it doesn't pay for compiling the extra
+# module — see ARCHITECTURE.md §7.
+cdc = []
+
 [dependencies]
 arrow-array = "58.4.0"
 arrow-cast = "58.4.0"
 arrow-schema = "58.4.0"
+arrow-select = "58.4.0"
 async-trait = "0.1.91"
 # `datafusion` feature is only needed for DeleteBuilder (CDC deletes via a SQL
 # predicate) — table creation and appends use the lower-level
 # CreateBuilder/RecordBatchWriter, which don't need it. Reads go through
 # `deltalake::parquet` (re-exported, guaranteed version-matched) directly
 # against the table's physical Parquet files rather than deltalake's own
-# query engine, so no separate `parquet` dependency is needed either.
+# query engine, so no separate `parquet` dependency is needed either. The
+# `cdc` feature (above) reuses this same `datafusion` re-export for the
+# Change Data Feed's `DeltaCdfTableProvider`.
 deltalake = { version = "0.32.4", features = ["datafusion"] }
 futures = "0.3.33"
 nexus-core = { version = "0.1.0", path = "../../nexus-core" }

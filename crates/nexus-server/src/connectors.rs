@@ -6,14 +6,20 @@ use nexus_core::{NodeSpec, PipelineSpec, Sink, Source};
 
 #[cfg(feature = "ailake")]
 use nexus_connector_ailake::{AilakeConnectorConfig, AilakeSink, AilakeSource};
+#[cfg(feature = "ailake-cdc")]
+use nexus_connector_ailake::{AilakeCdcConfig, AilakeCdcSource};
 #[cfg(feature = "chromadb")]
 use nexus_connector_chromadb::{ChromaConnectorConfig, ChromaSink};
 #[cfg(feature = "csv")]
 use nexus_connector_csv::{CsvConnectorConfig, CsvSink, CsvSource};
 #[cfg(feature = "deltalake")]
 use nexus_connector_deltalake::{DeltaConnectorConfig, DeltaSink, DeltaSource};
+#[cfg(feature = "deltalake-cdc")]
+use nexus_connector_deltalake::{DeltaCdcConfig, DeltaCdcSource};
 #[cfg(feature = "iceberg")]
 use nexus_connector_iceberg::{IcebergConnectorConfig, IcebergSink, IcebergSource};
+#[cfg(feature = "iceberg-cdc")]
+use nexus_connector_iceberg::{IcebergCdcConfig, IcebergCdcSource};
 #[cfg(feature = "kafka")]
 use nexus_connector_kafka::{KafkaConnectorConfig, KafkaSource};
 #[cfg(feature = "lancedb")]
@@ -110,6 +116,18 @@ pub fn validate_source_config(node: &NodeSpec) -> anyhow::Result<()> {
         "mysql-cdc" => {
             let _: MySqlCdcConfig = serde_json::from_value(node.config.clone())?;
         }
+        #[cfg(feature = "deltalake-cdc")]
+        "deltalake-cdc" => {
+            let _: DeltaCdcConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "iceberg-cdc")]
+        "iceberg-cdc" => {
+            let _: IcebergCdcConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "ailake-cdc")]
+        "ailake-cdc" => {
+            let _: AilakeCdcConfig = serde_json::from_value(node.config.clone())?;
+        }
         other => anyhow::bail!("unsupported source connector: {other:?}"),
     }
     Ok(())
@@ -188,6 +206,21 @@ pub async fn build_source(
         "mysql-cdc" => {
             let cfg: MySqlCdcConfig = serde_json::from_value(node.config.clone())?;
             Box::new(MySqlCdcSource::connect(&cfg).await?)
+        }
+        #[cfg(feature = "deltalake-cdc")]
+        "deltalake-cdc" => {
+            let cfg: DeltaCdcConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(DeltaCdcSource::connect(&cfg).await?)
+        }
+        #[cfg(feature = "iceberg-cdc")]
+        "iceberg-cdc" => {
+            let cfg: IcebergCdcConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(IcebergCdcSource::connect(&cfg).await?)
+        }
+        #[cfg(feature = "ailake-cdc")]
+        "ailake-cdc" => {
+            let cfg: AilakeCdcConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(AilakeCdcSource::connect(&cfg).await?)
         }
         other => anyhow::bail!("unsupported source connector: {other:?}"),
     };

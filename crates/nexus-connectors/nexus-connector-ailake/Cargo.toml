@@ -4,6 +4,15 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+# Native CDC (`ailake-cdc`) via CatalogProvider's "as of snapshot" list_files/
+# list_equality_deletes — no new dependency, all public API already in the
+# ailake-* crates below. Gated behind its own feature (CLAUDE.md §8 rule 5)
+# purely so a build that doesn't need it doesn't pay for compiling the extra
+# module — see ARCHITECTURE.md §7.
+cdc = []
+
 [dependencies]
 ailake-catalog = "0.1.10"
 ailake-core = "0.1.10"

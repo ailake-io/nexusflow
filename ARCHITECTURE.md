@@ -205,3 +205,64 @@ canal assim que o run termina, sem replay.
   `RunHistoryPanel` reusa o mesmo `LogTerminal` por run, mas alimentado por
   `GET .../logs` (`useRunLogs`, fetch sob demanda) em vez do WebSocket — é
   o caminho que cobre um run já terminado ou agendado.
+
+## 16. CDC nativo pra Delta Lake, Iceberg e AI-Lake (lakehouse)
+
+Extensão do §7 pros formatos de data lake que já tinham conector batch —
+Delta Lake e Iceberg têm changelog/manifest versionado nativo, e AI-Lake
+(`nexus-connector-ailake`) é Iceberg-compatible por baixo (`ailake-catalog`,
+implementação própria, não usa o crate `iceberg`). **Diferença
+arquitetural importante em relação ao §7**: os 3 são inerentemente
+**poll/batch**, não streaming — cada `read_batches` lê "o que mudou desde a
+versão/snapshot X" e termina, sem conexão viva. Encaixa direto no modelo de
+pipeline agendado (cron) já existente, sem infra nova. Resume entre
+execuções segue o mesmo precedente do `start_offsets` do Kafka: campo
+estático no config (`starting_version`/`starting_snapshot_id`), não
+auto-avançado por checkpoint entre runs — omitido, lê a tabela inteira
+desde a criação (seguro por causa do upsert idempotente do sink de
+destino, só desperdiça trabalho numa tabela grande).
+
+- **Delta Lake** (`deltalake-cdc`, feature `cdc` do `nexus-connector-deltalake`,
+  sem dependência nova — `datafusion` já ligado pro sink): usa o **Change
+  Data Feed nativo** (`DeltaTable::scan_cdf()`), coluna `_change_type`
+  (`insert`/`update_postimage`/`delete`, `update_preimage` descartado)
+  mapeada direto pro `__opcode`. Pré-requisito: `delta.enableChangeDataFeed
+  = 'true'` na tabela (property, via `TBLPROPERTIES` ou `ALTER TABLE`).
+  **Pegadinha real**: DataFusion não garante que a ordem dos batches
+  retornados bata com a ordem de commit — sem ordenar explicitamente por
+  `_commit_version` antes de processar, um delete pode aparecer antes do
+  insert que ele deveria sobrescrever. `read_batches` ordena a
+  `DataFrame` por essa coluna antes de coletar.
+- **Iceberg** (`iceberg-cdc`, feature `cdc` do `nexus-connector-iceberg`,
+  sem dependência nova): `iceberg` 0.10.0 **não tem scan incremental
+  nativo** — construído à mão andando `TableMetadata::snapshots()` (via
+  `parent_snapshot_id`), lendo `ManifestList`/`Manifest` (`iceberg::spec`,
+  tudo API pública) e filtrando `ManifestEntry`s com `status() ==
+  Added` + `content_type() == Data`. **Insert-only**: `IcebergSink` só
+  comita `fast_append` (o `Transaction` API do `iceberg` 0.10.0 não tem
+  ação de row-delta/equality-delete commitável ainda — ver `sink.rs`), então
+  não existe `Overwrite`/`Delete` escrito por este sistema pra detectar.
+  **Pegadinha real**: o manifest-list de um snapshot relista TODOS os
+  manifests ainda vivos, não só os que ele introduziu — sem filtrar por
+  `ManifestFile::added_snapshot_id == snapshot.snapshot_id()`, as mesmas
+  linhas `Added` de snapshots antigos são reprocessadas em cada snapshot
+  posterior que ainda os referencia, duplicando linhas.
+- **AI-Lake** (`ailake-cdc`, feature `cdc` do `nexus-connector-ailake`, sem
+  dependência nova): mais simples que o Iceberg porque `CatalogProvider`
+  (`ailake-catalog`) já expõe `list_files`/`list_equality_deletes` com um
+  parâmetro **"as of snapshot"** — basta diferenciar a lista "as of
+  `starting_snapshot_id`" contra a lista "as of atual" (por `path`) pra
+  achar exatamente o que mudou, sem andar manifest por manifest como no
+  Iceberg puro. `AilakeSink::delete` comita equality-deletes reais, então
+  emite `D` de verdade. **`U` não é inferido**: sem informação de ordem
+  entre um insert e um delete da mesma chave na mesma janela, não dá pra
+  saber com segurança se o insert veio antes ou depois do delete — a
+  chave sempre vence como `D` nesse caso (nunca ressuscita uma linha
+  deletada como `I`). Além disso, **`AilakeSink::upsert` (batch sem
+  `__opcode`) é append cego hoje** — não deleta a linha anterior antes de
+  inserir a nova, diferente do `DeltaSink`. Duas escritas da mesma chave
+  produzem duas linhas físicas, não uma atualização real — limitação do
+  sink, não algo que o CDC consegue contornar.
+
+Os 3 produzem `RecordBatch` com `__opcode` na mesma convenção do §5/§7 —
+mesmo `nexus_core::split_by_opcode` agnóstico à origem.

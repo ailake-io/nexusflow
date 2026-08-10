@@ -79,7 +79,7 @@ impl AilakeSource {
     }
 }
 
-async fn read_file_batch(
+pub(crate) async fn read_file_batch(
     store: &Arc<dyn Store>,
     path: &str,
     embedding_column: &str,
