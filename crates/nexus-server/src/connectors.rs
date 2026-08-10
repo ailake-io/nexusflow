@@ -119,7 +119,7 @@ pub async fn build_source(
     node: &NodeSpec,
     index: usize,
 ) -> anyhow::Result<(String, Box<dyn Source>)> {
-    let name = node.resolved_name(index, "source");
+    let name = node.resolved_name(index, "source")?;
     let source: Box<dyn Source> = match node.connector.as_str() {
         "postgres" => {
             let cfg: PostgresConnectorConfig = serde_json::from_value(node.config.clone())?;
@@ -295,7 +295,7 @@ pub async fn build_sink(
     index: usize,
     columns: &[String],
 ) -> anyhow::Result<(String, Box<dyn Sink>)> {
-    let name = node.resolved_name(index, "sink");
+    let name = node.resolved_name(index, "sink")?;
     let sink: Box<dyn Sink> = match node.connector.as_str() {
         "postgres" => {
             let cfg: PostgresConnectorConfig = serde_json::from_value(node.config.clone())?;

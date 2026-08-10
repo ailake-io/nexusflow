@@ -735,12 +735,12 @@ fn find_node_by_resolved_name<'a>(spec: &'a PipelineSpec, name: &str) -> Option<
     spec.sources
         .iter()
         .enumerate()
-        .find(|(i, n)| n.resolved_name(*i, "source") == name)
+        .find(|(i, n)| n.resolved_name(*i, "source").as_deref().ok() == Some(name))
         .or_else(|| {
             spec.sinks
                 .iter()
                 .enumerate()
-                .find(|(i, n)| n.resolved_name(*i, "sink") == name)
+                .find(|(i, n)| n.resolved_name(*i, "sink").as_deref().ok() == Some(name))
         })
         .map(|(_, n)| n)
 }
