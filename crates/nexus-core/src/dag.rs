@@ -244,9 +244,8 @@ impl PipelineSpec {
                 )));
             }
             if let Some(name) = &node.name {
-                crate::validate_identifier(name).map_err(|e| {
-                    NexusError::Schema(format!("sinks[{i}].name is invalid: {e}"))
-                })?;
+                crate::validate_identifier(name)
+                    .map_err(|e| NexusError::Schema(format!("sinks[{i}].name is invalid: {e}")))?;
             }
         }
 
@@ -702,7 +701,10 @@ mod tests {
         let spec = PipelineSpec::parse(json).expect("valid fan-in spec parses");
         assert!(spec.has_transform());
         assert_eq!(spec.sources.len(), 2);
-        assert_eq!(spec.sources[0].resolved_name(0, "source").unwrap(), "events");
+        assert_eq!(
+            spec.sources[0].resolved_name(0, "source").unwrap(),
+            "events"
+        );
         assert_eq!(spec.sinks[0].resolved_name(0, "sink").unwrap(), "sink0");
     }
 

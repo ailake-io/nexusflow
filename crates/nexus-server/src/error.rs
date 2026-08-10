@@ -112,7 +112,9 @@ pub(crate) fn sanitize_error(raw: &str) -> String {
         // character before "://"). Schemes start at the beginning of the
         // string or after whitespace/a delimiter.
         let url_start = rest[..scheme_colon]
-            .rfind(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '(' || c == '[' || c == '<')
+            .rfind(|c: char| {
+                c.is_whitespace() || c == '"' || c == '\'' || c == '(' || c == '[' || c == '<'
+            })
             .map(|i| i + 1)
             .unwrap_or(0);
 

@@ -87,8 +87,8 @@ async fn fetch_page(
     );
     // Defence in depth: parse and reject non-HTTP(S) schemes that could
     // emerge from a misconfigured or malicious base_url/path.
-    let url = Url::parse(&url)
-        .map_err(|e| NexusError::Schema(format!("REST URL is invalid: {e}")))?;
+    let url =
+        Url::parse(&url).map_err(|e| NexusError::Schema(format!("REST URL is invalid: {e}")))?;
     if url.scheme() != "http" && url.scheme() != "https" {
         return Err(NexusError::Schema(format!(
             "REST URL must use http(s), got {} scheme",

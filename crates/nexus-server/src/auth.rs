@@ -5,9 +5,7 @@ use axum::middleware::Next;
 use axum::response::Response;
 use axum::RequestExt;
 use dashmap::DashMap;
-use jsonwebtoken::{
-    decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation,
-};
+use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
