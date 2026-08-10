@@ -159,7 +159,11 @@ cargo run --release -p nexus-server --bin migrate-metadata --features postgres -
 
 `spec_ciphertext` é copiado byte a byte, não re-criptografado — o servidor apontado pro Postgres migrado precisa rodar com o **mesmo** `NEXUS_ENCRYPTION_KEY` de antes, senão os specs migrados falham ao decriptar no primeiro load.
 
-Manifests k8s (Deployment/Service/PVC/HPA) prontos ainda não existem — essa seção resolve só o pré-requisito de storage/coordenação, não a implantação em si.
+Manifests de referência (Deployment/Service/PVC/HPA/ConfigMap/Secret) em
+`packaging/kubernetes/` (`kubectl apply -k packaging/kubernetes/`), stack file
+de Docker Swarm em `packaging/swarm/` (`docker stack deploy`) — ver o `README.md`
+de cada um. Não são Helm chart nem testados num cluster gerenciado real, são
+ponto de partida validado offline.
 
 ## 4. Primeiro acesso
 
