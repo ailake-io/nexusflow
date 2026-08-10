@@ -163,6 +163,7 @@ mod tests {
             batches_written: 1,
             rows_written: 10,
             bytes_written: 100,
+            done: false,
         })
         .unwrap();
 
@@ -208,6 +209,7 @@ mod tests {
             batches_written: 1,
             rows_written: 5,
             bytes_written: 50,
+            done: false,
         })
         .unwrap();
 

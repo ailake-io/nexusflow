@@ -496,7 +496,24 @@ async fn execute_pipeline_run(
     progress_tx: ProgressSender,
     logger: RunLogger,
 ) {
-    logger.info("run started").await;
+    let mode = if spec.has_transform() {
+        if spec.dbt.is_some() {
+            "transform+dbt"
+        } else {
+            "transform"
+        }
+    } else {
+        "linear"
+    };
+    let source_connectors: Vec<_> = spec.sources.iter().map(|s| s.connector.as_str()).collect();
+    let sink_connectors: Vec<_> = spec.sinks.iter().map(|s| s.connector.as_str()).collect();
+    logger
+        .info(format!(
+            "Pipeline {} started (run {run_id}): mode={mode}, sources={source_connectors:?}, sinks={sink_connectors:?}",
+            spec.pipeline_id
+        ))
+        .await;
+
     let result = runner::run_pipeline(
         &spec,
         &state.checkpoints,
@@ -1884,8 +1901,11 @@ mod tests {
         let logs = body_json(response).await;
         let logs = logs.as_array().unwrap();
         assert!(
-            logs.iter().any(|l| l["message"] == "run started"),
-            "expected a 'run started' line, got: {logs:?}"
+            logs.iter().any(|l| l["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("Pipeline p1 started")),
+            "expected a 'Pipeline p1 started' line, got: {logs:?}"
         );
         let failure = logs
             .iter()
@@ -2574,6 +2594,7 @@ mod tests {
             batches_written: 1,
             rows_written: 10,
             bytes_written: 100,
+            done: false,
         })
         .unwrap();
         assert_eq!(rx.recv().await.unwrap().rows_written, 10);
@@ -2638,6 +2659,7 @@ mod tests {
             batches_written: 1,
             rows_written: 42,
             bytes_written: 999,
+            done: false,
         })
         .unwrap();
 
