@@ -202,8 +202,22 @@ impl PipelineSpec {
     /// `Json<PipelineSpec>` extractor, which deserializes directly) can still
     /// run the same validation explicitly.
     pub fn validate(&self) -> Result<(), NexusError> {
-        if self.pipeline_id.trim().is_empty() {
+        let id = self.pipeline_id.trim();
+        if id.is_empty() {
             return Err(NexusError::Schema("pipeline_id must not be empty".into()));
+        }
+        if id.len() > 128 {
+            return Err(NexusError::Schema(
+                "pipeline_id must not exceed 128 characters".into(),
+            ));
+        }
+        if !id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return Err(NexusError::Schema(
+                "pipeline_id must only contain ASCII letters, digits, '_' or '-'".into(),
+            ));
         }
         if self.sources.is_empty() {
             return Err(NexusError::Schema("sources must not be empty".into()));
@@ -701,6 +715,31 @@ mod tests {
         }"#;
         let err = PipelineSpec::parse(json).expect_err("empty pipeline_id must fail");
         assert!(matches!(err, NexusError::Schema(_)));
+    }
+
+    #[test]
+    fn rejects_pipeline_id_with_invalid_characters() {
+        let json = r#"{
+            "pipeline_id": "pg/demo",
+            "sources": [{"connector": "postgres", "config": {}}],
+            "sinks": [{"connector": "postgres", "config": {}}]
+        }"#;
+        let err = PipelineSpec::parse(json).expect_err("invalid pipeline_id must fail");
+        assert!(err.to_string().contains("pipeline_id must only contain"));
+    }
+
+    #[test]
+    fn rejects_pipeline_id_longer_than_limit() {
+        let id = "a".repeat(129);
+        let json = format!(
+            r#"{{
+                "pipeline_id": "{id}",
+                "sources": [{{"connector": "postgres", "config": {{}}}}],
+                "sinks": [{{"connector": "postgres", "config": {{}}}}]
+            }}"#
+        );
+        let err = PipelineSpec::parse(&json).expect_err("long pipeline_id must fail");
+        assert!(err.to_string().contains("128 characters"));
     }
 
     #[test]
