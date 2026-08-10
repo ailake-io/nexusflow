@@ -47,6 +47,11 @@ function parseConfig(raw: string): Record<string, unknown> {
  * fields that end up in PipelineSpec/NodeSpec JSON (role/name/config or
  * transform SQL). See lib/dag.ts for the schema these map onto.
  */
+/** Strips a trailing `-cdc` suffix, e.g. `"postgres-cdc"` -> `"postgres"`. */
+function batchNameOf(connector: string): string {
+  return connector.endsWith('-cdc') ? connector.slice(0, -'-cdc'.length) : connector
+}
+
 export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps) {
   const { t } = useI18n()
   const data = node.data
@@ -54,6 +59,19 @@ export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps
     const descriptor = connectors.find((c) => c.name === data.connector)
     const schema = descriptor?.config_schema
     const hasFormSchema = Boolean(schema?.properties && Object.keys(schema.properties).length > 0)
+
+    // The toggle only makes sense for a connector with an actual `-cdc`
+    // counterpart *linked into this build* (the catalog is dynamic — see
+    // ARCHITECTURE.md §3 — so this naturally disappears if a deployment
+    // doesn't compile that connector in) — and only for sources: none of
+    // the native CDC connectors have a `Sink` impl (ARCHITECTURE.md §7).
+    const isCdc = data.connector.endsWith('-cdc')
+    const batchName = batchNameOf(data.connector)
+    const cdcName = `${batchName}-cdc`
+    const hasCdcVariant =
+      data.role === 'source' &&
+      connectors.some((c) => c.name === batchName) &&
+      connectors.some((c) => c.name === cdcName)
 
     return (
       <aside className="flex w-80 shrink-0 flex-col border-l bg-card">
@@ -73,13 +91,55 @@ export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps
               <select
                 id="node-role"
                 value={data.role}
-                onChange={(e) => onChange(node.id, { role: e.target.value as ConnectorRole })}
+                onChange={(e) => {
+                  const role = e.target.value as ConnectorRole
+                  // None of the native CDC connectors have a `Sink` impl
+                  // (ARCHITECTURE.md §7) — switching to sink while one is
+                  // selected would otherwise silently persist an
+                  // unbuildable node, so fall back to the batch connector.
+                  onChange(node.id, role === 'sink' && isCdc ? { role, connector: batchName } : { role })
+                }}
                 className="mt-1.5 flex h-9 w-full rounded-lg border border-input bg-transparent px-3 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring"
               >
                 <option value="source">{t('pipelines.source')}</option>
                 <option value="sink">{t('pipelines.sink')}</option>
               </select>
             </div>
+            {hasCdcVariant && (
+              <div>
+                <Label className="text-xs font-medium">{t('canvas.mode')}</Label>
+                <div className="mt-1.5 grid grid-cols-2 gap-1 rounded-lg border border-input p-1">
+                  {(['batch', 'cdc'] as const).map((mode) => {
+                    const active = mode === (isCdc ? 'cdc' : 'batch')
+                    return (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={() => {
+                          const nextConnector = mode === 'cdc' ? cdcName : batchName
+                          if (nextConnector === data.connector) return
+                          // Batch and CDC configs share no field shapes
+                          // worth preserving (see canvas.modeCdcSwitchWarning)
+                          // — start the new mode from an empty config
+                          // rather than carrying over stale/invalid keys.
+                          onChange(node.id, { connector: nextConnector, config: '{}' })
+                        }}
+                        className={`rounded-md px-2 py-1 text-xs font-medium transition-colors ${
+                          active
+                            ? 'bg-primary text-primary-foreground'
+                            : 'text-muted-foreground hover:text-foreground'
+                        }`}
+                      >
+                        {mode === 'cdc' ? t('canvas.modeCdc') : t('canvas.modeBatch')}
+                      </button>
+                    )
+                  })}
+                </div>
+                <p className="mt-1 text-[10px] text-muted-foreground">
+                  {t('canvas.modeCdcSwitchWarning')}
+                </p>
+              </div>
+            )}
             <div>
               <Label htmlFor="node-name" className="text-xs font-medium">
                 {t('canvas.name')}{' '}

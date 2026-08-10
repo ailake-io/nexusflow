@@ -87,12 +87,21 @@ Motivo: DataFusion (usado nas transformações SQL) é single-node por padrão; 
 
 Caminho de escala, se necessário no futuro: escalar horizontalmente por **pipeline** (rodar pipelines diferentes em processos/máquinas diferentes, cada um single-node), não por *paralelizar um pipeline entre máquinas*. Isso evita reescrever o modelo de checkpoint/backpressure do §4-5.
 
-## 7. CDC — escopo faseado
+## 7. CDC — nativo (Postgres/MongoDB/MySQL) + Debezium+Kafka como alternativa
 
-Construir parser nativo de WAL (Postgres) ou binlog (MySQL) do zero é um subsistema do tamanho do Debezium, não uma feature de pipeline. Escopo em duas etapas (ver `ROADMAP.md` Fase 4):
+O plano original faseava CDC em duas etapas: MVP via Debezium+Kafka, e um "CDC nativo" pós-MVP só se o overhead operacional de rodar Debezium+Kafka+Zookeeper (3 JVMs) virasse bloqueador real de adoção confirmado (`IMPLEMENTATION_PLAN.md` Marco 13). Esse sinal chegou — rodar essa stack é pesado demais pra hardware mais simples — então o CDC nativo saiu de "condicional, não agendado" pra implementado (Fase 18 do `ROADMAP.md`).
 
-1. **MVP de CDC**: consumir eventos já decodificados via Debezium + Kafka — isto é, o conector `Bridged` de Kafka (§ já previsto) recebe eventos CDC no formato Debezium (JSON/Avro) e converte pra `RecordBatch` com opcode, via `RecordBatchBuilder`. Nenhum código novo de parsing de protocolo binário de replicação.
-2. **CDC nativo** (pós-MVP, sob demanda): parser direto de WAL/binlog, só se o overhead operacional de manter Debezium+Kafka como dependência for um bloqueador real de adoção.
+**Caminho recomendado hoje: CDC nativo**, sem Debezium/Kafka na frente:
+- **Postgres** (`postgres-cdc`, feature `cdc` do `nexus-connector-postgres`, crate `pg_walstream`): lê direto do protocolo de replicação lógica (`pgoutput`). O replication slot é criado automaticamente no primeiro connect; **a publicação não é** — `CREATE PUBLICATION <nome> FOR TABLE <tabela>` precisa existir de antemão (mesmo pré-requisito operacional que o Debezium já exige, só não automatizado aqui). Resume: reconectar no mesmo slot já retoma do ponto certo — Postgres guarda isso server-side. Pré-requisito: `wal_level = logical`.
+  - Nota de implementação: nem `postgres-protocol` nem `tokio-postgres` (crates.io, mainline) têm suporte a replicação lógica hoje — essa capacidade só existe num fork privado. `pg_walstream` é o crate publicado que resolve isso (wire protocol + decodificação `pgoutput` completos, pure Rust via `rustls-tls`, sem libpq).
+- **MongoDB** (`mongodb-cdc`, mesmo crate `nexus-connector-mongodb`, sem dependência nova): Change Streams nativo do driver oficial (`Collection::watch()`). Pré-requisito: rodar como replica set (mesmo single-node serve). `full_document: updateLookup` busca o documento atual numa query separada, no momento da decodificação — isso pode legitimamente vir `null` (observado até sem corrida com delete); o conector cai pra `document_key` nesse caso (linha chega com a identidade e o opcode certos, só sem os valores dessa mudança específica) em vez de descartar a linha.
+- **MySQL** (`mysql-cdc`, novo crate `nexus-connector-mysql`, dependência `mysql_cdc`): lê o binlog diretamente, sem conector batch associado (é CDC-only, mesmo padrão do Kafka). Pré-requisito: `binlog_format=ROW`, `binlog_row_image=FULL`, usuário com `REPLICATION SLAVE`/`REPLICATION CLIENT` (privilégios globais — a conexão de replicação não deve declarar um banco padrão, ou falha com "access denied to database"). Diferença importante: colunas são casadas **posicionalmente** com `fields` do config, não por nome — o protocolo binlog não carrega nome de coluna por padrão (só com `binlog_row_metadata=FULL`, MySQL 8.0.1+, desligado por padrão), diferente do Postgres/MongoDB.
+
+Os 3 produzem `RecordBatch` com coluna `__opcode` (`I`/`U`/`D`) na mesma convenção do resto do sistema (§5) — `nexus_core::split_by_opcode` já é 100% agnóstico à origem, nenhum sink precisou mudar.
+
+**Debezium + Kafka continua suportado como alternativa** — útil pra quem já opera essa infra ou precisa centralizar CDC de múltiplos bancos por um único broker Kafka. `nexus-connector-kafka` continua existindo como fonte genérica de Kafka pra qualquer uso, CDC ou não (`docs/cdc-reference/` documenta esse caminho).
+
+**Canvas**: os 3 conectores aparecem automaticamente no catálogo (`GET /connectors` é dinâmico via `ConnectorRegistry`), e o `NodeInspector` tem um toggle Batch/CDC dentro do mesmo node pra Postgres/MongoDB — troca `data.connector` e limpa o config (os dois modos não compartilham forma de config). Detecta a variante `-cdc` dinamicamente contra o catálogo real, não hardcoded. MySQL não tem toggle (`mysql-cdc` não tem batch equivalente).
 
 ## 8. Pipeline de embeddings (`nexus-ai`)
 
