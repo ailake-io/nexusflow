@@ -31,6 +31,7 @@ fn default_timeout_seconds() -> u64 {
 /// a separate connector name from `"postgres"` rather than a mode flag, so
 /// the batch connector's config/behavior never changes. See
 /// `ARCHITECTURE.md §7`.
+#[cfg(feature = "cdc")]
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct PostgresCdcConfig {
     /// Same `postgres://user:pass@host:port/db` shape as the batch
@@ -57,6 +58,7 @@ pub struct PostgresCdcConfig {
     pub timeout_seconds: u64,
 }
 
+#[cfg(feature = "cdc")]
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct PostgresCdcFieldSpec {
     pub name: String,
@@ -65,6 +67,7 @@ pub struct PostgresCdcFieldSpec {
     pub nullable: bool,
 }
 
+#[cfg(feature = "cdc")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PostgresCdcDataType {
