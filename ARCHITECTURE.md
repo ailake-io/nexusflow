@@ -47,7 +47,10 @@ pub trait Sink {
 
 #[async_trait]
 pub trait Transform: Send + Sync {
-    async fn apply(&self, batch: RecordBatch) -> Result<RecordBatch, NexusError>;
+    async fn apply(
+        &self,
+        inputs: Vec<(String, SchemaRef, Vec<RecordBatch>)>,
+    ) -> Result<Vec<RecordBatch>, NexusError>;
 }
 ```
 
@@ -181,13 +184,15 @@ canal assim que o run termina, sem replay.
   frontend discriminar sem heurística — os frames de `ProgressEvent`/
   `hardware_stats` continuam sem tag, formato inalterado (evita quebrar
   qualquer consumidor existente do WebSocket).
-- **Onde as linhas são emitidas**: `execute_pipeline_run` (lib.rs) loga o
-  início do run, cada etapa do dbt e o resumo final (linhas/partições ou erro
-  sanitizado — mesmo `error::sanitize_error` que já protege
-  `pipeline_runs.error`/alertas, texto idêntico). `runner.rs` loga contagem
-  de partições/sources/sinks e falhas de connect por partição/source/sink
-  (`log_on_err`, um helper que loga e repassa o `Result` inalterado, sem
-  mudar controle de fluxo existente).
+- **Onde as linhas são emitidas**: `execute_pipeline_run` (lib.rs) loga uma
+  mensagem de início estruturada (pipeline id, run id, modo e conectores),
+  cada etapa do dbt e o resumo final (linhas/partições ou erro sanitizado —
+  mesmo `error::sanitize_error` que já protege `pipeline_runs.error`/alertas,
+  texto idêntico). `runner.rs` loga contagem de partições/sources/sinks,
+  falhas de connect por partição/source/sink (`log_on_err`) e, via
+  `log_progress()`, marcos percentuais a cada 10% (10%, 20%, ..., 100%) à
+  medida que partições/sinks reportam `done` — todos persistidos no
+  `RunLogStore` e repassados ao WebSocket ao vivo.
 - **`GET /pipelines/{id}/runs/{run_id}/logs`** (role `Read`, mesmo nível de
   `GET .../runs`) devolve o histórico completo persistido — funciona pra um
   run em andamento, terminado, ou disparado pelo scheduler sem ninguém

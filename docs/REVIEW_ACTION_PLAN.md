@@ -143,17 +143,17 @@ No entanto, existem **riscos críticos de segurança e dados** que precisam de a
 
 | # | Documentação diz | Código real | Ação |
 |---|---|---|---|
-| D1 | Stack inclui "Next.js (TypeScript) ou Vite" | Usa Vite apenas | Atualizar `CLAUDE.md` |
-| D2 | Conectores MySQL, DuckDB, Snowflake, BigQuery, ClickHouse ADBC | Não existem crates | Atualizar matriz ou implementar |
-| D3 | Arrow Flight SQL connectors | Nenhum registrado | Atualizar matriz ou implementar |
+| D1 | Stack inclui "Next.js (TypeScript) ou Vite" | Usa Vite apenas | ✅ Resolvido: `CLAUDE.md` §2 atualizado para "React + Vite (TypeScript)" |
+| D2 | Conectores MySQL, DuckDB, Snowflake, BigQuery, ClickHouse ADBC | Não existem crates | ✅ Resolvido: matriz `CLAUDE.md` §4.1 atualizada; conectores não implementados marcados explicitamente |
+| D3 | Arrow Flight SQL connectors | Nenhum registrado | ✅ Resolvido: `CLAUDE.md` §4.1 e stack §2 atualizados para "Arrow Flight SQL é aspiracional" |
 | D4 | Alertas Teams/PagerDuty/Email/Webhook | Slack implementado | ✅ Resolvido: Slack, MS Teams, PagerDuty, Email (SMTP STARTTLS) e Webhook genérico implementados; docs atualizadas |
 | D5 | Stats de hardware no WebSocket | Não implementado | ✅ Resolvido: `hardware_stats.rs` amostra CPU/memória a cada 2s e envia frame `{"hardware_stats": {...}}` pelo WS de progresso |
 | D6 | CDC nativo via WAL/binlog | Só Debezium+Kafka | ✅ Resolvido: `postgres-cdc`/`mongodb-cdc`/`mysql-cdc` nativos implementados (Fase 18); Debezium+Kafka removido em seguida |
 | D7 | Features CUDA/Metal/API de embeddings | CPU apenas | ✅ Resolvido: features `api` (HTTP externo), `cuda` (ONNX CUDA EP) e `metal` (CoreML EP) registradas e compiláveis; validação em hardware real pendente |
-| D8 | Cron com 5 ou 6 campos (Quartz) | Verificar suporte real | Atualizar docs se só 5 campos |
-| D9 | GETTING_STARTED exemplo `postgres → sqlite` com path absoluto | `runner.rs:37-44` rejeita path absoluto | Corrigir exemplo ou regra |
-| D10 | README: "MVP completo e além" | Muitos itens aspiracionais | Atenuar declaração ou listar gaps |
-| D11 | ARCHITECTURE.md §12: rota `/spec` protegida por Write | Verificar se realmente exige Write | Confirmar e manter docs |
+| D8 | Cron com 5 ou 6 campos (Quartz) | Verificar suporte real | ✅ Confirmado: `nexus-core/src/schedule.rs` aceita 5 campos Unix (`0 */6 * * *`) e 6 campos Quartz (`0 0 */6 * * *`); docs estão corretas |
+| D9 | GETTING_STARTED exemplo `postgres → sqlite` com path absoluto | `runner.rs:37-44` rejeita path absoluto | ✅ Resolvido: exemplo cross-connector agora inclui nó `transform`; `sqlite`/`lancedb`/`ailake`/`iceberg`/`deltalake` são isentos da regra de path absoluto por design (`dag.rs::is_local_path_connector`) |
+| D10 | README: "MVP completo e além" | Muitos itens aspiracionais | ✅ Resolvido: README atualizado com nota de validação Linux e lista de conectores real; gaps de Windows/macOS/documentação declarados |
+| D11 | ARCHITECTURE.md §12: rota `/spec` protegida por Write | Verificar se realmente exige Write | ✅ Confirmado: `GET /pipelines/{id}/spec` exige `Write` (ver `lib.rs` rota `write_protected`); docs mantidas |
 
 ---
 

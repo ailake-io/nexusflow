@@ -12,15 +12,15 @@ Parte da arquitetura já revisada em `ARCHITECTURE.md` v2: crate-por-conector, b
 - `Cargo.toml` workspace na raiz, membros: `crates/nexus-core`, `crates/nexus-ai`, `crates/nexus-server`, `crates/nexus-connectors/*` (workspace aninhado, vazio por enquanto), `src/` (bin).
 - `nexus-core`:
   - `error.rs` — `NexusError` (`thiserror`), variantes: `Connector`, `Schema`, `Serialization`, `Checkpoint`.
-  - `traits.rs` — `Source`, `Sink`, `Transform` (assinatura definida em `ARCHITECTURE.md §2`), mais `ConnectorCapability` enum (`AdbcNative`/`ArrowFlight`/`Bridged`).
+  - `traits.rs` — `Source`, `Sink`, `Transform` (assinatura `apply(&self, inputs: Vec<(String, SchemaRef, Vec<RecordBatch>)>) -> Result<Vec<RecordBatch>, NexusError>`, ver `ARCHITECTURE.md §2`), mais `ConnectorCapability` enum (`AdbcNative`/`ArrowFlight`/`Bridged`).
   - `checkpoint.rs` — struct `CheckpointCursor { partition_id, last_updated_at: Option<DateTime<Utc>>, offset: Option<i64>, opcode: Option<Opcode> }`.
   - `registry.rs` — `ConnectorRegistry` (registro em runtime; usar `inventory` crate pra auto-registro via macro, evita lista hardcoded).
   - `record_batch_builder.rs` — `RecordBatchBuilder` genérico (linhas heterogêneas → `RecordBatch`), com testes usando dados mock (`serde_json::Value` → batch).
 - `src/main.rs` — bootstrap mínimo: carrega config (env/arquivo), chama `nexus_server::run()`. Nenhuma lógica além disso (contrato do `ARCHITECTURE.md §1`).
 - `nexus-server` (esqueleto): `lib.rs` com `pub async fn run()` que só sobe um Axum app vazio com `/health`.
-- CI: workflow (GitHub Actions) rodando `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --workspace` em cada push/PR pra `develop`.
+- CI: workflow (GitHub Actions) rodando `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, e `cargo test -p nexus-core -p nexus-ai -p nexus-server` em cada push/PR pra `develop`. `cargo test --workspace` na raiz **não** é usado porque a dependência de path do `nexus-server` pros crates do workspace aninhado `crates/nexus-connectors` faz o Cargo expor esses crates como membros do workspace raiz, disparando testes de integração pesados/com container de cada conector — esses ficam isolados nos jobs `connectors`/`connectors-heavy` do CI (ver `ARCHITECTURE.md §3`).
 
-**Critério de pronto:** `cargo build --workspace` e `cargo test --workspace` verdes; `curl localhost:8080/health` responde 200.
+**Critério de pronto:** `cargo build --release -p nexusflow --features embed-ui` e `cargo test -p nexus-core -p nexus-ai -p nexus-server` verdes; `curl localhost:8080/health` responde 200.
 
 ---
 
