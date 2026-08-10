@@ -107,6 +107,11 @@ export function DbtNodeView({ data, selected }: NodeProps<DagNode>) {
       <div className="mt-0.5 truncate text-xs text-muted-foreground">
         {data.select || data.projectDir || t('canvas.noProjectSet')}
       </div>
+      <Handle
+        type="source"
+        position={Position.Right}
+        className="!h-2.5 !w-2.5 !border-2 !bg-background !border-emerald-400"
+      />
     </div>
   )
 }

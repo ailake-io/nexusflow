@@ -10,6 +10,8 @@ mod dbt;
 mod embedded_ui;
 mod error;
 mod hardware_stats;
+mod license;
+mod license_store;
 pub mod migrate;
 mod pipeline_store;
 mod progress;
@@ -32,6 +34,7 @@ use checkpoint_store::CheckpointStore;
 use crypto::SecretCipher;
 use error::ApiError;
 use futures_util::StreamExt;
+use license_store::{LicenseStore, LicenseStoreError};
 use nexus_core::{ConnectorRegistry, NodeSpec, PipelineSpec, ProgressSender};
 use pipeline_store::{PipelineStore, PipelineStoreError, PipelineSummary, RunRecord};
 use progress::ProgressHub;
@@ -74,6 +77,7 @@ struct AppState {
     /// Encrypts connector secrets before `pipelines` persists them (CLAUDE.md §5).
     secrets: SecretCipher,
     pipelines: PipelineStore,
+    license_store: LicenseStore,
     progress: ProgressHub,
     alerts: AlertNotifier,
     login_rate_limiter: std::sync::Arc<rate_limit::LoginRateLimiter>,
@@ -92,6 +96,15 @@ impl From<PipelineStoreError> for ApiError {
             }
             PipelineStoreError::Corrupt(msg) => ApiError::internal(msg),
             PipelineStoreError::Sqlx(e) => ApiError::internal(e),
+        }
+    }
+}
+
+impl From<LicenseStoreError> for ApiError {
+    fn from(err: LicenseStoreError) -> Self {
+        match err {
+            LicenseStoreError::License(e) => ApiError::bad_request(e.to_string()),
+            LicenseStoreError::Sqlx(e) => ApiError::internal(e),
         }
     }
 }
@@ -178,6 +191,13 @@ fn router(state: AppState) -> Router {
             get(get_user_handler).delete(delete_user_handler),
         )
         .route("/users/{username}/role", put(update_user_role_handler))
+        // Installing/inspecting the enterprise license is an access-control
+        // action, same trust bar as user management — see
+        // `docs/ENTERPRISE_LICENSING.md`.
+        .route(
+            "/license",
+            post(install_license_handler).get(license_status_handler),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_role::<AppState>,
@@ -270,15 +290,30 @@ struct ConnectorCatalogEntry {
     name: &'static str,
     capability: nexus_core::ConnectorCapability,
     config_schema: serde_json::Value,
+    /// `true` for every OSS connector; for an enterprise connector
+    /// (`requires_license: Some(_)` — none exist in this repo yet, see
+    /// `docs/ENTERPRISE_LICENSING.md`), `true` only if the installed
+    /// license's `connectors` list covers its slug. The canvas uses this to
+    /// show a locked/"upgrade" state instead of hiding the node outright.
+    licensed: bool,
 }
 
-async fn list_connectors_handler() -> Json<Vec<ConnectorCatalogEntry>> {
+async fn list_connectors_handler(
+    State(state): State<AppState>,
+) -> Json<Vec<ConnectorCatalogEntry>> {
+    let active_license = state.license_store.active().await.ok().flatten();
     Json(
         ConnectorRegistry::all()
             .map(|d| ConnectorCatalogEntry {
                 name: d.name,
                 capability: d.capability,
                 config_schema: (d.config_schema)(),
+                licensed: match d.requires_license {
+                    None => true,
+                    Some(slug) => active_license
+                        .as_ref()
+                        .is_some_and(|claims| claims.covers(slug)),
+                },
             })
             .collect(),
     )
@@ -793,6 +828,68 @@ async fn create_user_handler(
 }
 
 #[derive(Deserialize)]
+struct InstallLicenseRequest {
+    license_key: String,
+}
+
+#[derive(Serialize)]
+struct LicenseStatusResponse {
+    active: bool,
+    connectors: Vec<String>,
+    seats: u32,
+    expires_at: Option<i64>,
+}
+
+impl LicenseStatusResponse {
+    fn inactive() -> Self {
+        Self {
+            active: false,
+            connectors: Vec::new(),
+            seats: 0,
+            expires_at: None,
+        }
+    }
+}
+
+/// Installs (or replaces) the enterprise license key — see
+/// `docs/ENTERPRISE_LICENSING.md`. No enterprise connector actually reads
+/// this yet (none exist in this repo); this is the verification + storage
+/// half of the gate, ready for a future connector registration path to
+/// consult via `LicenseStore::is_connector_licensed`.
+async fn install_license_handler(
+    State(state): State<AppState>,
+    Json(body): Json<InstallLicenseRequest>,
+) -> Result<Json<LicenseStatusResponse>, ApiError> {
+    let claims = state.license_store.install(&body.license_key).await?;
+    Ok(Json(LicenseStatusResponse {
+        active: true,
+        connectors: claims.connectors,
+        seats: claims.seats,
+        expires_at: Some(claims.exp),
+    }))
+}
+
+async fn license_status_handler(
+    State(state): State<AppState>,
+) -> Result<Json<LicenseStatusResponse>, ApiError> {
+    let status = match state
+        .license_store
+        .active()
+        .await
+        .map_err(ApiError::internal)?
+    {
+        Some(claims) => LicenseStatusResponse {
+            active: true,
+            connectors: claims.connectors,
+            seats: claims.seats,
+            expires_at: Some(claims.exp),
+        },
+        None => LicenseStatusResponse::inactive(),
+    };
+    Ok(Json(status))
+}
+
+#[derive(Deserialize)]
 struct UpdateRoleRequest {
     role: Role,
 }
@@ -978,6 +1075,10 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
     let checkpoints = CheckpointStore::connect(&config.checkpoint_database_url).await?;
     let auth_store = AuthStore::connect(&config.auth_database_url).await?;
     let pipelines = PipelineStore::connect(&config.pipelines_database_url).await?;
+    // Same database as auth (access-control data), not a 4th env var to
+    // operate — a license is a single-row table, not worth its own
+    // connection pool/URL to configure.
+    let license_store = LicenseStore::connect(&config.auth_database_url).await?;
     if let Some((username, password)) = &config.bootstrap_admin {
         auth_store.seed_admin_if_empty(username, password).await?;
     }
@@ -995,6 +1096,7 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         jwt,
         secrets,
         pipelines,
+        license_store,
         progress: ProgressHub::default(),
         alerts: AlertNotifier::new(AlertConfig {
             slack_webhook_url: config.slack_webhook_url.clone(),
@@ -1234,6 +1336,7 @@ mod tests {
             jwt: JwtCodec::new(b"test-secret", 3600),
             secrets: SecretCipher::from_hex_key(&"ab".repeat(32)).unwrap(),
             pipelines: PipelineStore::connect("sqlite::memory:").await.unwrap(),
+            license_store: LicenseStore::connect("sqlite::memory:").await.unwrap(),
             progress: ProgressHub::default(),
             alerts: AlertNotifier::new(AlertConfig::default()),
             login_rate_limiter: std::sync::Arc::new(rate_limit::LoginRateLimiter::new(
@@ -2420,6 +2523,7 @@ mod tests {
             jwt: JwtCodec::new(b"test-secret", 3600),
             secrets: SecretCipher::from_hex_key(&"ab".repeat(32)).unwrap(),
             pipelines: PipelineStore::connect("sqlite::memory:").await.unwrap(),
+            license_store: LicenseStore::connect("sqlite::memory:").await.unwrap(),
             progress: ProgressHub::default(),
             alerts: AlertNotifier::new(AlertConfig::default()),
             login_rate_limiter: limiter,

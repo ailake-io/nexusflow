@@ -88,7 +88,10 @@ axum = { version = "0.8.9", features = ["ws"] }
 # picking one, encode/decode panics at runtime ("Could not automatically
 # determine the process-level CryptoProvider"). rust_crypto is pure Rust
 # (no aws-lc-rs/C build), consistent with this workspace's other crates.
-jsonwebtoken = { version = "11.0.0", default-features = false, features = ["rust_crypto"] }
+# use_pem (pulls in `pem`/`simple_asn1`, also pure Rust) is needed for
+# `DecodingKey::from_ed_pem`/`EncodingKey::from_ed_pem` — the enterprise
+# license key's EdDSA verification (see license.rs).
+jsonwebtoken = { version = "11.0.0", default-features = false, features = ["rust_crypto", "use_pem"] }
 # argon2's password-hash re-export of rand_core doesn't itself turn on
 # rand_core's "getrandom" feature (that's what makes `OsRng` exist at all) —
 # has to be requested directly here, at the exact rand_core 0.6.x version
