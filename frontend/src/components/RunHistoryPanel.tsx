@@ -1,9 +1,12 @@
-import { AlertCircle, Loader2, RefreshCw } from 'lucide-react'
+import { useState } from 'react'
+import { AlertCircle, ChevronDown, ChevronUp, Loader2, RefreshCw, Terminal } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { StatusBadge } from '@/components/ui/status-badge'
 import { useI18n } from '@/lib/i18n'
 import { formatDuration } from '@/lib/utils'
 import { useRunHistory } from '@/hooks/useRunHistory'
+import { useRunLogs } from '@/hooks/useRunLogs'
+import { LogTerminal } from '@/components/LogTerminal'
 import type { RunRecord } from '@/lib/api'
 
 /** Matches nexus_core::PartitionStats — one entry per partition/sink
@@ -39,10 +42,18 @@ function statusVariant(status: RunRecord['status']) {
   return 'failed'
 }
 
-function RunRow({ run }: { run: RunRecord }) {
+function RunRow({ run, pipelineId }: { run: RunRecord; pipelineId: string }) {
   const { t } = useI18n()
   const duration = formatDuration(run.started_at, run.finished_at)
   const rows = totalRowsWritten(run.stats)
+  const [showLogs, setShowLogs] = useState(false)
+  const { logs, loading: logsLoading, fetchLogs } = useRunLogs()
+
+  const toggleLogs = () => {
+    const next = !showLogs
+    setShowLogs(next)
+    if (next) fetchLogs(pipelineId, run.id)
+  }
 
   return (
     <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3">
@@ -71,7 +82,29 @@ function RunRow({ run }: { run: RunRecord }) {
             })}
           </span>
         )}
+        <button
+          type="button"
+          onClick={toggleLogs}
+          className="ml-auto inline-flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground"
+        >
+          <Terminal className="h-3 w-3" />
+          {t('execution.logs.toggle')}
+          {showLogs ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+        </button>
       </div>
+
+      {showLogs && (
+        <div className="mt-2">
+          {logsLoading && logs.length === 0 ? (
+            <div className="flex h-10 items-center justify-center text-[10px] text-muted-foreground">
+              <Loader2 className="mr-2 h-3 w-3 animate-spin" />
+              {t('pipelines.history.loading')}
+            </div>
+          ) : (
+            <LogTerminal logs={logs} autoScroll={false} />
+          )}
+        </div>
+      )}
 
       {run.error && (
         <p className="mt-2 rounded border border-red-500/20 bg-red-500/10 p-2 text-[10px] text-red-300">
@@ -126,7 +159,7 @@ export function RunHistoryPanel({ pipelineId }: RunHistoryPanelProps) {
 
       <div className="flex flex-col gap-2">
         {sorted.map((run) => (
-          <RunRow key={run.id} run={run} />
+          <RunRow key={run.id} run={run} pipelineId={pipelineId} />
         ))}
       </div>
     </div>

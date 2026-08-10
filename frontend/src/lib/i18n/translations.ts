@@ -197,6 +197,10 @@ export const translations = {
       dbtCommand: 'dbt {command}',
       cpu: 'CPU',
       memory: 'Memory',
+      logs: {
+        toggle: 'Logs',
+        empty: 'No log lines yet.',
+      },
     },
     common: {
       loading: 'Loading…',
@@ -418,6 +422,10 @@ export const translations = {
       dbtCommand: 'dbt {command}',
       cpu: 'CPU',
       memory: 'Memória',
+      logs: {
+        toggle: 'Logs',
+        empty: 'Nenhuma linha de log ainda.',
+      },
     },
     common: {
       loading: 'Carregando…',

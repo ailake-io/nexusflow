@@ -16,6 +16,7 @@ pub mod migrate;
 mod pipeline_store;
 mod progress;
 mod rate_limit;
+mod run_log_store;
 mod runner;
 mod scheduler;
 pub mod telemetry;
@@ -37,7 +38,8 @@ use futures_util::StreamExt;
 use license_store::{LicenseStore, LicenseStoreError};
 use nexus_core::{ConnectorRegistry, NodeSpec, PipelineSpec, ProgressSender};
 use pipeline_store::{PipelineStore, PipelineStoreError, PipelineSummary, RunRecord};
-use progress::ProgressHub;
+use progress::{ProgressHub, RunLogEvent, RunLogger};
+use run_log_store::RunLogStore;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
@@ -77,6 +79,7 @@ struct AppState {
     /// Encrypts connector secrets before `pipelines` persists them (CLAUDE.md §5).
     secrets: SecretCipher,
     pipelines: PipelineStore,
+    run_logs: RunLogStore,
     license_store: LicenseStore,
     progress: ProgressHub,
     alerts: AlertNotifier,
@@ -177,6 +180,10 @@ fn router(state: AppState) -> Router {
         .route("/pipelines", get(list_pipelines_handler))
         .route("/pipelines/{id}", get(get_pipeline_handler))
         .route("/pipelines/{id}/runs", get(list_runs_handler))
+        .route(
+            "/pipelines/{id}/runs/{run_id}/logs",
+            get(list_run_logs_handler),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_role::<AppState>,
@@ -465,12 +472,13 @@ pub(crate) async fn start_pipeline_run(
     // still show up in `GET /pipelines/{id}/runs`, same as always-persisted
     // ones.
     let run_id = state.pipelines.start_run(&spec.pipeline_id).await?;
-    let progress_tx = state.progress.start(run_id);
+    let (progress_tx, log_tx) = state.progress.start(run_id);
+    let logger = RunLogger::new(run_id, log_tx, state.run_logs.clone());
 
     let supervisor = state.clone();
     let spec = spec.clone();
     tokio::spawn(async move {
-        execute_pipeline_run(supervisor, spec, run_id, progress_tx).await;
+        execute_pipeline_run(supervisor, spec, run_id, progress_tx, logger).await;
     });
     Ok(run_id)
 }
@@ -480,14 +488,22 @@ pub(crate) async fn start_pipeline_run(
 /// while the process lives — a run row must never be stranded as
 /// `'running'` (death of the process itself is handled by the boot-time
 /// reaper, `PipelineStore::fail_interrupted_runs`).
-#[tracing::instrument(skip(state, spec, progress_tx), fields(pipeline_id = %spec.pipeline_id, run_id))]
+#[tracing::instrument(skip(state, spec, progress_tx, logger), fields(pipeline_id = %spec.pipeline_id, run_id))]
 async fn execute_pipeline_run(
     state: AppState,
     spec: PipelineSpec,
     run_id: i64,
     progress_tx: ProgressSender,
+    logger: RunLogger,
 ) {
-    let result = runner::run_pipeline(&spec, &state.checkpoints, Some(progress_tx.clone())).await;
+    logger.info("run started").await;
+    let result = runner::run_pipeline(
+        &spec,
+        &state.checkpoints,
+        Some(progress_tx.clone()),
+        Some(&logger),
+    )
+    .await;
     state.progress.finish(run_id);
 
     match result {
@@ -499,13 +515,15 @@ async fn execute_pipeline_run(
             let mut dbt_summary = None;
             let mut stats = stats;
             if let Some(dbt_config) = &spec.dbt {
+                logger.info("running dbt").await;
                 match dbt::run(dbt_config).await {
                     Ok(outcome) => {
                         outcome.log_summary();
+                        logger.info("dbt finished").await;
                         dbt_summary = outcome.summary_json();
                     }
                     Err(e) => {
-                        record_run_failure(&state, run_id, &spec.pipeline_id, &e).await;
+                        record_run_failure(&state, run_id, &spec.pipeline_id, &e, &logger).await;
                         return;
                     }
                 }
@@ -521,18 +539,27 @@ async fn execute_pipeline_run(
                             output_node,
                             &state.checkpoints,
                             Some(progress_tx.clone()),
+                            Some(&logger),
                         )
                         .await
                         {
                             Ok(post_dbt_stats) => stats.extend(post_dbt_stats),
                             Err(e) => {
-                                record_run_failure(&state, run_id, &spec.pipeline_id, &e).await;
+                                record_run_failure(&state, run_id, &spec.pipeline_id, &e, &logger)
+                                    .await;
                                 return;
                             }
                         }
                     }
                 }
             }
+            let total_rows: usize = stats.iter().map(|s| s.rows_written).sum();
+            logger
+                .info(format!(
+                    "run succeeded: {total_rows} row(s) across {} partition(s)/sink(s)",
+                    stats.len()
+                ))
+                .await;
             if let Err(e) = state
                 .pipelines
                 .finish_run_success(run_id, &stats, dbt_summary.as_ref())
@@ -541,7 +568,7 @@ async fn execute_pipeline_run(
                 tracing::warn!(error = %e, "failed to record successful pipeline run");
             }
         }
-        Err(e) => record_run_failure(&state, run_id, &spec.pipeline_id, &e).await,
+        Err(e) => record_run_failure(&state, run_id, &spec.pipeline_id, &e, &logger).await,
     }
 }
 
@@ -550,14 +577,20 @@ async fn record_run_failure(
     run_id: i64,
     pipeline_id: &str,
     error: &anyhow::Error,
+    logger: &RunLogger,
 ) {
-    // Full detail (cause chain included) stays in the server log…
-    tracing::error!(error = format!("{error:?}"), "pipeline run failed");
+    let error_debug = format!("{error:?}");
+    // Full detail (cause chain included) stays in the server log, but the
+    // log itself is scrubbed so credentials don't end up in log aggregators.
+    tracing::error!(error = %error::sanitize_error(&error_debug), "pipeline run failed");
     // …what gets persisted (readable by any `Read` role via GET
     // /pipelines/{id}/runs) and forwarded to Slack is the sanitized
     // version: connector errors routinely embed connection URIs with
     // credentials.
     let sanitized = error::sanitize_error(&error.to_string());
+    logger
+        .error(format!("run failed: {sanitized}"))
+        .await;
     if let Err(record_err) = state.pipelines.finish_run_failure(run_id, &sanitized).await {
         tracing::warn!(error = %record_err, "failed to record failed pipeline run");
     }
@@ -752,6 +785,25 @@ async fn list_runs_handler(
 ) -> Result<Json<Vec<RunRecord>>, ApiError> {
     let (limit, offset) = pagination.validated()?;
     Ok(Json(state.pipelines.list_runs(&id, limit, offset).await?))
+}
+
+/// Historical/replayable view of a run's execution log — works for a run
+/// still in progress, one that already finished, and (the whole point) one
+/// nobody had the live WebSocket open for, e.g. a scheduler-triggered run
+/// (see `RunLogger`/`RunLogStore`). `_id` (pipeline id) is part of the URL
+/// for REST consistency with the other `/pipelines/{id}/runs/...` routes
+/// but isn't needed to look the logs up — `run_id` alone is the store's key.
+async fn list_run_logs_handler(
+    State(state): State<AppState>,
+    Path((_id, run_id)): Path<(String, i64)>,
+) -> Result<Json<Vec<RunLogEvent>>, ApiError> {
+    Ok(Json(
+        state
+            .run_logs
+            .list(run_id)
+            .await
+            .map_err(ApiError::internal)?,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -953,21 +1005,28 @@ async fn progress_ws_handler(
     let token = proto
         .strip_prefix("nexusflow-")
         .ok_or_else(|| ApiError::unauthorized("expected nexusflow-<token> protocol"))?;
-    let rx = authorize_progress_subscription(&state, token, run_id).await?;
+    let (progress_rx, log_rx) = authorize_progress_subscription(&state, token, run_id).await?;
     Ok(ws
         .protocols([proto.clone()])
-        .on_upgrade(move |socket| forward_progress(socket, rx)))
+        .on_upgrade(move |socket| forward_progress(socket, progress_rx, log_rx)))
 }
 
 /// Split out from `progress_ws_handler` so it's callable directly from a
 /// test — a `WebSocketUpgrade` extractor requires a real hyper connection
 /// (`tower::ServiceExt::oneshot` doesn't provide one, so it always rejects
 /// with 426 regardless of what this function would have decided).
+#[allow(clippy::type_complexity)]
 async fn authorize_progress_subscription(
     state: &AppState,
     token: &str,
     run_id: i64,
-) -> Result<tokio::sync::broadcast::Receiver<nexus_core::ProgressEvent>, ApiError> {
+) -> Result<
+    (
+        tokio::sync::broadcast::Receiver<nexus_core::ProgressEvent>,
+        tokio::sync::broadcast::Receiver<RunLogEvent>,
+    ),
+    ApiError,
+> {
     let claims = state.jwt.verify(token)?;
     if claims.role < Role::Read {
         return Err(ApiError::forbidden(format!(
@@ -991,6 +1050,7 @@ const HARDWARE_STATS_INTERVAL: std::time::Duration = std::time::Duration::from_s
 async fn forward_progress(
     mut socket: WebSocket,
     mut rx: tokio::sync::broadcast::Receiver<nexus_core::ProgressEvent>,
+    mut log_rx: tokio::sync::broadcast::Receiver<RunLogEvent>,
 ) {
     let mut hardware = hardware_stats::HardwareMonitor::new();
     let mut hardware_ticker = tokio::time::interval(HARDWARE_STATS_INTERVAL);
@@ -1013,6 +1073,29 @@ async fn forward_progress(
                     }
                     // A slow client missed some events — cumulative counts
                     // mean the next one it does get is still consistent.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            // Persistence of log lines (so `GET .../logs` can replay them
+            // later) happens once, at `RunLogger::log` — *not* here. This
+            // loop only fans a run's already-persisted events out to
+            // whichever WebSocket clients happen to be connected right now;
+            // running it per-connection means anything persisted here would
+            // duplicate once per subscriber.
+            event = log_rx.recv() => {
+                match event {
+                    Ok(event) => {
+                        // `"type": "log"` distinguishes this frame from the
+                        // untagged `ProgressEvent`/`hardware_stats` shapes
+                        // above — see `RunLogEvent`'s doc comment.
+                        let mut payload = serde_json::to_value(&event)
+                            .expect("RunLogEvent always serializes");
+                        payload["type"] = serde_json::Value::String("log".to_string());
+                        if socket.send(Message::Text(payload.to_string().into())).await.is_err() {
+                            break;
+                        }
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
@@ -1075,6 +1158,9 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
     let checkpoints = CheckpointStore::connect(&config.checkpoint_database_url).await?;
     let auth_store = AuthStore::connect(&config.auth_database_url).await?;
     let pipelines = PipelineStore::connect(&config.pipelines_database_url).await?;
+    // Same database as `pipeline_runs` (which these logs narrate) — not a
+    // 5th env var to operate.
+    let run_logs = RunLogStore::connect(&config.pipelines_database_url).await?;
     // Same database as auth (access-control data), not a 4th env var to
     // operate — a license is a single-row table, not worth its own
     // connection pool/URL to configure.
@@ -1096,6 +1182,7 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         jwt,
         secrets,
         pipelines,
+        run_logs,
         license_store,
         progress: ProgressHub::default(),
         alerts: AlertNotifier::new(AlertConfig {
@@ -1336,6 +1423,7 @@ mod tests {
             jwt: JwtCodec::new(b"test-secret", 3600),
             secrets: SecretCipher::from_hex_key(&"ab".repeat(32)).unwrap(),
             pipelines: PipelineStore::connect("sqlite::memory:").await.unwrap(),
+            run_logs: RunLogStore::connect("sqlite::memory:").await.unwrap(),
             license_store: LicenseStore::connect("sqlite::memory:").await.unwrap(),
             progress: ProgressHub::default(),
             alerts: AlertNotifier::new(AlertConfig::default()),
@@ -1736,6 +1824,76 @@ mod tests {
         let record = wait_for_terminal_run(&app, &execute_token, "p1").await;
         assert_eq!(record["status"], "failed");
         assert!(record["error"]
+            .as_str()
+            .unwrap()
+            .contains("unsupported connector"));
+    }
+
+    /// The whole point of persisting logs (not just broadcasting them) is
+    /// that `GET .../logs` works after the fact, for a run nobody had the
+    /// live WebSocket open for — this hits the endpoint only *after*
+    /// `wait_for_terminal_run` confirms the supervisor already finished, so
+    /// there's no live subscriber involved at all.
+    #[tokio::test]
+    async fn run_logs_endpoint_replays_start_and_failure_lines_after_the_run_finished() {
+        let state = test_state().await;
+        let write_token = bearer(&state, Role::Write);
+        let execute_token = bearer(&state, Role::Execute);
+        let app = router(state);
+
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                "/pipelines",
+                &write_token,
+                sample_pipeline("p1"),
+            ))
+            .await
+            .unwrap();
+
+        let body = serde_json::json!({
+            "pipeline_id": "p1",
+            "sources": [{"connector": "mongodb", "config": {}}],
+            "sinks": [{"connector": "postgres", "config": {}}]
+        });
+        let response = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/pipelines/p1/run",
+                &execute_token,
+                body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+        let record = wait_for_terminal_run(&app, &execute_token, "p1").await;
+        let run_id = record["id"].as_i64().unwrap();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/pipelines/p1/runs/{run_id}/logs"))
+                    .header("authorization", &execute_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let logs = body_json(response).await;
+        let logs = logs.as_array().unwrap();
+        assert!(
+            logs.iter().any(|l| l["message"] == "run started"),
+            "expected a 'run started' line, got: {logs:?}"
+        );
+        let failure = logs
+            .iter()
+            .find(|l| l["level"] == "error")
+            .expect("an error-level line for the failed run");
+        assert!(failure["message"]
             .as_str()
             .unwrap()
             .contains("unsupported connector"));
@@ -2367,7 +2525,9 @@ mod tests {
         let err = anyhow::anyhow!(
             "ADBC error: failed to connect to postgres://admin:s3cret@db.internal:5432/app: timeout"
         );
-        record_run_failure(&state, run_id, "p1", &err).await;
+        let (_progress_tx, log_tx) = state.progress.start(run_id);
+        let logger = RunLogger::new(run_id, log_tx, state.run_logs.clone());
+        record_run_failure(&state, run_id, "p1", &err, &logger).await;
 
         let runs = state.pipelines.list_runs("p1", 100, 0).await.unwrap();
         let stored = runs[0].error.as_deref().unwrap();
@@ -2405,9 +2565,9 @@ mod tests {
         let token = bearer(&state, Role::Read);
         let token = token.strip_prefix("Bearer ").unwrap();
         let run_id = state.pipelines.start_run("p1").await.unwrap();
-        let tx = state.progress.start(run_id);
+        let (tx, _log_tx) = state.progress.start(run_id);
 
-        let mut rx = authorize_progress_subscription(&state, token, run_id)
+        let (mut rx, _log_rx) = authorize_progress_subscription(&state, token, run_id)
             .await
             .unwrap();
 
@@ -2452,7 +2612,7 @@ mod tests {
         let token = bearer(&state, Role::Read);
         let token = token.strip_prefix("Bearer ").unwrap().to_string();
         let run_id = state.pipelines.start_run("p1").await.unwrap();
-        let tx = state.progress.start(run_id);
+        let (tx, _log_tx) = state.progress.start(run_id);
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2523,6 +2683,7 @@ mod tests {
             jwt: JwtCodec::new(b"test-secret", 3600),
             secrets: SecretCipher::from_hex_key(&"ab".repeat(32)).unwrap(),
             pipelines: PipelineStore::connect("sqlite::memory:").await.unwrap(),
+            run_logs: RunLogStore::connect("sqlite::memory:").await.unwrap(),
             license_store: LicenseStore::connect("sqlite::memory:").await.unwrap(),
             progress: ProgressHub::default(),
             alerts: AlertNotifier::new(AlertConfig::default()),

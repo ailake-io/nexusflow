@@ -151,3 +151,52 @@ Ver [`LICENSING.md`](./LICENSING.md) §2. Tecnicamente: `nexus-server` carrega c
 - **Leader election** (`scheduler.rs`): com >1 réplica compartilhando o mesmo Postgres, cada uma dispararia os mesmos pipelines agendados — `pg_try_advisory_lock` (chave fixa `SCHEDULER_LOCK_KEY`) resolve isso sem infra nova (sem etcd/Redis). Uma conexão dedicada (não emprestada do pool geral) é mantida viva entre ticks — o lock é por sessão, então só persiste enquanto essa conexão existe; a réplica cair (crash, rede) fecha a conexão e libera o lock automaticamente pra outra réplica assumir no próximo tick. No-op em SQLite (`MetadataPool::as_postgres()` retorna `None`) — sem cenário de múltiplas réplicas seguro pra SQLite de qualquer forma.
 - **Migração** (`nexus_server::migrate`, binário `migrate-metadata`): copia as 3 tabelas de metadados de SQLite pra Postgres preservando IDs originais (`audit_log.id`, `pipeline_runs.id`) via insert explícito + `setval(pg_get_serial_sequence(...))` no final, pra não colidir com o próximo insert real. `spec_ciphertext` é copiado byte a byte (não re-criptografado) — o servidor de destino precisa da mesma `NEXUS_ENCRYPTION_KEY`. Idempotente via `ON CONFLICT ... DO NOTHING` em cada insert.
 - **Deployment**: manifests de referência em `packaging/kubernetes/` (Deployment 2 réplicas, Service, PVC opcional pro cache de embeddings, HPA, ConfigMap/Secret) e stack file de Docker Swarm em `packaging/swarm/` — não são Helm chart nem testados num cluster gerenciado real, validados offline (`kubeconform`/`docker compose config`). Ver o `README.md` de cada um pros trade-offs (HPA escalando pra baixo mata runs em voo daquele pod — recuperável via checkpoint, não é perda de dado; Swarm não tem convenção de secret-via-arquivo, usa env var).
+
+## 15. Logs de execução por run
+
+Complementa o `ProgressEvent` numérico (rows/bytes por partição, §4) com uma
+narração textual do que o run está fazendo — motivado por um caso que o
+WebSocket puro nunca cobriu: um run disparado pelo scheduler (§12) não tem
+ninguém com o socket aberto pra assistir, e `ProgressHub::finish` remove o
+canal assim que o run termina, sem replay.
+
+- **`nexus_server::progress::RunLogEvent`** (`{ ts, level: Info|Warn|Error,
+  message }`) é emitido via `RunLogger` (também em `progress.rs`), que faz
+  as duas coisas na emissão — não numa depois: broadcast pro canal ao vivo
+  (best-effort, pode não ter subscriber) *e* persistência em
+  `RunLogStore` (`run_log_store.rs`, mesmo padrão dual-dialeto do
+  `MetadataPool` que `checkpoint_store.rs` já usa, tabela nova
+  `pipeline_run_logs`). A persistência acontece na emissão, não no loop que
+  repassa pro WebSocket (`forward_progress`) — esse loop roda uma vez por
+  conexão, então persistir ali duplicaria a linha por subscriber conectado.
+- **Canais**: `ProgressHub` (antes só `ProgressSender`) agora guarda um par
+  `(ProgressSender, LogSender)` por `run_id` — dois `broadcast::channel`
+  independentes, não um enum unificado. Decisão deliberada: unificar exigiria
+  mudar o tipo público `nexus_core::ProgressEvent`/`ProgressSender`, usado
+  em ~10 testes de `nexus-core::pipeline` e no hot path de execução; manter
+  os dois canais separados deixa `nexus-core` (que não deve fazer I/O nem
+  saber de logging — regra do crate) completamente intocado.
+- **Wire format**: o frame de log leva um `"type": "log"` explícito
+  (`forward_progress` adiciona essa chave manualmente só nesse frame) pra o
+  frontend discriminar sem heurística — os frames de `ProgressEvent`/
+  `hardware_stats` continuam sem tag, formato inalterado (evita quebrar
+  qualquer consumidor existente do WebSocket).
+- **Onde as linhas são emitidas**: `execute_pipeline_run` (lib.rs) loga o
+  início do run, cada etapa do dbt e o resumo final (linhas/partições ou erro
+  sanitizado — mesmo `error::sanitize_error` que já protege
+  `pipeline_runs.error`/alertas, texto idêntico). `runner.rs` loga contagem
+  de partições/sources/sinks e falhas de connect por partição/source/sink
+  (`log_on_err`, um helper que loga e repassa o `Result` inalterado, sem
+  mudar controle de fluxo existente).
+- **`GET /pipelines/{id}/runs/{run_id}/logs`** (role `Read`, mesmo nível de
+  `GET .../runs`) devolve o histórico completo persistido — funciona pra um
+  run em andamento, terminado, ou disparado pelo scheduler sem ninguém
+  olhando. Sem paginação (volume esperado é dezenas de linhas por run, não
+  milhares); sem retenção/cleanup ainda, mesmo estado de `pipeline_runs`/
+  `checkpoints`.
+- **Canvas**: `ExecutionPanel` ganhou um modo "terminal" (toggle no header,
+  `LogTerminal.tsx` compartilhado) alimentado pelos frames `type: "log"` do
+  mesmo WebSocket que já mantinha aberto pro progresso — sem socket novo.
+  `RunHistoryPanel` reusa o mesmo `LogTerminal` por run, mas alimentado por
+  `GET .../logs` (`useRunLogs`, fetch sob demanda) em vez do WebSocket — é
+  o caminho que cobre um run já terminado ou agendado.

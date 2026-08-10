@@ -7,6 +7,7 @@ import {
   type HardwareStats,
   type ProgressEvent,
   type ProgressSocketMessage,
+  type RunLogEvent,
   type RunRecord,
 } from '@/lib/api'
 import type { PipelineSpec } from '@/lib/dag'
@@ -25,6 +26,7 @@ interface UseRunProgressResult {
   hardwareStats: HardwareStats | null
   error: string | null
   dbtSummary: DbtRunSummary | null
+  logs: RunLogEvent[]
   run: (token: string, spec: PipelineSpec) => void
 }
 
@@ -48,6 +50,7 @@ export function useRunProgress(): UseRunProgressResult {
   const [hardwareStats, setHardwareStats] = useState<HardwareStats | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [dbtSummary, setDbtSummary] = useState<DbtRunSummary | null>(null)
+  const [logs, setLogs] = useState<RunLogEvent[]>([])
   const lastSample = useRef<Record<string, { event: ProgressEvent; at: number }>>({})
   const wsRef = useRef<WebSocket | null>(null)
   const inactivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -118,6 +121,17 @@ export function useRunProgress(): UseRunProgressResult {
       ws.onmessage = (event) => {
         resetInactivityTimer()
         const data = JSON.parse(event.data as string) as ProgressSocketMessage
+        // Split into two plain `in` checks (not `&&`-combined) so TypeScript
+        // can narrow the fallthrough type past this block — narrowing a
+        // compound `'type' in data && data.type === 'log'` condition leaves
+        // the negated branch as `ProgressEvent | {hardware_stats} |
+        // RunLogEvent` instead of excluding RunLogEvent.
+        if ('type' in data) {
+          if (data.type === 'log') {
+            setLogs((current) => [...current, data])
+          }
+          return
+        }
         if ('hardware_stats' in data) {
           setHardwareStats(data.hardware_stats)
           return
@@ -163,6 +177,7 @@ export function useRunProgress(): UseRunProgressResult {
       setError(null)
       setDbtSummary(null)
       setRunId(null)
+      setLogs([])
       lastSample.current = {}
 
       try {
@@ -180,5 +195,5 @@ export function useRunProgress(): UseRunProgressResult {
     [connectSocket, cleanupRun],
   )
 
-  return { status, runId, partitions, hardwareStats, error, dbtSummary, run }
+  return { status, runId, partitions, hardwareStats, error, dbtSummary, logs, run }
 }

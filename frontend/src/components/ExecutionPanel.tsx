@@ -1,8 +1,10 @@
+import { useState } from 'react'
 import { useI18n } from '@/lib/i18n'
-import type { DbtRunSummary, HardwareStats } from '@/lib/api'
+import type { DbtRunSummary, HardwareStats, RunLogEvent } from '@/lib/api'
 import type { ExecutionStatus, PartitionProgress } from '@/hooks/useRunProgress'
 import { StatusBadge } from '@/components/ui/status-badge'
-import { AlertCircle, Terminal, Database, Clock, Cpu } from 'lucide-react'
+import { LogTerminal } from '@/components/LogTerminal'
+import { AlertCircle, Terminal, Database, Clock, Cpu, ChevronDown, ChevronUp } from 'lucide-react'
 
 interface ExecutionPanelProps {
   status: ExecutionStatus
@@ -11,6 +13,7 @@ interface ExecutionPanelProps {
   hardwareStats: HardwareStats | null
   error: string | null
   dbtSummary: DbtRunSummary | null
+  logs: RunLogEvent[]
 }
 
 export function ExecutionPanel({
@@ -20,8 +23,10 @@ export function ExecutionPanel({
   hardwareStats,
   error,
   dbtSummary,
+  logs,
 }: ExecutionPanelProps) {
   const { t } = useI18n()
+  const [showLogs, setShowLogs] = useState(false)
   if (status === 'idle') return null
 
   const rows = Object.values(partitions)
@@ -57,7 +62,22 @@ export function ExecutionPanel({
             {(hardwareStats.memory_total_bytes / 1_000_000_000).toFixed(1)} GB
           </span>
         )}
+        <button
+          type="button"
+          onClick={() => setShowLogs((v) => !v)}
+          className="ml-auto inline-flex items-center gap-1 rounded-md border border-white/10 px-2 py-1 text-xs text-muted-foreground hover:bg-white/5"
+        >
+          <Terminal className="h-3.5 w-3.5" />
+          {t('execution.logs.toggle')}
+          {showLogs ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+        </button>
       </div>
+
+      {showLogs && (
+        <div className="mb-3">
+          <LogTerminal logs={logs} />
+        </div>
+      )}
 
       {rows.length > 0 && (
         <div className="overflow-hidden rounded-lg border border-white/10">
