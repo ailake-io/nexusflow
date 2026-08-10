@@ -21,6 +21,14 @@ use arrow_schema::SchemaRef as ArrowSchemaRef;
 /// log line on failure. A no-op pass-through when `log` is `None` (tests
 /// that don't care about logging, same convention as `progress:
 /// Option<ProgressSender>`).
+///
+/// Runs the same `error::sanitize_error` redaction `record_run_failure`
+/// (lib.rs) applies to the final run error — a connect failure's message
+/// routinely embeds the connection URI (`postgres://user:pass@host/db`),
+/// and unlike that final summary this line is persisted to `RunLogStore`
+/// and broadcast live, so it needs the same credential scrubbing, not a
+/// weaker bar just because it's a narration line instead of the terminal
+/// error.
 async fn log_on_err<T, E: std::fmt::Display>(
     log: Option<&RunLogger>,
     context: &str,
@@ -28,7 +36,12 @@ async fn log_on_err<T, E: std::fmt::Display>(
 ) -> Result<T, E> {
     if let Err(e) = &result {
         if let Some(logger) = log {
-            logger.error(format!("{context}: {e}")).await;
+            logger
+                .error(format!(
+                    "{context}: {}",
+                    crate::error::sanitize_error(&e.to_string())
+                ))
+                .await;
         }
     }
     result
@@ -394,4 +407,40 @@ async fn apply_embedding_stage(
         out.push((name, schema, embedded));
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::progress::{LogLevel, RunLogger};
+    use crate::run_log_store::RunLogStore;
+
+    /// A connect failure's `Display` routinely embeds the connection URI
+    /// with credentials (e.g. ADBC/tokio-postgres error messages) — this
+    /// line is persisted (`RunLogStore`) and broadcast live, so it must go
+    /// through the same `error::sanitize_error` redaction as the final run
+    /// error `record_run_failure` (lib.rs) already applies, not a weaker
+    /// bar just because it's a narration line.
+    #[tokio::test]
+    async fn log_on_err_redacts_credentials_from_the_error_message() {
+        let store = RunLogStore::connect("sqlite::memory:").await.unwrap();
+        let (tx, _rx) = tokio::sync::broadcast::channel(8);
+        let logger = RunLogger::new(1, tx, store.clone());
+
+        let err: Result<(), String> = Err(
+            "connect failed: postgres://admin:s3cret@db.internal:5432/app: timeout".to_string(),
+        );
+        let result = log_on_err(Some(&logger), "source connect failed", err).await;
+        assert!(result.is_err());
+
+        let logs = store.list(1).await.unwrap();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].level, LogLevel::Error);
+        assert!(
+            !logs[0].message.contains("s3cret"),
+            "credential must never reach the persisted run log: {}",
+            logs[0].message
+        );
+        assert!(logs[0].message.contains("postgres://***@db.internal:5432/app"));
+    }
 }
