@@ -5,10 +5,19 @@ use axum::middleware::Next;
 use axum::response::Response;
 use axum::RequestExt;
 use dashmap::DashMap;
-use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{
+    decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+/// Audience claim for Nexus-issued tokens. Tokens without this `aud` are
+/// rejected during verification, preventing cross-service token replay.
+pub const NEXUS_AUDIENCE: &str = "nexusflow";
+/// Issuer claim for Nexus-issued tokens. Validates provenance and makes
+/// verification stricter without adding per-request DB cost.
+pub const NEXUS_ISSUER: &str = "nexusflow:auth";
 
 /// 4 global roles, hierarchical (`Read` < `Execute` < `Write` < `Admin`) —
 /// no per-resource scope yet, see ARCHITECTURE.md §10 "Débito conhecido".
@@ -29,6 +38,8 @@ pub enum Role {
 pub struct Claims {
     pub sub: String,
     pub role: Role,
+    pub aud: String,
+    pub iss: String,
     pub exp: usize,
 }
 
@@ -91,10 +102,13 @@ impl JwtCodec {
         token_ttl_seconds: u64,
         blocklist: TokenBlocklist,
     ) -> Self {
+        let mut validation = Validation::new(Algorithm::HS256);
+        validation.set_audience(&[NEXUS_AUDIENCE]);
+        validation.set_issuer(&[NEXUS_ISSUER]);
         Self {
             encoding_key: EncodingKey::from_secret(secret),
             decoding_key: DecodingKey::from_secret(secret),
-            validation: Validation::new(Algorithm::HS256),
+            validation,
             token_ttl_seconds,
             blocklist,
         }
@@ -105,6 +119,8 @@ impl JwtCodec {
         let claims = Claims {
             sub: subject.to_string(),
             role,
+            aud: NEXUS_AUDIENCE.to_string(),
+            iss: NEXUS_ISSUER.to_string(),
             exp: exp as usize,
         };
         encode(&Header::new(Algorithm::HS256), &claims, &self.encoding_key)
@@ -209,6 +225,28 @@ mod tests {
     }
 
     #[test]
+    fn token_with_wrong_audience_is_rejected() {
+        let jwt = JwtCodec::new(b"test-secret", 3600);
+        let token = jwt.issue("alice", Role::Read).unwrap();
+        let mut validation = Validation::new(Algorithm::HS256);
+        validation.set_audience(&["other-audience"]);
+        validation.set_issuer(&[NEXUS_ISSUER]);
+        let decoding_key = DecodingKey::from_secret(b"test-secret");
+        assert!(decode::<Claims>(&token, &decoding_key, &validation).is_err());
+    }
+
+    #[test]
+    fn token_with_wrong_issuer_is_rejected() {
+        let jwt = JwtCodec::new(b"test-secret", 3600);
+        let token = jwt.issue("alice", Role::Read).unwrap();
+        let mut validation = Validation::new(Algorithm::HS256);
+        validation.set_audience(&[NEXUS_AUDIENCE]);
+        validation.set_issuer(&["other-issuer"]);
+        let decoding_key = DecodingKey::from_secret(b"test-secret");
+        assert!(decode::<Claims>(&token, &decoding_key, &validation).is_err());
+    }
+
+    #[test]
     fn revoked_token_is_rejected() {
         let jwt = JwtCodec::new(b"test-secret", 3600);
         let token = jwt.issue("alice", Role::Read).unwrap();
@@ -225,6 +263,8 @@ mod tests {
         let expired_claims = Claims {
             sub: "alice".to_string(),
             role: Role::Read,
+            aud: NEXUS_AUDIENCE.to_string(),
+            iss: NEXUS_ISSUER.to_string(),
             exp: 1,
         };
         let expired_token = encode(
