@@ -26,12 +26,16 @@ pub struct PartitionStats {
 /// nexus-server relays these over a WebSocket per run (Marco 7 task #9).
 /// Cumulative rather than per-batch deltas so a client that misses one
 /// event (a lagged broadcast receiver) is still consistent on the next.
+/// `done` is set on the final event for that partition/sink, letting
+/// observers emit percentage-based progress logs without guessing when a
+/// partition finished.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProgressEvent {
     pub partition_id: String,
     pub batches_written: usize,
     pub rows_written: usize,
     pub bytes_written: usize,
+    pub done: bool,
 }
 
 /// Broadcast so every connected WebSocket client for a run gets every
@@ -139,12 +143,23 @@ impl PipelineEngine {
                         batches_written,
                         rows_written,
                         bytes_written,
+                        done: false,
                     });
                 }
             }
 
-            sink.commit_checkpoint(CheckpointCursor::new(writer_partition_id))
+            sink.commit_checkpoint(CheckpointCursor::new(writer_partition_id.clone()))
                 .await?;
+
+            if let Some(tx) = &progress {
+                let _ = tx.send(ProgressEvent {
+                    partition_id: writer_partition_id,
+                    batches_written,
+                    rows_written,
+                    bytes_written,
+                    done: true,
+                });
+            }
 
             Ok::<(usize, usize), NexusError>((batches_written, rows_written))
         });
@@ -363,12 +378,23 @@ async fn write_one_sink_stream(
                 batches_written,
                 rows_written,
                 bytes_written,
+                done: false,
             });
         }
     }
 
     sink.commit_checkpoint(CheckpointCursor::new(name.clone()))
         .await?;
+
+    if let Some(tx) = &progress {
+        let _ = tx.send(ProgressEvent {
+            partition_id: name.clone(),
+            batches_written,
+            rows_written,
+            bytes_written,
+            done: true,
+        });
+    }
 
     Ok(PartitionStats {
         partition_id: name,
