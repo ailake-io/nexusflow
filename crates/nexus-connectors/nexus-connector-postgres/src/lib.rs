@@ -6,13 +6,19 @@
 //! `scripts/build-adbc-postgresql-driver.sh` (there is no crates.io
 //! distribution of the driver itself).
 
+#[cfg(feature = "cdc")]
+mod cdc;
 mod config;
 mod driver;
 mod introspect;
 mod sink;
 mod source;
 
+#[cfg(feature = "cdc")]
+pub use cdc::PostgresCdcSource;
 pub use config::PostgresConnectorConfig;
+#[cfg(feature = "cdc")]
+pub use config::{PostgresCdcConfig, PostgresCdcDataType, PostgresCdcFieldSpec};
 pub use driver::DRIVER_PATH_ENV;
 pub use introspect::{primary_key_bounds, table_schema, PkPartitionKind};
 pub use sink::PostgresSink;
@@ -22,4 +28,11 @@ nexus_core::submit_connector!(
     "postgres",
     nexus_core::ConnectorCapability::AdbcNative,
     PostgresConnectorConfig
+);
+
+#[cfg(feature = "cdc")]
+nexus_core::submit_connector!(
+    "postgres-cdc",
+    nexus_core::ConnectorCapability::Bridged,
+    PostgresCdcConfig
 );

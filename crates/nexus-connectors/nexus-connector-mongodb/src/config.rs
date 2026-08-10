@@ -60,3 +60,33 @@ pub enum MongoDataType {
 fn default_batch_size() -> usize {
     1000
 }
+
+/// Config for the native Change Streams CDC source (`"mongodb-cdc"`) — a
+/// separate connector name from `"mongodb"` rather than a mode flag on
+/// `MongoConnectorConfig`, so the existing batch connector's config shape
+/// never changes. Requires MongoDB running as a replica set (even a
+/// single-node one) — Change Streams don't work on a standalone server.
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct MongoCdcConfig {
+    pub uri: String,
+    pub database: String,
+    pub collection: String,
+    /// Same projection contract as the batch connector — a change event's
+    /// full document is projected onto these fields, see
+    /// `MongoConnectorConfig::fields`.
+    pub fields: Vec<MongoFieldSpec>,
+    /// Resume token from a previous run's last processed event (as returned
+    /// by `MongoCdcSource`'s checkpoint), so a restart picks up where it left
+    /// off instead of only seeing events from now on. Stored as the token's
+    /// extended-JSON form. `None` starts watching from the current moment —
+    /// same "static config field, not server-injected" resume model as
+    /// Kafka's `start_offsets` (ARCHITECTURE.md §7 doesn't cover this, but
+    /// `nexus-server` doesn't round-trip checkpoints into any source's
+    /// config today, streaming or batch).
+    #[serde(default)]
+    pub resume_token: Option<String>,
+    #[serde(default = "default_batch_size")]
+    pub batch_size: usize,
+    #[serde(default = "default_timeout_seconds")]
+    pub timeout_seconds: u64,
+}
