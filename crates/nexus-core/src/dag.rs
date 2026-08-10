@@ -501,6 +501,14 @@ fn validate_string_security(
     key: &str,
     allow_internal_hosts: bool,
 ) -> Result<(), NexusError> {
+    // file:// URIs bypass the absolute-path check below (they don't start
+    // with '/') and let local-path connectors read/write arbitrary files.
+    // Reject the scheme explicitly; plain relative paths remain valid.
+    if s.starts_with("file://") {
+        return Err(NexusError::Schema(format!(
+            "{context}[{index}] ({connector}): {key} must not use the file:// scheme"
+        )));
+    }
     // Absolute local path -> reject. URIs with schemes (postgres://,
     // http://, etc.) don't start with '/', so this only catches
     // filesystem paths. Exempt connectors whose config is local-path-based
@@ -884,6 +892,20 @@ mod tests {
             .validate_security()
             .expect_err("internal URL in array must be rejected");
         assert!(err.to_string().contains("internal host"));
+    }
+
+    #[test]
+    fn validate_security_rejects_file_scheme() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "csv", "config": {"uri": "file:///etc/passwd"}}],
+            "sinks": [{"connector": "postgres", "config": {}}]
+        }"#;
+        let spec = PipelineSpec::parse(json).unwrap();
+        let err = spec
+            .validate_security()
+            .expect_err("file:// scheme must be rejected");
+        assert!(err.to_string().contains("file:// scheme"));
     }
 
     #[test]
