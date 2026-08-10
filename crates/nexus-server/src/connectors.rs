@@ -1,3 +1,5 @@
+#[cfg(feature = "postgres-cdc")]
+use nexus_connector_postgres::{PostgresCdcConfig, PostgresCdcSource};
 use nexus_connector_postgres::{PostgresConnectorConfig, PostgresSink, PostgresSource};
 use nexus_connector_sqlite::{SqliteConnectorConfig, SqliteSink, SqliteSource};
 use nexus_core::{NodeSpec, PipelineSpec, Sink, Source};
@@ -19,7 +21,11 @@ use nexus_connector_lancedb::{LanceDbConnectorConfig, LanceDbSink};
 #[cfg(feature = "milvus")]
 use nexus_connector_milvus::{MilvusConnectorConfig, MilvusSink};
 #[cfg(feature = "mongodb")]
-use nexus_connector_mongodb::{MongoConnectorConfig, MongoSink, MongoSource};
+use nexus_connector_mongodb::{
+    MongoCdcConfig, MongoCdcSource, MongoConnectorConfig, MongoSink, MongoSource,
+};
+#[cfg(feature = "mysql-cdc")]
+use nexus_connector_mysql::{MySqlCdcConfig, MySqlCdcSource};
 #[cfg(feature = "odbc")]
 use nexus_connector_odbc::{OdbcConnectorConfig, OdbcSink, OdbcSource};
 #[cfg(feature = "parquet")]
@@ -92,6 +98,18 @@ pub fn validate_source_config(node: &NodeSpec) -> anyhow::Result<()> {
         "csv" => {
             let _: CsvConnectorConfig = serde_json::from_value(node.config.clone())?;
         }
+        #[cfg(feature = "postgres-cdc")]
+        "postgres-cdc" => {
+            let _: PostgresCdcConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "mongodb")]
+        "mongodb-cdc" => {
+            let _: MongoCdcConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "mysql-cdc")]
+        "mysql-cdc" => {
+            let _: MySqlCdcConfig = serde_json::from_value(node.config.clone())?;
+        }
         other => anyhow::bail!("unsupported source connector: {other:?}"),
     }
     Ok(())
@@ -155,6 +173,21 @@ pub async fn build_source(
         "csv" => {
             let cfg: CsvConnectorConfig = serde_json::from_value(node.config.clone())?;
             Box::new(CsvSource::connect(&cfg)?)
+        }
+        #[cfg(feature = "postgres-cdc")]
+        "postgres-cdc" => {
+            let cfg: PostgresCdcConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(PostgresCdcSource::connect(&cfg).await?)
+        }
+        #[cfg(feature = "mongodb")]
+        "mongodb-cdc" => {
+            let cfg: MongoCdcConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(MongoCdcSource::connect(&cfg).await?)
+        }
+        #[cfg(feature = "mysql-cdc")]
+        "mysql-cdc" => {
+            let cfg: MySqlCdcConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(MySqlCdcSource::connect(&cfg).await?)
         }
         other => anyhow::bail!("unsupported source connector: {other:?}"),
     };

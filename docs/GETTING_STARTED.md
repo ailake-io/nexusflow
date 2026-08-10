@@ -128,13 +128,38 @@ A feature Cargo `embeddings` (incluída em `connectors-all`) liga o crate `nexus
 |---|---|---|---|
 | `NEXUS_JWT_SECRET` | sim | — | Segredo pra assinar/validar JWT. Sem ela o processo não sobe. |
 | `NEXUS_ENCRYPTION_KEY` | sim | — | 64 caracteres hex (32 bytes) — chave AES-256-GCM que criptografa credenciais de conector em repouso. Gere com `openssl rand -hex 32`. |
-| `NEXUS_CHECKPOINT_DB` | não | `sqlite://nexusflow.db` | Onde ficam os checkpoints de pipeline (retomada por partição). |
-| `NEXUS_AUTH_DB` | não | `sqlite://nexusflow-auth.db` | Usuários e papéis (RBAC). |
-| `NEXUS_PIPELINES_DB` | não | `sqlite://nexusflow-pipelines.db` | Definições de pipeline e histórico de execuções. |
+| `NEXUS_CHECKPOINT_DB` | não | `sqlite://nexusflow.db` | Onde ficam os checkpoints de pipeline (retomada por partição). Aceita `postgres://`/`postgresql://` também — ver §4 abaixo. |
+| `NEXUS_AUTH_DB` | não | `sqlite://nexusflow-auth.db` | Usuários e papéis (RBAC). Aceita `postgres://`/`postgresql://` também. |
+| `NEXUS_PIPELINES_DB` | não | `sqlite://nexusflow-pipelines.db` | Definições de pipeline e histórico de execuções. Aceita `postgres://`/`postgresql://` também. |
 | `NEXUS_ADMIN_USERNAME` / `NEXUS_ADMIN_PASSWORD` | não | — | Se as duas estiverem setadas e a tabela de usuários estiver vazia, cria a conta Admin inicial (idempotente — não roda de novo depois). |
 | `NEXUS_SLACK_WEBHOOK_URL` | não | — | Sem ela, falhas de pipeline não disparam alerta no Slack. |
 | `NEXUS_OTLP_ENDPOINT` | não | — | Endpoint OTLP/HTTP pra exportar traces. Sem ela, traces ficam só como log JSON local; métricas Prometheus em `/metrics` funcionam de qualquer jeito. |
 | `ADBC_DRIVER_POSTGRESQL_PATH` / `ADBC_DRIVER_SQLITE_PATH` | sim (se usar postgres/sqlite) | — | Caminho pro `.so`/`.dylib` do driver ADBC — não existe distribuição via crates.io, tem que buildar com `scripts/build-adbc-*-driver.sh`. |
+
+### Metadados em Postgres (multi-réplica / k8s)
+
+Por padrão os 3 metadados acima (`NEXUS_CHECKPOINT_DB`/`NEXUS_AUTH_DB`/`NEXUS_PIPELINES_DB`) usam SQLite — suficiente pra rodar single-node (`ARCHITECTURE.md §6`). Apontando as três pra um Postgres em vez disso (`postgres://user:pass@host:5432/db`), o backend troca automaticamente pelo scheme da URL — sem flag nem env var extra:
+
+```bash
+export NEXUS_CHECKPOINT_DB=postgres://user:pass@host:5432/nexusflow
+export NEXUS_AUTH_DB=postgres://user:pass@host:5432/nexusflow
+export NEXUS_PIPELINES_DB=postgres://user:pass@host:5432/nexusflow
+```
+
+As três podem apontar pro mesmo banco Postgres (tabelas não colidem) ou bancos separados. Isso é o pré-requisito real pra rodar mais de uma réplica atrás do mesmo Service em k8s: SQLite não pode ser compartilhado com segurança entre réplicas (não use volume `ReadWriteMany` com ele — é receita de `database is locked`). Com Postgres, o scheduler de cron também coordena via `pg_try_advisory_lock` — só uma réplica dispara cada pipeline agendado por tick, mesmo com N réplicas lendo o mesmo Postgres (em SQLite essa coordenação não existe, mas também não faz sentido — só uma réplica é segura com SQLite de qualquer forma).
+
+**Migrando dados existentes de SQLite pra Postgres**: o binário `migrate-metadata` copia usuários, pipelines salvos, histórico de runs e checkpoints preservando os IDs originais (idempotente — rodar de novo só pula o que já foi migrado):
+
+```bash
+cargo run --release -p nexus-server --bin migrate-metadata --features postgres -- \
+  --auth-sqlite sqlite://nexusflow-auth.db --auth-postgres postgres://user:pass@host/db \
+  --pipelines-sqlite sqlite://nexusflow-pipelines.db --pipelines-postgres postgres://user:pass@host/db \
+  --checkpoint-sqlite sqlite://nexusflow.db --checkpoint-postgres postgres://user:pass@host/db
+```
+
+`spec_ciphertext` é copiado byte a byte, não re-criptografado — o servidor apontado pro Postgres migrado precisa rodar com o **mesmo** `NEXUS_ENCRYPTION_KEY` de antes, senão os specs migrados falham ao decriptar no primeiro load.
+
+Manifests k8s (Deployment/Service/PVC/HPA) prontos ainda não existem — essa seção resolve só o pré-requisito de storage/coordenação, não a implantação em si.
 
 ## 4. Primeiro acesso
 

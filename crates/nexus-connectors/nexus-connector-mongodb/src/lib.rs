@@ -3,12 +3,14 @@
 //! fast-path, so this is always `Bridged`. See ARCHITECTURE.md §2/§4.1 and
 //! IMPLEMENTATION_PLAN.md Marco 3.
 
+mod cdc;
 mod config;
 mod rows;
 mod sink;
 mod source;
 
-pub use config::{MongoConnectorConfig, MongoDataType, MongoFieldSpec};
+pub use cdc::MongoCdcSource;
+pub use config::{MongoCdcConfig, MongoConnectorConfig, MongoDataType, MongoFieldSpec};
 pub use sink::MongoSink;
 pub use source::MongoSource;
 
@@ -16,4 +18,10 @@ nexus_core::submit_connector!(
     "mongodb",
     nexus_core::ConnectorCapability::Bridged,
     MongoConnectorConfig
+);
+
+nexus_core::submit_connector!(
+    "mongodb-cdc",
+    nexus_core::ConnectorCapability::Bridged,
+    MongoCdcConfig
 );
