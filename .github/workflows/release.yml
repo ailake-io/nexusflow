@@ -53,6 +53,12 @@ permissions:
 jobs:
   build:
     strategy:
+      # arm64 stays blocked by the account billing issue independently of
+      # x86_64 (self-hosted, unaffected) — default fail-fast cancelled the
+      # working x86_64 leg the moment arm64's hosted runner failed to even
+      # start, confirmed live. The two legs are unrelated failure domains
+      # now, shouldn't take each other down.
+      fail-fast: false
       matrix:
         include:
           # x86_64 routed to the same self-hosted machine ci.yml's
