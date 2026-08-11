@@ -45,7 +45,11 @@ jobs:
             # to the same official release bucket rustup itself publishes from,
             # which serves both files correctly.
             Invoke-WebRequest -Uri https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe -OutFile rustup-init.exe
-            $expected = (Invoke-WebRequest -Uri https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe.sha256 -UseBasicParsing).Content.Split()[0]
+            # Served as `content-type: binary/octet-stream` (no charset) — Invoke-WebRequest
+            # hands back raw bytes here, not a string, so `.Content` needs an explicit decode
+            # before `.Split()` works.
+            $shaBytes = (Invoke-WebRequest -Uri https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe.sha256 -UseBasicParsing).Content
+            $expected = [System.Text.Encoding]::ASCII.GetString($shaBytes).Trim().Split()[0]
             $actual = (Get-FileHash -Algorithm SHA256 -Path rustup-init.exe).Hash
             if ($expected -ne $actual) {
               Write-Error "rustup-init checksum mismatch: expected $expected, got $actual"
