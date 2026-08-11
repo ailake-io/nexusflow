@@ -47,6 +47,6 @@ Community Edition sob **Apache-2.0**. Conectores enterprise são distribuídos s
 
 Rust (Edition 2021) · Apache Arrow / DataFusion · ADBC · Tokio · Axum · React Flow (frontend).
 
-> **Nota sobre validação de plataforma:** Linux (binário nativo, `.deb`, AppImage, rpm, Docker) é o único caminho validado de ponta a ponta neste sandbox. Windows (`.msi`/winget) e macOS (Homebrew/`.dmg`) têm specs em `packaging/`, mas ainda não foram testados em máquina real — contribuições ou relatórios de teste são bem-vindos.
+> **Nota sobre validação de plataforma:** Linux (binário nativo, `.deb`, AppImage, `.rpm`, Docker) é o único caminho validado de ponta a ponta em máquina real, e todos os 3 pacotes agora buildam automaticamente em CI a cada push/PR pra `main`. Windows (`.msi`) também já builda automaticamente em CI, mas ainda não foi instalado/testado numa máquina real por um humano — `winget` continua sem configurar. macOS (Homebrew/`.dmg`) tem specs em `packaging/` mas nem builda em CI nem foi testado em máquina real. Contribuições ou relatórios de teste são bem-vindos.
 
 Lista completa em [`CLAUDE.md` §2](./CLAUDE.md#%EF%B8%8F-2-tech-stack).
