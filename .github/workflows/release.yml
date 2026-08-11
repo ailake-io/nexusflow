@@ -30,19 +30,34 @@ name: Release
 #   runners hit the same billing block, and Mac isn't a current priority
 #   (ROADMAP.md's Pendências ativas item 5).
 #
-# Continuous-release model, not tag-triggered: `build` runs on every push
-# to `main` *and* every PR targeting it (pre-merge validation,
-# no publish side effects on a PR — see `docker-publish`/`publish`'s `if:`).
-# `publish` derives its GitHub Release tag/name directly from the workspace
-# version in Cargo.toml (currently v0.1.0) rather than requiring a separate
-# `git tag` push — every merge to `main` re-publishes that same version's
-# release (softprops/action-gh-release upserts: new assets replace old ones
-# on the existing tag rather than erroring) until someone bumps the
-# workspace version, at which point a new tag/release is created instead.
+# Continuous-release model, not tag-triggered: on `main`, this is the last
+# stage of a deliberate 3-stage chain — CI -> connectors-heavy -> Release —
+# so `build`/`docker-publish`/`publish` only run once both of those already
+# succeeded on that commit (see the `workflow_run` trigger below and each
+# job's `if:`). `build` also runs on every PR targeting `main` independently
+# of that chain, for pre-merge validation only — never `docker-publish`/
+# `publish` (no publish side effects on a PR). `publish` derives its GitHub
+# Release tag/name directly from the workspace version in Cargo.toml
+# (currently v0.1.0) rather than requiring a separate `git tag` push — every
+# successful run of the chain re-publishes that same version's release
+# (softprops/action-gh-release upserts: new assets replace old ones on the
+# existing tag rather than erroring) until someone bumps the workspace
+# version, at which point a new tag/release is created instead.
 
 on:
-  push:
+  # Step 3 of the CI -> connectors-heavy -> Release chain on main (see
+  # connectors-heavy.yml's matching workflow_run trigger for step 2) —
+  # `workflow_run` is the only way to sequence separate workflow files,
+  # there's no cross-file `needs:`. The job-level `if:`s below only let
+  # docker-publish/publish actually run when connectors-heavy's main-branch
+  # run succeeded.
+  workflow_run:
+    workflows: ["connectors-heavy"]
+    types: [completed]
     branches: [main]
+  # PR validation stays independent of the chain above — build/build-windows
+  # exercised pre-merge, never docker-publish/publish (no publish side
+  # effects on a PR).
   pull_request:
     branches: [main]
 
@@ -51,6 +66,7 @@ permissions:
 
 jobs:
   build:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     strategy:
       matrix:
         include:
@@ -87,6 +103,12 @@ jobs:
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # workflow_run's default ref/sha is the repo's default branch, not
+          # the commit connectors-heavy just validated on main — pin
+          # explicitly. github.sha already resolves correctly for
+          # pull_request (the PR's merge commit), so this is a no-op there.
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
         with:
@@ -176,7 +198,7 @@ jobs:
   # job definition (last present as of this commit's parent).
 
   docker-publish:
-    if: github.event_name == 'push'
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
     name: docker-publish
     needs: build
     runs-on: ubuntu-latest
@@ -193,6 +215,12 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # workflow_run's default ref/sha is the repo's default branch, not
+          # the commit connectors-heavy just validated on main — pin
+          # explicitly. github.sha already resolves correctly for
+          # pull_request (the PR's merge commit), so this is a no-op there.
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
       - name: Read version from Cargo.toml
         id: version
         run: |
@@ -242,7 +270,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   publish:
-    if: github.event_name == 'push'
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
     needs: [build, docker-publish]
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -250,6 +278,12 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # workflow_run's default ref/sha is the repo's default branch, not
+          # the commit connectors-heavy just validated on main — pin
+          # explicitly. github.sha already resolves correctly for
+          # pull_request (the PR's merge commit), so this is a no-op there.
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
       - name: Read version from Cargo.toml
         id: version
         run: |
