@@ -1,25 +1,24 @@
 name: Release
 
-# Builds nexusflow-linux-<arch>.tar.gz for x86_64+arm64 and publishes them
-# as GitHub Release assets — what scripts/install.sh downloads. Each
-# tarball is: the release binary (--features embed-ui,connectors-all —
-# every connector linked in, not just the two always-on ones, so
-# GET /connectors lists the full catalog out of the box) plus the two ADBC
-# driver libraries nexus-connector-postgres/-sqlite dlopen at runtime (no
-# crates.io distribution of those exists — see
-# nexus-connector-postgres/src/driver.rs, ARCHITECTURE.md §3).
-#
-# Both tarball builds are native (no cross-compilation): GitHub's own
-# ubuntu-24.04-arm hosted runner covers linux/arm64 natively — avoids
-# cross-compiling the ADBC C++ sources for a foreign arch/libc, which
-# scripts/build-adbc-*-driver.sh isn't set up for.
-#
-# Linux x86_64 additionally produces real native installers (.deb/.rpm/
+# Builds nexusflow-linux-x86_64.tar.gz and publishes it as a GitHub Release
+# asset — what scripts/install.sh downloads. The tarball is: the release
+# binary (--features embed-ui,connectors-all — every connector linked in,
+# not just the two always-on ones, so GET /connectors lists the full
+# catalog out of the box) plus the two ADBC driver libraries
+# nexus-connector-postgres/-sqlite dlopen at runtime (no crates.io
+# distribution of those exists — see nexus-connector-postgres/src/driver.rs,
+# ARCHITECTURE.md §3). Also produces real native installers (.deb/.rpm/
 # AppImage — scripts/package-{deb,rpm,appimage}.sh, staged from the same
 # release binary+ADBC build as the tarball).
 #
-# Windows and macOS are both out of scope for now (no installer, no CI
-# build in this workflow):
+# arm64, Windows, and macOS are all out of scope for now (no installer, no
+# CI build in this workflow):
+# - arm64: no self-hosted equivalent to fall back to (unlike x86_64 above),
+#   and the hosted ubuntu-24.04-arm runner is blocked by an account billing
+#   issue (Settings > Billing and plans) — confirmed hitting even plain
+#   ubuntu-latest/x86_64, not just macOS/Windows, before x86_64 got routed
+#   to self-hosted. Re-add once billing is resolved — see git history for
+#   the exact matrix entry.
 # - Windows: build-windows (cargo-wix + packaging/windows/main.wxs, on the
 #   same self-hosted machine connectors-heavy.yml uses) was here and did
 #   run, but cargo build --features connectors-all failed for real —
@@ -28,7 +27,7 @@ name: Release
 #   installed. Needs manual one-time setup on that host before re-adding
 #   (see git history for the removed job's full definition).
 # - macOS: no self-hosted macOS runner exists, the hosted macos-13/14
-#   runners hit an account billing block, and Mac isn't a current priority
+#   runners hit the same billing block, and Mac isn't a current priority
 #   (ROADMAP.md's Pendências ativas item 5).
 #
 # Continuous-release model, not tag-triggered: `build` runs on every push
@@ -53,36 +52,26 @@ permissions:
 jobs:
   build:
     strategy:
-      # arm64 stays blocked by the account billing issue independently of
-      # x86_64 (self-hosted, unaffected) — default fail-fast cancelled the
-      # working x86_64 leg the moment arm64's hosted runner failed to even
-      # start, confirmed live. The two legs are unrelated failure domains
-      # now, shouldn't take each other down.
-      fail-fast: false
       matrix:
         include:
           # x86_64 routed to the same self-hosted machine ci.yml's
           # test/connectors/docker-image jobs use — GitHub-hosted runners are
           # blocked account-wide by a billing issue (Settings > Billing and
           # plans), confirmed hitting even plain ubuntu-latest, not just
-          # macOS/Windows. arm64 has no self-hosted equivalent to fall back
-          # to, so it stays hosted and blocked until that's resolved.
+          # macOS/Windows.
           - os: linux
             arch: x86_64
             runner: [self-hosted, Linux]
             self_hosted: true
-          - os: linux
-            arch: arm64
-            runner: ubuntu-24.04-arm
-            self_hosted: false
-          # macOS dropped from this matrix for now — no self-hosted macOS
-          # runner exists (unlike Windows below), and the hosted macos-13/
-          # macos-14 runners are blocked by the same billing issue; their
-          # failure was also cancelling the Linux builds via the matrix's
-          # default fail-fast. Not in scope yet per project priority either
-          # way (ROADMAP.md's Pendências ativas item 5). Re-add once macOS
-          # actually becomes a priority and billing (or a self-hosted mac)
-          # is sorted out.
+          # arm64 (and macOS below) dropped from this matrix for now — no
+          # self-hosted equivalent to fall back to (unlike x86_64 above),
+          # and the hosted ubuntu-24.04-arm/macos-13/macos-14 runners are
+          # all blocked by the same billing issue; a failing leg here was
+          # also showing up as a red run every single time regardless of
+          # x86_64's own outcome (even with fail-fast: false, which only
+          # stops one leg's failure from *cancelling* another, not from
+          # still being reported). Re-add arm64 once billing is resolved —
+          # see git history for the exact matrix entry.
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     # The x86_64 leg shares ci.yml's own concurrency group — same physical
