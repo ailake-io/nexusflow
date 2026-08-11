@@ -79,6 +79,17 @@ jobs:
           # is sorted out.
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
+    # The x86_64 leg shares ci.yml's own concurrency group — same physical
+    # self-hosted machine, and that runner OOMs if 2 heavy cargo builds land
+    # on it at once (ci.yml's jobs are chained via `needs:` and already
+    # guard against overlapping with *themselves*, but a push to `main`
+    # fires this whole separate workflow in parallel with ci.yml unless
+    # both point at the same group — this is what closes that gap). arm64
+    # is hosted, no shared resource to serialize against, gets its own
+    # independent group so it's never blocked by the self-hosted queue.
+    concurrency:
+      group: ${{ matrix.self_hosted && 'ci-self-hosted-runner' || format('release-build-{0}-{1}', github.ref, matrix.arch) }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: dtolnay/rust-toolchain@stable
