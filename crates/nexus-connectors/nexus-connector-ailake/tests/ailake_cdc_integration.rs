@@ -2,15 +2,13 @@
 //! `list_files`/`list_equality_deletes` — no container, embedded
 //! `HadoopCatalog` + `LocalStore` in a temp directory.
 //!
-//! Only exercises `I`/`D` here, not `U`: `AilakeSink::upsert` (a plain
-//! batch with no `__opcode`) is a blind append today — it does not delete
-//! the row it's replacing first, unlike `DeltaSink`'s upsert. So two writes
-//! of the same primary key currently produce two physical rows, not an
-//! equality-delete + a fresh insert. `cdc.rs`'s "U" inference (a key that's
-//! both newly-inserted and newly-deleted in the same read window) is real
-//! and stays in place for when that's true — an explicit delete followed
-//! by a fresh insert of the same key across two separate writes — it's
-//! just not what a single "upsert" call produces from this sink today.
+//! Only exercises `I`/`D` here, not `U`: this source doesn't yet distinguish
+//! a genuine first-time insert from an update of a previously-live key (both
+//! are tagged `I`) — see `AilakeCdcConfig`'s doc comment for why. `upsert()`
+//! (`upsert_replaces_prior_row_instead_of_duplicating_it` in
+//! `ailake_integration.rs`) does have real delete-then-insert semantics now,
+//! it's this CDC source's opcode tagging that stops short of telling I/U
+//! apart.
 
 #![cfg(feature = "cdc")]
 

@@ -99,12 +99,31 @@ fn added_since<T>(old: &[T], new: Vec<T>, path_of: impl Fn(&T) -> &str) -> Vec<T
         .collect()
 }
 
-async fn deleted_keys_from(
+/// Primary keys named by `files`, each mapped to the *highest* sequence
+/// number among the delete files that name it (a key can be named by more
+/// than one delete file; Iceberg semantics only need the newest one, since
+/// masking a file requires beating its sequence number and a lower-sequence
+/// delete can never do that if a higher-sequence one already can't).
+///
+/// Callers use this alongside each candidate file's own
+/// `DataFileEntry::sequence_number` — see `read_batches` — to decide whether
+/// a given physical row is actually masked as of *now*, not just "named by
+/// some delete file at some point": `ailake-catalog`/`ailake-query` >=0.1.11
+/// only mask a data file when the delete's sequence number is strictly
+/// *greater* than the file's own (see that crate's CHANGELOG). Since
+/// `AilakeSink::upsert` emits its own equality-delete immediately before
+/// every append (real upsert semantics, including for brand-new keys that
+/// never had a prior row), a key showing up in both `added_files` and
+/// `added_deletes` within the same CDC window is the *common* case now, not
+/// an edge case — treating "named by any delete" as "currently masked"
+/// (the pre-0.1.11 behavior here) would mislabel a plain first-time insert
+/// as a deletion with nulled-out data.
+async fn deleted_key_sequences(
     store: &Arc<dyn Store>,
     files: &[EqualityDeleteFile],
     primary_key: &str,
-) -> Result<HashSet<String>, NexusError> {
-    let mut deleted = HashSet::new();
+) -> Result<std::collections::HashMap<String, i64>, NexusError> {
+    let mut deleted: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
     for file in files {
         let bytes = store
             .get(&file.path)
@@ -115,7 +134,10 @@ async fn deleted_keys_from(
         })?;
         for (col, val) in pairs {
             if col == primary_key {
-                deleted.insert(val);
+                deleted
+                    .entry(val)
+                    .and_modify(|seq| *seq = (*seq).max(file.sequence_number))
+                    .or_insert(file.sequence_number);
             }
         }
     }
@@ -123,10 +145,14 @@ async fn deleted_keys_from(
 }
 
 /// Appends `__opcode = "I"` to every row of `batch` — call sites have
-/// already excluded any row whose key is in `deleted_keys` (see
-/// `read_batches`; there's no ordering info available to tell whether such
-/// a row predates or postdates the delete, so the delete always wins
-/// rather than risking resurrecting one).
+/// already excluded any row actually masked by a higher-sequence delete
+/// (see `read_batches`'s use of `deleted_key_sequences`). A row whose key
+/// also appears in a lower-sequence delete (e.g. the delete `upsert()`
+/// commits immediately before its own append) survives and is tagged `I`
+/// here same as any other — this connector doesn't yet distinguish a
+/// genuine first-time insert from an update of a previously-live key
+/// (would require checking liveness as of the window's starting snapshot,
+/// not just diffing what changed since it); both are `I` for now.
 fn tag_insert(batch: &RecordBatch, target_schema: &SchemaRef) -> Result<RecordBatch, NexusError> {
     let mut columns = batch.columns().to_vec();
     columns.push(Arc::new(StringArray::from(vec!["I"; batch.num_rows()])) as _);
@@ -230,10 +256,14 @@ impl Source for AilakeCdcSource {
             added_since(&old_deletes, new_deletes, |f: &EqualityDeleteFile| {
                 f.path.as_str()
             });
-        let deleted_keys =
-            deleted_keys_from(&self.store, &added_deletes, &self.primary_key).await?;
+        let deleted_key_seqs =
+            deleted_key_sequences(&self.store, &added_deletes, &self.primary_key).await?;
+        // Tracks which deleted keys are actually superseded by a surviving
+        // row below — those must NOT also get a synthetic `delete_only_row`,
+        // or the same key would appear twice (once live, once as "D").
+        let mut superseded: HashSet<String> = HashSet::new();
 
-        let mut batches = Vec::with_capacity(added_files.len() + deleted_keys.len());
+        let mut batches = Vec::with_capacity(added_files.len() + deleted_key_seqs.len());
         for file in &added_files {
             let batch = with_timeout(self.timeout_seconds, "ailake-cdc read_file_batch", async {
                 read_file_batch(
@@ -245,10 +275,23 @@ impl Source for AilakeCdcSource {
                 .await
             })
             .await?;
-            // Exclude rows whose key was also deleted in this window — see
-            // `tag_insert`'s doc comment for why the delete always wins.
+            // A row is only actually masked by a delete with a *higher*
+            // sequence number than this file's own (see
+            // `deleted_key_sequences`'s doc comment) — a delete this file's
+            // own `upsert()` call committed just before it (lower sequence
+            // number) does not mask it.
             let pks = crate::rows::extract_pk_strings(&batch, &self.primary_key)?;
-            let keep: Vec<bool> = pks.iter().map(|pk| !deleted_keys.contains(pk)).collect();
+            let keep: Vec<bool> = pks
+                .iter()
+                .map(|pk| match deleted_key_seqs.get(pk) {
+                    Some(&del_seq) if del_seq > file.sequence_number => false,
+                    Some(_) => {
+                        superseded.insert(pk.clone());
+                        true
+                    }
+                    None => true,
+                })
+                .collect();
             if keep.iter().any(|k| *k) {
                 let mask = BooleanArray::from(keep);
                 let filtered = filter_record_batch(&batch, &mask)
@@ -259,8 +302,10 @@ impl Source for AilakeCdcSource {
             }
         }
 
-        for pk in &deleted_keys {
-            batches.push(delete_only_row(&self.schema, &self.primary_key, pk)?);
+        for pk in deleted_key_seqs.keys() {
+            if !superseded.contains(pk) {
+                batches.push(delete_only_row(&self.schema, &self.primary_key, pk)?);
+            }
         }
 
         Ok(Box::pin(stream::iter(batches.into_iter().map(Ok))))

@@ -14,11 +14,11 @@ default = []
 cdc = []
 
 [dependencies]
-ailake-catalog = "0.1.10"
-ailake-core = "0.1.10"
-ailake-file = "0.1.10"
-ailake-query = "0.1.10"
-ailake-store = "0.1.10"
+ailake-catalog = "0.1.11"
+ailake-core = "0.1.11"
+ailake-file = "0.1.11"
+ailake-query = "0.1.11"
+ailake-store = "0.1.11"
 arrow-array = "58.4.0"
 arrow-ipc = "58.4.0"
 arrow-schema = "58.4.0"

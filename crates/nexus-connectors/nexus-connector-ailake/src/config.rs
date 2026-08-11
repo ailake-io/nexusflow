@@ -42,22 +42,27 @@ fn default_timeout_seconds() -> u64 {
 /// Unlike `iceberg-cdc` (Insert-only — the plain `iceberg` crate has no
 /// committable delete action yet), `AilakeSink::delete` already commits
 /// real Iceberg-compatible equality-deletes, so this one emits `D` for a
-/// real delete, `U` when a key is both newly-inserted and newly-deleted in
-/// the same read window (an explicit delete followed by a fresh insert of
-/// the same key, across two separate writes), and `I` otherwise.
-/// `CatalogProvider::list_files`/`list_equality_deletes` both take an
-/// `Option<SnapshotId>` "as of" parameter — diffing the "as of
+/// real delete and `I` for a real insert/update — see `ailake-cdc`'s
+/// `deleted_key_sequences` doc comment for how it tells the two apart using
+/// `ailake-catalog`/`ailake-query` >=0.1.11's sequence-scoped equality
+/// deletes (a delete only masks a data file with a strictly lower sequence
+/// number than its own). `CatalogProvider::list_files`/`list_equality_deletes`
+/// both take an `Option<SnapshotId>` "as of" parameter — diffing the "as of
 /// `starting_snapshot_id`" list against the "as of current" list gives
 /// exactly the files/deletes added in between, without walking Avro
 /// manifests by hand (unlike `iceberg-cdc`, which had to, since the plain
 /// `iceberg` crate only exposes the low-level manifest/manifest-list
 /// types, not this "as-of" convenience).
 ///
-/// Note `AilakeSink::upsert` (a plain batch with no `__opcode`) is a blind
-/// append today — it does not delete the row it's replacing first, so two
-/// writes of the same key currently produce two physical rows (both `I`
-/// here), not the `U` pattern above. That's an `AilakeSink` limitation,
-/// not something this source can paper over.
+/// `AilakeSink::upsert` (a plain batch with no `__opcode`) now emits a real
+/// delete-then-insert per batch (two sequential commits — see
+/// `AilakeSink::upsert`'s own doc comment), giving true upsert semantics:
+/// a second write of the same key replaces the row instead of producing a
+/// duplicate. This source doesn't yet distinguish that replacement (an
+/// update of a previously-live key) from a genuine first-time insert —
+/// telling them apart needs checking whether the key was already live as
+/// of the window's *starting* snapshot, which this diff-based approach
+/// doesn't do — so both are tagged `I` for now.
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct AilakeCdcConfig {
     pub warehouse: String,

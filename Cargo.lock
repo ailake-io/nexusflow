@@ -114,9 +114,9 @@ dependencies = [
 
 [[package]]
 name = "ailake-catalog"
-version = "0.1.10"
+version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6448af25614f744f4c7a0534a2cb5c689f9e3a5d5f0d73c985a60ec68f6ec01c"
+checksum = "d0471ee3f245babc424f8dc11bdf5e2028adcc1def1cb46359dcc66574ce5a40"
 dependencies = [
  "ailake-core",
  "ailake-store",
@@ -139,9 +139,9 @@ dependencies = [
 
 [[package]]
 name = "ailake-core"
-version = "0.1.10"
+version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2a858145e7b1f622beda7e1c18f1231090a7448f428d882dbf35c78e5d35604"
+checksum = "2baf9182cc6f20d32866d01a05c5a7b5eda370d37dbded2bddd50665a3b1470a"
 dependencies = [
  "async-trait",
  "half",
@@ -153,9 +153,9 @@ dependencies = [
 
 [[package]]
 name = "ailake-file"
-version = "0.1.10"
+version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d36e3c1c95c99fed746e0dd3f664012e70e0dec298314269d3f6bc80d399c3b"
+checksum = "8bf139c539098e29a1aa93c0a017d44c42008812dee1d0a451736fdc7ef78051"
 dependencies = [
  "ailake-core",
  "ailake-fts",
@@ -170,9 +170,9 @@ dependencies = [
 
 [[package]]
 name = "ailake-fts"
-version = "0.1.10"
+version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "554df6544ced0272b5cfb337f055b6b7a76e6f01eed78ebacef0fb4b2848ba6e"
+checksum = "c20370a30661053d044df55ea8e99dc9ff3be5efe67b9b338e306adc5345c15a"
 dependencies = [
  "ailake-core",
  "arrow-array 52.2.0",
@@ -184,9 +184,9 @@ dependencies = [
 
 [[package]]
 name = "ailake-index"
-version = "0.1.10"
+version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b8d82e2e2f5fc770ae675c74ae64422b17b737535d307a7c41a7d3705ea86a2"
+checksum = "539c8ec6d1513ea4d99dd3646f59ef696c3133e2f0b58ccf077a5a8b68f3c844"
 dependencies = [
  "ailake-core",
  "ailake-vec",
@@ -204,9 +204,9 @@ dependencies = [
 
 [[package]]
 name = "ailake-parquet"
-version = "0.1.10"
+version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "346a06ba32942e9e392d9b471871515ea006593fa0a1c589d8c8a87acb956a12"
+checksum = "c8dbe5464212d2101ab526ebec5eb881e4b29eb01c0a1c5906d7509400dec25f"
 dependencies = [
  "ailake-core",
  "ailake-vec",
@@ -222,9 +222,9 @@ dependencies = [
 
 [[package]]
 name = "ailake-query"
-version = "0.1.10"
+version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e90303fb16eb196c53fd3877a9b35dafd6363cde8110635e299548997f103b3c"
+checksum = "8f7d8dc59464e930af446ccf18789912af173455288bef8a8fe0d99937cc3a4c"
 dependencies = [
  "ailake-catalog",
  "ailake-core",
@@ -252,9 +252,9 @@ dependencies = [
 
 [[package]]
 name = "ailake-store"
-version = "0.1.10"
+version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "424e78fd1f9e06dec66e2221cba17a565a714b859d1998d256f09cbc14898402"
+checksum = "23be57bfde2858d40370bcb78edccb7c38479cb4f5517a5b1159f20c210db777"
 dependencies = [
  "ailake-core",
  "async-trait",
@@ -267,9 +267,9 @@ dependencies = [
 
 [[package]]
 name = "ailake-vec"
-version = "0.1.10"
+version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "84c88a5aa5e53de19e1df6d356ea87e4c90b81dabb3bad975d3009b4a57e355e"
+checksum = "49cd5c201fd338489d8fbf6ae2132d4c0bfd8ca3529c000e1fae1b25e813da60"
 dependencies = [
  "ailake-core",
  "half",
