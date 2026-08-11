@@ -17,4 +17,13 @@ pub struct QdrantConnectorConfig {
     pub embedding_column: String,
     /// Vector size — must match the embedding column's actual length.
     pub dimension: usize,
+    /// Timeout in seconds for each gRPC call to Qdrant — the client library
+    /// exposes no connection/request timeout of its own, so a stalled
+    /// connection would otherwise block the pipeline indefinitely (C15).
+    #[serde(default = "default_timeout_seconds")]
+    pub timeout_seconds: u64,
+}
+
+fn default_timeout_seconds() -> u64 {
+    30
 }

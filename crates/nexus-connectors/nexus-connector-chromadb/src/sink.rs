@@ -20,7 +20,10 @@ pub struct ChromaSink {
 
 impl ChromaSink {
     pub async fn connect(cfg: &ChromaConnectorConfig) -> Result<Self, NexusError> {
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(cfg.timeout_seconds))
+            .build()
+            .map_err(|e| NexusError::Connector(format!("chroma client build failed: {e}")))?;
         let host = cfg.host.trim_end_matches('/');
         let get_url = format!(
             "{host}/api/v2/tenants/{}/databases/{}/collections/{}",

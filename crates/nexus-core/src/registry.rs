@@ -24,6 +24,12 @@ pub struct ConnectorDescriptor {
     pub capability: ConnectorCapability,
     #[serde(skip)]
     pub config_schema: fn() -> serde_json::Value,
+    /// `None` for every OSS connector. `Some(slug)` marks a connector as
+    /// enterprise-gated — a paid feature per `LICENSING.md §2` /
+    /// `docs/ENTERPRISE_LICENSING.md`, unlocked only by an installed license
+    /// whose `connectors` list contains `slug`. Set via
+    /// `submit_enterprise_connector!` instead of `submit_connector!`.
+    pub requires_license: Option<&'static str>,
 }
 
 inventory::collect!(ConnectorDescriptor);
@@ -40,6 +46,30 @@ macro_rules! submit_connector {
                     $crate::registry::serde_json::to_value(&schema)
                         .expect("JSON schema always serializes")
                 },
+                requires_license: None,
+            }
+        }
+    };
+}
+
+/// Same as `submit_connector!`, but marks the connector as enterprise-gated
+/// under its own name (see `ConnectorDescriptor::requires_license`). No
+/// crate calls this yet — enterprise connectors live in a private repo that
+/// doesn't exist in this workspace (`LICENSING.md §2`); this macro is the
+/// registration primitive that repo will use.
+#[macro_export]
+macro_rules! submit_enterprise_connector {
+    ($name:expr, $capability:expr, $config:ty) => {
+        $crate::registry::inventory::submit! {
+            $crate::registry::ConnectorDescriptor {
+                name: $name,
+                capability: $capability,
+                config_schema: || {
+                    let schema = $crate::registry::schemars::schema_for!($config);
+                    $crate::registry::serde_json::to_value(&schema)
+                        .expect("JSON schema always serializes")
+                },
+                requires_license: Some($name),
             }
         }
     };
@@ -84,5 +114,23 @@ mod tests {
     #[test]
     fn missing_connector_is_none() {
         assert!(ConnectorRegistry::find("does-not-exist").is_none());
+    }
+
+    submit_enterprise_connector!(
+        "test-enterprise-connector",
+        ConnectorCapability::Bridged,
+        TestConnectorConfig
+    );
+
+    #[test]
+    fn enterprise_connector_is_tagged_with_its_own_slug() {
+        let found = ConnectorRegistry::find("test-enterprise-connector").expect("registered");
+        assert_eq!(found.requires_license, Some("test-enterprise-connector"));
+    }
+
+    #[test]
+    fn oss_connector_requires_no_license() {
+        let found = ConnectorRegistry::find("test-connector").expect("registered");
+        assert_eq!(found.requires_license, None);
     }
 }

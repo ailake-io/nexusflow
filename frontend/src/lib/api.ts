@@ -15,6 +15,9 @@ export interface JsonSchemaNode {
   required?: string[]
   enum?: string[]
   items?: JsonSchemaNode
+  /** Present (and `properties` absent) for a free-form `HashMap<String, V>`
+   *  Rust field — schemars emits this instead of a fixed `properties` set. */
+  additionalProperties?: JsonSchemaNode | boolean
   $ref?: string
   description?: string
   default?: unknown
@@ -41,6 +44,18 @@ export class ApiError extends Error {
   }
 }
 
+let unauthorizedHandler: (() => void) | null = null
+
+/**
+ * Registers a callback invoked when an API call receives 401 Unauthorized.
+ * The auth layer uses this to clear the stored token and return to the login
+ * screen. Ignored for the login endpoint itself (wrong credentials must not
+ * log the user out).
+ */
+export function onUnauthorized(handler: () => void) {
+  unauthorizedHandler = handler
+}
+
 async function request<T>(path: string, init: RequestInit = {}, token?: string): Promise<T> {
   const headers = new Headers(init.headers)
   if (token) headers.set('authorization', `Bearer ${token}`)
@@ -49,6 +64,9 @@ async function request<T>(path: string, init: RequestInit = {}, token?: string):
   const response = await fetch(path, { ...init, headers })
   if (!response.ok) {
     const body = await response.json().catch(() => null)
+    if (response.status === 401 && !path.endsWith('/auth/login') && unauthorizedHandler) {
+      unauthorizedHandler()
+    }
     throw new ApiError(response.status, body?.error ?? response.statusText)
   }
   if (response.status === 204) return undefined as T
@@ -74,6 +92,36 @@ export interface ProgressEvent {
   rows_written: number
   bytes_written: number
 }
+
+/** Matches nexus-server::hardware_stats::HardwareStats. Sent every ~2s on
+ * the same WebSocket as ProgressEvent, wrapped as `{ hardware_stats: ... }`
+ * so the client can tell the two message shapes apart (CLAUDE.md §6). */
+export interface HardwareStats {
+  cpu_percent: number
+  memory_used_bytes: number
+  memory_total_bytes: number
+}
+
+/** Matches nexus-server::progress::RunLogEvent. Persisted server-side (`GET
+ * .../logs`, see `listRunLogs`) as well as broadcast live over the same
+ * WebSocket as ProgressEvent — the `type: 'log'` tag is only added on the
+ * wire for this variant, distinguishing it from the untagged ProgressEvent/
+ * hardware_stats shapes below (nexus-server/src/progress.rs's doc comment
+ * explains why those two stayed untagged). */
+export interface RunLogEvent {
+  type: 'log'
+  ts: string
+  level: 'info' | 'warn' | 'error'
+  message: string
+}
+
+/** A frame on the progress WebSocket is a bare ProgressEvent, a `{
+ * hardware_stats }` wrapper, or a tagged `RunLogEvent` — discriminated by
+ * `type === 'log'` first, then the presence of the `hardware_stats` key. */
+export type ProgressSocketMessage =
+  | ProgressEvent
+  | { hardware_stats: HardwareStats }
+  | RunLogEvent
 
 /** Matches nexus-server::dbt::DbtOutcome::summary_json's shape (Marco 10
  * task #26) — `undefined` when the pipeline has no `dbt` step, or the
@@ -123,6 +171,26 @@ export function runPipeline(
 
 export function listRuns(token: string, pipelineId: string): Promise<RunRecord[]> {
   return request<RunRecord[]>(`/pipelines/${encodeURIComponent(pipelineId)}/runs`, {}, token)
+}
+
+/**
+ * Replays a run's execution log after the fact — works whether the run is
+ * still going, already finished, or (the reason this exists) was triggered
+ * by the scheduler and nobody had the live WebSocket open for it. Same
+ * `RunLogEvent` shape as the live `type: 'log'` WebSocket frames, just
+ * without the `type` tag (the endpoint returns a plain array, no
+ * discrimination needed).
+ */
+export function listRunLogs(
+  token: string,
+  pipelineId: string,
+  runId: number,
+): Promise<Omit<RunLogEvent, 'type'>[]> {
+  return request<Omit<RunLogEvent, 'type'>[]>(
+    `/pipelines/${encodeURIComponent(pipelineId)}/runs/${runId}/logs`,
+    {},
+    token,
+  )
 }
 
 /**
@@ -211,4 +279,63 @@ export function deletePipeline(token: string, pipelineId: string): Promise<void>
     { method: 'DELETE' },
     token,
   )
+}
+
+/** Matches nexus-server's Role enum (`#[serde(rename_all = "lowercase")]`) —
+ * `Read < Execute < Write < Admin`, ARCHITECTURE.md §10. */
+export type Role = 'read' | 'execute' | 'write' | 'admin'
+
+/** Matches nexus-server::UserResponse, as returned by the /users routes
+ * (all Admin-only). */
+export interface UserRecord {
+  username: string
+  role: Role
+}
+
+export function listUsers(token: string): Promise<UserRecord[]> {
+  return request<UserRecord[]>('/users', {}, token)
+}
+
+export function createUser(
+  token: string,
+  username: string,
+  password: string,
+  role: Role,
+): Promise<UserRecord> {
+  return request<UserRecord>(
+    '/users',
+    { method: 'POST', body: JSON.stringify({ username, password, role }) },
+    token,
+  )
+}
+
+export function updateUserRole(token: string, username: string, role: Role): Promise<UserRecord> {
+  return request<UserRecord>(
+    `/users/${encodeURIComponent(username)}/role`,
+    { method: 'PUT', body: JSON.stringify({ role }) },
+    token,
+  )
+}
+
+export function deleteUser(token: string, username: string): Promise<void> {
+  return request<void>(`/users/${encodeURIComponent(username)}`, { method: 'DELETE' }, token)
+}
+
+/** Decodes the `role` claim from a JWT's payload without verifying the
+ * signature — the server is the actual enforcement point on every request
+ * this is only used to decide whether to show the Admin nav item at all.
+ * Returns `null` on any malformed/unexpected token instead of throwing, so
+ * a UI-only decode issue never blocks login. */
+export function decodeRoleFromToken(token: string): Role | null {
+  try {
+    const payload = token.split('.')[1]
+    const json = atob(payload.replace(/-/g, '+').replace(/_/g, '/'))
+    const claims = JSON.parse(json) as { role?: unknown }
+    const role = claims.role
+    return role === 'read' || role === 'execute' || role === 'write' || role === 'admin'
+      ? role
+      : null
+  } catch {
+    return null
+  }
 }

@@ -9,7 +9,8 @@ use milvus::client::Client;
 use milvus::data::FieldColumn;
 use milvus::schema::FieldSchema;
 use nexus_core::{
-    project_column, split_by_opcode, validate_identifier, CheckpointCursor, NexusError, Sink,
+    project_column, split_by_opcode, validate_identifier, with_timeout, CheckpointCursor,
+    NexusError, Sink,
 };
 
 /// AI Lakehouse sink #4. The `milvus-sdk-rust` crate (0.1.0) has no native
@@ -23,6 +24,7 @@ pub struct MilvusSink {
     collection: String,
     primary_key: String,
     embedding_column: String,
+    timeout_seconds: u64,
 }
 
 impl MilvusSink {
@@ -31,14 +33,18 @@ impl MilvusSink {
         // so validate it before splicing it into any expression string.
         validate_identifier(&cfg.primary_key)?;
 
-        let client = Client::new(cfg.url.clone())
-            .await
-            .map_err(|e| NexusError::Connector(format!("milvus connect failed: {e}")))?;
+        let client = with_timeout(cfg.timeout_seconds, "milvus connect", async {
+            Client::new(cfg.url.clone())
+                .await
+                .map_err(|e| NexusError::Connector(format!("milvus connect failed: {e}")))
+        })
+        .await?;
         Ok(Self {
             client,
             collection: cfg.collection.clone(),
             primary_key: cfg.primary_key.clone(),
             embedding_column: cfg.embedding_column.clone(),
+            timeout_seconds: cfg.timeout_seconds,
         })
     }
 
@@ -147,11 +153,16 @@ impl MilvusSink {
         // primary keys first so re-inserting doesn't create duplicates.
         self.delete(batch).await?;
 
-        let milvus_collection = self
-            .client
-            .get_collection(&self.collection)
-            .await
-            .map_err(|e| NexusError::Connector(format!("milvus get_collection failed: {e}")))?;
+        let milvus_collection =
+            with_timeout(self.timeout_seconds, "milvus get_collection", async {
+                self.client
+                    .get_collection(&self.collection)
+                    .await
+                    .map_err(|e| {
+                        NexusError::Connector(format!("milvus get_collection failed: {e}"))
+                    })
+            })
+            .await?;
         let field_columns = batch
             .schema()
             .fields()
@@ -177,10 +188,13 @@ impl MilvusSink {
         // already tracks a per-collection session timestamp from `insert`'s
         // result and uses it as the query guarantee timestamp, so writes are
         // visible to reads through the same `Collection` handle without it.
-        milvus_collection
-            .insert(field_columns, None)
-            .await
-            .map_err(|e| NexusError::Connector(format!("milvus insert failed: {e}")))?;
+        with_timeout(self.timeout_seconds, "milvus insert", async {
+            milvus_collection
+                .insert(field_columns, None)
+                .await
+                .map_err(|e| NexusError::Connector(format!("milvus insert failed: {e}")))
+        })
+        .await?;
         Ok(())
     }
 
@@ -205,15 +219,23 @@ impl MilvusSink {
             .join(", ");
         let expr = format!("{} in [{id_list}]", self.primary_key);
 
-        let milvus_collection = self
-            .client
-            .get_collection(&self.collection)
-            .await
-            .map_err(|e| NexusError::Connector(format!("milvus get_collection failed: {e}")))?;
-        milvus_collection
-            .delete(&expr, None)
-            .await
-            .map_err(|e| NexusError::Connector(format!("milvus delete failed: {e}")))?;
+        let milvus_collection =
+            with_timeout(self.timeout_seconds, "milvus get_collection", async {
+                self.client
+                    .get_collection(&self.collection)
+                    .await
+                    .map_err(|e| {
+                        NexusError::Connector(format!("milvus get_collection failed: {e}"))
+                    })
+            })
+            .await?;
+        with_timeout(self.timeout_seconds, "milvus delete", async {
+            milvus_collection
+                .delete(&expr, None)
+                .await
+                .map_err(|e| NexusError::Connector(format!("milvus delete failed: {e}")))
+        })
+        .await?;
         Ok(())
     }
 }

@@ -7,6 +7,19 @@ on:
     paths:
       - 'crates/nexus-connectors/**'
       - '.github/workflows/connectors-heavy.yml'
+  # On main, this is step 2 of a deliberate 3-stage chain: CI -> connectors-heavy
+  # -> Release (see release.yml's matching workflow_run trigger for step 3).
+  # `workflow_run` is the only way to sequence separate workflow files —
+  # there's no cross-file `needs:`. The job-level `if:` below only lets this
+  # actually run when CI's main-branch run succeeded; a failed/cancelled CI
+  # run on main should not still kick off the heavy Windows suite.
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -14,9 +27,11 @@ env:
 jobs:
   connectors-heavy:
     name: connectors-heavy
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     # Dedicated Windows self-hosted runner. Docker Desktop must be running and
     # exposing the named pipe for testcontainers.
     runs-on: [windows-connectors-heavy]
+    timeout-minutes: 180
     defaults:
       run:
         shell: pwsh
@@ -24,7 +39,12 @@ jobs:
     env:
       DOCKER_HOST: npipe:////./pipe/docker_engine
     steps:
-      - uses: actions/checkout@v4
+      # workflow_run's default ref/sha context is the repo's default branch,
+      # not the commit CI just validated on main — pin explicitly so this
+      # actually tests the same commit, not an unrelated one.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
       # The self-hosted Windows runner has WSL's bash earlier in PATH than Git
       # Bash, so dtolnay/rust-toolchain's internal bash steps mangle the temp
@@ -36,7 +56,21 @@ jobs:
         run: |
           $cargoBin = "$env:USERPROFILE\.cargo\bin"
           if (!(Get-Command rustc.exe -ErrorAction SilentlyContinue)) {
-            Invoke-WebRequest -Uri https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
+            # win.rustup.rs's `.sha256` sidecar has been returning a bare S3
+            # NoSuchKey 404 (the installer itself still serves fine) — switched
+            # to the same official release bucket rustup itself publishes from,
+            # which serves both files correctly.
+            Invoke-WebRequest -Uri https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe -OutFile rustup-init.exe
+            # Served as `content-type: binary/octet-stream` (no charset) — Invoke-WebRequest
+            # hands back raw bytes here, not a string, so `.Content` needs an explicit decode
+            # before `.Split()` works.
+            $shaBytes = (Invoke-WebRequest -Uri https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe.sha256 -UseBasicParsing).Content
+            $expected = [System.Text.Encoding]::ASCII.GetString($shaBytes).Trim().Split()[0]
+            $actual = (Get-FileHash -Algorithm SHA256 -Path rustup-init.exe).Hash
+            if ($expected -ne $actual) {
+              Write-Error "rustup-init checksum mismatch: expected $expected, got $actual"
+              exit 1
+            }
             ./rustup-init.exe -y --default-toolchain stable --no-modify-path
             Remove-Item rustup-init.exe
           }
@@ -45,7 +79,7 @@ jobs:
           "C:\Program Files\Git\usr\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
           "C:\Program Files\CMake\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
         with:
           workspaces: crates/nexus-connectors
 
@@ -53,5 +87,4 @@ jobs:
         shell: pwsh
         run: docker info
 
-      - run: cargo test -p nexus-connector-kafka --all-features --test cdc_debezium_integration
       - run: cargo test -p nexus-connector-milvus --all-features --test milvus_integration

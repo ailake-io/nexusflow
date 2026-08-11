@@ -1,7 +1,9 @@
 use crate::crypto::SecretCipher;
+use crate::db::{rewrite_placeholders, MetadataPool};
 use nexus_core::PipelineSpec;
 use serde::Serialize;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use std::borrow::Cow;
 use std::str::FromStr;
 
 #[derive(Debug, thiserror::Error)]
@@ -66,60 +68,117 @@ pub struct RunRecord {
 
 /// Persists `PipelineSpec`s (encrypted at rest, see `crypto.rs`) and the
 /// run history recorded each time one executes — ARCHITECTURE.md §7 /
-/// IMPLEMENTATION_PLAN.md Marco 7 task #8.
+/// IMPLEMENTATION_PLAN.md Marco 7 task #8. Backed by SQLite (default) or
+/// Postgres (multi-replica deployments, see `db::MetadataPool`).
 #[derive(Clone)]
 pub struct PipelineStore {
-    pool: SqlitePool,
+    pool: MetadataPool,
 }
 
 impl PipelineStore {
+    /// Exposes the backend for `scheduler.rs`'s leader election
+    /// (`pg_try_advisory_lock` needs a real `PgPool`, see `db::MetadataPool`).
+    pub fn pool(&self) -> &MetadataPool {
+        &self.pool
+    }
+
+    /// Every query below is written with `?` placeholders as a `&'static`
+    /// literal; `q()` rewrites them to `$1, $2, ...` when running against
+    /// Postgres (see `db::rewrite_placeholders`). Queries that embed
+    /// SQLite's `datetime('now')` function call inline (not just as a
+    /// column default) need a genuinely different literal per backend —
+    /// those don't go through `q()`, see the two-arm `match` at each such
+    /// call site instead.
+    fn q(&self, sql: &'static str) -> Cow<'static, str> {
+        rewrite_placeholders(sql, self.pool.is_postgres())
+    }
+
     pub async fn connect(database_url: &str) -> anyhow::Result<Self> {
-        let options = SqliteConnectOptions::from_str(database_url)?.create_if_missing(true);
+        let is_postgres =
+            database_url.starts_with("postgres://") || database_url.starts_with("postgresql://");
         // An in-memory SQLite database is private to its connection: with an
         // unbounded pool, two concurrent acquires would open *separate*
         // empty databases. Runs now execute in background supervisor tasks
         // (POST /run returns 202 immediately), so a supervisor and a
         // concurrent request can hold connections at the same time — cap
         // the pool at one connection so every user of the store shares the
-        // same in-memory database.
-        let pool = if database_url.contains(":memory:") {
-            SqlitePoolOptions::new()
+        // same in-memory database. Postgres has no such concept (no
+        // `:memory:`), so this branch is SQLite-only.
+        let pool = if !is_postgres && database_url.contains(":memory:") {
+            let options = SqliteConnectOptions::from_str(database_url)?.create_if_missing(true);
+            let sqlite_pool = SqlitePoolOptions::new()
                 .max_connections(1)
                 .connect_with(options)
-                .await?
+                .await?;
+            MetadataPool::Sqlite(sqlite_pool)
         } else {
-            SqlitePool::connect_with(options).await?
+            MetadataPool::connect(database_url).await?
         };
 
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS pipelines (
-                id TEXT PRIMARY KEY,
-                spec_ciphertext TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-            )
-            "#,
-        )
-        .execute(&pool)
-        .await?;
+        match &pool {
+            MetadataPool::Sqlite(p) => {
+                sqlx::query(
+                    r#"
+                    CREATE TABLE IF NOT EXISTS pipelines (
+                        id TEXT PRIMARY KEY,
+                        spec_ciphertext TEXT NOT NULL,
+                        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                    )
+                    "#,
+                )
+                .execute(p)
+                .await?;
 
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS pipeline_runs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                pipeline_id TEXT NOT NULL,
-                started_at TEXT NOT NULL DEFAULT (datetime('now')),
-                finished_at TEXT,
-                status TEXT NOT NULL,
-                error TEXT,
-                stats_json TEXT,
-                dbt_summary_json TEXT
-            )
-            "#,
-        )
-        .execute(&pool)
-        .await?;
+                sqlx::query(
+                    r#"
+                    CREATE TABLE IF NOT EXISTS pipeline_runs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        pipeline_id TEXT NOT NULL,
+                        started_at TEXT NOT NULL DEFAULT (datetime('now')),
+                        finished_at TEXT,
+                        status TEXT NOT NULL,
+                        error TEXT,
+                        stats_json TEXT,
+                        dbt_summary_json TEXT
+                    )
+                    "#,
+                )
+                .execute(p)
+                .await?;
+            }
+            MetadataPool::Postgres(p) => {
+                sqlx::query(
+                    r#"
+                    CREATE TABLE IF NOT EXISTS pipelines (
+                        id TEXT PRIMARY KEY,
+                        spec_ciphertext TEXT NOT NULL,
+                        created_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')),
+                        updated_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
+                    )
+                    "#,
+                )
+                .execute(p)
+                .await?;
+
+                sqlx::query(
+                    r#"
+                    CREATE TABLE IF NOT EXISTS pipeline_runs (
+                        id BIGSERIAL PRIMARY KEY,
+                        pipeline_id TEXT NOT NULL,
+                        started_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')),
+                        finished_at TEXT,
+                        status TEXT NOT NULL,
+                        error TEXT,
+                        stats_json TEXT,
+                        dbt_summary_json TEXT
+                    )
+                    "#,
+                )
+                .execute(p)
+                .await?;
+            }
+        }
 
         Ok(Self { pool })
     }
@@ -129,20 +188,43 @@ impl PipelineStore {
         spec: &PipelineSpec,
         cipher: &SecretCipher,
     ) -> Result<(), PipelineStoreError> {
-        let existing: Option<(String,)> = sqlx::query_as("SELECT id FROM pipelines WHERE id = ?")
-            .bind(&spec.pipeline_id)
-            .fetch_optional(&self.pool)
-            .await?;
+        let sql = self.q("SELECT id FROM pipelines WHERE id = ?");
+        let existing: Option<(String,)> = match &self.pool {
+            MetadataPool::Sqlite(p) => {
+                sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .bind(&spec.pipeline_id)
+                    .fetch_optional(p)
+                    .await?
+            }
+            MetadataPool::Postgres(p) => {
+                sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .bind(&spec.pipeline_id)
+                    .fetch_optional(p)
+                    .await?
+            }
+        };
         if existing.is_some() {
             return Err(PipelineStoreError::AlreadyExists(spec.pipeline_id.clone()));
         }
 
         let ciphertext = encode_spec(spec, cipher);
-        sqlx::query("INSERT INTO pipelines (id, spec_ciphertext) VALUES (?, ?)")
-            .bind(&spec.pipeline_id)
-            .bind(&ciphertext)
-            .execute(&self.pool)
-            .await?;
+        let sql = self.q("INSERT INTO pipelines (id, spec_ciphertext) VALUES (?, ?)");
+        match &self.pool {
+            MetadataPool::Sqlite(p) => {
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .bind(&spec.pipeline_id)
+                    .bind(&ciphertext)
+                    .execute(p)
+                    .await?;
+            }
+            MetadataPool::Postgres(p) => {
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .bind(&spec.pipeline_id)
+                    .bind(&ciphertext)
+                    .execute(p)
+                    .await?;
+            }
+        }
         Ok(())
     }
 
@@ -153,25 +235,49 @@ impl PipelineStore {
         cipher: &SecretCipher,
     ) -> Result<(), PipelineStoreError> {
         let ciphertext = encode_spec(spec, cipher);
-        let result = sqlx::query(
-            "UPDATE pipelines SET spec_ciphertext = ?, updated_at = datetime('now') WHERE id = ?",
-        )
-        .bind(&ciphertext)
-        .bind(id)
-        .execute(&self.pool)
-        .await?;
-        if result.rows_affected() == 0 {
+        let rows_affected = match &self.pool {
+            MetadataPool::Sqlite(p) => {
+                sqlx::query(sqlx::AssertSqlSafe(self.q(
+                    "UPDATE pipelines SET spec_ciphertext = ?, updated_at = datetime('now') WHERE id = ?",
+                )))
+                .bind(&ciphertext)
+                .bind(id)
+                .execute(p)
+                .await?
+                .rows_affected()
+            }
+            MetadataPool::Postgres(p) => {
+                sqlx::query(sqlx::AssertSqlSafe(self.q(
+                    "UPDATE pipelines SET spec_ciphertext = ?, updated_at = (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')) WHERE id = ?",
+                )))
+                .bind(&ciphertext)
+                .bind(id)
+                .execute(p)
+                .await?
+                .rows_affected()
+            }
+        };
+        if rows_affected == 0 {
             return Err(PipelineStoreError::NotFound(id.to_string()));
         }
         Ok(())
     }
 
     pub async fn delete(&self, id: &str) -> Result<(), PipelineStoreError> {
-        let result = sqlx::query("DELETE FROM pipelines WHERE id = ?")
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
-        if result.rows_affected() == 0 {
+        let sql = self.q("DELETE FROM pipelines WHERE id = ?");
+        let rows_affected = match &self.pool {
+            MetadataPool::Sqlite(p) => sqlx::query(sqlx::AssertSqlSafe(sql))
+                .bind(id)
+                .execute(p)
+                .await?
+                .rows_affected(),
+            MetadataPool::Postgres(p) => sqlx::query(sqlx::AssertSqlSafe(sql))
+                .bind(id)
+                .execute(p)
+                .await?
+                .rows_affected(),
+        };
+        if rows_affected == 0 {
             return Err(PipelineStoreError::NotFound(id.to_string()));
         }
         Ok(())
@@ -182,16 +288,27 @@ impl PipelineStore {
         id: &str,
         cipher: &SecretCipher,
     ) -> Result<PipelineSummary, PipelineStoreError> {
-        let row: Option<SummaryRow> = sqlx::query_as(
+        let sql = self.q(
             "SELECT p.spec_ciphertext, p.created_at, p.updated_at, r.status, r.started_at \
              FROM pipelines p LEFT JOIN pipeline_runs r ON r.id = ( \
                  SELECT id FROM pipeline_runs WHERE pipeline_id = p.id \
                  ORDER BY started_at DESC LIMIT 1 \
              ) WHERE p.id = ?",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?;
+        );
+        let row: Option<SummaryRow> = match &self.pool {
+            MetadataPool::Sqlite(p) => {
+                sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .bind(id)
+                    .fetch_optional(p)
+                    .await?
+            }
+            MetadataPool::Postgres(p) => {
+                sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .bind(id)
+                    .fetch_optional(p)
+                    .await?
+            }
+        };
         let (ciphertext, created_at, updated_at, last_run_status, last_run_at) =
             row.ok_or_else(|| PipelineStoreError::NotFound(id.to_string()))?;
         let spec = decode_spec(&ciphertext, cipher)?;
@@ -213,11 +330,21 @@ impl PipelineStore {
         id: &str,
         cipher: &SecretCipher,
     ) -> Result<PipelineSpec, PipelineStoreError> {
-        let row: Option<(String,)> =
-            sqlx::query_as("SELECT spec_ciphertext FROM pipelines WHERE id = ?")
-                .bind(id)
-                .fetch_optional(&self.pool)
-                .await?;
+        let sql = self.q("SELECT spec_ciphertext FROM pipelines WHERE id = ?");
+        let row: Option<(String,)> = match &self.pool {
+            MetadataPool::Sqlite(p) => {
+                sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .bind(id)
+                    .fetch_optional(p)
+                    .await?
+            }
+            MetadataPool::Postgres(p) => {
+                sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .bind(id)
+                    .fetch_optional(p)
+                    .await?
+            }
+        };
         let (ciphertext,) = row.ok_or_else(|| PipelineStoreError::NotFound(id.to_string()))?;
         decode_spec(&ciphertext, cipher)
     }
@@ -228,17 +355,29 @@ impl PipelineStore {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<PipelineSummary>, PipelineStoreError> {
-        let rows: Vec<SummaryRow> = sqlx::query_as(
+        let sql = self.q(
             "SELECT p.spec_ciphertext, p.created_at, p.updated_at, r.status, r.started_at \
              FROM pipelines p LEFT JOIN pipeline_runs r ON r.id = ( \
                  SELECT id FROM pipeline_runs WHERE pipeline_id = p.id \
                  ORDER BY started_at DESC LIMIT 1 \
              ) ORDER BY p.created_at LIMIT ? OFFSET ?",
-        )
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&self.pool)
-        .await?;
+        );
+        let rows: Vec<SummaryRow> = match &self.pool {
+            MetadataPool::Sqlite(p) => {
+                sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .bind(limit)
+                    .bind(offset)
+                    .fetch_all(p)
+                    .await?
+            }
+            MetadataPool::Postgres(p) => {
+                sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .bind(limit)
+                    .bind(offset)
+                    .fetch_all(p)
+                    .await?
+            }
+        };
         rows.into_iter()
             .map(
                 |(ciphertext, created_at, updated_at, last_run_status, last_run_at)| {
@@ -257,13 +396,30 @@ impl PipelineStore {
 
     /// Called right before a pipeline starts executing — returns the new
     /// run's id, to be closed out via `finish_run_success`/`finish_run_failure`.
+    /// SQLite exposes the id via `last_insert_rowid()`; Postgres has no such
+    /// call, so that branch uses `INSERT ... RETURNING id` instead.
     pub async fn start_run(&self, pipeline_id: &str) -> Result<i64, PipelineStoreError> {
-        let result =
-            sqlx::query("INSERT INTO pipeline_runs (pipeline_id, status) VALUES (?, 'running')")
-                .bind(pipeline_id)
-                .execute(&self.pool)
-                .await?;
-        Ok(result.last_insert_rowid())
+        match &self.pool {
+            MetadataPool::Sqlite(p) => {
+                let sql =
+                    self.q("INSERT INTO pipeline_runs (pipeline_id, status) VALUES (?, 'running')");
+                let result = sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .bind(pipeline_id)
+                    .execute(p)
+                    .await?;
+                Ok(result.last_insert_rowid())
+            }
+            MetadataPool::Postgres(p) => {
+                let sql = self.q(
+                    "INSERT INTO pipeline_runs (pipeline_id, status) VALUES (?, 'running') RETURNING id",
+                );
+                let id: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+                    .bind(pipeline_id)
+                    .fetch_one(p)
+                    .await?;
+                Ok(id)
+            }
+        }
     }
 
     pub async fn finish_run_success(
@@ -278,15 +434,30 @@ impl PipelineStore {
             .map(serde_json::to_string)
             .transpose()
             .map_err(|e| PipelineStoreError::Corrupt(e.to_string()))?;
-        sqlx::query(
-            "UPDATE pipeline_runs SET finished_at = datetime('now'), status = 'success', \
-             stats_json = ?, dbt_summary_json = ? WHERE id = ?",
-        )
-        .bind(&stats_json)
-        .bind(&dbt_summary_json)
-        .bind(run_id)
-        .execute(&self.pool)
-        .await?;
+        match &self.pool {
+            MetadataPool::Sqlite(p) => {
+                sqlx::query(sqlx::AssertSqlSafe(self.q(
+                    "UPDATE pipeline_runs SET finished_at = datetime('now'), status = 'success', \
+                     stats_json = ?, dbt_summary_json = ? WHERE id = ?",
+                )))
+                .bind(&stats_json)
+                .bind(&dbt_summary_json)
+                .bind(run_id)
+                .execute(p)
+                .await?;
+            }
+            MetadataPool::Postgres(p) => {
+                sqlx::query(sqlx::AssertSqlSafe(self.q(
+                    "UPDATE pipeline_runs SET finished_at = (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')), status = 'success', \
+                     stats_json = ?, dbt_summary_json = ? WHERE id = ?",
+                )))
+                .bind(&stats_json)
+                .bind(&dbt_summary_json)
+                .bind(run_id)
+                .execute(p)
+                .await?;
+            }
+        }
         Ok(())
     }
 
@@ -295,14 +466,28 @@ impl PipelineStore {
         run_id: i64,
         error: &str,
     ) -> Result<(), PipelineStoreError> {
-        sqlx::query(
-            "UPDATE pipeline_runs SET finished_at = datetime('now'), status = 'failed', \
-             error = ? WHERE id = ?",
-        )
-        .bind(error)
-        .bind(run_id)
-        .execute(&self.pool)
-        .await?;
+        match &self.pool {
+            MetadataPool::Sqlite(p) => {
+                sqlx::query(sqlx::AssertSqlSafe(self.q(
+                    "UPDATE pipeline_runs SET finished_at = datetime('now'), status = 'failed', \
+                     error = ? WHERE id = ?",
+                )))
+                .bind(error)
+                .bind(run_id)
+                .execute(p)
+                .await?;
+            }
+            MetadataPool::Postgres(p) => {
+                sqlx::query(sqlx::AssertSqlSafe(self.q(
+                    "UPDATE pipeline_runs SET finished_at = (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')), status = 'failed', \
+                     error = ? WHERE id = ?",
+                )))
+                .bind(error)
+                .bind(run_id)
+                .execute(p)
+                .await?;
+            }
+        }
         Ok(())
     }
 
@@ -313,13 +498,27 @@ impl PipelineStore {
     /// scheduler skip that pipeline forever (it never overlaps a run with
     /// itself). Returns how many rows were reaped.
     pub async fn fail_interrupted_runs(&self) -> Result<u64, PipelineStoreError> {
-        let result = sqlx::query(
-            "UPDATE pipeline_runs SET finished_at = datetime('now'), status = 'failed', \
-             error = 'server process ended before this run completed' WHERE status = 'running'",
-        )
-        .execute(&self.pool)
-        .await?;
-        Ok(result.rows_affected())
+        let rows_affected = match &self.pool {
+            MetadataPool::Sqlite(p) => {
+                sqlx::query(
+                    "UPDATE pipeline_runs SET finished_at = datetime('now'), status = 'failed', \
+                     error = 'server process ended before this run completed' WHERE status = 'running'",
+                )
+                .execute(p)
+                .await?
+                .rows_affected()
+            }
+            MetadataPool::Postgres(p) => {
+                sqlx::query(
+                    "UPDATE pipeline_runs SET finished_at = (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')), status = 'failed', \
+                     error = 'server process ended before this run completed' WHERE status = 'running'",
+                )
+                .execute(p)
+                .await?
+                .rows_affected()
+            }
+        };
+        Ok(rows_affected)
     }
 
     pub async fn list_runs(
@@ -338,16 +537,29 @@ impl PipelineStore {
             Option<String>,
             Option<String>,
         );
-        let rows: Vec<RunRow> = sqlx::query_as(
+        let sql = self.q(
             "SELECT id, pipeline_id, started_at, finished_at, status, error, stats_json, \
                  dbt_summary_json FROM pipeline_runs WHERE pipeline_id = ? \
                  ORDER BY started_at DESC LIMIT ? OFFSET ?",
-        )
-        .bind(pipeline_id)
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&self.pool)
-        .await?;
+        );
+        let rows: Vec<RunRow> = match &self.pool {
+            MetadataPool::Sqlite(p) => {
+                sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .bind(pipeline_id)
+                    .bind(limit)
+                    .bind(offset)
+                    .fetch_all(p)
+                    .await?
+            }
+            MetadataPool::Postgres(p) => {
+                sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .bind(pipeline_id)
+                    .bind(limit)
+                    .bind(offset)
+                    .fetch_all(p)
+                    .await?
+            }
+        };
 
         rows.into_iter()
             .map(
@@ -455,6 +667,7 @@ mod tests {
             channel_capacity: 100,
             partitions: 1,
             dbt: None,
+            post_dbt_sinks: Vec::new(),
             schedule: None,
         }
     }
@@ -507,10 +720,13 @@ mod tests {
         let cipher = cipher();
         store.create(&sample_spec("p1"), &cipher).await.unwrap();
 
+        let MetadataPool::Sqlite(pool) = &store.pool else {
+            unreachable!("this test always connects via sqlite::memory:")
+        };
         let (raw,): (String,) =
             sqlx::query_as("SELECT spec_ciphertext FROM pipelines WHERE id = ?")
                 .bind("p1")
-                .fetch_one(&store.pool)
+                .fetch_one(pool)
                 .await
                 .unwrap();
         assert!(!raw.contains("postgres://user:pw@host/db"));
@@ -663,5 +879,72 @@ mod tests {
 
         assert_eq!(store.list_runs("p1", 100, 0).await.unwrap().len(), 1);
         assert_eq!(store.list_runs("p2", 100, 0).await.unwrap().len(), 1);
+    }
+
+    /// Proves the Postgres branch — most notably `start_run`'s `INSERT ...
+    /// RETURNING id` path (SQLite instead uses `last_insert_rowid()`) — is
+    /// behaviorally identical to the SQLite path already covered above.
+    #[tokio::test]
+    async fn postgres_backend_supports_full_lifecycle() {
+        use testcontainers_modules::postgres;
+        use testcontainers_modules::testcontainers::runners::AsyncRunner;
+
+        let container = postgres::Postgres::default().start().await.unwrap();
+        let host = container.get_host().await.unwrap();
+        let port = container.get_host_port_ipv4(5432).await.unwrap();
+        let url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
+
+        let store = PipelineStore::connect(&url).await.unwrap();
+        assert!(matches!(store.pool, MetadataPool::Postgres(_)));
+        let cipher = cipher();
+
+        store.create(&sample_spec("p1"), &cipher).await.unwrap();
+        assert!(matches!(
+            store.create(&sample_spec("p1"), &cipher).await,
+            Err(PipelineStoreError::AlreadyExists(_))
+        ));
+
+        let summary = store.get_summary("p1", &cipher).await.unwrap();
+        assert_eq!(summary.sources[0].connector, "postgres");
+
+        let mut updated = sample_spec("p1");
+        updated.sinks[0].connector = "postgres".to_string();
+        store.update("p1", &updated, &cipher).await.unwrap();
+        assert_eq!(
+            store.get_summary("p1", &cipher).await.unwrap().sinks[0].connector,
+            "postgres"
+        );
+
+        // `start_run` twice — RETURNING must hand back two distinct,
+        // increasing ids just like SQLite's last_insert_rowid() would.
+        let run_id_1 = store.start_run("p1").await.unwrap();
+        let run_id_2 = store.start_run("p1").await.unwrap();
+        assert!(run_id_2 > run_id_1);
+
+        let stats = vec![nexus_core::PartitionStats {
+            partition_id: "p0".to_string(),
+            batches_written: 1,
+            rows_written: 42,
+        }];
+        store
+            .finish_run_success(run_id_1, &stats, None)
+            .await
+            .unwrap();
+        store.finish_run_failure(run_id_2, "boom").await.unwrap();
+
+        let runs = store.list_runs("p1", 100, 0).await.unwrap();
+        assert_eq!(runs.len(), 2);
+        let success = runs.iter().find(|r| r.id == run_id_1).unwrap();
+        assert_eq!(success.status, "success");
+        assert_eq!(success.stats.as_ref().unwrap()[0]["rows_written"], 42);
+        let failed = runs.iter().find(|r| r.id == run_id_2).unwrap();
+        assert_eq!(failed.status, "failed");
+        assert_eq!(failed.error.as_deref(), Some("boom"));
+
+        store.delete("p1").await.unwrap();
+        assert!(matches!(
+            store.get_summary("p1", &cipher).await,
+            Err(PipelineStoreError::NotFound(_))
+        ));
     }
 }

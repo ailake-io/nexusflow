@@ -1,13 +1,23 @@
+#[cfg(feature = "postgres-cdc")]
+use nexus_connector_postgres::{PostgresCdcConfig, PostgresCdcSource};
 use nexus_connector_postgres::{PostgresConnectorConfig, PostgresSink, PostgresSource};
 use nexus_connector_sqlite::{SqliteConnectorConfig, SqliteSink, SqliteSource};
 use nexus_core::{NodeSpec, PipelineSpec, Sink, Source};
 
+#[cfg(feature = "ailake-cdc")]
+use nexus_connector_ailake::{AilakeCdcConfig, AilakeCdcSource};
 #[cfg(feature = "ailake")]
 use nexus_connector_ailake::{AilakeConnectorConfig, AilakeSink, AilakeSource};
 #[cfg(feature = "chromadb")]
 use nexus_connector_chromadb::{ChromaConnectorConfig, ChromaSink};
+#[cfg(feature = "csv")]
+use nexus_connector_csv::{CsvConnectorConfig, CsvSink, CsvSource};
+#[cfg(feature = "deltalake-cdc")]
+use nexus_connector_deltalake::{DeltaCdcConfig, DeltaCdcSource};
 #[cfg(feature = "deltalake")]
 use nexus_connector_deltalake::{DeltaConnectorConfig, DeltaSink, DeltaSource};
+#[cfg(feature = "iceberg-cdc")]
+use nexus_connector_iceberg::{IcebergCdcConfig, IcebergCdcSource};
 #[cfg(feature = "iceberg")]
 use nexus_connector_iceberg::{IcebergConnectorConfig, IcebergSink, IcebergSource};
 #[cfg(feature = "kafka")]
@@ -17,7 +27,11 @@ use nexus_connector_lancedb::{LanceDbConnectorConfig, LanceDbSink};
 #[cfg(feature = "milvus")]
 use nexus_connector_milvus::{MilvusConnectorConfig, MilvusSink};
 #[cfg(feature = "mongodb")]
-use nexus_connector_mongodb::{MongoConnectorConfig, MongoSink, MongoSource};
+use nexus_connector_mongodb::{
+    MongoCdcConfig, MongoCdcSource, MongoConnectorConfig, MongoSink, MongoSource,
+};
+#[cfg(feature = "mysql-cdc")]
+use nexus_connector_mysql::{MySqlCdcConfig, MySqlCdcSource};
 #[cfg(feature = "odbc")]
 use nexus_connector_odbc::{OdbcConnectorConfig, OdbcSink, OdbcSource};
 #[cfg(feature = "parquet")]
@@ -29,7 +43,7 @@ use nexus_connector_pinecone::{PineconeConnectorConfig, PineconeSink};
 #[cfg(feature = "qdrant")]
 use nexus_connector_qdrant::{QdrantConnectorConfig, QdrantSink};
 #[cfg(feature = "rest")]
-use nexus_connector_rest::{RestConnectorConfig, RestSource};
+use nexus_connector_rest::{RestConnectorConfig, RestSource, WebhookSink, WebhookSinkConfig};
 
 /// The only place that knows which connector names exist and how to build
 /// them — `nexus-core`/`PipelineEngine` never hardcode a connector list, see
@@ -86,6 +100,34 @@ pub fn validate_source_config(node: &NodeSpec) -> anyhow::Result<()> {
         "ailake" => {
             let _: AilakeConnectorConfig = serde_json::from_value(node.config.clone())?;
         }
+        #[cfg(feature = "csv")]
+        "csv" => {
+            let _: CsvConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "postgres-cdc")]
+        "postgres-cdc" => {
+            let _: PostgresCdcConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "mongodb")]
+        "mongodb-cdc" => {
+            let _: MongoCdcConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "mysql-cdc")]
+        "mysql-cdc" => {
+            let _: MySqlCdcConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "deltalake-cdc")]
+        "deltalake-cdc" => {
+            let _: DeltaCdcConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "iceberg-cdc")]
+        "iceberg-cdc" => {
+            let _: IcebergCdcConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "ailake-cdc")]
+        "ailake-cdc" => {
+            let _: AilakeCdcConfig = serde_json::from_value(node.config.clone())?;
+        }
         other => anyhow::bail!("unsupported source connector: {other:?}"),
     }
     Ok(())
@@ -95,15 +137,15 @@ pub async fn build_source(
     node: &NodeSpec,
     index: usize,
 ) -> anyhow::Result<(String, Box<dyn Source>)> {
-    let name = node.resolved_name(index, "source");
+    let name = node.resolved_name(index, "source")?;
     let source: Box<dyn Source> = match node.connector.as_str() {
         "postgres" => {
             let cfg: PostgresConnectorConfig = serde_json::from_value(node.config.clone())?;
-            Box::new(PostgresSource::connect(&cfg, None)?)
+            Box::new(PostgresSource::connect(&cfg, None).await?)
         }
         "sqlite" => {
             let cfg: SqliteConnectorConfig = serde_json::from_value(node.config.clone())?;
-            Box::new(SqliteSource::connect(&cfg)?)
+            Box::new(SqliteSource::connect(&cfg).await?)
         }
         #[cfg(feature = "mongodb")]
         "mongodb" => {
@@ -144,6 +186,41 @@ pub async fn build_source(
         "ailake" => {
             let cfg: AilakeConnectorConfig = serde_json::from_value(node.config.clone())?;
             Box::new(AilakeSource::connect(&cfg).await?)
+        }
+        #[cfg(feature = "csv")]
+        "csv" => {
+            let cfg: CsvConnectorConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(CsvSource::connect(&cfg)?)
+        }
+        #[cfg(feature = "postgres-cdc")]
+        "postgres-cdc" => {
+            let cfg: PostgresCdcConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(PostgresCdcSource::connect(&cfg).await?)
+        }
+        #[cfg(feature = "mongodb")]
+        "mongodb-cdc" => {
+            let cfg: MongoCdcConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(MongoCdcSource::connect(&cfg).await?)
+        }
+        #[cfg(feature = "mysql-cdc")]
+        "mysql-cdc" => {
+            let cfg: MySqlCdcConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(MySqlCdcSource::connect(&cfg).await?)
+        }
+        #[cfg(feature = "deltalake-cdc")]
+        "deltalake-cdc" => {
+            let cfg: DeltaCdcConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(DeltaCdcSource::connect(&cfg).await?)
+        }
+        #[cfg(feature = "iceberg-cdc")]
+        "iceberg-cdc" => {
+            let cfg: IcebergCdcConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(IcebergCdcSource::connect(&cfg).await?)
+        }
+        #[cfg(feature = "ailake-cdc")]
+        "ailake-cdc" => {
+            let cfg: AilakeCdcConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(AilakeCdcSource::connect(&cfg).await?)
         }
         other => anyhow::bail!("unsupported source connector: {other:?}"),
     };
@@ -192,6 +269,10 @@ pub fn validate_sink_config(node: &NodeSpec) -> anyhow::Result<()> {
         "chromadb" => {
             let _: ChromaConnectorConfig = serde_json::from_value(node.config.clone())?;
         }
+        #[cfg(feature = "rest")]
+        "webhook" => {
+            let _: WebhookSinkConfig = serde_json::from_value(node.config.clone())?;
+        }
         #[cfg(feature = "deltalake")]
         "deltalake" => {
             let _: DeltaConnectorConfig = serde_json::from_value(node.config.clone())?;
@@ -207,6 +288,10 @@ pub fn validate_sink_config(node: &NodeSpec) -> anyhow::Result<()> {
         #[cfg(feature = "ailake")]
         "ailake" => {
             let _: AilakeConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "csv")]
+        "csv" => {
+            let _: CsvConnectorConfig = serde_json::from_value(node.config.clone())?;
         }
         other => anyhow::bail!("unsupported sink connector: {other:?}"),
     }
@@ -225,6 +310,16 @@ pub fn validate_pipeline_configs(spec: &PipelineSpec) -> anyhow::Result<()> {
         validate_sink_config(node)
             .map_err(|e| anyhow::anyhow!("sink[{i}] ({}): {e}", node.connector))?;
     }
+    if let Some(dbt) = &spec.dbt {
+        if let Some(output) = &dbt.output {
+            validate_source_config(output)
+                .map_err(|e| anyhow::anyhow!("dbt.output ({}): {e}", output.connector))?;
+        }
+    }
+    for (i, node) in spec.post_dbt_sinks.iter().enumerate() {
+        validate_sink_config(node)
+            .map_err(|e| anyhow::anyhow!("post_dbt_sinks[{i}] ({}): {e}", node.connector))?;
+    }
     Ok(())
 }
 
@@ -233,15 +328,15 @@ pub async fn build_sink(
     index: usize,
     columns: &[String],
 ) -> anyhow::Result<(String, Box<dyn Sink>)> {
-    let name = node.resolved_name(index, "sink");
+    let name = node.resolved_name(index, "sink")?;
     let sink: Box<dyn Sink> = match node.connector.as_str() {
         "postgres" => {
             let cfg: PostgresConnectorConfig = serde_json::from_value(node.config.clone())?;
-            Box::new(PostgresSink::connect(&cfg, columns)?)
+            Box::new(PostgresSink::connect(&cfg, columns).await?)
         }
         "sqlite" => {
             let cfg: SqliteConnectorConfig = serde_json::from_value(node.config.clone())?;
-            Box::new(SqliteSink::connect(&cfg, columns)?)
+            Box::new(SqliteSink::connect(&cfg, columns).await?)
         }
         #[cfg(feature = "mongodb")]
         "mongodb" => {
@@ -283,6 +378,11 @@ pub async fn build_sink(
             let cfg: ChromaConnectorConfig = serde_json::from_value(node.config.clone())?;
             Box::new(ChromaSink::connect(&cfg).await?)
         }
+        #[cfg(feature = "rest")]
+        "webhook" => {
+            let cfg: WebhookSinkConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(WebhookSink::connect(&cfg)?)
+        }
         #[cfg(feature = "deltalake")]
         "deltalake" => {
             let cfg: DeltaConnectorConfig = serde_json::from_value(node.config.clone())?;
@@ -302,6 +402,11 @@ pub async fn build_sink(
         "ailake" => {
             let cfg: AilakeConnectorConfig = serde_json::from_value(node.config.clone())?;
             Box::new(AilakeSink::connect(&cfg)?)
+        }
+        #[cfg(feature = "csv")]
+        "csv" => {
+            let cfg: CsvConnectorConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(CsvSink::connect(&cfg)?)
         }
         other => anyhow::bail!("unsupported sink connector: {other:?}"),
     };

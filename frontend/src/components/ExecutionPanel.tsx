@@ -1,100 +1,157 @@
-import type { DbtRunSummary } from '@/lib/api'
+import { useState } from 'react'
+import { useI18n } from '@/lib/i18n'
+import type { DbtRunSummary, HardwareStats, RunLogEvent } from '@/lib/api'
 import type { ExecutionStatus, PartitionProgress } from '@/hooks/useRunProgress'
+import { StatusBadge } from '@/components/ui/status-badge'
+import { LogTerminal } from '@/components/LogTerminal'
+import { AlertCircle, Terminal, Database, Clock, Cpu, ChevronDown, ChevronUp } from 'lucide-react'
 
 interface ExecutionPanelProps {
   status: ExecutionStatus
   runId: number | null
   partitions: Record<string, PartitionProgress>
+  hardwareStats: HardwareStats | null
   error: string | null
   dbtSummary: DbtRunSummary | null
+  logs: RunLogEvent[]
 }
 
-const STATUS_LABEL: Record<ExecutionStatus, string> = {
-  idle: 'Idle',
-  starting: 'Starting…',
-  running: 'Running',
-  success: 'Success',
-  failed: 'Failed',
-}
-
-const STATUS_CLASS: Record<ExecutionStatus, string> = {
-  idle: 'text-muted-foreground',
-  starting: 'text-muted-foreground',
-  running: 'text-primary',
-  success: 'text-emerald-600 dark:text-emerald-400',
-  failed: 'text-destructive',
-}
-
-/** Live execution panel (Marco 8 task #16) — consumes the progress
- * WebSocket from Marco 7 (task #9): rows/s and MB/s per partition/sink,
- * computed client-side from the cumulative counters each event carries. */
 export function ExecutionPanel({
   status,
   runId,
   partitions,
+  hardwareStats,
   error,
   dbtSummary,
+  logs,
 }: ExecutionPanelProps) {
+  const { t } = useI18n()
+  const [showLogs, setShowLogs] = useState(false)
   if (status === 'idle') return null
 
   const rows = Object.values(partitions)
 
+  const statusConfig: Record<ExecutionStatus, { label: string; variant: 'idle' | 'running' | 'success' | 'failed' }> = {
+    idle: { label: t('status.scheduled'), variant: 'idle' },
+    starting: { label: t('status.running') + '…', variant: 'running' },
+    running: { label: t('status.running'), variant: 'running' },
+    success: { label: t('status.success'), variant: 'success' },
+    failed: { label: t('status.failed'), variant: 'failed' },
+  }
+
+  const config = statusConfig[status]
+
   return (
-    <div className="border-t bg-card p-3">
-      <div className="mb-2 flex items-center gap-2 text-sm">
-        <span className={`font-medium ${STATUS_CLASS[status]}`}>{STATUS_LABEL[status]}</span>
-        {runId !== null && <span className="text-muted-foreground">run #{runId}</span>}
+    <div className="border-t border-white/10 bg-card p-4 animate-slide-in-up">
+      <div className="mb-3 flex flex-wrap items-center gap-3">
+        <StatusBadge variant={config.variant} pulse={status === 'running' || status === 'starting'}>
+          {config.label}
+        </StatusBadge>
+        {runId !== null && (
+          <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Terminal className="h-3.5 w-3.5" />
+            {t('execution.run', { id: runId })}
+          </span>
+        )}
+        {hardwareStats && (
+          <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Cpu className="h-3.5 w-3.5" />
+            {t('execution.cpu')} {hardwareStats.cpu_percent.toFixed(0)}% ·{' '}
+            {t('execution.memory')}{' '}
+            {(hardwareStats.memory_used_bytes / 1_000_000_000).toFixed(1)}/
+            {(hardwareStats.memory_total_bytes / 1_000_000_000).toFixed(1)} GB
+          </span>
+        )}
+        <button
+          type="button"
+          onClick={() => setShowLogs((v) => !v)}
+          className="ml-auto inline-flex items-center gap-1 rounded-md border border-white/10 px-2 py-1 text-xs text-muted-foreground hover:bg-white/5"
+        >
+          <Terminal className="h-3.5 w-3.5" />
+          {t('execution.logs.toggle')}
+          {showLogs ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+        </button>
       </div>
-      {rows.length > 0 && (
-        <table className="w-full text-xs">
-          <thead>
-            <tr className="text-left text-muted-foreground">
-              <th className="pr-4 font-normal">Partition</th>
-              <th className="pr-4 font-normal">Rows</th>
-              <th className="pr-4 font-normal">Rows/s</th>
-              <th className="pr-4 font-normal">MB</th>
-              <th className="font-normal">MB/s</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((p) => (
-              <tr key={p.partition_id}>
-                <td className="pr-4">{p.partition_id}</td>
-                <td className="pr-4">{p.rows_written.toLocaleString()}</td>
-                <td className="pr-4">{p.rowsPerSecond.toFixed(0)}</td>
-                <td className="pr-4">{(p.bytes_written / 1_000_000).toFixed(2)}</td>
-                <td>{p.mbPerSecond.toFixed(2)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+
+      {showLogs && (
+        <div className="mb-3">
+          <LogTerminal logs={logs} />
+        </div>
       )}
+
+      {rows.length > 0 && (
+        <div className="overflow-hidden rounded-lg border border-white/10">
+          <table className="w-full text-xs">
+            <thead className="bg-muted/50 text-left uppercase tracking-wider text-muted-foreground">
+              <tr>
+                <th className="px-3 py-2 font-medium">{t('execution.partition')}</th>
+                <th className="px-3 py-2 font-medium">{t('execution.rows')}</th>
+                <th className="px-3 py-2 font-medium">{t('execution.rowsPerSecond')}</th>
+                <th className="px-3 py-2 font-medium">{t('execution.mb')}</th>
+                <th className="px-3 py-2 font-medium">{t('execution.mbPerSecond')}</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/5">
+              {rows.map((p) => (
+                <tr key={p.partition_id} className="hover:bg-white/[0.02]">
+                  <td className="px-3 py-2 font-mono text-foreground">{p.partition_id}</td>
+                  <td className="px-3 py-2">{p.rows_written.toLocaleString()}</td>
+                  <td className="px-3 py-2">{p.rowsPerSecond.toFixed(0)}</td>
+                  <td className="px-3 py-2">{(p.bytes_written / 1_000_000).toFixed(2)}</td>
+                  <td className="px-3 py-2">{p.mbPerSecond.toFixed(2)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       {dbtSummary && (
-        <div className="mt-3 border-t pt-2 text-xs">
-          <div className="mb-1 font-medium text-muted-foreground">
-            dbt {dbtSummary.command}
+        <div className="mt-3 rounded-lg border border-white/10 bg-white/[0.02] p-3">
+          <div className="mb-2 flex items-center gap-2 text-xs font-medium text-foreground">
+            <Database className="h-3.5 w-3.5 text-emerald-400" />
+            {t('execution.dbtCommand', { command: dbtSummary.command })}
           </div>
-          <div className="flex flex-wrap gap-x-4 gap-y-1">
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
             <span>
-              models: {dbtSummary.models_succeeded}/{dbtSummary.models_total}
+              {t('execution.models', {
+                succeeded: dbtSummary.models_succeeded,
+                total: dbtSummary.models_total,
+              })}
               {dbtSummary.models_failed > 0 && (
-                <span className="text-destructive"> ({dbtSummary.models_failed} failed)</span>
+                <span className="text-red-400">
+                  {t('execution.modelsFailed', { failed: dbtSummary.models_failed })}
+                </span>
               )}
             </span>
             <span>
-              tests: {dbtSummary.tests_passed}/{dbtSummary.tests_total}
+              {t('execution.tests', {
+                passed: dbtSummary.tests_passed,
+                total: dbtSummary.tests_total,
+              })}
               {dbtSummary.tests_failed > 0 && (
-                <span className="text-destructive"> ({dbtSummary.tests_failed} failed)</span>
+                <span className="text-red-400">
+                  {t('execution.testsFailed', { failed: dbtSummary.tests_failed })}
+                </span>
               )}
             </span>
             {dbtSummary.nodes_in_lineage !== null && (
-              <span>lineage: {dbtSummary.nodes_in_lineage} nodes</span>
+              <span>{t('execution.lineage', { count: dbtSummary.nodes_in_lineage })}</span>
             )}
-            <span>{dbtSummary.elapsed_time.toFixed(2)}s</span>
+            <span className="inline-flex items-center gap-1">
+              <Clock className="h-3 w-3" />
+              {t('execution.elapsed', { seconds: dbtSummary.elapsed_time.toFixed(2) })}
+            </span>
           </div>
         </div>
       )}
-      {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
+
+      {error && (
+        <div className="mt-3 flex items-start gap-2 rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-xs text-red-400">
+          <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          {error}
+        </div>
+      )}
     </div>
   )
 }

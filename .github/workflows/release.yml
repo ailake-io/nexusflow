@@ -1,46 +1,116 @@
 name: Release
 
-# Builds nexusflow-<os>-<arch>.tar.gz for Linux/macOS x86_64+arm64 and
-# publishes them as GitHub Release assets — what scripts/install.sh
-# downloads. Each tarball is: the release binary (--features
-# embed-ui,connectors-all — every connector linked in, not just the two
-# always-on ones, so GET /connectors lists the full catalog out of the box)
-# plus the two ADBC driver libraries nexus-connector-postgres/-sqlite dlopen
-# at runtime (no crates.io distribution of those exists — see
-# nexus-connector-postgres/src/driver.rs, ARCHITECTURE.md §3).
+# Builds nexusflow-linux-x86_64.tar.gz and publishes it as a GitHub Release
+# asset — what scripts/install.sh downloads. The tarball is: the release
+# binary (--features embed-ui,connectors-all — every connector linked in,
+# not just the two always-on ones, so GET /connectors lists the full
+# catalog out of the box) plus the two ADBC driver libraries
+# nexus-connector-postgres/-sqlite dlopen at runtime (no crates.io
+# distribution of those exists — see nexus-connector-postgres/src/driver.rs,
+# ARCHITECTURE.md §3). Also produces real native installers (.deb/.rpm/
+# AppImage — scripts/package-{deb,rpm,appimage}.sh, staged from the same
+# release binary+ADBC build as the tarball).
 #
-# All four builds are native (no cross-compilation): GitHub's own
-# ubuntu-24.04-arm hosted runner covers linux/arm64 natively, same as
-# macos-14 (Apple Silicon) / macos-13 (Intel) do for the two macOS arches —
-# avoids cross-compiling the ADBC C++ sources for a foreign arch/libc, which
-# scripts/build-adbc-*-driver.sh isn't set up for.
+# arm64, Windows, and macOS are all out of scope for now (no installer, no
+# CI build in this workflow):
+# - arm64: no self-hosted equivalent to fall back to (unlike x86_64 above),
+#   and the hosted ubuntu-24.04-arm runner is blocked by an account billing
+#   issue (Settings > Billing and plans) — confirmed hitting even plain
+#   ubuntu-latest/x86_64, not just macOS/Windows, before x86_64 got routed
+#   to self-hosted. Re-add once billing is resolved — see git history for
+#   the exact matrix entry.
+# - Windows: build-windows (cargo-wix + packaging/windows/main.wxs, on the
+#   same self-hosted machine connectors-heavy.yml uses) was here and did
+#   run, but cargo build --features connectors-all failed for real —
+#   nexus-connector-mysql's mysql_cdc dependency only supports native
+#   OpenSSL (no rustls option), and that machine has no OpenSSL/vcpkg
+#   installed. Needs manual one-time setup on that host before re-adding
+#   (see git history for the removed job's full definition).
+# - macOS: no self-hosted macOS runner exists, the hosted macos-13/14
+#   runners hit the same billing block, and Mac isn't a current priority
+#   (ROADMAP.md's Pendências ativas item 5).
+#
+# Continuous-release model, not tag-triggered: on `main`, this is the last
+# stage of a deliberate 3-stage chain — CI -> connectors-heavy -> Release —
+# so `build`/`docker-publish`/`publish` only run once both of those already
+# succeeded on that commit (see the `workflow_run` trigger below and each
+# job's `if:`). `build` also runs on every PR targeting `main` independently
+# of that chain, for pre-merge validation only — never `docker-publish`/
+# `publish` (no publish side effects on a PR). `publish` derives its GitHub
+# Release tag/name directly from the workspace version in Cargo.toml
+# (currently v0.1.0) rather than requiring a separate `git tag` push — every
+# successful run of the chain re-publishes that same version's release
+# (softprops/action-gh-release upserts: new assets replace old ones on the
+# existing tag rather than erroring) until someone bumps the workspace
+# version, at which point a new tag/release is created instead.
 
 on:
-  push:
-    tags: ["v*"]
+  # Step 3 of the CI -> connectors-heavy -> Release chain on main (see
+  # connectors-heavy.yml's matching workflow_run trigger for step 2) —
+  # `workflow_run` is the only way to sequence separate workflow files,
+  # there's no cross-file `needs:`. The job-level `if:`s below only let
+  # docker-publish/publish actually run when connectors-heavy's main-branch
+  # run succeeded.
+  workflow_run:
+    workflows: ["connectors-heavy"]
+    types: [completed]
+    branches: [main]
+  # PR validation stays independent of the chain above — build/build-windows
+  # exercised pre-merge, never docker-publish/publish (no publish side
+  # effects on a PR).
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
 
 jobs:
   build:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     strategy:
       matrix:
         include:
+          # x86_64 routed to the same self-hosted machine ci.yml's
+          # test/connectors/docker-image jobs use — GitHub-hosted runners are
+          # blocked account-wide by a billing issue (Settings > Billing and
+          # plans), confirmed hitting even plain ubuntu-latest, not just
+          # macOS/Windows.
           - os: linux
             arch: x86_64
-            runner: ubuntu-latest
-          - os: linux
-            arch: arm64
-            runner: ubuntu-24.04-arm
-          - os: macos
-            arch: x86_64
-            runner: macos-13
-          - os: macos
-            arch: arm64
-            runner: macos-14
+            runner: [self-hosted, Linux]
+            self_hosted: true
+          # arm64 (and macOS below) dropped from this matrix for now — no
+          # self-hosted equivalent to fall back to (unlike x86_64 above),
+          # and the hosted ubuntu-24.04-arm/macos-13/macos-14 runners are
+          # all blocked by the same billing issue; a failing leg here was
+          # also showing up as a red run every single time regardless of
+          # x86_64's own outcome (even with fail-fast: false, which only
+          # stops one leg's failure from *cancelling* another, not from
+          # still being reported). Re-add arm64 once billing is resolved —
+          # see git history for the exact matrix entry.
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    # The x86_64 leg shares ci.yml's own concurrency group — same physical
+    # self-hosted machine, and that runner OOMs if 2 heavy cargo builds land
+    # on it at once (ci.yml's jobs are chained via `needs:` and already
+    # guard against overlapping with *themselves*, but a push to `main`
+    # fires this whole separate workflow in parallel with ci.yml unless
+    # both point at the same group — this is what closes that gap). arm64
+    # is hosted, no shared resource to serialize against, gets its own
+    # independent group so it's never blocked by the self-hosted queue.
+    concurrency:
+      group: ${{ matrix.self_hosted && 'ci-self-hosted-runner' || format('release-build-{0}-{1}', github.ref, matrix.arch) }}
+      cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # workflow_run's default ref/sha is the repo's default branch, not
+          # the commit connectors-heavy just validated on main — pin
+          # explicitly. github.sha already resolves correctly for
+          # pull_request (the PR's merge commit), so this is a no-op there.
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
         with:
           node-version: "22"
           cache: npm
@@ -52,17 +122,16 @@ jobs:
       # §3) and nexus-connector-kafka (rdkafka's default "cmake-build" feature
       # compiles vendored librdkafka from source, which auto-detects SASL/SSL/
       # zlib and silently builds without those protocols if headers are
-      # missing — installed here so the shipped binary has them).
+      # missing — installed here so the shipped binary has them). Skipped on
+      # the self-hosted runner: no interactive sudo there (same posture as
+      # ci.yml's test/connectors jobs), and these packages are assumed
+      # already present on that host from prior setup.
       - name: Install native build deps for the ADBC drivers + connectors-all
-        if: matrix.os == 'linux'
+        if: matrix.os == 'linux' && !matrix.self_hosted
         run: |
           sudo apt-get update && sudo apt-get install -y \
             cmake pkg-config libpq-dev libsqlite3-dev libfmt-dev \
             unixodbc-dev libsasl2-dev libssl-dev zlib1g-dev
-
-      - name: Install native build deps for the ADBC drivers + connectors-all (macOS)
-        if: matrix.os == 'macos'
-        run: brew install cmake pkg-config libpq sqlite fmt unixodbc
 
       - run: npm ci
         working-directory: frontend
@@ -76,12 +145,10 @@ jobs:
 
       - name: Package tarball
         run: |
-          lib_ext=so
-          [ "${{ matrix.os }}" = "macos" ] && lib_ext=dylib
           stage="$(mktemp -d)"
           cp target/release/nexusflow "$stage/nexusflow-bin"
-          cp "target/adbc/libadbc_driver_postgresql.$lib_ext" "$stage/"
-          cp "target/adbc/libadbc_driver_sqlite.$lib_ext" "$stage/"
+          cp target/adbc/libadbc_driver_postgresql.so "$stage/"
+          cp target/adbc/libadbc_driver_sqlite.so "$stage/"
           tar -czf "nexusflow-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" -C "$stage" .
 
       - uses: actions/upload-artifact@v4
@@ -89,23 +156,174 @@ jobs:
           name: nexusflow-${{ matrix.os }}-${{ matrix.arch }}
           path: nexusflow-${{ matrix.os }}-${{ matrix.arch }}.tar.gz
 
-  publish:
+      # scripts/package-{deb,rpm,appimage}.sh existed but were never wired into
+      # CI — only the raw tarball above was actually produced/released. Each
+      # script hardcodes amd64/x86_64 (see their own headers), so gated to
+      # that arch only; arm64 .deb/.rpm/AppImage is future work, not a
+      # regression from this being narrower than the tarball matrix.
+      - name: Build native Linux packages (deb/rpm/AppImage)
+        if: matrix.os == 'linux' && matrix.arch == 'x86_64'
+        run: |
+          # No sudo on the self-hosted runner this now builds on (see the
+          # deps step above) — rpmbuild is assumed already present there;
+          # rpmbuild's own "command not found" is a clear enough failure if
+          # it isn't, no need to duplicate that check here.
+          if ! command -v rpmbuild >/dev/null; then
+            sudo apt-get install -y rpm
+          fi
+          curl -fL -o /tmp/appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x /tmp/appimagetool
+          ./scripts/package-deb.sh target/package
+          ./scripts/package-rpm.sh target/package
+          # appimagetool is itself an AppImage; --appimage-extract-and-run
+          # avoids depending on FUSE being available on the runner.
+          APPIMAGETOOL="/tmp/appimagetool --appimage-extract-and-run" \
+            ./scripts/package-appimage.sh target/package
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.os == 'linux' && matrix.arch == 'x86_64'
+        with:
+          name: nexusflow-linux-packages
+          path: target/package/*
+
+  # build-windows removed for now — cargo build --features connectors-all
+  # failed for real on the self-hosted windows-connectors-heavy runner:
+  # nexus-connector-mysql's mysql_cdc dependency only supports native
+  # OpenSSL (no rustls option), and that machine has no OpenSSL/vcpkg
+  # installed. Needs manual one-time setup on that host (vcpkg install
+  # openssl:x64-windows-static-md + vcpkg integrate install + VCPKG_ROOT
+  # env var), same category as cmake/WiX Toolset already being assumed
+  # present there. Re-add once that's done — see git history for the full
+  # job definition (last present as of this commit's parent).
+
+  docker-publish:
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
+    name: docker-publish
     needs: build
     runs-on: ubuntu-latest
+    # linux/arm64 compiles connectors-all's full Rust workspace under QEMU
+    # emulation (no native arm64 Docker builder wired up here, unlike the
+    # `build` job above which uses a real ubuntu-24.04-arm runner for the
+    # tarball) — emulated cargo builds run several times slower than
+    # native, hence the generous timeout versus the amd64-only job this
+    # replaced (60min).
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # workflow_run's default ref/sha is the repo's default branch, not
+          # the commit connectors-heavy just validated on main — pin
+          # explicitly. github.sha already resolves correctly for
+          # pull_request (the PR's merge commit), so this is a no-op there.
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+      - name: Read version from Cargo.toml
+        id: version
+        run: |
+          version="$(grep -A3 '^\[workspace.package\]' Cargo.toml | grep '^version' | head -1 | cut -d '"' -f2)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@c47758b77c9736f4b2ef4073d4d51994fabfe349 # v3.7.1
+      - uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # Requires the DOCKERHUB_USERNAME/DOCKERHUB_TOKEN repo secrets (Docker
+      # Hub access token, not the account password) — not set by this change,
+      # someone with repo admin needs to add them under Settings > Secrets.
+      - uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # No git tag to derive a semver pattern from under the continuous-release
+      # model (see this file's header) — tag both registries directly off the
+      # workspace version read above, same convention `publish`'s GitHub
+      # Release tag uses, plus a floating `latest`.
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@369eb591f429131d6889c46b94e711f089e6ca96 # v5.6.1
+        with:
+          images: |
+            ghcr.io/${{ github.repository }}
+            docker.io/ailake/nexusflow
+          tags: |
+            type=raw,value=v${{ steps.version.outputs.version }}
+            type=raw,value=latest
+
+      - uses: docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a4 # v6.15.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  publish:
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
+    needs: [build, docker-publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # workflow_run's default ref/sha is the repo's default branch, not
+          # the commit connectors-heavy just validated on main — pin
+          # explicitly. github.sha already resolves correctly for
+          # pull_request (the PR's merge commit), so this is a no-op there.
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+      - name: Read version from Cargo.toml
+        id: version
+        run: |
+          version="$(grep -A3 '^\[workspace.package\]' Cargo.toml | grep '^version' | head -1 | cut -d '"' -f2)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@65a9edc5881444af0b9093a5e628f2fe47ea3b2e # v4.1.7
         with:
           path: dist
           merge-multiple: true
       - name: Generate SHA256SUMS
         run: |
           cd dist
-          sha256sum *.tar.gz > SHA256SUMS
-      - uses: softprops/action-gh-release@v2
+          sha256sum *.tar.gz *.deb *.rpm *.AppImage > SHA256SUMS
+      - name: Import GPG signing key
+        uses: crazy-max/ghaction-import-gpg@01dd5d3ca463c7f10f7f4f7b4f177225ac661ee4 # v6.1.0
         with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.GPG_PASSPHRASE }}
+      - name: Sign release artifacts
+        run: |
+          cd dist
+          for f in *.tar.gz *.deb *.rpm *.AppImage SHA256SUMS; do
+            gpg --batch --yes --armor --detach-sign --output "$f.asc" "$f"
+          done
+      - uses: softprops/action-gh-release@7b4da11513bf3f43f9999e90eabced41ab8bb048 # v2.2.0
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
+          # `main` is the release branch under this continuous-release model
+          # (see this file's header comment) — every push re-publishes the
+          # same tag with fresh assets until the workspace version bumps.
           files: |
             dist/*.tar.gz
+            dist/*.tar.gz.asc
+            dist/*.deb
+            dist/*.deb.asc
+            dist/*.rpm
+            dist/*.rpm.asc
+            dist/*.AppImage
+            dist/*.AppImage.asc
             dist/SHA256SUMS
+            dist/SHA256SUMS.asc
           generate_release_notes: true

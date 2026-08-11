@@ -1,9 +1,7 @@
 #![cfg(feature = "consumer")]
 
 use futures::StreamExt;
-use nexus_connector_kafka::{
-    KafkaConnectorConfig, KafkaDataType, KafkaEnvelope, KafkaFieldSpec, KafkaSource,
-};
+use nexus_connector_kafka::{KafkaConnectorConfig, KafkaDataType, KafkaFieldSpec, KafkaSource};
 use nexus_core::Source;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::ClientConfig;
@@ -64,7 +62,6 @@ async fn consumes_json_messages_as_record_batches() {
         // a full JoinGroup/SyncGroup rebalance before any message arrives.
         poll_timeout_ms: 15000,
         max_messages: 100,
-        envelope: KafkaEnvelope::Raw,
         start_offsets: HashMap::new(),
     };
 
@@ -125,7 +122,6 @@ async fn resumes_from_explicit_start_offset() {
         batch_size: 500,
         poll_timeout_ms: 15000,
         max_messages: 3,
-        envelope: KafkaEnvelope::Raw,
         start_offsets: HashMap::new(),
     };
 

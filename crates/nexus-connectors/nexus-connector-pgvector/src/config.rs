@@ -17,4 +17,14 @@ pub struct PgVectorConnectorConfig {
     pub embedding_column: String,
     /// Must match the `vector(N)` column's declared width.
     pub dimension: usize,
+    /// Timeout in seconds for connecting and for each batch write (begin +
+    /// upsert/delete + commit) — `tokio_postgres` has no timeout of its own,
+    /// so a stalled connection would otherwise block the pipeline
+    /// indefinitely (C15).
+    #[serde(default = "default_timeout_seconds")]
+    pub timeout_seconds: u64,
+}
+
+fn default_timeout_seconds() -> u64 {
+    30
 }

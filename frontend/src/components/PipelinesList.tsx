@@ -1,40 +1,45 @@
 import { useState } from 'react'
+import {
+  Edit2,
+  Trash2,
+  Clock,
+  History,
+  ArrowRight,
+  Database,
+  Workflow,
+  AlertCircle,
+  Loader2,
+} from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { StatusBadge } from '@/components/ui/status-badge'
+import { EmptyState } from '@/components/EmptyState'
+import { RunHistoryPanel } from '@/components/RunHistoryPanel'
+import { useI18n } from '@/lib/i18n'
 import { deletePipeline, getPipelineSpec, type NodeSummary } from '@/lib/api'
 import { useAuth } from '@/lib/auth-context'
 import { usePipelines } from '@/hooks/usePipelines'
 import type { PipelineSpec } from '@/lib/dag'
 
-const STATUS_STYLE: Record<string, string> = {
-  success: 'border-green-600/40 bg-green-600/10 text-green-700 dark:text-green-400',
-  failed: 'border-destructive/40 bg-destructive/10 text-destructive',
-  running: 'border-blue-600/40 bg-blue-600/10 text-blue-700 dark:text-blue-400',
-}
-
-function StatusBadge({ status }: { status: 'running' | 'success' | 'failed' | null }) {
-  if (!status) {
-    return (
-      <span className="rounded-full border bg-background px-2 py-0.5 text-xs text-muted-foreground">
-        nunca rodou
-      </span>
-    )
-  }
-  return (
-    <span className={`rounded-full border px-2 py-0.5 text-xs ${STATUS_STYLE[status]}`}>
-      {status}
-    </span>
-  )
+function statusVariant(status: 'running' | 'success' | 'failed' | null) {
+  if (status === 'running') return 'running'
+  if (status === 'success') return 'success'
+  if (status === 'failed') return 'failed'
+  return 'idle'
 }
 
 function NodeBadge({ node }: { node: NodeSummary }) {
   return (
-    <span className="inline-flex items-center gap-1 rounded-full border bg-background px-2 py-0.5 text-xs">
-      <span className="font-medium">{node.connector}</span>
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-xs">
+      <Database className="h-3 w-3 text-muted-foreground" />
+      <span className="font-medium text-foreground">{node.connector}</span>
       {node.name && <span className="text-muted-foreground">({node.name})</span>}
       {/* The config a node carries (where secrets like uri/password live)
        * is never returned by the API once persisted — nothing to render
        * here except this mask, there's no plaintext to accidentally leak. */}
-      <span className="text-muted-foreground" title="connector config is never exposed once saved">
+      <span
+        className="text-muted-foreground"
+        title="connector config is never exposed once saved"
+      >
         ••••
       </span>
     </span>
@@ -55,12 +60,15 @@ interface PipelinesListProps {
 }
 
 export function PipelinesList({ onEdit }: PipelinesListProps) {
+  const { t } = useI18n()
   const { token } = useAuth()
   const { pipelines, loading, error, refresh } = usePipelines()
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editError, setEditError] = useState<string | null>(null)
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
+  const [historyId, setHistoryId] = useState<string | null>(null)
 
   const handleDelete = async (pipelineId: string) => {
     if (!token) return
@@ -73,6 +81,7 @@ export function PipelinesList({ onEdit }: PipelinesListProps) {
       setDeleteError(err instanceof Error ? err.message : String(err))
     } finally {
       setDeletingId(null)
+      setConfirmDeleteId(null)
     }
   }
 
@@ -91,31 +100,72 @@ export function PipelinesList({ onEdit }: PipelinesListProps) {
   }
 
   return (
-    <div className="h-full overflow-auto p-4">
-      <h1 className="mb-3 text-lg font-medium">Pipelines</h1>
-      {loading && <p className="text-sm text-muted-foreground">Loading…</p>}
-      {error && <p className="text-sm text-destructive">{error}</p>}
-      {deleteError && <p className="text-sm text-destructive">{deleteError}</p>}
-      {editError && <p className="text-sm text-destructive">{editError}</p>}
-      {!loading && pipelines.length === 0 && (
-        <p className="text-sm text-muted-foreground">
-          No pipelines saved yet — create one from the canvas and Export JSON, then POST it to
-          /pipelines.
-        </p>
+    <div className="h-full overflow-auto p-6">
+      <div className="mb-6 flex items-center justify-between">
+        <div>
+          <h1 className="text-lg font-semibold tracking-tight">{t('pipelines.title')}</h1>
+          <p className="text-xs text-muted-foreground">{t('pipelines.subtitle')}</p>
+        </div>
+      </div>
+
+      {loading && pipelines.length === 0 && (
+        <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">
+          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+          {t('pipelines.loading')}
+        </div>
       )}
-      <div className="flex flex-col gap-2">
+
+      {error && (
+        <div className="mb-4 flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-xs text-red-400">
+          <AlertCircle className="h-4 w-4" />
+          {error}
+        </div>
+      )}
+      {deleteError && (
+        <div className="mb-4 flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-xs text-red-400">
+          <AlertCircle className="h-4 w-4" />
+          {deleteError}
+        </div>
+      )}
+      {editError && (
+        <div className="mb-4 flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-xs text-red-400">
+          <AlertCircle className="h-4 w-4" />
+          {editError}
+        </div>
+      )}
+
+      {!loading && pipelines.length === 0 && (
+        <EmptyState
+          icon={<Workflow className="h-6 w-6" />}
+          title={t('pipelines.emptyTitle')}
+          description={t('pipelines.emptyDescription')}
+        />
+      )}
+
+      <div className="flex flex-col gap-3">
         {pipelines.map((p) => (
-          <div key={p.pipeline_id} className="rounded-lg border bg-card p-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="font-medium">{p.pipeline_id}</span>
-                <StatusBadge status={p.last_run_status} />
+          <div
+            key={p.pipeline_id}
+            className="group rounded-xl border border-white/10 bg-card p-4 transition-all hover:border-white/15 hover:shadow-sm"
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-semibold text-foreground">{p.pipeline_id}</span>
+                <StatusBadge
+                  variant={statusVariant(p.last_run_status)}
+                  pulse={p.last_run_status === 'running'}
+                >
+                  {p.last_run_status
+                    ? t(`status.${p.last_run_status}` as 'status.running' | 'status.success' | 'status.failed')
+                    : t('pipelines.neverRun')}
+                </StatusBadge>
                 {p.schedule && (
                   <span
-                    className="rounded-full border bg-background px-2 py-0.5 text-xs text-muted-foreground"
-                    title="Roda automaticamente conforme este cron"
+                    className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-xs text-muted-foreground"
+                    title={t('pipelines.runsOn', { schedule: p.schedule })}
                   >
-                    ⏰ {p.schedule}
+                    <Clock className="h-3 w-3" />
+                    {p.schedule}
                   </span>
                 )}
               </div>
@@ -124,43 +174,109 @@ export function PipelinesList({ onEdit }: PipelinesListProps) {
                   type="button"
                   variant="outline"
                   size="sm"
+                  onClick={() =>
+                    setHistoryId(historyId === p.pipeline_id ? null : p.pipeline_id)
+                  }
+                  className="gap-1.5"
+                >
+                  <History className="h-3.5 w-3.5" />
+                  {t('pipelines.history.toggle')}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
                   disabled={editingId === p.pipeline_id}
                   onClick={() => handleEdit(p.pipeline_id)}
+                  className="gap-1.5"
                 >
-                  {editingId === p.pipeline_id ? 'Loading…' : 'Edit'}
+                  {editingId === p.pipeline_id ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Edit2 className="h-3.5 w-3.5" />
+                  )}
+                  {editingId === p.pipeline_id ? t('pipelines.editing') : t('pipelines.edit')}
                 </Button>
                 <Button
                   type="button"
                   variant="destructive"
                   size="sm"
                   disabled={deletingId === p.pipeline_id}
-                  onClick={() => handleDelete(p.pipeline_id)}
+                  onClick={() => setConfirmDeleteId(p.pipeline_id)}
+                  className="gap-1.5"
                 >
-                  {deletingId === p.pipeline_id ? 'Deleting…' : 'Delete'}
+                  {deletingId === p.pipeline_id ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Trash2 className="h-3.5 w-3.5" />
+                  )}
+                  {deletingId === p.pipeline_id ? t('pipelines.deleting') : t('pipelines.delete')}
                 </Button>
               </div>
             </div>
-            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+
+            <div className="mt-3 flex flex-wrap items-center gap-1.5">
               {p.sources.map((n, i) => (
                 <NodeBadge key={`source-${i}`} node={n} />
               ))}
-              <span className="text-muted-foreground">→</span>
+              <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
               {p.has_transform && (
-                <span className="rounded-full border bg-background px-2 py-0.5 text-xs">
-                  transform
+                <span className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-xs text-foreground">
+                  <Workflow className="h-3 w-3 text-muted-foreground" />
+                  {t('pipelines.transform')}
                 </span>
               )}
-              {p.has_transform && <span className="text-muted-foreground">→</span>}
+              {p.has_transform && <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />}
               {p.sinks.map((n, i) => (
                 <NodeBadge key={`sink-${i}`} node={n} />
               ))}
             </div>
-            <p className="mt-2 text-xs text-muted-foreground">
-              •••• edited at {p.updated_at} (created {p.created_at})
+
+            {confirmDeleteId === p.pipeline_id && (
+              <div className="mt-3 rounded-lg border border-red-500/20 bg-red-500/10 p-3">
+                <p className="mb-2 text-xs text-red-200">
+                  {t('pipelines.deleteConfirm', { id: p.pipeline_id })}
+                </p>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    size="sm"
+                    disabled={deletingId === p.pipeline_id}
+                    onClick={() => handleDelete(p.pipeline_id)}
+                    className="gap-1.5"
+                  >
+                    {deletingId === p.pipeline_id ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-3.5 w-3.5" />
+                    )}
+                    {t('pipelines.confirmDelete')}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setConfirmDeleteId(null)}
+                    disabled={deletingId === p.pipeline_id}
+                  >
+                    {t('pipelines.cancelDelete')}
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            <p className="mt-3 text-[10px] text-muted-foreground">
+              {t('pipelines.updatedAt', { updated: p.updated_at })} ·{' '}
+              {t('pipelines.createdAt', { created: p.created_at })}
             </p>
+
+            {historyId === p.pipeline_id && <RunHistoryPanel pipelineId={p.pipeline_id} />}
           </div>
         ))}
       </div>
     </div>
   )
 }
+
+export default PipelinesList

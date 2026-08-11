@@ -3,8 +3,26 @@ name: CI
 on:
   push:
     branches: [develop, main]
-  pull_request:
-    branches: [develop, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# All 7 jobs below run on the same self-hosted machine (a shared dev
+# desktop, not a dedicated runner — see the `test`/`connectors` jobs'
+# comments) and are chained via `needs:` into one strict sequence so at
+# most one is ever alive at a time. That alone isn't enough: two different
+# pushes/PRs each start their own independent instance of this whole
+# workflow, and their two chains can still run side by side, each spawning
+# heavy cargo/docker builds that together exceed this machine's RAM (this
+# OOM-killed the runner's own systemd service more than once). A single
+# fixed group with no `github.ref`/`github.sha` in the key serializes
+# across every branch/PR, not just concurrent runs of the same one;
+# `cancel-in-progress: false` queues the new run instead of cancelling
+# in-progress work, so nothing gets thrown away.
+concurrency:
+  group: ci-self-hosted-runner
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -13,19 +31,22 @@ jobs:
   # Checks both Cargo.lock files (root + crates/nexus-connectors' own nested
   # workspace — see the `connectors` job's comment below on why that one is
   # gitignored and only exists as a build byproduct) against the RustSec
-  # advisory database. ubuntu-latest, not self-hosted: this doesn't need the
-  # connector crates' native build deps, just cargo-audit itself. The
-  # nested workspace's own Cargo.lock is generated fresh by this step's own
-  # `cargo audit` run (nothing to check out for it), unlike the drift check
-  # against the root lockfile (see the `connectors` job), which needs a
-  # `cargo check` to have run first.
+  # advisory database. The nested workspace's own Cargo.lock is generated
+  # fresh by this step's own `cargo audit` run (nothing to check out for
+  # it), unlike the drift check against the root lockfile (see the
+  # `connectors` job), which needs a `cargo check` to have run first.
+  # Self-hosted (see the workflow-level `concurrency` comment above) — no
+  # `needs:` since it doesn't touch the Rust *build* graph, but it still
+  # only runs after `fmt` releases the machine, same as every other job here.
   cargo-audit:
     name: cargo-audit
-    runs-on: ubuntu-latest
+    needs: fmt
+    runs-on: [self-hosted, Linux]
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
       - run: cargo install cargo-audit --locked
       # --ignore entries below were each traced with `cargo tree -i <crate>`
       # to confirm there's no fix reachable today without breaking a version
@@ -49,24 +70,32 @@ jobs:
         run: cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195 --ignore RUSTSEC-2025-0009 --ignore RUSTSEC-2024-0336
         working-directory: crates/nexus-connectors
 
+  # Self-hosted, first in the chain (no `needs:`) — see the workflow-level
+  # `concurrency` comment above for why every job here shares one machine.
   fmt:
     name: fmt
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux]
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
-  # Self-hosted, not ubuntu-latest: --all-features now covers embed-ui,
-  # nexus-ai's `cpu` feature (ort/hf-hub/tokenizers) and connectors-all
-  # (mongodb/kafka/milvus/lancedb/... all linked into nexus-server, not
-  # just the nested crates/nexus-connectors workspace) — this combination
-  # already ran ubuntu-latest out of its ~14GB disk cap mid-link ("ld
-  # terminated with signal 7 [Bus error]", 39MB free). Same root cause the
-  # `connectors` job below already solved by moving to self-hosted
-  # (052e26c); root-workspace jobs now share that same rationale.
+  # --all-features covers embed-ui, nexus-ai's `cpu` feature (ort/hf-hub/
+  # tokenizers) and connectors-all (mongodb/kafka/milvus/lancedb/... all
+  # linked into nexus-server, not just the nested crates/nexus-connectors
+  # workspace) — this combination already ran a GitHub-hosted runner out of
+  # its ~14GB disk cap mid-link ("ld terminated with signal 7 [Bus error]",
+  # 39MB free); self-hosted has real disk, no such cap.
+  #
+  # needs: docker-image (not just fmt/frontend) — every job in this
+  # workflow chains to the previous one so only one is ever alive on this
+  # shared machine at a time (see the workflow-level `concurrency` comment).
+  # Still downloads frontend's artifact directly below since that's what
+  # embed-ui's RustEmbed derive needs at compile time, regardless of how
+  # many other jobs ran in between.
   #
   # -p nexus-core -p nexus-ai -p nexus-server, not --workspace: `cargo
   # metadata --no-deps` from the repo root shows every crate under
@@ -78,40 +107,41 @@ jobs:
   # owns that.
   clippy:
     name: clippy
-    needs: fmt
+    needs: docker-image
     runs-on: [self-hosted, Linux]
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
       # --all-features turns on nexus-server's embed-ui, whose
       # #[derive(RustEmbed)] needs frontend/dist to exist at compile time
-      # (Marco 11) — build it for real rather than faking an empty dir, so
-      # this also catches an actually-broken frontend build.
-      - uses: actions/setup-node@v4
+      # (Marco 11). Reuse the artifact built by the `frontend` job instead of
+      # rebuilding it here (A34).
+      - uses: actions/download-artifact@65a9edc5881444af0b9093a5e628f2fe47ea3b2e # v4.1.7
         with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - run: npm ci && npm run build
-        working-directory: frontend
+          name: frontend-dist
+          path: frontend/dist
       - run: cargo clippy -p nexus-core -p nexus-ai -p nexus-server --all-targets --all-features -- -D warnings
 
   # Marco 11's done criterion, checked for real rather than just documented:
   # "docker run sobe binário único servindo UI em localhost:8080, sem
-  # dependência externa além do container." Independent job (no `needs:`) —
-  # builds its own image from scratch (frontend -> ADBC drivers -> release
-  # binary w/ embed-ui -> runtime, see ../../Dockerfile), so it doesn't
-  # share any state with the fmt/clippy/test chain above.
+  # dependência externa além do container." Builds its own image from
+  # scratch (frontend -> ADBC drivers -> release binary w/ embed-ui ->
+  # runtime, see ../../Dockerfile) — doesn't share build state with the
+  # fmt/clippy/test chain, but still runs after `frontend` in the machine's
+  # one-at-a-time queue (see the workflow-level `concurrency` comment).
   docker-image:
     name: docker-image
-    runs-on: ubuntu-latest
+    needs: frontend
+    runs-on: [self-hosted, Linux]
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: docker/setup-buildx-action@c47758b77c9736f4b2ef4073d4d51994fabfe349 # v3.7.1
+      - uses: docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a4 # v6.15.0
         with:
           context: .
           load: true
@@ -121,9 +151,11 @@ jobs:
 
       - name: Boot the image and hit the embedded UI
         run: |
+          jwt_secret="$(openssl rand -hex 32)"
+          encryption_key="$(openssl rand -hex 32)"
           docker run -d --name nexusflow-ci -p 8080:8080 \
-            -e NEXUS_JWT_SECRET=ci-secret-that-is-long-enough-for-jwt-signing \
-            -e NEXUS_ENCRYPTION_KEY=$(printf 'ab%.0s' {1..32}) \
+            -e NEXUS_JWT_SECRET="$jwt_secret" \
+            -e NEXUS_ENCRYPTION_KEY="$encryption_key" \
             -e NEXUS_CHECKPOINT_DB=sqlite::memory: \
             -e NEXUS_AUTH_DB=sqlite::memory: \
             -e NEXUS_PIPELINES_DB=sqlite::memory: \
@@ -139,20 +171,24 @@ jobs:
           [ "$status" = "200" ] || { echo "GET / returned $status, expected 200"; exit 1; }
           [ "$health" = "ok" ] || { echo "GET /health returned '$health', expected ok"; exit 1; }
 
-  # frontend/ (Marco 8) doesn't touch the Rust workspace or the self-hosted
-  # runner — no `needs:`, runs independently on GitHub-hosted infra instead
-  # of joining the fmt -> clippy -> test -> connectors chain (that chain is
-  # sequential specifically to avoid overloading the self-hosted machine,
-  # see 052e26c; this job never runs there).
+  # frontend/ (Marco 8) doesn't touch the Rust workspace, but still runs on
+  # the same self-hosted machine as everything else and slots into the
+  # fmt -> cargo-audit -> frontend -> docker-image -> clippy -> test ->
+  # connectors chain (see the workflow-level `concurrency` comment) — its
+  # own build is light, but node_modules/npm briefly adds to whatever else
+  # is resident, so it still gets its own turn rather than running
+  # alongside a cargo build.
   frontend:
     name: frontend
-    runs-on: ubuntu-latest
+    needs: cargo-audit
+    runs-on: [self-hosted, Linux]
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
         with:
           node-version: "22"
           cache: npm
@@ -166,16 +202,23 @@ jobs:
       # without an upstream release; high/critical is the bar worth
       # blocking a merge over.
       - run: npm audit --audit-level=high
+      - uses: actions/upload-artifact@834a144ee995460fba8ed112a2fc961b36a5ec5a # v4.3.6
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          retention-days: 1
 
-  # Self-hosted for the same reason as clippy above.
+  # Self-hosted for the same reason as clippy above; needs: clippy is enough
+  # since frontend is already an ancestor of clippy in this chain.
   test:
     name: test
     needs: clippy
     runs-on: [self-hosted, Linux]
+    timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
 
       # nexus-connector-postgres/nexus-connector-sqlite need the real ADBC
       # drivers at test runtime (C++ implementations, not crates.io packages —
@@ -187,7 +230,7 @@ jobs:
       # apt-get here (runner service has no interactive sudo).
       - name: Cache built ADBC drivers
         id: adbc-cache
-        uses: actions/cache@v4
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
           path: target/adbc
           key: adbc-drivers-${{ runner.os }}-${{ hashFiles('scripts/build-adbc-postgresql-driver.sh', 'scripts/build-adbc-sqlite-driver.sh') }}
@@ -208,20 +251,18 @@ jobs:
       # guarantees that directory survives between runs — cache it
       # explicitly instead of relying on it.
       - name: Cache Hugging Face model cache
-        uses: actions/cache@v4
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
           path: ~/.cache/nexusflow/models
           key: hf-models-${{ hashFiles('crates/nexus-ai/tests/embedding_integration.rs') }}
 
       # Same reason as the clippy job: --all-features enables embed-ui,
       # whose RustEmbed derive needs frontend/dist to exist at compile time.
-      - uses: actions/setup-node@v4
+      # Reuse the artifact built by the `frontend` job (A34).
+      - uses: actions/download-artifact@65a9edc5881444af0b9093a5e628f2fe47ea3b2e # v4.1.7
         with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - run: npm ci && npm run build
-        working-directory: frontend
+          name: frontend-dist
+          path: frontend/dist
 
       - name: Run tests
         env:
@@ -262,6 +303,7 @@ jobs:
     # mongodb dep trees), was hitting the 14GB disk cap on ubuntu-latest.
     # Repo is private, single-maintainer, so no untrusted-PR risk.
     runs-on: [self-hosted, Linux]
+    timeout-minutes: 120
     defaults:
       run:
         working-directory: crates/nexus-connectors
@@ -271,11 +313,11 @@ jobs:
     # (see git history for that saga). Moot on self-hosted: real disk, no
     # preinstalled-toolchain cleanup or job-count throttling needed.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
         with:
           workspaces: crates/nexus-connectors
 

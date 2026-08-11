@@ -1,0 +1,85 @@
+# 2 replicas by default to exercise the multi-replica path documented in
+# ARCHITECTURE.md §14: safe only because NEXUS_*_DB point at Postgres
+# (secret.yaml) — the scheduler's pg_try_advisory_lock keeps only one
+# replica firing each cron-scheduled pipeline per tick, and Postgres is the
+# single source of truth for pipelines/checkpoints/auth. Do not scale this
+# past 1 replica while NEXUS_*_DB still default to sqlite:// — see
+# GETTING_STARTED.md §3.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nexusflow
+  labels:
+    app.kubernetes.io/name: nexusflow
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nexusflow
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nexusflow
+    spec:
+      # Matches the Dockerfile's non-root `nexusflow` user (uid/gid 1001) —
+      # asserting it here too means the pod is rejected up front if the
+      # image ever regresses to running as root, instead of silently
+      # running privileged.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+      containers:
+        - name: nexusflow
+          image: ghcr.io/ailake-io/nexusflow:latest
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: nexusflow-config
+            - secretRef:
+                name: nexusflow-secrets
+          env:
+            # hf_hub (crates/nexus-ai) resolves its cache dir via
+            # dirs::cache_dir(), which honors $XDG_CACHE_HOME — pointing it
+            # at the mounted volume below means embedding models survive
+            # pod restarts instead of re-downloading every time.
+            - name: XDG_CACHE_HOME
+              value: /data/cache
+          volumeMounts:
+            - name: cache
+              mountPath: /data/cache
+          # Same endpoint the Dockerfile's HEALTHCHECK uses.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+      volumes:
+        # Optional but recommended (embeddings model cache) — swap for the
+        # PVC in pvc.yaml if you want it to survive pod rescheduling onto a
+        # different node too; emptyDir only survives restarts on the same
+        # node.
+        - name: cache
+          emptyDir: {}

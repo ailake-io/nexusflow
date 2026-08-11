@@ -121,6 +121,17 @@ fn test_server_config(checkpoint_database_url: String) -> ServerConfig {
         bootstrap_admin: Some(("admin".to_string(), "test-password".to_string())),
         encryption_key_hex: "ab".repeat(32),
         slack_webhook_url: None,
+        teams_webhook_url: None,
+        pagerduty_routing_key: None,
+        email: None,
+        webhook_url: None,
+        // testcontainers exposes Postgres on localhost — the same host the
+        // SSRF-hardened validate_security() blocks by default (C5). Real
+        // production ad-hoc/create/update pipeline requests still go through
+        // NEXUS_ALLOW_INTERNAL_HOSTS's normal (unset = blocked) default;
+        // this only opts this test's in-process server into the same escape
+        // hatch a self-hosted deployment would use for its own private DB.
+        allow_internal_hosts: true,
     }
 }
 

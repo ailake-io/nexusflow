@@ -2,7 +2,7 @@
 
 **Universal Rust Data & Vector Framework** — movimentação, transformação, vetorização e orquestração de dados (ETL/ELT/Streaming) de altíssima performance.
 
-> Status: ✅ MVP completo e além — todos os 16 conectores (fast-path + híbridos + AI Lakehouse + data lake formats) linkáveis via feature flag, API + UI + observabilidade + distribuição multiplataforma funcionando end-to-end. Sem release taggeado no GitHub ainda.
+> Status: ✅ MVP completo e além — 18 conectores (Postgres/SQLite fast-path, MongoDB/Kafka/REST/ODBC/CSV bridging, sinks vetoriais, data lake formats, AI Lake e webhook) linkáveis via feature flag, API + UI + observabilidade + distribuição Linux funcionando end-to-end. Windows/macOS têm specs mas ainda não foram validados em máquina real.
 
 ## O que é
 
@@ -45,6 +45,8 @@ Community Edition sob **Apache-2.0**. Conectores enterprise são distribuídos s
 
 ## Stack (resumo)
 
-Rust (Edition 2021) · Apache Arrow / DataFusion · ADBC / Arrow Flight · Tokio · Axum · React Flow (frontend).
+Rust (Edition 2021) · Apache Arrow / DataFusion · ADBC · Tokio · Axum · React Flow (frontend).
+
+> **Nota sobre validação de plataforma:** Linux (binário nativo, `.deb`, AppImage, `.rpm`, Docker) é o único caminho validado de ponta a ponta em máquina real, e todos os 3 pacotes agora buildam automaticamente em CI a cada push/PR pra `main`. Windows (`.msi`) também já builda automaticamente em CI, mas ainda não foi instalado/testado numa máquina real por um humano — `winget` continua sem configurar. macOS (Homebrew/`.dmg`) tem specs em `packaging/` mas nem builda em CI nem foi testado em máquina real. Contribuições ou relatórios de teste são bem-vindos.
 
 Lista completa em [`CLAUDE.md` §2](./CLAUDE.md#%EF%B8%8F-2-tech-stack).

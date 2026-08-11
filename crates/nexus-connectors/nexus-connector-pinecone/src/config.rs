@@ -26,4 +26,13 @@ pub struct PineconeConnectorConfig {
     /// the default (unnamed) namespace.
     #[serde(default)]
     pub namespace: Option<String>,
+    /// Per-request timeout in seconds — `reqwest::Client` has no timeout by
+    /// default, so a stalled connection to Pinecone would otherwise block
+    /// the pipeline indefinitely (C15).
+    #[serde(default = "default_timeout_seconds")]
+    pub timeout_seconds: u64,
+}
+
+fn default_timeout_seconds() -> u64 {
+    30
 }

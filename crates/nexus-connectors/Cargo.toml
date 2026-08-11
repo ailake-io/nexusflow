@@ -5,6 +5,7 @@ members = [
     "nexus-connector-sqlite",
     "nexus-connector-rest",
     "nexus-connector-mongodb",
+    "nexus-connector-mysql",
     "nexus-connector-kafka",
     "nexus-connector-odbc",
     "nexus-connector-pgvector",
@@ -17,6 +18,7 @@ members = [
     "nexus-connector-parquet",
     "nexus-connector-deltalake",
     "nexus-connector-iceberg",
+    "nexus-connector-csv",
 ]
 
 [workspace.package]

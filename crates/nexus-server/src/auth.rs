@@ -4,8 +4,18 @@ use axum::http::request::Parts;
 use axum::middleware::Next;
 use axum::response::Response;
 use axum::RequestExt;
+use dashmap::DashMap;
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+/// Audience claim for Nexus-issued tokens. Tokens without this `aud` are
+/// rejected during verification, preventing cross-service token replay.
+pub const NEXUS_AUDIENCE: &str = "nexusflow";
+/// Issuer claim for Nexus-issued tokens. Validates provenance and makes
+/// verification stricter without adding per-request DB cost.
+pub const NEXUS_ISSUER: &str = "nexusflow:auth";
 
 /// 4 global roles, hierarchical (`Read` < `Execute` < `Write` < `Admin`) —
 /// no per-resource scope yet, see ARCHITECTURE.md §10 "Débito conhecido".
@@ -26,7 +36,46 @@ pub enum Role {
 pub struct Claims {
     pub sub: String,
     pub role: Role,
+    pub aud: String,
+    pub iss: String,
     pub exp: usize,
+}
+
+/// In-memory revocation list for JWTs. Sufficient for single-node
+/// deployments; a multi-node setup would need a shared store (Redis, DB).
+#[derive(Clone, Default)]
+pub struct TokenBlocklist {
+    entries: Arc<DashMap<String, Instant>>,
+}
+
+impl TokenBlocklist {
+    pub fn new() -> Self {
+        Self {
+            entries: Arc::new(DashMap::new()),
+        }
+    }
+
+    /// Records a token as revoked until `exp` (Unix seconds). Called by
+    /// `POST /auth/logout` and by role-demotion flows.
+    pub fn revoke(&self, token: String, exp: usize) {
+        let now = jsonwebtoken::get_current_timestamp();
+        let ttl = exp.saturating_sub(now as usize) as u64;
+        let expiry = Instant::now() + Duration::from_secs(ttl);
+        self.entries.insert(token, expiry);
+    }
+
+    pub fn is_revoked(&self, token: &str) -> bool {
+        self.cleanup_expired();
+        self.entries.contains_key(token)
+    }
+
+    /// Removes expired entries opportunistically. Not strictly required for
+    /// correctness (expired tokens fail validation anyway), but keeps memory
+    /// bounded.
+    fn cleanup_expired(&self) {
+        let now = Instant::now();
+        self.entries.retain(|_, expiry| *expiry > now);
+    }
 }
 
 /// Encodes/decodes JWTs with a single HS256 secret. The secret comes from
@@ -37,15 +86,29 @@ pub struct JwtCodec {
     decoding_key: DecodingKey,
     validation: Validation,
     token_ttl_seconds: u64,
+    blocklist: TokenBlocklist,
 }
 
 impl JwtCodec {
+    #[allow(dead_code)]
     pub fn new(secret: &[u8], token_ttl_seconds: u64) -> Self {
+        Self::with_blocklist(secret, token_ttl_seconds, TokenBlocklist::new())
+    }
+
+    pub fn with_blocklist(
+        secret: &[u8],
+        token_ttl_seconds: u64,
+        blocklist: TokenBlocklist,
+    ) -> Self {
+        let mut validation = Validation::new(Algorithm::HS256);
+        validation.set_audience(&[NEXUS_AUDIENCE]);
+        validation.set_issuer(&[NEXUS_ISSUER]);
         Self {
             encoding_key: EncodingKey::from_secret(secret),
             decoding_key: DecodingKey::from_secret(secret),
-            validation: Validation::new(Algorithm::HS256),
+            validation,
             token_ttl_seconds,
+            blocklist,
         }
     }
 
@@ -54,10 +117,16 @@ impl JwtCodec {
         let claims = Claims {
             sub: subject.to_string(),
             role,
+            aud: NEXUS_AUDIENCE.to_string(),
+            iss: NEXUS_ISSUER.to_string(),
             exp: exp as usize,
         };
         encode(&Header::new(Algorithm::HS256), &claims, &self.encoding_key)
             .map_err(|e| ApiError::internal(format!("token issuance failed: {e}")))
+    }
+
+    pub fn blocklist(&self) -> &TokenBlocklist {
+        &self.blocklist
     }
 
     /// `pub(crate)` (not private) because the progress WebSocket route
@@ -65,6 +134,9 @@ impl JwtCodec {
     /// can't set an `Authorization` header, so that route takes the token
     /// as a query param and verifies it directly (see `lib.rs`).
     pub(crate) fn verify(&self, token: &str) -> Result<Claims, ApiError> {
+        if self.blocklist.is_revoked(token) {
+            return Err(ApiError::unauthorized("token has been revoked"));
+        }
         decode::<Claims>(token, &self.decoding_key, &self.validation)
             .map(|data| data.claims)
             .map_err(|e| ApiError::unauthorized(format!("invalid token: {e}")))
@@ -151,6 +223,37 @@ mod tests {
     }
 
     #[test]
+    fn token_with_wrong_audience_is_rejected() {
+        let jwt = JwtCodec::new(b"test-secret", 3600);
+        let token = jwt.issue("alice", Role::Read).unwrap();
+        let mut validation = Validation::new(Algorithm::HS256);
+        validation.set_audience(&["other-audience"]);
+        validation.set_issuer(&[NEXUS_ISSUER]);
+        let decoding_key = DecodingKey::from_secret(b"test-secret");
+        assert!(decode::<Claims>(&token, &decoding_key, &validation).is_err());
+    }
+
+    #[test]
+    fn token_with_wrong_issuer_is_rejected() {
+        let jwt = JwtCodec::new(b"test-secret", 3600);
+        let token = jwt.issue("alice", Role::Read).unwrap();
+        let mut validation = Validation::new(Algorithm::HS256);
+        validation.set_audience(&[NEXUS_AUDIENCE]);
+        validation.set_issuer(&["other-issuer"]);
+        let decoding_key = DecodingKey::from_secret(b"test-secret");
+        assert!(decode::<Claims>(&token, &decoding_key, &validation).is_err());
+    }
+
+    #[test]
+    fn revoked_token_is_rejected() {
+        let jwt = JwtCodec::new(b"test-secret", 3600);
+        let token = jwt.issue("alice", Role::Read).unwrap();
+        let claims = jwt.verify(&token).unwrap();
+        jwt.blocklist().revoke(token.clone(), claims.exp);
+        assert!(jwt.verify(&token).is_err());
+    }
+
+    #[test]
     fn expired_token_is_rejected() {
         // Built directly (not via `issue`) with `exp` in the distant past,
         // so this doesn't depend on wall-clock timing or sleeping.
@@ -158,6 +261,8 @@ mod tests {
         let expired_claims = Claims {
             sub: "alice".to_string(),
             role: Role::Read,
+            aud: NEXUS_AUDIENCE.to_string(),
+            iss: NEXUS_ISSUER.to_string(),
             exp: 1,
         };
         let expired_token = encode(

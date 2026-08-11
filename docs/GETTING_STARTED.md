@@ -26,7 +26,7 @@ docker build --build-arg FEATURES=embed-ui,connectors-all -t nexusflow:full .
 
 Não validado como build Docker completo nesta sessão (cada conector foi validado via `cargo build` direto, não através do Dockerfile) — se faltar alguma lib no runtime (ex. `zlib1g` pro rdkafka do kafka), adicione no `apt-get install` do estágio `runtime` do `Dockerfile`.
 
-Perfil com base CUDA (`--gpus all`) — hoje é só a mesma imagem numa base `nvidia/cuda`; aceleração de GPU real ainda não está implementada no pipeline de embeddings (ver `crates/nexus-ai/Cargo.toml`):
+Perfil com base CUDA (`--gpus all`) — usa a mesma imagem numa base `nvidia/cuda`; as features `cuda`/`metal` registram o execution provider ONNX correto, mas **não foram validadas em hardware real** (fallback silencioso pra CPU se driver/GPU não estiver presente):
 
 ```bash
 docker build --build-arg RUNTIME_IMAGE=nvidia/cuda:12.4.1-runtime-ubuntu22.04 -t nexusflow:cuda .
@@ -39,7 +39,7 @@ docker run --gpus all -d -p 8080:8080 -e NEXUS_JWT_SECRET=... -e NEXUS_ENCRYPTIO
 curl -fsSL https://raw.githubusercontent.com/ailake-io/nexusflow/develop/scripts/install.sh | sh
 ```
 
-Baixa o binário + drivers ADBC pra `~/.local/share/nexusflow` e cria `~/.local/bin/nexusflow`. Precisa de um [release](https://github.com/ailake-io/nexusflow/releases) publicado — ver `.github/workflows/release.yml`. O binário do release já vem com **todos** os 16 conectores linkados (`embed-ui,connectors-all`, não só postgres/sqlite — ver seção 2 abaixo); pra `odbc`/`kafka` funcionarem, precisa de `unixodbc`/`libsasl2` no sistema (o instalador avisa no final se faltar).
+Baixa o binário + drivers ADBC pra `~/.local/share/nexusflow` e cria `~/.local/bin/nexusflow`. Precisa de um [release](https://github.com/ailake-io/nexusflow/releases) publicado — ver `.github/workflows/release.yml`. O binário do release já vem com **todos** os 18 conectores linkados (`embed-ui,connectors-all`, não só postgres/sqlite — ver seção 2 abaixo); pra `odbc`/`kafka` funcionarem, precisa de `unixodbc`/`libsasl2` no sistema (o instalador avisa no final se faltar).
 
 ### Pacotes nativos (Linux)
 
@@ -77,7 +77,7 @@ export NEXUS_ADMIN_PASSWORD="troque-isto"
 
 Isso só se aplica a quem builda a partir do source (seção 1, "Build a partir do source") — os binários pré-buildados (script de instalação, `.deb`/AppImage/rpm, imagem Docker `:full`) já vêm com `connectors-all` ligado, ver seção 1.
 
-Por padrão um `cargo build` sem flags só liga `postgres` e `sqlite`. Os outros 14 conectores (mongodb, kafka, rest, odbc, milvus, qdrant, lancedb, pgvector, pinecone, chromadb, deltalake, iceberg, parquet, ailake) são features Cargo opcionais — cada um só entra no binário se for pedido:
+Por padrão um `cargo build` sem flags só liga `postgres` e `sqlite`. Os outros 16 conectores (mongodb, kafka, rest, odbc, milvus, qdrant, lancedb, pgvector, pinecone, chromadb, deltalake, iceberg, parquet, ailake, csv, webhook) são features Cargo opcionais — cada um só entra no binário se for pedido:
 
 ```bash
 # um conector específico
@@ -91,7 +91,7 @@ cargo build --release -p nexusflow --features embed-ui,connectors-all
 
 ### Embeddings (chunking + ONNX)
 
-Para gerar embeddings no pipeline, adicione um nó `embedding` ao spec — ele roda **antes** do transform SQL, expandindo cada linha da source em chunks e adicionando uma coluna `FixedSizeList<Float32>` com os vetores:
+Para gerar embeddings no pipeline, adicione um nó `embedding` ao spec (ou arraste o node **+ Embedding** no Canvas — ambos editam o mesmo campo) — ele roda **antes** do transform SQL, expandindo cada linha da source em chunks e adicionando uma coluna `FixedSizeList<Float32>` com os vetores:
 
 ```json
 {
@@ -128,13 +128,42 @@ A feature Cargo `embeddings` (incluída em `connectors-all`) liga o crate `nexus
 |---|---|---|---|
 | `NEXUS_JWT_SECRET` | sim | — | Segredo pra assinar/validar JWT. Sem ela o processo não sobe. |
 | `NEXUS_ENCRYPTION_KEY` | sim | — | 64 caracteres hex (32 bytes) — chave AES-256-GCM que criptografa credenciais de conector em repouso. Gere com `openssl rand -hex 32`. |
-| `NEXUS_CHECKPOINT_DB` | não | `sqlite://nexusflow.db` | Onde ficam os checkpoints de pipeline (retomada por partição). |
-| `NEXUS_AUTH_DB` | não | `sqlite://nexusflow-auth.db` | Usuários e papéis (RBAC). |
-| `NEXUS_PIPELINES_DB` | não | `sqlite://nexusflow-pipelines.db` | Definições de pipeline e histórico de execuções. |
+| `NEXUS_CHECKPOINT_DB` | não | `sqlite://nexusflow.db` | Onde ficam os checkpoints de pipeline (retomada por partição). Aceita `postgres://`/`postgresql://` também — ver §4 abaixo. |
+| `NEXUS_AUTH_DB` | não | `sqlite://nexusflow-auth.db` | Usuários e papéis (RBAC). Aceita `postgres://`/`postgresql://` também. |
+| `NEXUS_PIPELINES_DB` | não | `sqlite://nexusflow-pipelines.db` | Definições de pipeline e histórico de execuções. Aceita `postgres://`/`postgresql://` também. |
 | `NEXUS_ADMIN_USERNAME` / `NEXUS_ADMIN_PASSWORD` | não | — | Se as duas estiverem setadas e a tabela de usuários estiver vazia, cria a conta Admin inicial (idempotente — não roda de novo depois). |
 | `NEXUS_SLACK_WEBHOOK_URL` | não | — | Sem ela, falhas de pipeline não disparam alerta no Slack. |
 | `NEXUS_OTLP_ENDPOINT` | não | — | Endpoint OTLP/HTTP pra exportar traces. Sem ela, traces ficam só como log JSON local; métricas Prometheus em `/metrics` funcionam de qualquer jeito. |
 | `ADBC_DRIVER_POSTGRESQL_PATH` / `ADBC_DRIVER_SQLITE_PATH` | sim (se usar postgres/sqlite) | — | Caminho pro `.so`/`.dylib` do driver ADBC — não existe distribuição via crates.io, tem que buildar com `scripts/build-adbc-*-driver.sh`. |
+
+### Metadados em Postgres (multi-réplica / k8s)
+
+Por padrão os 3 metadados acima (`NEXUS_CHECKPOINT_DB`/`NEXUS_AUTH_DB`/`NEXUS_PIPELINES_DB`) usam SQLite — suficiente pra rodar single-node (`ARCHITECTURE.md §6`). Apontando as três pra um Postgres em vez disso (`postgres://user:pass@host:5432/db`), o backend troca automaticamente pelo scheme da URL — sem flag nem env var extra:
+
+```bash
+export NEXUS_CHECKPOINT_DB=postgres://user:pass@host:5432/nexusflow
+export NEXUS_AUTH_DB=postgres://user:pass@host:5432/nexusflow
+export NEXUS_PIPELINES_DB=postgres://user:pass@host:5432/nexusflow
+```
+
+As três podem apontar pro mesmo banco Postgres (tabelas não colidem) ou bancos separados. Isso é o pré-requisito real pra rodar mais de uma réplica atrás do mesmo Service em k8s: SQLite não pode ser compartilhado com segurança entre réplicas (não use volume `ReadWriteMany` com ele — é receita de `database is locked`). Com Postgres, o scheduler de cron também coordena via `pg_try_advisory_lock` — só uma réplica dispara cada pipeline agendado por tick, mesmo com N réplicas lendo o mesmo Postgres (em SQLite essa coordenação não existe, mas também não faz sentido — só uma réplica é segura com SQLite de qualquer forma).
+
+**Migrando dados existentes de SQLite pra Postgres**: o binário `migrate-metadata` copia usuários, pipelines salvos, histórico de runs e checkpoints preservando os IDs originais (idempotente — rodar de novo só pula o que já foi migrado):
+
+```bash
+cargo run --release -p nexus-server --bin migrate-metadata --features postgres -- \
+  --auth-sqlite sqlite://nexusflow-auth.db --auth-postgres postgres://user:pass@host/db \
+  --pipelines-sqlite sqlite://nexusflow-pipelines.db --pipelines-postgres postgres://user:pass@host/db \
+  --checkpoint-sqlite sqlite://nexusflow.db --checkpoint-postgres postgres://user:pass@host/db
+```
+
+`spec_ciphertext` é copiado byte a byte, não re-criptografado — o servidor apontado pro Postgres migrado precisa rodar com o **mesmo** `NEXUS_ENCRYPTION_KEY` de antes, senão os specs migrados falham ao decriptar no primeiro load.
+
+Manifests de referência (Deployment/Service/PVC/HPA/ConfigMap/Secret) em
+`packaging/kubernetes/` (`kubectl apply -k packaging/kubernetes/`), stack file
+de Docker Swarm em `packaging/swarm/` (`docker stack deploy`) — ver o `README.md`
+de cada um. Não são Helm chart nem testados num cluster gerenciado real, são
+ponto de partida validado offline.
 
 ## 4. Primeiro acesso
 
@@ -145,7 +174,7 @@ A feature Cargo `embeddings` (incluída em `connectors-all`) liga o crate `nexus
 5. Opcional: adicione um node de transform (SQL via DataFusion) entre source e sink, ou um node `dbt` depois do(s) sink(s) pra rodar ELT pós-carga. **Sem transform, o runner só suporta `postgres → postgres`; cross-connector ou outros conectores exigem um nó transform.**
 6. Clique **Save** pra persistir o pipeline (cria na primeira vez, atualiza nas seguintes) — sem isso ele só existe nessa aba do navegador e o scheduler (próximo item) não tem o que agendar. Opcional: preencha o campo **schedule** (cron) pra rodar automaticamente, sem precisar clicar Run de novo.
 7. Rode manualmente e acompanhe linhas/s, MB/s e logs em tempo real no painel de execução (WebSocket), ou deixe o schedule disparar sozinho.
-8. Na aba **Pipelines**: veja tudo que já foi salvo, clique **Edit** pra recarregar um pipeline de volta no canvas (inclusive configs de conector) ou **Delete** pra remover. Na aba **Status**: visão rápida de todos os pipelines com um flag por linha — verde (sucesso), amarelo (em execução), vermelho (falha), cinza (nunca rodou).
+8. Na aba **Pipelines**: veja tudo que já foi salvo, clique **Edit** pra recarregar um pipeline de volta no canvas (inclusive configs de conector), **Histórico** pra ver todas as execuções (não só a última) com duração calculada, linhas gravadas, erro completo em caso de falha e um botão **Logs** por execução (funciona pra qualquer run, inclusive um disparado pelo scheduler que ninguém acompanhou ao vivo), ou **Delete** pra remover. Na aba **Status**: visão rápida de todos os pipelines com um flag por linha — verde (sucesso), amarelo (em execução), vermelho (falha), cinza (nunca rodou).
 
 ### Via API direto
 
@@ -195,15 +224,42 @@ curl -s -X POST http://localhost:8080/pipelines/meu-pipeline/run \
 # histórico de execuções (inclui as disparadas pelo scheduler, indistinguíveis de um run manual)
 curl -s http://localhost:8080/pipelines/meu-pipeline/runs -H "authorization: Bearer $TOKEN"
 
+# log de execução de um run específico (id vindo da resposta acima ou do POST /run) —
+# funciona pra um run já terminado ou disparado pelo scheduler sem ninguém olhando o
+# WebSocket ao vivo, já que fica persistido (ARCHITECTURE.md §15)
+curl -s http://localhost:8080/pipelines/meu-pipeline/runs/1/logs -H "authorization: Bearer $TOKEN"
+
 # spec completo, configs de conector inclusas — só pra recarregar/editar, exige Write
 curl -s http://localhost:8080/pipelines/meu-pipeline/spec -H "authorization: Bearer $TOKEN"
+
+# preview: primeiras linhas de um node source/sink do pipeline, sem rodar o pipeline inteiro
+curl -s "http://localhost:8080/pipelines/meu-pipeline/preview?node=source0&limit=20" \
+  -H "authorization: Bearer $TOKEN"
 ```
 
 Papéis RBAC (`Read < Execute < Write < Admin`): criar/editar pipeline (`POST`/`PUT`/`DELETE /pipelines`, e `GET /pipelines/{id}/spec`) exige `Write`; rodar exige `Execute`; listar catálogo/histórico/resumo (`GET /pipelines`) exige `Read`.
 
-## 5. ELT com dbt (opcional)
+## 5. ELT (ou ETL real) com dbt (opcional)
 
 Precisa do build com a feature `dbt` (`cargo build --features embed-ui,dbt`) e do CLI `dbt` (dbt-fusion) no `PATH` do processo em runtime — não é instalado automaticamente. Um pipeline com um node `dbt` roda `dbt run`/`build`/`test` contra o warehouse de destino **depois** que a carga bruta termina (ELT clássico, não transforma os `RecordBatch` do pipeline em si). Resultado (models/tests passados, lineage) aparece no histórico da execução e no painel da UI.
+
+Se `dbt.output` estiver setado no spec (aponta pro model/tabela que o dbt acabou de gerar), o pipeline vira ETL de verdade: depois do `dbt run`/`build`, o backend lê esse resultado de volta e grava em `post_dbt_sinks` — tudo no mesmo `run`, sem precisar montar um segundo pipeline manualmente pra "buscar o que o dbt gerou". Configuração hoje só via API/JSON (sem UI dedicada no Canvas ainda):
+
+```json
+{
+  "pipeline_id": "etl-com-dbt",
+  "sources": [{"connector": "postgres", "config": {"uri": "...", "table": "raw_events", "primary_key": "id"}}],
+  "sinks": [{"connector": "postgres", "config": {"uri": "...", "table": "staging_events", "primary_key": "id"}}],
+  "dbt": {
+    "project_dir": "meu_projeto_dbt",
+    "command": "run",
+    "output": {"connector": "postgres", "config": {"uri": "...", "table": "transformed_events", "primary_key": "id"}}
+  },
+  "post_dbt_sinks": [
+    {"connector": "postgres", "config": {"uri": "...", "table": "final_events", "primary_key": "id"}}
+  ]
+}
+```
 
 ## 6. Observabilidade
 
@@ -215,6 +271,7 @@ Precisa do build com a feature `dbt` (`cargo build --features embed-ui,dbt`) e d
 
 | Arquivo | Conteúdo |
 |---|---|
+| [`USER_GUIDE.md`](./USER_GUIDE.md) | Referência completa: config exata de cada um dos 18 conectores, transform SQL, embeddings, dbt ELT/ETL, preview, agendamento |
 | [`ARCHITECTURE.md`](../ARCHITECTURE.md) | Roteador de conectores, streaming/backpressure, checkpointing |
 | [`IMPLEMENTATION_PLAN.md`](../IMPLEMENTATION_PLAN.md) | Detalhamento marco a marco |
 | [`ROADMAP.md`](../ROADMAP.md) | Fases e critério de "pronto" |

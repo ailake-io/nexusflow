@@ -1,5 +1,5 @@
-import { useCallback, useState, type ReactNode } from 'react'
-import { login as apiLogin } from '@/lib/api'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { decodeRoleFromToken, login as apiLogin, onUnauthorized } from '@/lib/api'
 import { AuthContext } from '@/lib/auth-context'
 
 const STORAGE_KEY = 'nexusflow.token'
@@ -9,6 +9,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // reason to outlive the tab. Re-login on every new session is fine for
   // the MVP self-host scale this targets.
   const [token, setToken] = useState<string | null>(() => sessionStorage.getItem(STORAGE_KEY))
+  // Decoded (not verified) purely to decide whether to show the Admin nav
+  // item — the server enforces the role on every request regardless.
+  const role = useMemo(() => (token ? decodeRoleFromToken(token) : null), [token])
 
   const login = useCallback(async (username: string, password: string) => {
     const newToken = await apiLogin(username, password)
@@ -21,5 +24,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setToken(null)
   }, [])
 
-  return <AuthContext value={{ token, login, logout }}>{children}</AuthContext>
+  useEffect(() => {
+    onUnauthorized(logout)
+  }, [logout])
+
+  return <AuthContext value={{ token, role, login, logout }}>{children}</AuthContext>
 }

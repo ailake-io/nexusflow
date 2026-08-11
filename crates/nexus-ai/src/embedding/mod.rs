@@ -1,19 +1,29 @@
-//! ONNX embedding pipeline. Gated behind the `cpu` feature (and later
-//! `cuda`/`metal`/`api`) — see ARCHITECTURE.md §8 and CLAUDE.md §8.5.
-//! The `model` submodule resolves which local file backs a given Hugging
-//! Face repo (downloading + caching on first use). `inference` wraps the
-//! `ort` session + tokenizer to turn text into embeddings and append them to
-//! a `RecordBatch` — see ARCHITECTURE.md §4.3 and IMPLEMENTATION_PLAN.md
-//! Marco 5.
+//! Two independent embedding backends behind separate Cargo features (see
+//! nexus-ai/Cargo.toml, CLAUDE.md §4.3/§8.5): a local ONNX model (`cpu`,
+//! plus `cuda`/`metal` on top) via `inference`, or an external HTTP API
+//! (`api`) via `api_client`. `common` holds the shared error type and the
+//! arrow-append helper neither backend-specific module needs `ort` or
+//! `reqwest` for. `pipeline` orchestrates chunking + whichever backend the
+//! DAG spec's `EmbeddingModelSpec` selects — see ARCHITECTURE.md §4.3 and
+//! IMPLEMENTATION_PLAN.md Marco 5.
 
-mod inference;
-mod model;
+#[cfg(feature = "api")]
+mod api_client;
+mod common;
 #[cfg(feature = "cpu")]
+mod inference;
+// HF Hub resolution — only ever needed by the local-ONNX path.
+#[cfg(feature = "cpu")]
+mod model;
+#[cfg(any(feature = "cpu", feature = "api"))]
 mod pipeline;
 
-pub use inference::{
-    append_embedding_column, EmbeddingError, EmbeddingModel, EmbeddingModelConfig,
-};
-pub use model::{resolve_model_path, ModelConfig, ModelError};
+#[cfg(feature = "api")]
+pub use api_client::{ApiEmbeddingConfig, ApiEmbeddingModel};
+pub use common::{append_embedding_column, EmbeddingError};
 #[cfg(feature = "cpu")]
-pub use pipeline::apply_embedding;
+pub use inference::{EmbeddingModel, EmbeddingModelConfig};
+#[cfg(feature = "cpu")]
+pub use model::{resolve_model_path, ModelConfig, ModelError};
+#[cfg(any(feature = "cpu", feature = "api"))]
+pub use pipeline::{apply_embedding, load_embedding_backend, EmbeddingBackend};

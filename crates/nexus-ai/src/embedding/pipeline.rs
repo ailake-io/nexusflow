@@ -1,20 +1,106 @@
 use crate::chunking::{
     chunk_fixed_window, chunk_recursive_character, FixedWindowConfig, RecursiveCharacterConfig,
 };
-use crate::embedding::{
-    append_embedding_column, EmbeddingError, EmbeddingModel, EmbeddingModelConfig,
-};
+use crate::embedding::{append_embedding_column, EmbeddingError};
 use arrow_array::{Array, ArrayRef, FixedSizeListArray, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use nexus_core::{ChunkingSpec, EmbeddingModelSpec, EmbeddingSpec};
 use std::sync::Arc;
 
-/// Applies chunking + ONNX embedding to one `RecordBatch`, returning a new
-/// batch where each input row may have become N chunk-rows. Non-text columns
-/// are replicated for every chunk produced from their original row.
+/// A loaded embedding backend that can embed multiple batches without
+/// reloading the model/session each time. Created once per pipeline run via
+/// [`load_embedding_backend`] and reused across every batch of that run.
+#[cfg(any(feature = "cpu", feature = "api"))]
+pub enum EmbeddingBackend {
+    // Boxed: EmbeddingModel holds an ort::Session + tokenizers::Tokenizer
+    // (>1KB), versus ApiEmbeddingModel's single reqwest::Client handle
+    // (~80 bytes) — an unboxed variant would force every EmbeddingBackend
+    // value to be sized for the larger one regardless of which is active
+    // (clippy::large_enum_variant, real with cpu+api both compiled in).
+    #[cfg(feature = "cpu")]
+    Onnx(Box<crate::embedding::EmbeddingModel>),
+    #[cfg(feature = "api")]
+    Api(crate::embedding::ApiEmbeddingModel),
+}
+
+#[cfg(any(feature = "cpu", feature = "api"))]
+impl EmbeddingBackend {
+    pub async fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+        match self {
+            #[cfg(feature = "cpu")]
+            EmbeddingBackend::Onnx(model) => model.embed_batch(texts),
+            #[cfg(feature = "api")]
+            EmbeddingBackend::Api(model) => model.embed_batch(texts).await,
+        }
+    }
+}
+
+/// Loads whichever backend `spec.model` selects once per pipeline run. Each
+/// branch is only compiled when its matching Cargo feature is on; if the DAG
+/// spec asks for a backend this binary wasn't built with, that's a runtime
+/// config error (clear message), not a compile-time one.
+#[cfg(any(feature = "cpu", feature = "api"))]
+pub async fn load_embedding_backend(
+    spec: &EmbeddingSpec,
+) -> Result<EmbeddingBackend, EmbeddingError> {
+    match &spec.model {
+        #[cfg(feature = "cpu")]
+        EmbeddingModelSpec::Onnx {
+            repo,
+            filename,
+            tokenizer_filename,
+            max_length,
+        } => {
+            use crate::embedding::model::ModelConfig;
+            use crate::embedding::EmbeddingModelConfig;
+            let model_cfg = EmbeddingModelConfig {
+                model: ModelConfig {
+                    repo_id: repo.clone(),
+                    revision: "main".to_string(),
+                    filename: filename.clone(),
+                },
+                tokenizer_filename: tokenizer_filename.clone(),
+                dimension: spec.dimension,
+                max_length: *max_length,
+            };
+            let model = crate::embedding::EmbeddingModel::load(&model_cfg).await?;
+            Ok(EmbeddingBackend::Onnx(Box::new(model)))
+        }
+        #[cfg(not(feature = "cpu"))]
+        EmbeddingModelSpec::Onnx { .. } => Err(EmbeddingError::UnsupportedBackend(
+            "embedding model backend 'onnx' requires nexus-ai's `cpu` feature, which is not compiled into this binary".to_string(),
+        )),
+        #[cfg(feature = "api")]
+        EmbeddingModelSpec::Api {
+            base_url,
+            model,
+            api_key_env,
+        } => {
+            let client = crate::embedding::ApiEmbeddingModel::new(crate::embedding::ApiEmbeddingConfig {
+                base_url: base_url.clone(),
+                model: model.clone(),
+                api_key_env: api_key_env.clone(),
+            });
+            Ok(EmbeddingBackend::Api(client))
+        }
+        #[cfg(not(feature = "api"))]
+        EmbeddingModelSpec::Api { .. } => Err(EmbeddingError::UnsupportedBackend(
+            "embedding model backend 'api' requires nexus-ai's `api` feature, which is not compiled into this binary".to_string(),
+        )),
+    }
+}
+
+/// Applies chunking + embedding to one `RecordBatch`, returning a new batch
+/// where each input row may have become N chunk-rows. Non-text columns are
+/// replicated for every chunk produced from their original row. The embedding
+/// `backend` must be loaded once per pipeline run (see
+/// [`load_embedding_backend`]) and reused across all batches — this avoids
+/// reloading the ONNX model or HTTP client for every batch.
+#[cfg(any(feature = "cpu", feature = "api"))]
 pub async fn apply_embedding(
     batch: &RecordBatch,
     spec: &EmbeddingSpec,
+    backend: &mut EmbeddingBackend,
 ) -> Result<RecordBatch, EmbeddingError> {
     let source_idx = batch.schema().index_of(&spec.source_column).map_err(|_| {
         EmbeddingError::Arrow(arrow_schema::ArrowError::InvalidArgumentError(format!(
@@ -117,15 +203,8 @@ pub async fn apply_embedding(
     let expanded = RecordBatch::try_new(schema_without_embedding, expanded_columns)
         .map_err(EmbeddingError::Arrow)?;
 
-    // 4. Load model and embed all chunks.
-    let model_cfg = EmbeddingModelConfig {
-        model: ModelConfig::from(&spec.model),
-        tokenizer_filename: spec.model.tokenizer_filename.clone(),
-        dimension: spec.dimension,
-        max_length: spec.model.max_length,
-    };
-    let mut model = EmbeddingModel::load(&model_cfg).await?;
-    let embeddings = model.embed_batch(&chunk_texts)?;
+    // 4. Embed all chunks via the pre-loaded backend.
+    let embeddings = backend.embed(&chunk_texts).await?;
 
     // 5. Append the embedding column.
     append_embedding_column(&expanded, &embeddings, spec.dimension, &spec.output_column)
@@ -237,20 +316,5 @@ fn new_empty_array(data_type: &DataType) -> ArrayRef {
             ) as ArrayRef
         }
         other => panic!("new_empty_array not implemented for {other:?}"),
-    }
-}
-
-use crate::embedding::model::ModelConfig;
-
-impl From<&EmbeddingModelSpec> for ModelConfig {
-    fn from(spec: &EmbeddingModelSpec) -> Self {
-        Self {
-            repo_id: spec.repo.clone(),
-            // Pin to the repo's default revision (usually "main") for now;
-            // reproducibility could be enhanced by adding an explicit revision
-            // field to EmbeddingModelSpec later.
-            revision: "main".to_string(),
-            filename: spec.filename.clone(),
-        }
     }
 }

@@ -1,23 +1,31 @@
 import { useEffect } from 'react'
+import {
+  Activity,
+  CheckCircle2,
+  XCircle,
+  Clock,
+  CalendarClock,
+  Loader2,
+  AlertCircle,
+} from 'lucide-react'
+import { useI18n } from '@/lib/i18n'
 import { usePipelines } from '@/hooks/usePipelines'
+import { StatusBadge } from '@/components/ui/status-badge'
+import { EmptyState } from '@/components/EmptyState'
 import type { PipelineSummary } from '@/lib/api'
 
 const POLL_INTERVAL_MS = 5000
 
 type FlagColor = 'green' | 'yellow' | 'red' | 'gray'
 
-const FLAG_STYLE: Record<FlagColor, string> = {
-  green: 'bg-green-500',
-  yellow: 'bg-yellow-500 animate-pulse',
-  red: 'bg-red-500',
-  gray: 'bg-muted-foreground/40',
-}
-
-const FLAG_LABEL: Record<FlagColor, string> = {
-  green: 'Sucesso',
-  yellow: 'Em execução',
-  red: 'Falha',
-  gray: 'Agendado',
+const FLAG_CONFIG: Record<
+  FlagColor,
+  { variant: 'success' | 'running' | 'failed' | 'idle'; icon: typeof CheckCircle2 }
+> = {
+  green: { variant: 'success', icon: CheckCircle2 },
+  yellow: { variant: 'running', icon: Clock },
+  red: { variant: 'failed', icon: XCircle },
+  gray: { variant: 'idle', icon: CalendarClock },
 }
 
 /** One pipeline's flag reflects its last known outcome, not just whether it
@@ -31,15 +39,6 @@ function flagFor(p: PipelineSummary): FlagColor {
   return 'gray'
 }
 
-function Flag({ color }: { color: FlagColor }) {
-  return (
-    <span className="inline-flex items-center gap-1.5" title={FLAG_LABEL[color]}>
-      <span className={`h-2.5 w-2.5 rounded-full ${FLAG_STYLE[color]}`} />
-      <span className="text-xs text-muted-foreground">{FLAG_LABEL[color]}</span>
-    </span>
-  )
-}
-
 /**
  * Dashboard tab: every saved pipeline at a glance — one colored flag per
  * row (green/yellow/red/gray) instead of the detailed connector badges the
@@ -47,6 +46,7 @@ function Flag({ color }: { color: FlagColor }) {
  * "running" flag flips to green/red without a manual refresh.
  */
 export function PipelineStatusBoard() {
+  const { t } = useI18n()
   const { pipelines, loading, error, refresh } = usePipelines()
 
   useEffect(() => {
@@ -62,54 +62,103 @@ export function PipelineStatusBoard() {
     { green: 0, yellow: 0, red: 0, gray: 0 } as Record<FlagColor, number>,
   )
 
+  const flagOrder: FlagColor[] = ['green', 'yellow', 'red', 'gray']
+
   return (
-    <div className="h-full overflow-auto p-4">
-      <div className="mb-3 flex items-center justify-between">
-        <h1 className="text-lg font-medium">Status dos pipelines</h1>
-        <div className="flex gap-3">
-          {(['green', 'yellow', 'red', 'gray'] as const).map((color) => (
-            <span key={color} className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <span className={`h-2.5 w-2.5 rounded-full ${FLAG_STYLE[color]}`} />
-              {counts[color]} {FLAG_LABEL[color].toLowerCase()}
-            </span>
-          ))}
+    <div className="h-full overflow-auto p-6">
+      <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="text-lg font-semibold tracking-tight">{t('status.title')}</h1>
+          <p className="text-xs text-muted-foreground">{t('status.subtitle')}</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {flagOrder.map((color) => {
+            const config = FLAG_CONFIG[color]
+            const Icon = config.icon
+            const labelKey: 'success' | 'running' | 'failed' | 'scheduled' =
+              color === 'green' ? 'success' : color === 'yellow' ? 'running' : color === 'red' ? 'failed' : 'scheduled'
+            return (
+              <div
+                key={color}
+                className="flex items-center gap-2 rounded-lg border border-white/10 bg-card px-3 py-1.5 text-xs"
+              >
+                <Icon className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className="font-medium text-foreground">{counts[color]}</span>
+                <span className="text-muted-foreground">{t(`status.${labelKey}`).toLowerCase()}</span>
+              </div>
+            )
+          })}
         </div>
       </div>
+
       {loading && pipelines.length === 0 && (
-        <p className="text-sm text-muted-foreground">Loading…</p>
+        <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">
+          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+          {t('status.loading')}
+        </div>
       )}
-      {error && <p className="text-sm text-destructive">{error}</p>}
+
+      {error && (
+        <div className="mb-4 flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-xs text-red-400">
+          <AlertCircle className="h-4 w-4" />
+          {error}
+        </div>
+      )}
+
       {!loading && pipelines.length === 0 && (
-        <p className="text-sm text-muted-foreground">Nenhum pipeline salvo ainda.</p>
+        <EmptyState
+          icon={<Activity className="h-6 w-6" />}
+          title={t('status.emptyTitle')}
+          description={t('status.emptyDescription')}
+        />
       )}
-      <div className="overflow-x-auto rounded-lg border">
-        <table className="w-full text-sm">
-          <thead className="bg-muted/50 text-left text-xs text-muted-foreground">
-            <tr>
-              <th className="px-3 py-2 font-medium">Status</th>
-              <th className="px-3 py-2 font-medium">pipeline_id</th>
-              <th className="px-3 py-2 font-medium">schedule</th>
-              <th className="px-3 py-2 font-medium">última execução</th>
-            </tr>
-          </thead>
-          <tbody>
-            {pipelines.map((p) => (
-              <tr key={p.pipeline_id} className="border-t">
-                <td className="px-3 py-2">
-                  <Flag color={flagFor(p)} />
-                </td>
-                <td className="px-3 py-2 font-medium">{p.pipeline_id}</td>
-                <td className="px-3 py-2 text-muted-foreground">
-                  {p.schedule ?? <span className="italic">manual</span>}
-                </td>
-                <td className="px-3 py-2 text-muted-foreground">
-                  {p.last_run_at ?? <span className="italic">nunca rodou</span>}
-                </td>
+
+      {pipelines.length > 0 && (
+        <div className="overflow-hidden rounded-xl border border-white/10 bg-card">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/50 text-left text-xs uppercase tracking-wider text-muted-foreground">
+              <tr>
+                <th className="px-4 py-3 font-medium">{t('status.status')}</th>
+                <th className="px-4 py-3 font-medium">{t('status.pipeline')}</th>
+                <th className="px-4 py-3 font-medium">{t('status.schedule')}</th>
+                <th className="px-4 py-3 font-medium">{t('status.lastRun')}</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody className="divide-y divide-white/5">
+              {pipelines.map((p) => {
+                const color = flagFor(p)
+                const config = FLAG_CONFIG[color]
+                const labelKey: 'success' | 'running' | 'failed' | 'scheduled' =
+                  color === 'green'
+                    ? 'success'
+                    : color === 'yellow'
+                      ? 'running'
+                      : color === 'red'
+                        ? 'failed'
+                        : 'scheduled'
+                return (
+                  <tr key={p.pipeline_id} className="transition-colors hover:bg-white/[0.02]">
+                    <td className="px-4 py-3">
+                      <StatusBadge variant={config.variant} pulse={color === 'yellow'}>
+                        {t(`status.${labelKey}`)}
+                      </StatusBadge>
+                    </td>
+                    <td className="px-4 py-3 font-medium text-foreground">{p.pipeline_id}</td>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      {p.schedule ?? <span className="italic opacity-60">{t('status.manual')}</span>}
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      {p.last_run_at ?? <span className="italic opacity-60">{t('status.neverRun')}</span>}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   )
 }
+
+export default PipelineStatusBoard

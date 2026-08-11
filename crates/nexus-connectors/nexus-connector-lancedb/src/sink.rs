@@ -3,7 +3,8 @@ use arrow_array::{Array, Int64Array, RecordBatch, RecordBatchIterator, RecordBat
 use async_trait::async_trait;
 use lancedb::connection::Connection;
 use nexus_core::{
-    project_column, split_by_opcode, validate_identifier, CheckpointCursor, NexusError, Sink,
+    project_column, split_by_opcode, validate_identifier, with_timeout, CheckpointCursor,
+    NexusError, Sink,
 };
 
 /// AI Lakehouse sink #3. LanceDB is Arrow-native — batches are handed over
@@ -16,6 +17,7 @@ pub struct LanceDbSink {
     table: String,
     primary_key: String,
     table_exists: bool,
+    timeout_seconds: u64,
 }
 
 impl LanceDbSink {
@@ -24,15 +26,21 @@ impl LanceDbSink {
         // so validate it before splicing it into any predicate string.
         validate_identifier(&cfg.primary_key)?;
 
-        let connection = lancedb::connect(&cfg.uri)
-            .execute()
-            .await
-            .map_err(|e| NexusError::Connector(format!("lancedb connect failed: {e}")))?;
-        let table_names = connection
-            .table_names()
-            .execute()
-            .await
-            .map_err(|e| NexusError::Connector(format!("lancedb list tables failed: {e}")))?;
+        let connection = with_timeout(cfg.timeout_seconds, "lancedb connect", async {
+            lancedb::connect(&cfg.uri)
+                .execute()
+                .await
+                .map_err(|e| NexusError::Connector(format!("lancedb connect failed: {e}")))
+        })
+        .await?;
+        let table_names = with_timeout(cfg.timeout_seconds, "lancedb list tables", async {
+            connection
+                .table_names()
+                .execute()
+                .await
+                .map_err(|e| NexusError::Connector(format!("lancedb list tables failed: {e}")))
+        })
+        .await?;
         let table_exists = table_names.iter().any(|n| n == &cfg.table);
 
         Ok(Self {
@@ -40,6 +48,7 @@ impl LanceDbSink {
             table: cfg.table.clone(),
             primary_key: cfg.primary_key.clone(),
             table_exists,
+            timeout_seconds: cfg.timeout_seconds,
         })
     }
 
@@ -51,31 +60,39 @@ impl LanceDbSink {
         let reader = RecordBatchIterator::new(vec![Ok(batch)], schema);
 
         if !self.table_exists {
-            self.connection
-                .create_table(
-                    &self.table,
-                    Box::new(reader) as Box<dyn RecordBatchReader + Send>,
-                )
-                .execute()
-                .await
-                .map_err(|e| NexusError::Connector(format!("lancedb create_table failed: {e}")))?;
+            with_timeout(self.timeout_seconds, "lancedb create_table", async {
+                self.connection
+                    .create_table(
+                        &self.table,
+                        Box::new(reader) as Box<dyn RecordBatchReader + Send>,
+                    )
+                    .execute()
+                    .await
+                    .map_err(|e| NexusError::Connector(format!("lancedb create_table failed: {e}")))
+            })
+            .await?;
             self.table_exists = true;
             return Ok(());
         }
 
-        let table = self
-            .connection
-            .open_table(&self.table)
-            .execute()
-            .await
-            .map_err(|e| NexusError::Connector(format!("lancedb open_table failed: {e}")))?;
-        let mut merge = table.merge_insert(&[self.primary_key.as_str()]);
-        merge.when_matched_update_all(None);
-        merge.when_not_matched_insert_all();
-        merge
-            .execute(Box::new(reader) as Box<dyn RecordBatchReader + Send>)
-            .await
-            .map_err(|e| NexusError::Connector(format!("lancedb merge_insert failed: {e}")))?;
+        let table = with_timeout(self.timeout_seconds, "lancedb open_table", async {
+            self.connection
+                .open_table(&self.table)
+                .execute()
+                .await
+                .map_err(|e| NexusError::Connector(format!("lancedb open_table failed: {e}")))
+        })
+        .await?;
+        with_timeout(self.timeout_seconds, "lancedb merge_insert", async {
+            let mut merge = table.merge_insert(&[self.primary_key.as_str()]);
+            merge.when_matched_update_all(None);
+            merge.when_not_matched_insert_all();
+            merge
+                .execute(Box::new(reader) as Box<dyn RecordBatchReader + Send>)
+                .await
+                .map_err(|e| NexusError::Connector(format!("lancedb merge_insert failed: {e}")))
+        })
+        .await?;
         Ok(())
     }
 
@@ -100,16 +117,21 @@ impl LanceDbSink {
             .join(", ");
         let predicate = format!("{} IN ({id_list})", self.primary_key);
 
-        let table = self
-            .connection
-            .open_table(&self.table)
-            .execute()
-            .await
-            .map_err(|e| NexusError::Connector(format!("lancedb open_table failed: {e}")))?;
-        table
-            .delete(&predicate)
-            .await
-            .map_err(|e| NexusError::Connector(format!("lancedb delete failed: {e}")))?;
+        let table = with_timeout(self.timeout_seconds, "lancedb open_table", async {
+            self.connection
+                .open_table(&self.table)
+                .execute()
+                .await
+                .map_err(|e| NexusError::Connector(format!("lancedb open_table failed: {e}")))
+        })
+        .await?;
+        with_timeout(self.timeout_seconds, "lancedb delete", async {
+            table
+                .delete(&predicate)
+                .await
+                .map_err(|e| NexusError::Connector(format!("lancedb delete failed: {e}")))
+        })
+        .await?;
         Ok(())
     }
 }

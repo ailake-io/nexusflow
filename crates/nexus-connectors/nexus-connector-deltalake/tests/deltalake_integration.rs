@@ -19,6 +19,7 @@ async fn writes_reads_back_and_deletes_via_delta_ops() {
     let cfg = DeltaConnectorConfig {
         table_uri: table_uri.clone(),
         primary_key: "id".to_string(),
+        timeout_seconds: 30,
     };
 
     let schema = Arc::new(Schema::new(vec![

@@ -4,19 +4,25 @@ mod auth_store;
 mod checkpoint_store;
 mod connectors;
 mod crypto;
+mod db;
 mod dbt;
 #[cfg(feature = "embed-ui")]
 mod embedded_ui;
 mod error;
+mod hardware_stats;
+mod license;
+mod license_store;
+pub mod migrate;
 mod pipeline_store;
 mod progress;
 mod rate_limit;
+mod run_log_store;
 mod runner;
 mod scheduler;
 pub mod telemetry;
 
-use alerts::AlertNotifier;
-use auth::{require_role, Claims, JwtCodec, Role};
+use alerts::{AlertConfig, AlertNotifier};
+use auth::{require_role, Claims, JwtCodec, Role, TokenBlocklist};
 use auth_store::AuthStore;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Extension, FromRef, Path, Query, State};
@@ -28,14 +34,19 @@ use axum::{Json, Router};
 use checkpoint_store::CheckpointStore;
 use crypto::SecretCipher;
 use error::ApiError;
-use nexus_core::{ConnectorRegistry, PipelineSpec, ProgressSender};
+use futures_util::StreamExt;
+use license_store::{LicenseStore, LicenseStoreError};
+use nexus_core::{ConnectorRegistry, NodeSpec, PipelineSpec, ProgressSender};
 use pipeline_store::{PipelineStore, PipelineStoreError, PipelineSummary, RunRecord};
-use progress::ProgressHub;
+use progress::{ProgressHub, RunLogEvent, RunLogger};
+use run_log_store::RunLogStore;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
 const DEFAULT_PAGE_LIMIT: i64 = 50;
 const MAX_PAGE_LIMIT: i64 = 1000;
+const DEFAULT_PREVIEW_LIMIT: usize = 50;
+const MAX_PREVIEW_LIMIT: usize = 500;
 
 /// Query parameters for paginated list endpoints.
 #[derive(Debug, Deserialize)]
@@ -68,9 +79,13 @@ struct AppState {
     /// Encrypts connector secrets before `pipelines` persists them (CLAUDE.md §5).
     secrets: SecretCipher,
     pipelines: PipelineStore,
+    run_logs: RunLogStore,
+    license_store: LicenseStore,
     progress: ProgressHub,
     alerts: AlertNotifier,
     login_rate_limiter: std::sync::Arc<rate_limit::LoginRateLimiter>,
+    /// `NEXUS_ALLOW_INTERNAL_HOSTS` — see `PipelineSpec::validate_security_with`.
+    allow_internal_hosts: bool,
 }
 
 impl From<PipelineStoreError> for ApiError {
@@ -84,6 +99,15 @@ impl From<PipelineStoreError> for ApiError {
             }
             PipelineStoreError::Corrupt(msg) => ApiError::internal(msg),
             PipelineStoreError::Sqlx(e) => ApiError::internal(e),
+        }
+    }
+}
+
+impl From<LicenseStoreError> for ApiError {
+    fn from(err: LicenseStoreError) -> Self {
+        match err {
+            LicenseStoreError::License(e) => ApiError::bad_request(e.to_string()),
+            LicenseStoreError::Sqlx(e) => ApiError::internal(e),
         }
     }
 }
@@ -117,6 +141,9 @@ fn router(state: AppState) -> Router {
     // missing-extension rejection instead of getting a real 401/403.
     let execute_protected = Router::new()
         .route("/pipelines/{id}/run", post(run_pipeline_handler))
+        // Same role as running the pipeline: a real, live connection to an
+        // external system with a decrypted credential, same trust bar.
+        .route("/pipelines/{id}/preview", get(preview_node_handler))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_role::<AppState>,
@@ -153,6 +180,10 @@ fn router(state: AppState) -> Router {
         .route("/pipelines", get(list_pipelines_handler))
         .route("/pipelines/{id}", get(get_pipeline_handler))
         .route("/pipelines/{id}/runs", get(list_runs_handler))
+        .route(
+            "/pipelines/{id}/runs/{run_id}/logs",
+            get(list_run_logs_handler),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_role::<AppState>,
@@ -167,6 +198,13 @@ fn router(state: AppState) -> Router {
             get(get_user_handler).delete(delete_user_handler),
         )
         .route("/users/{username}/role", put(update_user_role_handler))
+        // Installing/inspecting the enterprise license is an access-control
+        // action, same trust bar as user management — see
+        // `docs/ENTERPRISE_LICENSING.md`.
+        .route(
+            "/license",
+            post(install_license_handler).get(license_status_handler),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_role::<AppState>,
@@ -181,6 +219,16 @@ fn router(state: AppState) -> Router {
         .layer(middleware::from_fn(rate_limit::login_rate_limit))
         .layer(Extension(state.login_rate_limiter.clone()));
 
+    // Logout requires any valid token; the token is revoked so it can't be
+    // reused until expiry. Protected by Read role (minimum authenticated role).
+    let logout_routes = Router::new()
+        .route("/auth/logout", post(logout_handler))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_role::<AppState>,
+        ))
+        .layer(Extension(Role::Read));
+
     let app = Router::new()
         .route("/health", get(health))
         // Unauthenticated like /health — Prometheus scrapers don't carry a
@@ -189,6 +237,7 @@ fn router(state: AppState) -> Router {
         // here (ARCHITECTURE.md §9/§10).
         .route("/metrics", get(metrics_handler))
         .merge(login_routes)
+        .merge(logout_routes)
         // Not behind `require_role` — a browser's `WebSocket` API can't set
         // an `Authorization` header, so this route reads the JWT from the
         // `Sec-WebSocket-Protocol` subprotocol and checks the role itself
@@ -248,15 +297,30 @@ struct ConnectorCatalogEntry {
     name: &'static str,
     capability: nexus_core::ConnectorCapability,
     config_schema: serde_json::Value,
+    /// `true` for every OSS connector; for an enterprise connector
+    /// (`requires_license: Some(_)` — none exist in this repo yet, see
+    /// `docs/ENTERPRISE_LICENSING.md`), `true` only if the installed
+    /// license's `connectors` list covers its slug. The canvas uses this to
+    /// show a locked/"upgrade" state instead of hiding the node outright.
+    licensed: bool,
 }
 
-async fn list_connectors_handler() -> Json<Vec<ConnectorCatalogEntry>> {
+async fn list_connectors_handler(
+    State(state): State<AppState>,
+) -> Json<Vec<ConnectorCatalogEntry>> {
+    let active_license = state.license_store.active().await.ok().flatten();
     Json(
         ConnectorRegistry::all()
             .map(|d| ConnectorCatalogEntry {
                 name: d.name,
                 capability: d.capability,
                 config_schema: (d.config_schema)(),
+                licensed: match d.requires_license {
+                    None => true,
+                    Some(slug) => active_license
+                        .as_ref()
+                        .is_some_and(|claims| claims.covers(slug)),
+                },
             })
             .collect(),
     )
@@ -309,6 +373,28 @@ async fn login_handler(
 }
 
 #[derive(Serialize)]
+struct LogoutResponse {
+    revoked: bool,
+}
+
+async fn logout_handler(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    req: axum::extract::Request,
+) -> Result<Json<LogoutResponse>, ApiError> {
+    let header = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| ApiError::unauthorized("missing Authorization header"))?;
+    let token = header
+        .strip_prefix("Bearer ")
+        .ok_or_else(|| ApiError::unauthorized("Authorization header must be 'Bearer <token>'"))?;
+    state.jwt.blocklist().revoke(token.to_string(), claims.exp);
+    Ok(Json(LogoutResponse { revoked: true }))
+}
+
+#[derive(Serialize)]
 struct RunAccepted {
     run_id: i64,
 }
@@ -352,7 +438,7 @@ async fn run_pipeline_handler(
     let effective_spec = if let Some(spec) = persisted {
         spec
     } else if claims.role >= Role::Write {
-        spec.validate_security()
+        spec.validate_security_with(state.allow_internal_hosts)
             .map_err(|e| ApiError::bad_request(e.to_string()))?;
         spec
     } else {
@@ -386,12 +472,13 @@ pub(crate) async fn start_pipeline_run(
     // still show up in `GET /pipelines/{id}/runs`, same as always-persisted
     // ones.
     let run_id = state.pipelines.start_run(&spec.pipeline_id).await?;
-    let progress_tx = state.progress.start(run_id);
+    let (progress_tx, log_tx) = state.progress.start(run_id);
+    let logger = RunLogger::new(run_id, log_tx, state.run_logs.clone());
 
     let supervisor = state.clone();
     let spec = spec.clone();
     tokio::spawn(async move {
-        execute_pipeline_run(supervisor, spec, run_id, progress_tx).await;
+        execute_pipeline_run(supervisor, spec, run_id, progress_tx, logger).await;
     });
     Ok(run_id)
 }
@@ -401,14 +488,39 @@ pub(crate) async fn start_pipeline_run(
 /// while the process lives — a run row must never be stranded as
 /// `'running'` (death of the process itself is handled by the boot-time
 /// reaper, `PipelineStore::fail_interrupted_runs`).
-#[tracing::instrument(skip(state, spec, progress_tx), fields(pipeline_id = %spec.pipeline_id, run_id))]
+#[tracing::instrument(skip(state, spec, progress_tx, logger), fields(pipeline_id = %spec.pipeline_id, run_id))]
 async fn execute_pipeline_run(
     state: AppState,
     spec: PipelineSpec,
     run_id: i64,
     progress_tx: ProgressSender,
+    logger: RunLogger,
 ) {
-    let result = runner::run_pipeline(&spec, &state.checkpoints, Some(progress_tx)).await;
+    let mode = if spec.has_transform() {
+        if spec.dbt.is_some() {
+            "transform+dbt"
+        } else {
+            "transform"
+        }
+    } else {
+        "linear"
+    };
+    let source_connectors: Vec<_> = spec.sources.iter().map(|s| s.connector.as_str()).collect();
+    let sink_connectors: Vec<_> = spec.sinks.iter().map(|s| s.connector.as_str()).collect();
+    logger
+        .info(format!(
+            "Pipeline {} started (run {run_id}): mode={mode}, sources={source_connectors:?}, sinks={sink_connectors:?}",
+            spec.pipeline_id
+        ))
+        .await;
+
+    let result = runner::run_pipeline(
+        &spec,
+        &state.checkpoints,
+        Some(progress_tx.clone()),
+        Some(&logger),
+    )
+    .await;
     state.progress.finish(run_id);
 
     match result {
@@ -418,18 +530,53 @@ async fn execute_pipeline_run(
             // same recording/alerting as a load failure, not a separate
             // "partial success" state.
             let mut dbt_summary = None;
+            let mut stats = stats;
             if let Some(dbt_config) = &spec.dbt {
+                logger.info("running dbt").await;
                 match dbt::run(dbt_config).await {
                     Ok(outcome) => {
                         outcome.log_summary();
+                        logger.info("dbt finished").await;
                         dbt_summary = outcome.summary_json();
                     }
                     Err(e) => {
-                        record_run_failure(&state, run_id, &spec.pipeline_id, &e).await;
+                        record_run_failure(&state, run_id, &spec.pipeline_id, &e, &logger).await;
                         return;
                     }
                 }
+                // True ETL (approved plan): dbt.output + post_dbt_sinks lets a
+                // pipeline read dbt's transformed result back out and write it
+                // to a final destination, instead of dbt staying a terminal
+                // ELT step. A failure here fails the whole run, same as a dbt
+                // failure itself.
+                if let Some(output_node) = &dbt_config.output {
+                    if !spec.post_dbt_sinks.is_empty() {
+                        match runner::run_post_dbt_stage(
+                            &spec,
+                            output_node,
+                            &state.checkpoints,
+                            Some(progress_tx.clone()),
+                            Some(&logger),
+                        )
+                        .await
+                        {
+                            Ok(post_dbt_stats) => stats.extend(post_dbt_stats),
+                            Err(e) => {
+                                record_run_failure(&state, run_id, &spec.pipeline_id, &e, &logger)
+                                    .await;
+                                return;
+                            }
+                        }
+                    }
+                }
             }
+            let total_rows: usize = stats.iter().map(|s| s.rows_written).sum();
+            logger
+                .info(format!(
+                    "run succeeded: {total_rows} row(s) across {} partition(s)/sink(s)",
+                    stats.len()
+                ))
+                .await;
             if let Err(e) = state
                 .pipelines
                 .finish_run_success(run_id, &stats, dbt_summary.as_ref())
@@ -438,7 +585,7 @@ async fn execute_pipeline_run(
                 tracing::warn!(error = %e, "failed to record successful pipeline run");
             }
         }
-        Err(e) => record_run_failure(&state, run_id, &spec.pipeline_id, &e).await,
+        Err(e) => record_run_failure(&state, run_id, &spec.pipeline_id, &e, &logger).await,
     }
 }
 
@@ -447,14 +594,18 @@ async fn record_run_failure(
     run_id: i64,
     pipeline_id: &str,
     error: &anyhow::Error,
+    logger: &RunLogger,
 ) {
-    // Full detail (cause chain included) stays in the server log…
-    tracing::error!(error = format!("{error:?}"), "pipeline run failed");
+    let error_debug = format!("{error:?}");
+    // Full detail (cause chain included) stays in the server log, but the
+    // log itself is scrubbed so credentials don't end up in log aggregators.
+    tracing::error!(error = %error::sanitize_error(&error_debug), "pipeline run failed");
     // …what gets persisted (readable by any `Read` role via GET
     // /pipelines/{id}/runs) and forwarded to Slack is the sanitized
     // version: connector errors routinely embed connection URIs with
     // credentials.
     let sanitized = error::sanitize_error(&error.to_string());
+    logger.error(format!("run failed: {sanitized}")).await;
     if let Err(record_err) = state.pipelines.finish_run_failure(run_id, &sanitized).await {
         tracing::warn!(error = %record_err, "failed to record failed pipeline run");
     }
@@ -468,6 +619,8 @@ async fn create_pipeline_handler(
     Json(spec): Json<PipelineSpec>,
 ) -> Result<(StatusCode, Json<PipelineSummary>), ApiError> {
     spec.validate()
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    spec.validate_security_with(state.allow_internal_hosts)
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
     connectors::validate_pipeline_configs(&spec)
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
@@ -508,6 +661,107 @@ async fn get_pipeline_spec_handler(
     Ok(Json(state.pipelines.get_spec(&id, &state.secrets).await?))
 }
 
+/// Query parameters for `GET /pipelines/{id}/preview`.
+#[derive(Debug, Deserialize)]
+struct PreviewParams {
+    /// Resolved name of the source/sink node to preview — same string
+    /// `NodeSpec::resolved_name` produces (`source0`, `sink0`, or an
+    /// explicit `name` if the node has one).
+    node: String,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// Reads the first `limit` rows of a saved pipeline's source or sink node,
+/// for inspecting data without leaving the app. Reuses `build_source` —
+/// the exact function a real pipeline run uses — so it only works for
+/// connectors that can act as a `Source` (every bidirectional connector,
+/// e.g. postgres/sqlite/mongodb/csv, on either their `sources` or `sinks`
+/// entry) and clearly rejects the sink-only ones (milvus/qdrant/lancedb/
+/// pgvector/pinecone/chromadb/webhook) via that same function's existing
+/// "unsupported source connector" error — no per-connector code needed
+/// here. Ad-hoc (unsaved) pipelines aren't supported, same restriction as
+/// `get_pipeline_spec_handler` above.
+async fn preview_node_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(params): Query<PreviewParams>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let spec = state.pipelines.get_spec(&id, &state.secrets).await?;
+    let limit = params
+        .limit
+        .unwrap_or(DEFAULT_PREVIEW_LIMIT)
+        .min(MAX_PREVIEW_LIMIT);
+
+    let node = find_node_by_resolved_name(&spec, &params.node).ok_or_else(|| {
+        ApiError::not_found(format!(
+            "node {:?} not found in pipeline {id:?}",
+            params.node
+        ))
+    })?;
+
+    let (_, mut source) = crate::connectors::build_source(node, 0)
+        .await
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+
+    let mut stream = source.read_batches().await.map_err(ApiError::internal)?;
+    let mut collected = Vec::new();
+    let mut row_count = 0usize;
+    while row_count < limit {
+        match stream.next().await {
+            Some(Ok(batch)) => {
+                row_count += batch.num_rows();
+                collected.push(batch);
+            }
+            Some(Err(e)) => return Err(ApiError::internal(e)),
+            None => break,
+        }
+    }
+    drop(stream);
+
+    // The last batch pulled may have overshot `limit` — trim it back.
+    let total: usize = collected.iter().map(|b| b.num_rows()).sum();
+    if total > limit {
+        if let Some(last) = collected.pop() {
+            let already: usize = collected.iter().map(|b| b.num_rows()).sum();
+            collected.push(last.slice(0, limit.saturating_sub(already)));
+        }
+    }
+
+    let rows: Vec<serde_json::Value> = if collected.is_empty() {
+        Vec::new()
+    } else {
+        let mut buf = Vec::new();
+        {
+            let mut writer = arrow_json::writer::ArrayWriter::new(&mut buf);
+            for batch in &collected {
+                writer.write(batch).map_err(ApiError::internal)?;
+            }
+            writer.finish().map_err(ApiError::internal)?;
+        }
+        serde_json::from_slice(&buf).map_err(ApiError::internal)?
+    };
+
+    Ok(Json(serde_json::json!({ "rows": rows })))
+}
+
+/// Finds a source or sink node by its resolved name (`source0`/`sink0`, or
+/// an explicit `name` — see `NodeSpec::resolved_name`), searching sources
+/// first, then sinks.
+fn find_node_by_resolved_name<'a>(spec: &'a PipelineSpec, name: &str) -> Option<&'a NodeSpec> {
+    spec.sources
+        .iter()
+        .enumerate()
+        .find(|(i, n)| n.resolved_name(*i, "source").as_deref().ok() == Some(name))
+        .or_else(|| {
+            spec.sinks
+                .iter()
+                .enumerate()
+                .find(|(i, n)| n.resolved_name(*i, "sink").as_deref().ok() == Some(name))
+        })
+        .map(|(_, n)| n)
+}
+
 async fn update_pipeline_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -520,6 +774,8 @@ async fn update_pipeline_handler(
         )));
     }
     spec.validate()
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    spec.validate_security_with(state.allow_internal_hosts)
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
     connectors::validate_pipeline_configs(&spec)
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
@@ -544,6 +800,25 @@ async fn list_runs_handler(
 ) -> Result<Json<Vec<RunRecord>>, ApiError> {
     let (limit, offset) = pagination.validated()?;
     Ok(Json(state.pipelines.list_runs(&id, limit, offset).await?))
+}
+
+/// Historical/replayable view of a run's execution log — works for a run
+/// still in progress, one that already finished, and (the whole point) one
+/// nobody had the live WebSocket open for, e.g. a scheduler-triggered run
+/// (see `RunLogger`/`RunLogStore`). `_id` (pipeline id) is part of the URL
+/// for REST consistency with the other `/pipelines/{id}/runs/...` routes
+/// but isn't needed to look the logs up — `run_id` alone is the store's key.
+async fn list_run_logs_handler(
+    State(state): State<AppState>,
+    Path((_id, run_id)): Path<(String, i64)>,
+) -> Result<Json<Vec<RunLogEvent>>, ApiError> {
+    Ok(Json(
+        state
+            .run_logs
+            .list(run_id)
+            .await
+            .map_err(ApiError::internal)?,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -620,6 +895,68 @@ async fn create_user_handler(
 }
 
 #[derive(Deserialize)]
+struct InstallLicenseRequest {
+    license_key: String,
+}
+
+#[derive(Serialize)]
+struct LicenseStatusResponse {
+    active: bool,
+    connectors: Vec<String>,
+    seats: u32,
+    expires_at: Option<i64>,
+}
+
+impl LicenseStatusResponse {
+    fn inactive() -> Self {
+        Self {
+            active: false,
+            connectors: Vec::new(),
+            seats: 0,
+            expires_at: None,
+        }
+    }
+}
+
+/// Installs (or replaces) the enterprise license key — see
+/// `docs/ENTERPRISE_LICENSING.md`. No enterprise connector actually reads
+/// this yet (none exist in this repo); this is the verification + storage
+/// half of the gate, ready for a future connector registration path to
+/// consult via `LicenseStore::is_connector_licensed`.
+async fn install_license_handler(
+    State(state): State<AppState>,
+    Json(body): Json<InstallLicenseRequest>,
+) -> Result<Json<LicenseStatusResponse>, ApiError> {
+    let claims = state.license_store.install(&body.license_key).await?;
+    Ok(Json(LicenseStatusResponse {
+        active: true,
+        connectors: claims.connectors,
+        seats: claims.seats,
+        expires_at: Some(claims.exp),
+    }))
+}
+
+async fn license_status_handler(
+    State(state): State<AppState>,
+) -> Result<Json<LicenseStatusResponse>, ApiError> {
+    let status = match state
+        .license_store
+        .active()
+        .await
+        .map_err(ApiError::internal)?
+    {
+        Some(claims) => LicenseStatusResponse {
+            active: true,
+            connectors: claims.connectors,
+            seats: claims.seats,
+            expires_at: Some(claims.exp),
+        },
+        None => LicenseStatusResponse::inactive(),
+    };
+    Ok(Json(status))
+}
+
+#[derive(Deserialize)]
 struct UpdateRoleRequest {
     role: Role,
 }
@@ -683,21 +1020,28 @@ async fn progress_ws_handler(
     let token = proto
         .strip_prefix("nexusflow-")
         .ok_or_else(|| ApiError::unauthorized("expected nexusflow-<token> protocol"))?;
-    let rx = authorize_progress_subscription(&state, token, run_id).await?;
+    let (progress_rx, log_rx) = authorize_progress_subscription(&state, token, run_id).await?;
     Ok(ws
         .protocols([proto.clone()])
-        .on_upgrade(move |socket| forward_progress(socket, rx)))
+        .on_upgrade(move |socket| forward_progress(socket, progress_rx, log_rx)))
 }
 
 /// Split out from `progress_ws_handler` so it's callable directly from a
 /// test — a `WebSocketUpgrade` extractor requires a real hyper connection
 /// (`tower::ServiceExt::oneshot` doesn't provide one, so it always rejects
 /// with 426 regardless of what this function would have decided).
+#[allow(clippy::type_complexity)]
 async fn authorize_progress_subscription(
     state: &AppState,
     token: &str,
     run_id: i64,
-) -> Result<tokio::sync::broadcast::Receiver<nexus_core::ProgressEvent>, ApiError> {
+) -> Result<
+    (
+        tokio::sync::broadcast::Receiver<nexus_core::ProgressEvent>,
+        tokio::sync::broadcast::Receiver<RunLogEvent>,
+    ),
+    ApiError,
+> {
     let claims = state.jwt.verify(token)?;
     if claims.role < Role::Read {
         return Err(ApiError::forbidden(format!(
@@ -713,10 +1057,24 @@ async fn authorize_progress_subscription(
         .ok_or_else(|| ApiError::not_found(format!("run {run_id} not found or already finished")))
 }
 
+/// How often a `hardware_stats` frame is interleaved into the progress
+/// stream — frequent enough to feel "live" without meaningfully competing
+/// with `ProgressEvent` traffic for bandwidth.
+const HARDWARE_STATS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
 async fn forward_progress(
     mut socket: WebSocket,
     mut rx: tokio::sync::broadcast::Receiver<nexus_core::ProgressEvent>,
+    mut log_rx: tokio::sync::broadcast::Receiver<RunLogEvent>,
 ) {
+    let mut hardware = hardware_stats::HardwareMonitor::new();
+    let mut hardware_ticker = tokio::time::interval(HARDWARE_STATS_INTERVAL);
+    // The first tick fires immediately; sysinfo's CPU usage is only
+    // meaningful as a delta between two refreshes, so the first sample sent
+    // to the client is discarded rather than shipped as a misleading 0%.
+    hardware_ticker.tick().await;
+    hardware.sample();
+
     loop {
         tokio::select! {
             event = rx.recv() => {
@@ -732,6 +1090,37 @@ async fn forward_progress(
                     // mean the next one it does get is still consistent.
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            // Persistence of log lines (so `GET .../logs` can replay them
+            // later) happens once, at `RunLogger::log` — *not* here. This
+            // loop only fans a run's already-persisted events out to
+            // whichever WebSocket clients happen to be connected right now;
+            // running it per-connection means anything persisted here would
+            // duplicate once per subscriber.
+            event = log_rx.recv() => {
+                match event {
+                    Ok(event) => {
+                        // `"type": "log"` distinguishes this frame from the
+                        // untagged `ProgressEvent`/`hardware_stats` shapes
+                        // above — see `RunLogEvent`'s doc comment.
+                        let mut payload = serde_json::to_value(&event)
+                            .expect("RunLogEvent always serializes");
+                        payload["type"] = serde_json::Value::String("log".to_string());
+                        if socket.send(Message::Text(payload.to_string().into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            _ = hardware_ticker.tick() => {
+                let stats = hardware.sample();
+                let json = serde_json::to_string(&serde_json::json!({ "hardware_stats": stats }))
+                    .expect("HardwareStats always serializes");
+                if socket.send(Message::Text(json.into())).await.is_err() {
+                    break;
                 }
             }
             incoming = socket.recv() => {
@@ -761,16 +1150,45 @@ pub struct ServerConfig {
     /// `NEXUS_SLACK_WEBHOOK_URL` — `None` just means alerting is off, not a
     /// startup failure (see `alerts.rs`).
     pub slack_webhook_url: Option<String>,
+    /// `NEXUS_TEAMS_WEBHOOK_URL` — same "off is fine" contract as Slack's.
+    pub teams_webhook_url: Option<String>,
+    /// `NEXUS_PAGERDUTY_ROUTING_KEY` — same "off is fine" contract as
+    /// Slack's. PagerDuty's Events API posts to one fixed endpoint for
+    /// every account, so this is a routing key, not a URL (see alerts.rs).
+    pub pagerduty_routing_key: Option<String>,
+    /// Email alert channel config — `None` means the channel is off.
+    pub email: Option<alerts::EmailConfig>,
+    /// `NEXUS_ALERT_WEBHOOK_URL` — same "off is fine" contract as Slack's.
+    pub webhook_url: Option<String>,
+    /// `NEXUS_ALLOW_INTERNAL_HOSTS` — opt-in for self-hosted deployments that
+    /// need pipelines to reach their own private network. See
+    /// `PipelineSpec::validate_security_with`'s doc for why this defaults to
+    /// `false`. Off by default even in this struct: every other field here
+    /// documents an env var that degrades gracefully when unset (alerts just
+    /// stay off); this one weakens SSRF protection, so it's opt-in only.
+    pub allow_internal_hosts: bool,
 }
 
 async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
     let checkpoints = CheckpointStore::connect(&config.checkpoint_database_url).await?;
     let auth_store = AuthStore::connect(&config.auth_database_url).await?;
     let pipelines = PipelineStore::connect(&config.pipelines_database_url).await?;
+    // Same database as `pipeline_runs` (which these logs narrate) — not a
+    // 5th env var to operate.
+    let run_logs = RunLogStore::connect(&config.pipelines_database_url).await?;
+    // Same database as auth (access-control data), not a 4th env var to
+    // operate — a license is a single-row table, not worth its own
+    // connection pool/URL to configure.
+    let license_store = LicenseStore::connect(&config.auth_database_url).await?;
     if let Some((username, password)) = &config.bootstrap_admin {
         auth_store.seed_admin_if_empty(username, password).await?;
     }
-    let jwt = JwtCodec::new(config.jwt_secret.as_bytes(), config.jwt_ttl_seconds);
+    let token_blocklist = TokenBlocklist::new();
+    let jwt = JwtCodec::with_blocklist(
+        config.jwt_secret.as_bytes(),
+        config.jwt_ttl_seconds,
+        token_blocklist,
+    );
     let secrets = SecretCipher::from_hex_key(&config.encryption_key_hex)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(AppState {
@@ -779,9 +1197,18 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         jwt,
         secrets,
         pipelines,
+        run_logs,
+        license_store,
         progress: ProgressHub::default(),
-        alerts: AlertNotifier::new(config.slack_webhook_url.clone()),
+        alerts: AlertNotifier::new(AlertConfig {
+            slack_webhook_url: config.slack_webhook_url.clone(),
+            teams_webhook_url: config.teams_webhook_url.clone(),
+            pagerduty_routing_key: config.pagerduty_routing_key.clone(),
+            email: config.email.clone(),
+            webhook_url: config.webhook_url.clone(),
+        }),
         login_rate_limiter: std::sync::Arc::new(rate_limit::LoginRateLimiter::default()),
+        allow_internal_hosts: config.allow_internal_hosts,
     })
 }
 
@@ -795,6 +1222,36 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
 pub async fn build_app(config: &ServerConfig) -> anyhow::Result<Router> {
     let state = build_state(config).await?;
     Ok(router(state))
+}
+
+/// Parses the optional Email alert channel from environment variables.
+/// Returns `None` if the minimum required fields (`SMTP_HOST`, `FROM`, `TO`)
+/// are not all present — same "channel is off" contract as the webhook
+/// channels.
+fn parse_email_config_from_env() -> Option<alerts::EmailConfig> {
+    let smtp_host = std::env::var("NEXUS_EMAIL_SMTP_HOST").ok()?;
+    let smtp_port = std::env::var("NEXUS_EMAIL_SMTP_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(587);
+    let from = std::env::var("NEXUS_EMAIL_FROM").ok()?;
+    let to = std::env::var("NEXUS_EMAIL_TO")
+        .ok()?
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
+    if to.is_empty() {
+        return None;
+    }
+    Some(alerts::EmailConfig {
+        smtp_host,
+        smtp_port,
+        username: std::env::var("NEXUS_EMAIL_SMTP_USERNAME").ok(),
+        password: std::env::var("NEXUS_EMAIL_SMTP_PASSWORD").ok(),
+        from,
+        to,
+    })
 }
 
 /// Boots the server. This is the only orchestration entrypoint — `src/main.rs`
@@ -845,6 +1302,39 @@ pub async fn run() -> anyhow::Result<()> {
             "NEXUS_SLACK_WEBHOOK_URL not set — pipeline failures will not raise a Slack alert"
         );
     }
+    let teams_webhook_url = std::env::var("NEXUS_TEAMS_WEBHOOK_URL").ok();
+    if teams_webhook_url.is_none() {
+        tracing::warn!(
+            "NEXUS_TEAMS_WEBHOOK_URL not set — pipeline failures will not raise a Teams alert"
+        );
+    }
+    let pagerduty_routing_key = std::env::var("NEXUS_PAGERDUTY_ROUTING_KEY").ok();
+    if pagerduty_routing_key.is_none() {
+        tracing::warn!(
+            "NEXUS_PAGERDUTY_ROUTING_KEY not set — pipeline failures will not page PagerDuty"
+        );
+    }
+    let email = parse_email_config_from_env();
+    if email.is_none() {
+        tracing::warn!(
+            "NEXUS_EMAIL_SMTP_HOST/NEXUS_EMAIL_TO not set — pipeline failures will not send email alerts"
+        );
+    }
+    let webhook_url = std::env::var("NEXUS_ALERT_WEBHOOK_URL").ok();
+    if webhook_url.is_none() {
+        tracing::warn!(
+            "NEXUS_ALERT_WEBHOOK_URL not set — pipeline failures will not raise a generic webhook alert"
+        );
+    }
+    let allow_internal_hosts = std::env::var("NEXUS_ALLOW_INTERNAL_HOSTS")
+        .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+    if allow_internal_hosts {
+        tracing::warn!(
+            "NEXUS_ALLOW_INTERNAL_HOSTS=true — pipelines may target this deployment's private \
+             network (10.0.0.0/8, 192.168.0.0/16, 127.0.0.1, etc). Only set this on trusted \
+             self-hosted deployments, never on a multi-tenant/shared instance."
+        );
+    }
 
     let state = build_state(&ServerConfig {
         checkpoint_database_url: database_url,
@@ -855,6 +1345,11 @@ pub async fn run() -> anyhow::Result<()> {
         bootstrap_admin,
         encryption_key_hex,
         slack_webhook_url,
+        teams_webhook_url,
+        pagerduty_routing_key,
+        email,
+        webhook_url,
+        allow_internal_hosts,
     })
     .await?;
 
@@ -943,12 +1438,15 @@ mod tests {
             jwt: JwtCodec::new(b"test-secret", 3600),
             secrets: SecretCipher::from_hex_key(&"ab".repeat(32)).unwrap(),
             pipelines: PipelineStore::connect("sqlite::memory:").await.unwrap(),
+            run_logs: RunLogStore::connect("sqlite::memory:").await.unwrap(),
+            license_store: LicenseStore::connect("sqlite::memory:").await.unwrap(),
             progress: ProgressHub::default(),
-            alerts: AlertNotifier::new(None),
+            alerts: AlertNotifier::new(AlertConfig::default()),
             login_rate_limiter: std::sync::Arc::new(rate_limit::LoginRateLimiter::new(
                 std::time::Duration::from_secs(60),
                 10_000,
             )),
+            allow_internal_hosts: false,
         }
     }
 
@@ -1346,6 +1844,79 @@ mod tests {
             .contains("unsupported connector"));
     }
 
+    /// The whole point of persisting logs (not just broadcasting them) is
+    /// that `GET .../logs` works after the fact, for a run nobody had the
+    /// live WebSocket open for — this hits the endpoint only *after*
+    /// `wait_for_terminal_run` confirms the supervisor already finished, so
+    /// there's no live subscriber involved at all.
+    #[tokio::test]
+    async fn run_logs_endpoint_replays_start_and_failure_lines_after_the_run_finished() {
+        let state = test_state().await;
+        let write_token = bearer(&state, Role::Write);
+        let execute_token = bearer(&state, Role::Execute);
+        let app = router(state);
+
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                "/pipelines",
+                &write_token,
+                sample_pipeline("p1"),
+            ))
+            .await
+            .unwrap();
+
+        let body = serde_json::json!({
+            "pipeline_id": "p1",
+            "sources": [{"connector": "mongodb", "config": {}}],
+            "sinks": [{"connector": "postgres", "config": {}}]
+        });
+        let response = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/pipelines/p1/run",
+                &execute_token,
+                body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+        let record = wait_for_terminal_run(&app, &execute_token, "p1").await;
+        let run_id = record["id"].as_i64().unwrap();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/pipelines/p1/runs/{run_id}/logs"))
+                    .header("authorization", &execute_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let logs = body_json(response).await;
+        let logs = logs.as_array().unwrap();
+        assert!(
+            logs.iter().any(|l| l["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("Pipeline p1 started")),
+            "expected a 'Pipeline p1 started' line, got: {logs:?}"
+        );
+        let failure = logs
+            .iter()
+            .find(|l| l["level"] == "error")
+            .expect("an error-level line for the failed run");
+        assert!(failure["message"]
+            .as_str()
+            .unwrap()
+            .contains("unsupported connector"));
+    }
+
     #[tokio::test]
     async fn run_response_run_id_is_immediately_subscribable_for_progress() {
         let state = test_state().await;
@@ -1415,9 +1986,12 @@ mod tests {
         let token = bearer(&state, Role::Write);
         let app = router(state);
 
+        // "rest", not "sqlite" — sqlite/lancedb/ailake/iceberg/deltalake are
+        // exempt from the absolute-path check, their config is local-path-
+        // based by design (see dag.rs's `is_local_path_connector`).
         let body = serde_json::json!({
             "pipeline_id": "p1",
-            "sources": [{"connector": "sqlite", "config": {"path": "/etc/passwd"}}],
+            "sources": [{"connector": "rest", "config": {"path": "/etc/passwd"}}],
             "sinks": [{"connector": "sqlite", "config": {"path": "out.db"}}]
         });
 
@@ -1478,7 +2052,7 @@ mod tests {
                 "primary_key": "id"
             }}],
             "sinks": [{"connector": "sqlite", "config": {
-                "uri": "/tmp/out.db",
+                "uri": "out.db",
                 "table": "dst",
                 "primary_key": "id"
             }}]
@@ -1676,6 +2250,149 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn preview_requires_execute_role() {
+        let state = test_state().await;
+        let token = bearer(&state, Role::Read);
+        let app = router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/pipelines/does-not-exist/preview?node=source0")
+                    .header("authorization", token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn preview_rejects_unknown_node_name() {
+        let state = test_state().await;
+        let write_token = bearer(&state, Role::Write);
+        let execute_token = bearer(&state, Role::Execute);
+        let app = router(state);
+
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                "/pipelines",
+                &write_token,
+                sample_pipeline("p1"),
+            ))
+            .await
+            .unwrap();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/pipelines/p1/preview?node=does-not-exist")
+                    .header("authorization", execute_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[cfg(feature = "milvus")]
+    #[tokio::test]
+    async fn preview_rejects_connector_with_no_source_impl() {
+        let state = test_state().await;
+        let write_token = bearer(&state, Role::Write);
+        let execute_token = bearer(&state, Role::Execute);
+        let app = router(state);
+
+        // milvus is sink-only (no `Source` impl exists for it anywhere in
+        // the registry) — `preview` must surface `build_source`'s own
+        // "unsupported source connector" error, not a 500.
+        let spec = serde_json::json!({
+            "pipeline_id": "p1",
+            "sources": [{"connector": "postgres", "config": {
+                "uri": "postgres://user:pw@host/db", "table": "src", "primary_key": "id"
+            }}],
+            "sinks": [{"connector": "milvus", "config": {
+                "url": "http://milvus.example.com:19530", "collection": "docs",
+                "primary_key": "id", "embedding_column": "embedding", "dimension": 8
+            }}]
+        });
+        let create = app
+            .clone()
+            .oneshot(json_request("POST", "/pipelines", &write_token, spec))
+            .await
+            .unwrap();
+        assert_eq!(create.status(), StatusCode::CREATED);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/pipelines/p1/preview?node=sink0")
+                    .header("authorization", execute_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[cfg(feature = "csv")]
+    #[tokio::test]
+    async fn preview_reads_first_n_rows_of_a_real_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let csv_path = dir.path().join("events.csv");
+        std::fs::write(&csv_path, "id,status\n1,pending\n2,paid\n3,pending\n").unwrap();
+
+        let state = test_state().await;
+        let write_token = bearer(&state, Role::Write);
+        let execute_token = bearer(&state, Role::Execute);
+        let app = router(state);
+
+        let spec = serde_json::json!({
+            "pipeline_id": "p1",
+            "sources": [{"connector": "csv", "config": {
+                "uri": csv_path.to_str().unwrap(),
+                "fields": [
+                    {"name": "id", "data_type": "int64"},
+                    {"name": "status", "data_type": "utf8"}
+                ]
+            }}],
+            "sinks": [{"connector": "sqlite", "config": {
+                "uri": dir.path().join("out.db").to_str().unwrap(),
+                "table": "dst",
+                "primary_key": "id"
+            }}]
+        });
+        let create = app
+            .clone()
+            .oneshot(json_request("POST", "/pipelines", &write_token, spec))
+            .await
+            .unwrap();
+        assert_eq!(create.status(), StatusCode::CREATED);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/pipelines/p1/preview?node=source0&limit=2")
+                    .header("authorization", execute_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = body_json(response).await;
+        let rows = body["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 2, "limit=2 must cap the row count: {rows:?}");
+        assert_eq!(rows[0]["id"], 1);
+        assert_eq!(rows[0]["status"], "pending");
+    }
+
+    #[tokio::test]
     async fn update_pipeline_changes_stored_spec() {
         let state = test_state().await;
         let write_token = bearer(&state, Role::Write);
@@ -1826,7 +2543,9 @@ mod tests {
         let err = anyhow::anyhow!(
             "ADBC error: failed to connect to postgres://admin:s3cret@db.internal:5432/app: timeout"
         );
-        record_run_failure(&state, run_id, "p1", &err).await;
+        let (_progress_tx, log_tx) = state.progress.start(run_id);
+        let logger = RunLogger::new(run_id, log_tx, state.run_logs.clone());
+        record_run_failure(&state, run_id, "p1", &err, &logger).await;
 
         let runs = state.pipelines.list_runs("p1", 100, 0).await.unwrap();
         let stored = runs[0].error.as_deref().unwrap();
@@ -1864,9 +2583,9 @@ mod tests {
         let token = bearer(&state, Role::Read);
         let token = token.strip_prefix("Bearer ").unwrap();
         let run_id = state.pipelines.start_run("p1").await.unwrap();
-        let tx = state.progress.start(run_id);
+        let (tx, _log_tx) = state.progress.start(run_id);
 
-        let mut rx = authorize_progress_subscription(&state, token, run_id)
+        let (mut rx, _log_rx) = authorize_progress_subscription(&state, token, run_id)
             .await
             .unwrap();
 
@@ -1875,6 +2594,7 @@ mod tests {
             batches_written: 1,
             rows_written: 10,
             bytes_written: 100,
+            done: false,
         })
         .unwrap();
         assert_eq!(rx.recv().await.unwrap().rows_written, 10);
@@ -1911,7 +2631,7 @@ mod tests {
         let token = bearer(&state, Role::Read);
         let token = token.strip_prefix("Bearer ").unwrap().to_string();
         let run_id = state.pipelines.start_run("p1").await.unwrap();
-        let tx = state.progress.start(run_id);
+        let (tx, _log_tx) = state.progress.start(run_id);
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1939,6 +2659,7 @@ mod tests {
             batches_written: 1,
             rows_written: 42,
             bytes_written: 999,
+            done: false,
         })
         .unwrap();
 
@@ -1982,9 +2703,12 @@ mod tests {
             jwt: JwtCodec::new(b"test-secret", 3600),
             secrets: SecretCipher::from_hex_key(&"ab".repeat(32)).unwrap(),
             pipelines: PipelineStore::connect("sqlite::memory:").await.unwrap(),
+            run_logs: RunLogStore::connect("sqlite::memory:").await.unwrap(),
+            license_store: LicenseStore::connect("sqlite::memory:").await.unwrap(),
             progress: ProgressHub::default(),
-            alerts: AlertNotifier::new(None),
+            alerts: AlertNotifier::new(AlertConfig::default()),
             login_rate_limiter: limiter,
+            allow_internal_hosts: false,
         };
         let app = router(state);
 
@@ -2017,5 +2741,39 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(blocked.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn logout_revokes_token_immediately() {
+        let state = test_state().await;
+        let token = bearer(&state, Role::Read);
+        let app = router(state.clone());
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/auth/logout")
+                    .header("authorization", &token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // The same token must now be rejected on a protected route.
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/connectors")
+                    .header("authorization", token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 }

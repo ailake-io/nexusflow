@@ -21,4 +21,14 @@ pub struct MilvusConnectorConfig {
     /// Must match the vector field's declared dimension in the collection
     /// schema.
     pub dimension: usize,
+    /// Timeout in seconds for each call to Milvus (connect, insert, delete,
+    /// collection lookup) — the SDK exposes no timeout of its own, so a
+    /// stalled connection would otherwise block the pipeline indefinitely
+    /// (C15).
+    #[serde(default = "default_timeout_seconds")]
+    pub timeout_seconds: u64,
+}
+
+fn default_timeout_seconds() -> u64 {
+    30
 }

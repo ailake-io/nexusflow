@@ -1,0 +1,32 @@
+# Optional — only needed if you want the embeddings model cache
+# (XDG_CACHE_HOME, see deployment.yaml) to survive a pod being rescheduled
+# onto a different node. Without this, deployment.yaml's `emptyDir` already
+# survives plain restarts on the same node, which is enough for most setups.
+#
+# To use: apply this file, then in deployment.yaml replace
+#   - name: cache
+#     emptyDir: {}
+# with
+#   - name: cache
+#     persistentVolumeClaim:
+#       claimName: nexusflow-cache
+#
+# ReadWriteOnce is enough — each replica gets its own cache, they don't need
+# to share it (unlike the SQLite-must-not-be-shared warning in
+# GETTING_STARTED.md §3, which is about the metadata DB, not this cache).
+# Bump `replicas` in deployment.yaml past 1 and you'll need one PVC per
+# replica (StatefulSet + volumeClaimTemplates) instead of this single claim,
+# or just keep using emptyDir per pod — the cache is a pure optimization,
+# never load-bearing data.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nexusflow-cache
+  labels:
+    app.kubernetes.io/name: nexusflow
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi

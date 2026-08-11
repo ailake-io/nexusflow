@@ -4,15 +4,13 @@
 #
 # `docker build --build-arg RUNTIME_IMAGE=nvidia/cuda:12.4.1-runtime-ubuntu22.04 .`
 # selects the "cuda" profile's base image (`docker run --gpus all` at
-# runtime). NOTE: nexus-ai's `cuda` feature isn't implemented yet (see
-# crates/nexus-ai/Cargo.toml — only `cpu` exists so far; `cuda`/`metal` are
-# still future work per IMPLEMENTATION_PLAN.md Marco 5), and nexus-server
-# doesn't link nexus-ai at all yet. This runtime stage is genuinely
-# functional today (same binary, same behavior as the default profile) —
-# it just isn't accelerating anything yet. It exists so the multi-arch/GPU
-# runtime plumbing (base image, --gpus all, driver libraries) is ready the
-# day nexus-ai's ONNX-via-ort CUDA execution provider lands, without a
-# second Dockerfile to maintain in sync.
+# runtime). NOTE: nexus-ai's `cuda`/`metal` execution providers register
+# correctly at compile time but have not been validated on real GPU/Apple
+# Silicon hardware (sandbox is Linux without a GPU) — runtime falls back
+# silently to CPU if the driver/hardware is missing. The `embeddings`
+# feature links `nexus-ai` into `nexus-server`; the default `embed-ui`
+# profile does not, keeping the base image small. This runtime stage is
+# functional today and ready for the day the CUDA EP is validated.
 
 ARG RUNTIME_IMAGE=ubuntu:24.04
 # `docker build --build-arg FEATURES=embed-ui,connectors-all .` links every
@@ -55,11 +53,16 @@ ARG FEATURES
 # well-known types that protoc needs to resolve `import "google/protobuf/
 # empty.proto"` — --no-install-recommends drops it otherwise since it's
 # only a Recommends of protobuf-compiler, not a Depends), libsqlite3-dev
-# for iceberg's sqlx "sqlite" feature — kept unconditional since this whole
-# stage is discarded after the build (see the `runtime` stage below), so it
-# costs build time, not final image size.
+# for iceberg's sqlx "sqlite" feature, libcurl4-openssl-dev for kafka's
+# rdkafka-sys vendored librdkafka CMake build (unconditionally probes for
+# libcurl at build time — CI's `connectors` job never hits this because its
+# self-hosted host has libcurl-dev installed system-wide already, outside
+# anything the workflow itself installs; a fresh container image has no
+# such thing) — kept unconditional since this whole stage is discarded
+# after the build (see the `runtime` stage below), so it costs build time,
+# not final image size.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      pkg-config libssl-dev cmake make g++ zlib1g-dev protobuf-compiler libprotobuf-dev libsqlite3-dev python3 \
+      pkg-config libssl-dev cmake make g++ zlib1g-dev protobuf-compiler libprotobuf-dev libsqlite3-dev libcurl4-openssl-dev python3 \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY . .

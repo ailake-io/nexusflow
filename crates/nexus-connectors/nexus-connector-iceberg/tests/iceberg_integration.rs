@@ -26,6 +26,7 @@ fn test_cfg(dir: &std::path::Path, format_version: IcebergFormatVersion) -> Iceb
         namespace: "ns".to_string(),
         table: "orders".to_string(),
         format_version,
+        timeout_seconds: 30,
     }
 }
 

@@ -4,11 +4,14 @@ use arrow_array::{
 };
 use arrow_schema::DataType;
 use nexus_core::NexusError;
+use qdrant_client::Payload;
 use serde_json::{Map, Value};
 
 /// Turns every column of `batch` except `skip` into a JSON payload per row —
 /// used as the Qdrant point payload. Same 4-primitive-type support as the
-/// other bridging connectors' JSON row helpers.
+/// other bridging connectors' JSON row helpers. Kept for tests; the sink fast
+/// path uses `batch_to_qdrant_payloads`.
+#[allow(dead_code)]
 pub fn batch_to_payloads(batch: &RecordBatch, skip: &[&str]) -> Result<Vec<Value>, NexusError> {
     let num_rows = batch.num_rows();
     let mut rows = vec![Map::new(); num_rows];
@@ -82,6 +85,87 @@ pub fn batch_to_payloads(batch: &RecordBatch, skip: &[&str]) -> Result<Vec<Value
     }
 
     Ok(rows.into_iter().map(Value::Object).collect())
+}
+
+/// Fast path: builds Qdrant `Payload` objects directly from the Arrow batch,
+/// skipping the intermediate `serde_json::Value` allocation.
+pub fn batch_to_qdrant_payloads(
+    batch: &RecordBatch,
+    skip: &[&str],
+) -> Result<Vec<Payload>, NexusError> {
+    let num_rows = batch.num_rows();
+    let mut rows =
+        vec![Map::with_capacity(batch.num_columns().saturating_sub(skip.len())); num_rows];
+
+    for (col_idx, field) in batch.schema().fields().iter().enumerate() {
+        let name = field.name();
+        if skip.contains(&name.as_str()) {
+            continue;
+        }
+        let column = batch.column(col_idx);
+
+        macro_rules! downcast {
+            ($ty:ty) => {
+                column.as_any().downcast_ref::<$ty>().ok_or_else(|| {
+                    NexusError::Schema(format!("column '{name}' has unexpected array type"))
+                })?
+            };
+        }
+
+        match field.data_type() {
+            DataType::Int64 => {
+                let arr = downcast!(Int64Array);
+                for (i, row) in rows.iter_mut().enumerate() {
+                    let value = if arr.is_null(i) {
+                        Value::Null
+                    } else {
+                        Value::from(arr.value(i))
+                    };
+                    row.insert(name.clone(), value);
+                }
+            }
+            DataType::Float64 => {
+                let arr = downcast!(Float64Array);
+                for (i, row) in rows.iter_mut().enumerate() {
+                    let value = if arr.is_null(i) {
+                        Value::Null
+                    } else {
+                        Value::from(arr.value(i))
+                    };
+                    row.insert(name.clone(), value);
+                }
+            }
+            DataType::Boolean => {
+                let arr = downcast!(BooleanArray);
+                for (i, row) in rows.iter_mut().enumerate() {
+                    let value = if arr.is_null(i) {
+                        Value::Null
+                    } else {
+                        Value::from(arr.value(i))
+                    };
+                    row.insert(name.clone(), value);
+                }
+            }
+            DataType::Utf8 => {
+                let arr = downcast!(StringArray);
+                for (i, row) in rows.iter_mut().enumerate() {
+                    let value = if arr.is_null(i) {
+                        Value::Null
+                    } else {
+                        Value::from(arr.value(i))
+                    };
+                    row.insert(name.clone(), value);
+                }
+            }
+            other => {
+                return Err(NexusError::Schema(format!(
+                    "unsupported data type for field '{name}': {other:?}"
+                )));
+            }
+        }
+    }
+
+    Ok(rows.into_iter().map(Into::into).collect())
 }
 
 /// Reads `column_name` (a `FixedSizeList<Float32>`) as one `Vec<f32>` per row.

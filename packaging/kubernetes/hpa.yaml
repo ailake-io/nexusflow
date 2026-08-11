@@ -1,0 +1,36 @@
+# CPU-based autoscaling for the REST/WebSocket API + scheduler workload.
+#
+# Caveat that matters here (see crates/nexus-server/src/lib.rs's
+# shutdown_signal doc comment): SIGTERM triggers graceful HTTP shutdown, but
+# already-spawned pipeline run supervisors are detached tasks that are NOT
+# awaited — scaling down mid-run kills that pod's in-flight runs, which get
+# reaped as 'failed' on the next boot and resume from their last checkpoint
+# (ARCHITECTURE.md §5), not silently lost. Still, a scale-down during a long
+# run means that run restarts from its last partition checkpoint rather
+# than finishing cleanly. If your pipelines are long-running and
+# scale-down-sensitive, consider a conservative minReplicas/scaleDown policy
+# rather than removing this file — the interruption is recoverable, not
+# unsafe, but it's not free either. Requires the metrics-server add-on.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: nexusflow
+  labels:
+    app.kubernetes.io/name: nexusflow
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: nexusflow
+  minReplicas: 2
+  maxReplicas: 6
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

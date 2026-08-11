@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: nexusflow
+  labels:
+    app.kubernetes.io/name: nexusflow
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: nexusflow
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
