@@ -152,3 +152,77 @@ async fn text_chunk_embed_ailake_end_to_end() {
         "id=1 must have been deleted, not upserted: {seen_ids_after:?}"
     );
 }
+
+/// Real upsert semantics: a second write of the same primary key must
+/// replace the row's data, not produce a second physical row alongside it.
+/// `AilakeSink::upsert` commits an equality-delete for the batch's keys
+/// immediately before appending — see its doc comment for why the new row
+/// is never masked by its own delete (`ailake-catalog`/`ailake-query`
+/// >=0.1.11's sequence-scoped equality deletes).
+#[tokio::test]
+async fn upsert_replaces_prior_row_instead_of_duplicating_it() {
+    const DIMENSION: usize = 2;
+
+    fn batch_with_status(id: i64, status: &str) -> RecordBatch {
+        let raw = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("status", DataType::Utf8, false),
+            ])),
+            vec![
+                Arc::new(Int64Array::from(vec![id])),
+                Arc::new(StringArray::from(vec![status])),
+            ],
+        )
+        .unwrap();
+        append_embedding_column(&raw, &[vec![0.1, 0.2]], DIMENSION, "embedding").unwrap()
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir creates");
+    let cfg = AilakeConnectorConfig {
+        warehouse: dir.path().to_str().unwrap().to_string(),
+        namespace: "ns".to_string(),
+        table: "docs".to_string(),
+        primary_key: "id".to_string(),
+        embedding_column: "embedding".to_string(),
+        dimension: DIMENSION as u32,
+        timeout_seconds: 30,
+    };
+    let mut sink = AilakeSink::connect(&cfg).expect("sink connects");
+
+    sink.write_batch(batch_with_status(1, "version-a"))
+        .await
+        .expect("writes first version");
+    sink.write_batch(batch_with_status(1, "version-b"))
+        .await
+        .expect("writes second version");
+
+    let mut source = AilakeSource::connect(&cfg).await.expect("source connects");
+    let mut stream = source.read_batches().await.expect("reads batches");
+    let mut rows: Vec<(i64, String)> = Vec::new();
+    while let Some(batch) = stream.next().await {
+        let batch = batch.expect("batch reads ok");
+        let ids = batch
+            .column(batch.schema().index_of("id").unwrap())
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap()
+            .clone();
+        let statuses = batch
+            .column(batch.schema().index_of("status").unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .clone();
+        for i in 0..ids.len() {
+            rows.push((ids.value(i), statuses.value(i).to_string()));
+        }
+    }
+    drop(stream);
+
+    assert_eq!(
+        rows,
+        vec![(1, "version-b".to_string())],
+        "second write must replace the row, not duplicate it: {rows:?}"
+    );
+}

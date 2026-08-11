@@ -254,15 +254,27 @@ destino, só desperdiça trabalho numa tabela grande).
   `starting_snapshot_id`" contra a lista "as of atual" (por `path`) pra
   achar exatamente o que mudou, sem andar manifest por manifest como no
   Iceberg puro. `AilakeSink::delete` comita equality-deletes reais, então
-  emite `D` de verdade. **`U` não é inferido**: sem informação de ordem
-  entre um insert e um delete da mesma chave na mesma janela, não dá pra
-  saber com segurança se o insert veio antes ou depois do delete — a
-  chave sempre vence como `D` nesse caso (nunca ressuscita uma linha
-  deletada como `I`). Além disso, **`AilakeSink::upsert` (batch sem
-  `__opcode`) é append cego hoje** — não deleta a linha anterior antes de
-  inserir a nova, diferente do `DeltaSink`. Duas escritas da mesma chave
-  produzem duas linhas físicas, não uma atualização real — limitação do
-  sink, não algo que o CDC consegue contornar.
+  emite `D` de verdade. Desde `ailake-catalog`/`ailake-query` 0.1.11
+  (equality delete escopado por sequence number — só mascara arquivo com
+  sequence number estritamente menor que o do próprio delete, spec
+  Iceberg), o CDC usa `DataFileEntry::sequence_number`/
+  `EqualityDeleteFile::sequence_number` pra decidir se uma linha marcada
+  numa mesma janela como inserida E deletada está de fato mascarada agora
+  (delete com sequence maior) ou sobrevive (delete com sequence menor —
+  ex.: o próprio `upsert()` comita seu delete um passo antes do append).
+  **`U` ainda não é inferido**: distinguir uma atualização real (chave já
+  existia antes da janela) de um insert genuíno exigiria checar liveness
+  da chave no snapshot de partida, não só diferençar o que mudou — as duas
+  seguem marcadas como `I` por ora.
+- **`AilakeSink::upsert` (batch sem `__opcode`) tem semântica de upsert real
+  desde a correção do bug de escopo do equality-delete**: antes de cada
+  append, comita um `delete_where` pra chave do batch (dois commits
+  sequenciais — delete primeiro, depois o append). Como o delete tem
+  sequence number menor que o append que vem depois, nunca mascara a
+  própria linha nova (mesmo mecanismo delete-then-insert que o
+  `DeltaSink` já usa); qualquer linha anterior com a mesma chave (de um
+  commit ainda mais antigo) fica mascarada normalmente. Seguro mesmo pra
+  chave nunca vista — um equality-delete pra valor inexistente é inócuo.
 
 Os 3 produzem `RecordBatch` com `__opcode` na mesma convenção do §5/§7 —
 mesmo `nexus_core::split_by_opcode` agnóstico à origem.

@@ -59,6 +59,28 @@ impl AilakeSink {
         if batch.num_rows() == 0 {
             return Ok(());
         }
+        // Real upsert semantics: mask any existing row sharing a primary key
+        // with this batch *before* appending it, via a separate, earlier
+        // commit. `ailake-catalog`/`ailake-query` >=0.1.11 scope equality
+        // deletes by Iceberg sequence number — a delete only masks a data
+        // file with a strictly *lower* sequence number than its own. Since
+        // this delete commits before the write_batch()+commit() below, the
+        // freshly-appended rows always carry a higher sequence number than
+        // this delete and are therefore never masked by it, while any prior
+        // row sharing the same key (necessarily an even earlier commit) is.
+        // Safe to run even when no prior row exists for these keys yet — an
+        // equality delete for a value with no current match is a no-op today
+        // and, by the same sequence-number rule, can never retroactively mask
+        // a future row that reuses the key.
+        //
+        // Exception: the table itself may not exist yet (this sink's very
+        // first write). `delete_where` unconditionally loads the table's
+        // metadata.json and errors if it's missing — nothing to be created
+        // by it (unlike `TableWriter::create_or_open` below) — so skip the
+        // delete entirely in that case; there is nothing to mask anyway.
+        if self.catalog.load_table(&self.table).await.is_ok() {
+            self.delete(&batch).await?;
+        }
         with_timeout(self.timeout_seconds, "ailake upsert", async {
             let embeddings = extract_embeddings(&batch, &self.embedding_column)?;
             // ailake_query::writer::TableWriter appends its own vector column
