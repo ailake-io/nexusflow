@@ -40,8 +40,12 @@ jobs:
         run: |
           $cargoBin = "$env:USERPROFILE\.cargo\bin"
           if (!(Get-Command rustc.exe -ErrorAction SilentlyContinue)) {
-            Invoke-WebRequest -Uri https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
-            $expected = (Invoke-WebRequest -Uri https://win.rustup.rs/x86_64.sha256 -UseBasicParsing).Content.Split()[0]
+            # win.rustup.rs's `.sha256` sidecar has been returning a bare S3
+            # NoSuchKey 404 (the installer itself still serves fine) — switched
+            # to the same official release bucket rustup itself publishes from,
+            # which serves both files correctly.
+            Invoke-WebRequest -Uri https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe -OutFile rustup-init.exe
+            $expected = (Invoke-WebRequest -Uri https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe.sha256 -UseBasicParsing).Content.Split()[0]
             $actual = (Get-FileHash -Algorithm SHA256 -Path rustup-init.exe).Hash
             if ($expected -ne $actual) {
               Write-Error "rustup-init checksum mismatch: expected $expected, got $actual"
