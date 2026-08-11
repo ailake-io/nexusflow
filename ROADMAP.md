@@ -161,6 +161,20 @@ O Marco 13 do `IMPLEMENTATION_PLAN.md` deixava CDC nativo condicional — só en
 
 ---
 
+## Fase 21 — CDC nativo pra Delta Lake, Iceberg e AI-Lake (lakehouse)
+
+Extensão da Fase 18 pros formatos de data lake que já tinham conector batch. Ver `ARCHITECTURE.md §16` pro detalhe técnico completo (pegadinhas reais de cada um, descobertas via teste de integração — não hipotéticas).
+
+- [x] `deltalake-cdc` — Change Data Feed nativo (`DeltaTable::scan_cdf()`), sem dependência nova. Esforço baixo: a biblioteca já resolve o trabalho difícil (decodificação do log de transação); só precisou ordenar por `_commit_version` antes de processar (DataFusion não garante ordem de commit no resultado).
+- [x] `iceberg-cdc` — sem scan incremental nativo no `iceberg` 0.10.0, construído à mão (manifest list + manifest walk via API pública do crate). **Insert-only**: `IcebergSink` só comita `fast_append` hoje (sem row-delta/equality-delete commitável na API pública ainda), então não existe update/delete pra detectar de dados escritos por este sistema.
+- [x] `ailake-cdc` — mais simples que o Iceberg porque `ailake-catalog`'s `CatalogProvider` já expõe `list_files`/`list_equality_deletes` "as of snapshot", dispensando manifest walk manual. Suporta `I`/`D` reais (`AilakeSink::delete` já comita equality-deletes) — `U` não é inferido de propósito (sem informação de ordem entre insert/delete da mesma chave, o delete sempre vence). Achado à parte: `AilakeSink::upsert` (batch sem `__opcode`) é append cego hoje, não faz delete-antes-do-insert como o `DeltaSink` — duas escritas da mesma chave viram duas linhas físicas.
+- [x] Mesmo padrão de resume dos outros 3 CDC nativos (Fase 18): campo estático no config (`starting_version`/`starting_snapshot_id`), sem auto-avanço via checkpoint entre runs — mesmo precedente do `start_offsets` do Kafka.
+- [x] Nenhuma dependência nova em nenhum dos 3 — tudo via API já pública das dependências existentes de cada conector.
+
+**Critério de pronto:** teste de integração real por conector (escrever insert/update/delete via o sink batch já existente, ler de volta via a fonte CDC nova, validar opcode e valores) — sem testcontainers, os 3 formatos já são embarcados/locais. **Atingido.**
+
+---
+
 **Critério de "MVP pronto"**: Fases 0–3 + 7 (parcial: auth básica) + 8 (canvas mínimo) funcionando end-to-end — mover dados de Postgres pra Postgres via canvas visual, com checkpoint por partição, retry e escrita idempotente. **Atingido e superado** — Fases 0–11 e 13–17 completas, só falta Fase 12 (enterprise, repo separado) e os itens condicionais/parciais marcados acima.
 
 ## Débitos conhecidos (aceitos pro MVP, resolver antes de vender enterprise)

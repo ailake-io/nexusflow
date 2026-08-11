@@ -34,3 +34,43 @@ pub struct AilakeConnectorConfig {
 fn default_timeout_seconds() -> u64 {
     30
 }
+
+/// Native CDC source for AI-Lake — separate connector name
+/// (`"ailake-cdc"`) from `"ailake"`, same convention as `postgres-cdc`/
+/// `deltalake-cdc`/`iceberg-cdc`. See `ARCHITECTURE.md §7`.
+///
+/// Unlike `iceberg-cdc` (Insert-only — the plain `iceberg` crate has no
+/// committable delete action yet), `AilakeSink::delete` already commits
+/// real Iceberg-compatible equality-deletes, so this one emits `D` for a
+/// real delete, `U` when a key is both newly-inserted and newly-deleted in
+/// the same read window (an explicit delete followed by a fresh insert of
+/// the same key, across two separate writes), and `I` otherwise.
+/// `CatalogProvider::list_files`/`list_equality_deletes` both take an
+/// `Option<SnapshotId>` "as of" parameter — diffing the "as of
+/// `starting_snapshot_id`" list against the "as of current" list gives
+/// exactly the files/deletes added in between, without walking Avro
+/// manifests by hand (unlike `iceberg-cdc`, which had to, since the plain
+/// `iceberg` crate only exposes the low-level manifest/manifest-list
+/// types, not this "as-of" convenience).
+///
+/// Note `AilakeSink::upsert` (a plain batch with no `__opcode`) is a blind
+/// append today — it does not delete the row it's replacing first, so two
+/// writes of the same key currently produce two physical rows (both `I`
+/// here), not the `U` pattern above. That's an `AilakeSink` limitation,
+/// not something this source can paper over.
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct AilakeCdcConfig {
+    pub warehouse: String,
+    pub namespace: String,
+    pub table: String,
+    pub primary_key: String,
+    pub embedding_column: String,
+    pub dimension: u32,
+    /// Snapshot id to read changes after (exclusive) — omit to read the
+    /// table's entire history. Static field, not auto-advanced between
+    /// runs (same precedent as Kafka's `start_offsets`).
+    #[serde(default)]
+    pub starting_snapshot_id: Option<i64>,
+    #[serde(default = "default_timeout_seconds")]
+    pub timeout_seconds: u64,
+}

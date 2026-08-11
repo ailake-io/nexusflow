@@ -50,3 +50,32 @@ pub struct IcebergConnectorConfig {
 fn default_timeout_seconds() -> u64 {
     30
 }
+
+/// Native CDC source for Iceberg, via manual manifest diffing — separate
+/// connector name (`"iceberg-cdc"`) from `"iceberg"`, same convention as
+/// `postgres-cdc`/`deltalake-cdc`. See `ARCHITECTURE.md §7`.
+///
+/// **Insert-only.** `IcebergSink` (this same crate) only ever commits
+/// `fast_append` snapshots — `iceberg` 0.10.0's `Transaction` API has no
+/// committable row-delta/equality-delete action yet, so CDC delete batches
+/// are rejected at the sink (see `sink.rs`). Since our own writer never
+/// produces an `Overwrite`/`Delete` snapshot, this source only ever emits
+/// `Insert` — there is no `Update`/`Delete` to detect from data this system
+/// wrote itself. (Contrast `ailake-cdc`: `AilakeSink` *does* commit real
+/// equality-deletes today, so that one supports the full `I`/`U`/`D` set.)
+/// No `fields` list needed — Iceberg tables are self-describing, same
+/// reason the batch `IcebergConnectorConfig` never needed one.
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct IcebergCdcConfig {
+    pub catalog_uri: String,
+    pub warehouse_location: String,
+    pub namespace: String,
+    pub table: String,
+    /// Snapshot id to read changes after (exclusive) — omit to read every
+    /// snapshot in the table's history. Static field, not auto-advanced
+    /// between runs (same precedent as Kafka's `start_offsets`).
+    #[serde(default)]
+    pub starting_snapshot_id: Option<i64>,
+    #[serde(default = "default_timeout_seconds")]
+    pub timeout_seconds: u64,
+}

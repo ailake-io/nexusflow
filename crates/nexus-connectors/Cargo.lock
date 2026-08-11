@@ -6940,6 +6940,7 @@ dependencies = [
  "arrow-array 58.4.0",
  "arrow-cast 58.4.0",
  "arrow-schema 58.4.0",
+ "arrow-select 58.4.0",
  "async-trait",
  "deltalake",
  "futures",
