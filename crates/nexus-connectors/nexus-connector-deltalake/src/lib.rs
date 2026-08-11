@@ -10,9 +10,9 @@ mod source;
 
 #[cfg(feature = "cdc")]
 pub use cdc::DeltaCdcSource;
-pub use config::DeltaConnectorConfig;
 #[cfg(feature = "cdc")]
 pub use config::DeltaCdcConfig;
+pub use config::DeltaConnectorConfig;
 pub use sink::DeltaSink;
 pub use source::DeltaSource;
 

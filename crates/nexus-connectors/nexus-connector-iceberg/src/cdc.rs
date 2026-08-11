@@ -26,7 +26,9 @@ impl IcebergCdcSource {
     pub async fn connect(cfg: &IcebergCdcConfig) -> Result<Self, NexusError> {
         let table = load_table(cfg).await?;
         let mut fields: Vec<Field> = schema_to_arrow_schema(table.metadata().current_schema())
-            .map_err(|e| NexusError::Schema(format!("iceberg-cdc schema_to_arrow_schema failed: {e}")))?
+            .map_err(|e| {
+                NexusError::Schema(format!("iceberg-cdc schema_to_arrow_schema failed: {e}"))
+            })?
             .fields()
             .iter()
             .map(|f| f.as_ref().clone())
@@ -42,7 +44,10 @@ impl IcebergCdcSource {
 
 async fn load_table(cfg: &IcebergCdcConfig) -> Result<Table, NexusError> {
     let catalog = catalog::connect(&IcebergCdcConfigAsBatch(cfg).into()).await?;
-    let ident = TableIdent::new(NamespaceIdent::new(cfg.namespace.clone()), cfg.table.clone());
+    let ident = TableIdent::new(
+        NamespaceIdent::new(cfg.namespace.clone()),
+        cfg.table.clone(),
+    );
     with_timeout(cfg.timeout_seconds, "iceberg-cdc load_table", async {
         catalog
             .load_table(&ident)
@@ -110,7 +115,9 @@ impl Source for IcebergCdcSource {
                         .load()
                         .await
                         .map_err(|e| {
-                            NexusError::Connector(format!("iceberg-cdc manifest list load failed: {e}"))
+                            NexusError::Connector(format!(
+                                "iceberg-cdc manifest list load failed: {e}"
+                            ))
                         })
                 },
             )
@@ -203,10 +210,7 @@ fn append_insert_opcode(
         })?;
         columns.push(batch.column(idx).clone());
     }
-    columns.push(Arc::new(StringArray::from(vec![
-        "I";
-        batch.num_rows()
-    ])) as _);
+    columns.push(Arc::new(StringArray::from(vec!["I"; batch.num_rows()])) as _);
 
     RecordBatch::try_new(target_schema.clone(), columns)
         .map_err(|e| NexusError::Schema(format!("iceberg-cdc remap failed: {e}")))

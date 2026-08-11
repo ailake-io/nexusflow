@@ -48,11 +48,7 @@ async fn cdc_source_replays_inserts_and_deletes_from_change_data_feed() {
     CreateBuilder::new()
         .with_location(&table_uri)
         .with_columns(vec![
-            StructField::new(
-                "id",
-                DeltaDataType::Primitive(PrimitiveType::Long),
-                false,
-            ),
+            StructField::new("id", DeltaDataType::Primitive(PrimitiveType::Long), false),
             StructField::new(
                 "status",
                 DeltaDataType::Primitive(PrimitiveType::String),
@@ -144,7 +140,8 @@ async fn cdc_source_replays_inserts_and_deletes_from_change_data_feed() {
     // per-key state — the real assertion that matters: does replaying this
     // feed reconstruct the same state `DeltaSource` (the batch reader)
     // would show right now?
-    let mut state: std::collections::BTreeMap<i64, Option<String>> = std::collections::BTreeMap::new();
+    let mut state: std::collections::BTreeMap<i64, Option<String>> =
+        std::collections::BTreeMap::new();
     for (id, status, opcode) in &rows {
         match opcode.as_str() {
             "I" | "U" => {

@@ -4,22 +4,22 @@ use nexus_connector_postgres::{PostgresConnectorConfig, PostgresSink, PostgresSo
 use nexus_connector_sqlite::{SqliteConnectorConfig, SqliteSink, SqliteSource};
 use nexus_core::{NodeSpec, PipelineSpec, Sink, Source};
 
-#[cfg(feature = "ailake")]
-use nexus_connector_ailake::{AilakeConnectorConfig, AilakeSink, AilakeSource};
 #[cfg(feature = "ailake-cdc")]
 use nexus_connector_ailake::{AilakeCdcConfig, AilakeCdcSource};
+#[cfg(feature = "ailake")]
+use nexus_connector_ailake::{AilakeConnectorConfig, AilakeSink, AilakeSource};
 #[cfg(feature = "chromadb")]
 use nexus_connector_chromadb::{ChromaConnectorConfig, ChromaSink};
 #[cfg(feature = "csv")]
 use nexus_connector_csv::{CsvConnectorConfig, CsvSink, CsvSource};
-#[cfg(feature = "deltalake")]
-use nexus_connector_deltalake::{DeltaConnectorConfig, DeltaSink, DeltaSource};
 #[cfg(feature = "deltalake-cdc")]
 use nexus_connector_deltalake::{DeltaCdcConfig, DeltaCdcSource};
-#[cfg(feature = "iceberg")]
-use nexus_connector_iceberg::{IcebergConnectorConfig, IcebergSink, IcebergSource};
+#[cfg(feature = "deltalake")]
+use nexus_connector_deltalake::{DeltaConnectorConfig, DeltaSink, DeltaSource};
 #[cfg(feature = "iceberg-cdc")]
 use nexus_connector_iceberg::{IcebergCdcConfig, IcebergCdcSource};
+#[cfg(feature = "iceberg")]
+use nexus_connector_iceberg::{IcebergConnectorConfig, IcebergSink, IcebergSource};
 #[cfg(feature = "kafka")]
 use nexus_connector_kafka::{KafkaConnectorConfig, KafkaSource};
 #[cfg(feature = "lancedb")]

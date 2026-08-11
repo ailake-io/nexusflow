@@ -76,8 +76,8 @@ async fn cdc_source_replays_inserts_and_a_real_delete() {
         ],
     )
     .unwrap();
-    let delete_batch = append_embedding_column(&delete_raw, &[vec![0.1, 0.2]], DIMENSION, "embedding")
-        .unwrap();
+    let delete_batch =
+        append_embedding_column(&delete_raw, &[vec![0.1, 0.2]], DIMENSION, "embedding").unwrap();
     sink.write_batch(delete_batch)
         .await
         .expect("writes delete batch");

@@ -7,8 +7,8 @@ use async_trait::async_trait;
 use deltalake::datafusion::prelude::SessionContext;
 use deltalake::delta_datafusion::cdf::scan::DeltaCdfTableProvider;
 use deltalake::delta_datafusion::cdf::{CHANGE_TYPE_COL, COMMIT_VERSION_COL};
-use deltalake::table::builder::ensure_table_uri;
 use deltalake::open_table;
+use deltalake::table::builder::ensure_table_uri;
 use futures::stream::{self, BoxStream};
 use nexus_core::{with_timeout, NexusError, Source, OPCODE_COLUMN};
 use std::sync::Arc;
@@ -84,7 +84,9 @@ impl Source for DeltaCdcSource {
         })
         .await?;
 
-        let builder = table.scan_cdf().with_starting_version(self.starting_version);
+        let builder = table
+            .scan_cdf()
+            .with_starting_version(self.starting_version);
         let provider = DeltaCdfTableProvider::try_new(builder)
             .map_err(|e| NexusError::Connector(format!("delta-cdc load_cdf failed: {e}")))?;
 
@@ -99,10 +101,10 @@ impl Source for DeltaCdcSource {
         // present on every CDF batch (see `CDC_PARTITION_SCHEMA` in
         // deltalake-core), so this sort is always valid.
         let df = df
-            .sort(vec![
-                deltalake::datafusion::logical_expr::col(COMMIT_VERSION_COL)
-                    .sort(true, false),
-            ])
+            .sort(vec![deltalake::datafusion::logical_expr::col(
+                COMMIT_VERSION_COL,
+            )
+            .sort(true, false)])
             .map_err(|e| NexusError::Connector(format!("delta-cdc sort failed: {e}")))?;
         let cdf_batches = with_timeout(self.timeout_seconds, "delta-cdc collect", async {
             df.collect()
@@ -137,7 +139,9 @@ fn remap_cdf_batch(
     target_schema: &SchemaRef,
 ) -> Result<Option<RecordBatch>, NexusError> {
     let change_type_idx = batch.schema().index_of(CHANGE_TYPE_COL).map_err(|_| {
-        NexusError::Schema(format!("delta-cdc batch missing '{CHANGE_TYPE_COL}' column"))
+        NexusError::Schema(format!(
+            "delta-cdc batch missing '{CHANGE_TYPE_COL}' column"
+        ))
     })?;
     let change_types = batch
         .column(change_type_idx)

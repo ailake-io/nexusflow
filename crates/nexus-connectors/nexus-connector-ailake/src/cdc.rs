@@ -226,19 +226,23 @@ impl Source for AilakeCdcSource {
             .map_err(|e| {
                 NexusError::Connector(format!("ailake-cdc list_equality_deletes failed: {e}"))
             })?;
-        let added_deletes: Vec<EqualityDeleteFile> = added_since(
-            &old_deletes,
-            new_deletes,
-            |f: &EqualityDeleteFile| f.path.as_str(),
-        );
+        let added_deletes: Vec<EqualityDeleteFile> =
+            added_since(&old_deletes, new_deletes, |f: &EqualityDeleteFile| {
+                f.path.as_str()
+            });
         let deleted_keys =
             deleted_keys_from(&self.store, &added_deletes, &self.primary_key).await?;
 
         let mut batches = Vec::with_capacity(added_files.len() + deleted_keys.len());
         for file in &added_files {
             let batch = with_timeout(self.timeout_seconds, "ailake-cdc read_file_batch", async {
-                read_file_batch(&self.store, &file.path, &self.embedding_column, self.dimension)
-                    .await
+                read_file_batch(
+                    &self.store,
+                    &file.path,
+                    &self.embedding_column,
+                    self.dimension,
+                )
+                .await
             })
             .await?;
             // Exclude rows whose key was also deleted in this window — see

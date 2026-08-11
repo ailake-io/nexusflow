@@ -41,10 +41,7 @@ async fn cdc_source_replays_every_append_as_insert() {
             "sqlite://{}?mode=rwc",
             dir.path().join("catalog.db").to_str().unwrap()
         ),
-        warehouse_location: format!(
-            "file://{}",
-            dir.path().join("warehouse").to_str().unwrap()
-        ),
+        warehouse_location: format!("file://{}", dir.path().join("warehouse").to_str().unwrap()),
         namespace: "ns".to_string(),
         table: "orders".to_string(),
         format_version: IcebergFormatVersion::V2,
