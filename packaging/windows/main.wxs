@@ -1,16 +1,16 @@
 <?xml version='1.0' encoding='windows-1252'?>
 <!--
-  WiX Toolset v3 source for nexusflow.msi. NOT validated: no Windows
-  toolchain in this dev sandbox (see IMPLEMENTATION_PLAN.md Marco 11).
-  Intended to be built with cargo wix (see volks73/cargo-wix on GitHub) from
-  a Windows host, after installing the frontend's npm dependencies, running
-  its production build, then a release cargo build with the
+  WiX Toolset v3 source for nexusflow.msi. Built automatically in CI
+  (.github/workflows/release.yml's build-windows job, windows-latest
+  hosted runner) via `cargo wix --input packaging\windows\main.wxs` on every
+  push/PR to main — but the resulting .msi has NOT been installed/run on a
+  real Windows machine by a human yet (see ROADMAP.md's Pendências ativas
+  item 5). To build locally instead: install cargo-wix (see volks73/cargo-wix
+  on GitHub) from a Windows host, install the frontend's npm dependencies,
+  run its production build, then a release cargo build with the
   embed-ui,connectors-all features enabled (see the root Cargo.toml's
-  [features] section) — same feature set as .github/workflows/release.yml's
-  Linux/macOS builds, so GET /connectors matches across platforms. Unlike
-  those two, nexus-connector-odbc and nexus-connector-kafka's native deps
-  (unixODBC / SASL+SSL for librdkafka) have no MSVC/vcpkg setup written yet;
-  until that exists, a Windows build of connectors-all will fail to link.
+  [features] section) — same feature set as release.yml's Linux/macOS
+  builds, so GET /connectors matches across platforms.
 
   Regenerate the two Product/Package Ids below (uuidgen, or WiX's own
   candle preprocessor with the WixUtilExtension) before a real release;

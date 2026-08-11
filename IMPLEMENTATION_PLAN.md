@@ -131,7 +131,7 @@ Parte da arquitetura já revisada em `ARCHITECTURE.md` v2: crate-por-conector, b
 - Empacotamento: AppImage/deb/rpm (Linux) primeiro (ambiente de dev), depois `.msi`/winget (Windows) e Homebrew/dmg (macOS).
 - Docker multi-arch com `--gpus all` (perfil `cuda`).
 
-**Critério de pronto:** `docker run` sobe binário único servindo UI em `localhost:8080`, sem dependência externa além do container.
+**Critério de pronto:** `docker run` sobe binário único servindo UI em `localhost:8080`, sem dependência externa além do container. **Atingido** — detalhe completo (o que builda em CI vs. o que ainda não foi validado em máquina real) em `ROADMAP.md`'s Fase 11 e item 5/6/8 das Pendências ativas.
 
 ---
 
