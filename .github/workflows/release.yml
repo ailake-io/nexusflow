@@ -52,15 +52,23 @@ jobs:
     strategy:
       matrix:
         include:
+          # x86_64 routed to the same self-hosted machine ci.yml's
+          # test/connectors/docker-image jobs use — GitHub-hosted runners are
+          # blocked account-wide by a billing issue (Settings > Billing and
+          # plans), confirmed hitting even plain ubuntu-latest, not just
+          # macOS/Windows. arm64 has no self-hosted equivalent to fall back
+          # to, so it stays hosted and blocked until that's resolved.
           - os: linux
             arch: x86_64
-            runner: ubuntu-latest
+            runner: [self-hosted, Linux]
+            self_hosted: true
           - os: linux
             arch: arm64
             runner: ubuntu-24.04-arm
+            self_hosted: false
           # macOS dropped from this matrix for now — no self-hosted macOS
           # runner exists (unlike Windows below), and the hosted macos-13/
-          # macos-14 runners are blocked by an account billing issue; their
+          # macos-14 runners are blocked by the same billing issue; their
           # failure was also cancelling the Linux builds via the matrix's
           # default fail-fast. Not in scope yet per project priority either
           # way (ROADMAP.md's Pendências ativas item 5). Re-add once macOS
@@ -83,9 +91,12 @@ jobs:
       # §3) and nexus-connector-kafka (rdkafka's default "cmake-build" feature
       # compiles vendored librdkafka from source, which auto-detects SASL/SSL/
       # zlib and silently builds without those protocols if headers are
-      # missing — installed here so the shipped binary has them).
+      # missing — installed here so the shipped binary has them). Skipped on
+      # the self-hosted runner: no interactive sudo there (same posture as
+      # ci.yml's test/connectors jobs), and these packages are assumed
+      # already present on that host from prior setup.
       - name: Install native build deps for the ADBC drivers + connectors-all
-        if: matrix.os == 'linux'
+        if: matrix.os == 'linux' && !matrix.self_hosted
         run: |
           sudo apt-get update && sudo apt-get install -y \
             cmake pkg-config libpq-dev libsqlite3-dev libfmt-dev \
@@ -122,7 +133,13 @@ jobs:
       - name: Build native Linux packages (deb/rpm/AppImage)
         if: matrix.os == 'linux' && matrix.arch == 'x86_64'
         run: |
-          sudo apt-get install -y rpm
+          # No sudo on the self-hosted runner this now builds on (see the
+          # deps step above) — rpmbuild is assumed already present there;
+          # rpmbuild's own "command not found" is a clear enough failure if
+          # it isn't, no need to duplicate that check here.
+          if ! command -v rpmbuild >/dev/null; then
+            sudo apt-get install -y rpm
+          fi
           curl -fL -o /tmp/appimagetool \
             https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x /tmp/appimagetool
