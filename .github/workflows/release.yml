@@ -241,14 +241,24 @@ jobs:
         with:
           platforms: arm64
       - uses: docker/setup-buildx-action@c47758b77c9736f4b2ef4073d4d51994fabfe349 # v3.7.1
+
+      - name: Verify Docker Hub secrets are configured
+        run: |
+          missing=""
+          if [ -z "${{ secrets.DOCKERHUB_USERNAME }}" ]; then missing="$missing DOCKERHUB_USERNAME"; fi
+          if [ -z "${{ secrets.DOCKERHUB_TOKEN }}" ]; then missing="$missing DOCKERHUB_TOKEN"; fi
+          if [ -n "$missing" ]; then
+            echo "Missing Docker Hub secrets:$missing"
+            echo "Create them under Settings > Secrets and variables > Actions."
+            echo "DOCKERHUB_TOKEN must be an access token, not your account password."
+            exit 1
+          fi
+
       - uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      # Requires the DOCKERHUB_USERNAME/DOCKERHUB_TOKEN repo secrets (Docker
-      # Hub access token, not the account password) — not set by this change,
-      # someone with repo admin needs to add them under Settings > Secrets.
       - uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
         with:
           registry: docker.io
@@ -312,6 +322,18 @@ jobs:
         run: |
           cd dist
           sha256sum *.tar.gz *.deb *.rpm *.AppImage > SHA256SUMS
+
+      - name: Verify GPG secrets are configured
+        run: |
+          missing=""
+          if [ -z "${{ secrets.GPG_PRIVATE_KEY }}" ]; then missing="$missing GPG_PRIVATE_KEY"; fi
+          if [ -z "${{ secrets.GPG_PASSPHRASE }}" ]; then missing="$missing GPG_PASSPHRASE"; fi
+          if [ -n "$missing" ]; then
+            echo "Missing GPG signing secrets:$missing"
+            echo "Create them under Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
       - name: Import GPG signing key
         uses: crazy-max/ghaction-import-gpg@01dd5d3ca463c7f10f7f4f7b4f177225ac661ee4 # v6.1.0
         with:
