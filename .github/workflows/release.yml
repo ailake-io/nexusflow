@@ -242,40 +242,25 @@ jobs:
           platforms: arm64
       - uses: docker/setup-buildx-action@c47758b77c9736f4b2ef4073d4d51994fabfe349 # v3.7.1
 
-      - name: Verify Docker Hub secrets are configured
-        run: |
-          missing=""
-          if [ -z "${{ secrets.DOCKERHUB_USERNAME }}" ]; then missing="$missing DOCKERHUB_USERNAME"; fi
-          if [ -z "${{ secrets.DOCKERHUB_TOKEN }}" ]; then missing="$missing DOCKERHUB_TOKEN"; fi
-          if [ -n "$missing" ]; then
-            echo "Missing Docker Hub secrets:$missing"
-            echo "Create them under Settings > Secrets and variables > Actions."
-            echo "DOCKERHUB_TOKEN must be an access token, not your account password."
-            exit 1
-          fi
-
-      - uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+      - name: Log in to GHCR
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
-        with:
-          registry: docker.io
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # Docker Hub is intentionally disabled for now — add DOCKERHUB_USERNAME
+      # and DOCKERHUB_TOKEN secrets later and restore the second registry here.
       # No git tag to derive a semver pattern from under the continuous-release
-      # model (see this file's header) — tag both registries directly off the
-      # workspace version read above, same convention `publish`'s GitHub
-      # Release tag uses, plus a floating `latest`.
+      # model (see this file's header) — tag directly off the workspace version
+      # read above, same convention `publish`'s GitHub Release tag uses, plus a
+      # floating `latest`.
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@369eb591f429131d6889c46b94e711f089e6ca96 # v5.6.1
         with:
           images: |
             ghcr.io/${{ github.repository }}
-            docker.io/ailake/nexusflow
           tags: |
             type=raw,value=v${{ steps.version.outputs.version }}
             type=raw,value=latest
