@@ -19,13 +19,17 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Iceberg sink (Marco 6 — `iceberg` crate + `iceberg-catalog-sql`).
-/// Append-only: `iceberg` 0.10.0's `Transaction` API has a `fast_append()`
-/// action to commit new data files, but no committable row-delta /
-/// equality-delete action yet — the low-level `EqualityDeleteFileWriterBuilder`
-/// exists (writes a valid delete file), but nothing in the public
-/// `Transaction` API wires its output into a snapshot commit. CDC delete
-/// batches are therefore rejected with a clear error rather than silently
-/// dropped, until iceberg-rust exposes that action.
+/// Append-only: `iceberg` 0.10.0/0.10.1's `Transaction` API only exposes
+/// `fast_append()`. The higher-level row-delta / equality-delete action is
+/// missing, and so are the copy-on-write primitives (`OverwriteFiles`,
+/// `RewriteFiles`, `DeleteFiles`) that could otherwise be used to rewrite
+/// data files without deletes. See apache/iceberg-rust#2269.
+///
+/// TODO: Once `RowDeltaAction` (or at least `OverwriteFiles`/`RewriteFiles`)
+/// lands in iceberg-rust, replace the error below with a real CDC delete
+/// path — either equality-delete files (MoR) or filtered data-file rewrites
+/// (CoW). Until then, delete batches are rejected explicitly instead of being
+/// silently dropped.
 pub struct IcebergSink {
     cfg: IcebergConnectorConfig,
     // `DefaultFileNameGenerator`'s per-file counter starts at 0 for every

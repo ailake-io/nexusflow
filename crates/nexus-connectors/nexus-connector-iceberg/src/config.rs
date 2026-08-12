@@ -237,13 +237,15 @@ impl IcebergConnectorConfig {
 /// `postgres-cdc`/`deltalake-cdc`. See `ARCHITECTURE.md §7`.
 ///
 /// **Insert-only.** `IcebergSink` (this same crate) only ever commits
-/// `fast_append` snapshots — `iceberg` 0.10.0's `Transaction` API has no
-/// committable row-delta/equality-delete action yet, so CDC delete batches
-/// are rejected at the sink (see `sink.rs`). Since our own writer never
-/// produces an `Overwrite`/`Delete` snapshot, this source only ever emits
-/// `Insert` — there is no `Update`/`Delete` to detect from data this system
-/// wrote itself. (Contrast `ailake-cdc`: `AilakeSink` *does* commit real
-/// equality-deletes today, so that one supports the full `I`/`U`/`D` set.)
+/// `fast_append` snapshots — `iceberg` 0.10.0/0.10.1's `Transaction` API has
+/// no committable row-delta/equality-delete action yet, and the copy-on-write
+/// actions (`OverwriteFiles`, `RewriteFiles`, `DeleteFiles`) are also missing.
+/// See apache/iceberg-rust#2269. CDC delete batches are therefore rejected at
+/// the sink (see `sink.rs`). Since our own writer never produces an
+/// `Overwrite`/`Delete` snapshot, this source only ever emits `Insert` — there
+/// is no `Update`/`Delete` to detect from data this system wrote itself.
+/// (Contrast `ailake-cdc`: `AilakeSink` *does* commit real equality-deletes
+/// today, so that one supports the full `I`/`U`/`D` set.)
 /// No `fields` list needed — Iceberg tables are self-describing, same
 /// reason the batch `IcebergConnectorConfig` never needed one.
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
