@@ -58,7 +58,7 @@ impl IcebergSink {
 
     async fn append_inner(&self, batch: RecordBatch) -> Result<(), NexusError> {
         let catalog = catalog::connect(&self.cfg).await?;
-        let namespace = NamespaceIdent::new(self.cfg.namespace.clone());
+        let namespace = NamespaceIdent::new(self.cfg.namespace());
         if !catalog
             .namespace_exists(&namespace)
             .await
@@ -71,7 +71,7 @@ impl IcebergSink {
                     NexusError::Connector(format!("iceberg create_namespace failed: {e}"))
                 })?;
         }
-        let ident = TableIdent::new(namespace.clone(), self.cfg.table.clone());
+        let ident = TableIdent::new(namespace.clone(), self.cfg.table_name());
         let table = if catalog
             .table_exists(&ident)
             .await
@@ -90,7 +90,7 @@ impl IcebergSink {
                 IcebergFormatVersion::V3 => FormatVersion::V3,
             };
             let creation = TableCreation::builder()
-                .name(self.cfg.table.clone())
+                .name(self.cfg.table_name())
                 .schema(schema)
                 .format_version(format_version)
                 .build();

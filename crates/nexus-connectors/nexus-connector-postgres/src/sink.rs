@@ -24,7 +24,7 @@ impl PostgresSink {
         cfg: &PostgresConnectorConfig,
         columns: &[String],
     ) -> Result<Self, NexusError> {
-        let uri = cfg.uri.clone();
+        let uri = cfg.connection_string();
         let connection = with_timeout(cfg.timeout_seconds, "postgres connect", async {
             tokio::task::spawn_blocking(move || open_connection(&uri))
                 .await

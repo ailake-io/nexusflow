@@ -189,8 +189,12 @@ async fn text_chunk_embed_milvus_end_to_end() {
 
     // --- write to milvus ---
     let sink_cfg = MilvusConnectorConfig {
-        url: url.clone(),
-        collection: "docs".to_string(),
+        url: Some(url.clone()),
+        host: None,
+        port: None,
+        api_key: None,
+        collection: Some("docs".to_string()),
+        collection_name: None,
         primary_key: "id".to_string(),
         embedding_column: "embedding".to_string(),
         dimension: 384,

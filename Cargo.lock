@@ -7281,6 +7281,7 @@ dependencies = [
  "nexus-core",
  "schemars 1.2.2",
  "serde",
+ "serde_json",
  "testcontainers",
  "tokio",
 ]
@@ -7347,14 +7348,16 @@ dependencies = [
  "arrow-schema 58.4.0",
  "arrow-select 58.4.0",
  "async-trait",
+ "bytes",
  "futures",
  "nexus-core",
+ "object_store 0.10.2",
  "parquet 58.4.0",
  "schemars 1.2.2",
  "serde",
  "tempfile",
  "tokio",
- "uuid",
+ "url",
 ]
 
 [[package]]

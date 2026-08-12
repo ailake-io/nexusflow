@@ -33,6 +33,18 @@ pub(crate) fn delimiter_byte(delimiter: char) -> Result<u8, NexusError> {
     }
 }
 
+/// Same contract as `delimiter_byte` but for the quote / escape characters
+/// configured on the CSV reader/writer.
+pub(crate) fn quote_byte(quote: char) -> Result<u8, NexusError> {
+    if quote.is_ascii() {
+        Ok(quote as u8)
+    } else {
+        Err(NexusError::Schema(format!(
+            "quote {quote:?} must be a single ASCII character"
+        )))
+    }
+}
+
 pub(crate) fn primary_key_or_err(cfg: &CsvConnectorConfig) -> Result<String, NexusError> {
     cfg.primary_key
         .clone()

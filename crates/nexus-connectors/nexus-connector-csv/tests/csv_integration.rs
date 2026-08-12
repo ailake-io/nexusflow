@@ -9,16 +9,25 @@
 use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use futures::StreamExt;
-use nexus_connector_csv::{CsvConnectorConfig, CsvDataType, CsvFieldSpec, CsvSink, CsvSource};
+use nexus_connector_csv::{CsvConnectorConfig, CsvDataType, CsvFieldSpec, CsvSink, CsvSource, StorageType};
 use nexus_core::{Sink, Source};
 use std::collections::HashMap;
 use std::sync::Arc;
 
 fn test_cfg(uri: String, delimiter: char) -> CsvConnectorConfig {
     CsvConnectorConfig {
-        uri,
+        uri: Some(uri),
+        storage: StorageType::Local,
+        path: String::new(),
+        bucket: None,
+        region: None,
+        access_key_id: None,
+        secret_access_key: None,
+        endpoint: None,
         delimiter,
         has_header: true,
+        quote: '"',
+        escape: None,
         fields: vec![
             CsvFieldSpec {
                 name: "id".to_string(),
@@ -159,4 +168,108 @@ async fn rejects_multi_byte_delimiter() {
         Ok(_) => panic!("multi-byte delimiter must be rejected"),
         Err(e) => assert!(matches!(e, nexus_core::NexusError::Schema(_))),
     }
+}
+
+fn cfg_with(
+    uri: Option<String>,
+    storage: StorageType,
+    path: String,
+    bucket: Option<String>,
+) -> CsvConnectorConfig {
+    CsvConnectorConfig {
+        uri,
+        storage,
+        path,
+        bucket,
+        region: None,
+        access_key_id: None,
+        secret_access_key: None,
+        endpoint: None,
+        delimiter: ',',
+        has_header: true,
+        quote: '"',
+        escape: None,
+        fields: vec![CsvFieldSpec {
+            name: "id".to_string(),
+            data_type: CsvDataType::Int64,
+            nullable: false,
+        }],
+        primary_key: Some("id".to_string()),
+        batch_size: 1000,
+        storage_options: HashMap::new(),
+        timeout_seconds: 30,
+    }
+}
+
+#[test]
+fn legacy_uri_takes_precedence() {
+    let cfg = cfg_with(
+        Some("s3://legacy/bucket/key.csv".to_string()),
+        StorageType::Local,
+        "/tmp/ignored.csv".to_string(),
+        None,
+    );
+    assert_eq!(cfg.uri().unwrap(), "s3://legacy/bucket/key.csv");
+}
+
+#[test]
+fn local_storage_uri_uses_path() {
+    let cfg = cfg_with(None, StorageType::Local, "/data/events.csv".to_string(), None);
+    assert_eq!(cfg.uri().unwrap(), "/data/events.csv");
+}
+
+#[test]
+fn s3_storage_uri_requires_bucket() {
+    let cfg = cfg_with(None, StorageType::S3, "path/to/file.csv".to_string(), None);
+    assert!(cfg.uri().is_err());
+
+    let cfg = cfg_with(
+        None,
+        StorageType::S3,
+        "path/to/file.csv".to_string(),
+        Some("my-bucket".to_string()),
+    );
+    assert_eq!(cfg.uri().unwrap(), "s3://my-bucket/path/to/file.csv");
+}
+
+#[test]
+fn gcs_storage_uri_requires_bucket() {
+    let cfg = cfg_with(
+        None,
+        StorageType::Gcs,
+        "path/to/file.csv".to_string(),
+        Some("my-bucket".to_string()),
+    );
+    assert_eq!(cfg.uri().unwrap(), "gs://my-bucket/path/to/file.csv");
+}
+
+#[test]
+fn azure_storage_uri_requires_bucket() {
+    let cfg = cfg_with(
+        None,
+        StorageType::Azure,
+        "path/to/file.csv".to_string(),
+        Some("my-container".to_string()),
+    );
+    assert_eq!(cfg.uri().unwrap(), "az://my-container/path/to/file.csv");
+}
+
+#[test]
+fn storage_options_injects_backend_keys() {
+    let mut cfg = cfg_with(
+        None,
+        StorageType::S3,
+        "key.csv".to_string(),
+        Some("bucket".to_string()),
+    );
+    cfg.access_key_id = Some("AK".to_string());
+    cfg.secret_access_key = Some("SK".to_string());
+    cfg.region = Some("us-west-2".to_string());
+    cfg.endpoint = Some("http://localhost:9000".to_string());
+
+    let opts = cfg.storage_options();
+    assert_eq!(opts.get("aws_access_key_id").unwrap(), "AK");
+    assert_eq!(opts.get("aws_secret_access_key").unwrap(), "SK");
+    assert_eq!(opts.get("aws_region").unwrap(), "us-west-2");
+    assert_eq!(opts.get("aws_endpoint").unwrap(), "http://localhost:9000");
 }

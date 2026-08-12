@@ -42,7 +42,11 @@ async fn mongo_native_cdc_carries_correct_opcode_per_row() {
         .collection::<mongodb::bson::Document>("events");
 
     let config = MongoCdcConfig {
-        uri: uri.clone(),
+        connection_string: Some(uri.clone()),
+        hosts: Vec::new(),
+        username: None,
+        password: None,
+        auth_database: None,
         database: "nexus".to_string(),
         collection: "events".to_string(),
         fields: fields(),

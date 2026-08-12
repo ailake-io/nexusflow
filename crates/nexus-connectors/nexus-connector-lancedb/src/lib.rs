@@ -4,7 +4,7 @@
 mod config;
 mod sink;
 
-pub use config::LanceDbConnectorConfig;
+pub use config::{LanceDbConnectorConfig, LanceDbStorageOptions};
 pub use sink::LanceDbSink;
 
 nexus_core::submit_connector!(

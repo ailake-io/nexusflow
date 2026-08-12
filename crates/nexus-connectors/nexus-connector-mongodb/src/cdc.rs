@@ -33,7 +33,7 @@ pub struct MongoCdcSource {
 impl MongoCdcSource {
     pub async fn connect(config: &MongoCdcConfig) -> Result<Self, NexusError> {
         let client = with_timeout(config.timeout_seconds, "mongo connect", async {
-            Client::with_uri_str(&config.uri)
+            Client::with_uri_str(&config.connection_string())
                 .await
                 .map_err(|e| NexusError::Connector(format!("mongo connect failed: {e}")))
         })

@@ -33,10 +33,14 @@ pub struct AilakeCdcSource {
 impl AilakeCdcSource {
     pub async fn connect(cfg: &AilakeCdcConfig) -> Result<Self, NexusError> {
         with_timeout(cfg.timeout_seconds, "ailake-cdc connect", async {
-            let store: Arc<dyn Store> = Arc::new(LocalStore::new(&cfg.warehouse));
+            let warehouse = cfg.warehouse();
+            let namespace = cfg.namespace();
+            let table_name = cfg.table_name();
+
+            let store: Arc<dyn Store> = Arc::new(LocalStore::new(warehouse));
             let catalog: Arc<dyn CatalogProvider> =
                 Arc::new(HadoopCatalog::new(store.clone(), ""));
-            let table = TableIdent::new(&cfg.namespace, &cfg.table);
+            let table = TableIdent::new(namespace, table_name);
 
             // Schema derived from the first committed file, same constraint
             // the batch `AilakeSource` already documents.
@@ -47,7 +51,7 @@ impl AilakeCdcSource {
             let first = files.first().ok_or_else(|| {
                 NexusError::Connector(format!(
                     "ailake table '{}.{}' has no committed data files yet — schema cannot be derived",
-                    cfg.namespace, cfg.table
+                    namespace, table_name
                 ))
             })?;
             let batch =

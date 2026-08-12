@@ -45,8 +45,8 @@ impl IcebergCdcSource {
 async fn load_table(cfg: &IcebergCdcConfig) -> Result<Table, NexusError> {
     let catalog = catalog::connect(&IcebergCdcConfigAsBatch(cfg).into()).await?;
     let ident = TableIdent::new(
-        NamespaceIdent::new(cfg.namespace.clone()),
-        cfg.table.clone(),
+        NamespaceIdent::new(cfg.namespace()),
+        cfg.table_name(),
     );
     with_timeout(cfg.timeout_seconds, "iceberg-cdc load_table", async {
         catalog
@@ -66,10 +66,15 @@ impl From<IcebergCdcConfigAsBatch<'_>> for crate::config::IcebergConnectorConfig
     fn from(wrapper: IcebergCdcConfigAsBatch<'_>) -> Self {
         let cfg = wrapper.0;
         crate::config::IcebergConnectorConfig {
-            catalog_uri: cfg.catalog_uri.clone(),
-            warehouse_location: cfg.warehouse_location.clone(),
-            namespace: cfg.namespace.clone(),
-            table: cfg.table.clone(),
+            catalog_uri: Some(cfg.catalog_uri()),
+            catalog_path: cfg.catalog_path.clone(),
+            warehouse_location: Some(cfg.warehouse_location()),
+            warehouse_path: cfg.warehouse_path.clone(),
+            namespace: Some(cfg.namespace()),
+            namespace_name: cfg.namespace_name.clone(),
+            table: Some(cfg.table_name()),
+            table_name: cfg.table_name.clone(),
+            storage_options: cfg.storage_options.clone(),
             format_version: Default::default(),
             timeout_seconds: cfg.timeout_seconds,
         }

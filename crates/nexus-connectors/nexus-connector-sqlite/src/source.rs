@@ -23,7 +23,7 @@ impl SqliteSource {
     pub async fn connect(cfg: &SqliteConnectorConfig) -> Result<Self, NexusError> {
         quote_identifier(&cfg.table)?;
 
-        let uri = cfg.uri.clone();
+        let uri = cfg.connection_url();
         let table = cfg.table.clone();
         let (connection, schema) = with_timeout(cfg.timeout_seconds, "sqlite connect", async {
             tokio::task::spawn_blocking(

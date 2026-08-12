@@ -32,7 +32,7 @@ pub struct PostgresCdcSource {
 
 impl PostgresCdcSource {
     pub async fn connect(config: &PostgresCdcConfig) -> Result<Self, NexusError> {
-        let replication_uri = with_replication_param(&config.uri);
+        let replication_uri = with_replication_param(&config.connection_string());
 
         let stream_config = ReplicationStreamConfig::builder(
             config.slot_name.clone(),

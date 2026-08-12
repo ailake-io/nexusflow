@@ -1,16 +1,66 @@
+use nexus_core::NexusError;
 use serde::Deserialize;
 use std::collections::HashMap;
+use url::Url;
+
+/// HTTP method used by the REST source when fetching pages.
+/// Serialized as an uppercase verb to match HTTP conventions.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum RestMethod {
+    /// Fetch data with GET (default). Query parameters for pagination are
+    /// appended to the URL automatically.
+    #[default]
+    Get,
+    /// Send an empty-body POST request. Useful for APIs that expose a search
+    /// or list endpoint only through POST.
+    Post,
+    /// Send an empty-body PUT request.
+    Put,
+    /// Send an empty-body PATCH request.
+    Patch,
+    /// Send a DELETE request.
+    Delete,
+}
+
+impl RestMethod {
+    /// Convert to the corresponding `reqwest` HTTP method.
+    pub fn as_reqwest(&self) -> reqwest::Method {
+        match self {
+            RestMethod::Get => reqwest::Method::GET,
+            RestMethod::Post => reqwest::Method::POST,
+            RestMethod::Put => reqwest::Method::PUT,
+            RestMethod::Patch => reqwest::Method::PATCH,
+            RestMethod::Delete => reqwest::Method::DELETE,
+        }
+    }
+}
 
 /// Static connector config resolved at node-configuration time (not runtime).
 /// Deserialized from the DAG node's raw `config` JSON — see ARCHITECTURE.md §3.
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct RestConnectorConfig {
+    /// Legacy full URL field. If present, it takes precedence over `url`,
+    /// `base_url`, and `path`, preserving old configs that stored the
+    /// complete endpoint address in a single `uri` key.
+    #[serde(default)]
+    pub uri: Option<String>,
+    /// Legacy full URL field. Used when `uri` is absent and either replaces
+    /// `base_url`/`path` entirely or fills in for a missing `base_url`.
+    #[serde(default)]
+    pub url: Option<String>,
     /// Scheme + host of the API, e.g. `"https://api.example.com"` — no
-    /// trailing slash needed.
+    /// trailing slash needed. Empty when the full URL is supplied via `uri`
+    /// or `url`.
+    #[serde(default)]
     pub base_url: String,
     /// Path appended to `base_url` for this request, e.g. `"/v1/items"`.
+    /// Leading slashes are normalized automatically.
     #[serde(default)]
     pub path: String,
+    /// HTTP method used when fetching pages. Defaults to `GET`.
+    #[serde(default)]
+    pub method: RestMethod,
     /// Extra HTTP headers sent with every request — this is where an API
     /// key/bearer token goes (e.g. `{"Authorization": "Bearer ..."}`).
     #[serde(default)]
@@ -22,6 +72,7 @@ pub struct RestConnectorConfig {
     /// (e.g. `"data.items"`). `None` means the response body itself is the array.
     #[serde(default)]
     pub rows_path: Option<String>,
+    /// Pagination strategy applied across multiple requests.
     #[serde(default)]
     pub pagination: RestPagination,
     /// Hard cap on pages fetched, regardless of pagination signals — guards
@@ -40,6 +91,53 @@ pub struct RestConnectorConfig {
     /// Maximum requests per second across this source (0 = unlimited).
     #[serde(default)]
     pub requests_per_second: u32,
+}
+
+impl RestConnectorConfig {
+    /// Resolve the final request URL, honoring legacy single-key configs.
+    ///
+    /// Priority:
+    /// 1. `uri` — old single-field URL.
+    /// 2. `url` — alternate legacy single-field URL.
+    /// 3. `base_url` + `path` — new split form.
+    ///
+    /// The resulting string is validated to be a non-protocol-relative,
+    /// HTTP(S) URL.
+    pub fn url(&self) -> Result<String, NexusError> {
+        let raw = if let Some(uri) = &self.uri {
+            uri.clone()
+        } else if let Some(url) = &self.url {
+            url.clone()
+        } else {
+            format!(
+                "{}/{}",
+                self.base_url.trim_end_matches('/'),
+                self.path.trim_start_matches('/')
+            )
+        };
+
+        if raw.starts_with("//") {
+            return Err(NexusError::Schema(
+                "REST URL must not be protocol-relative (//host)".to_string(),
+            ));
+        }
+
+        let parsed =
+            Url::parse(&raw).map_err(|e| NexusError::Schema(format!("REST URL is invalid: {e}")))?;
+        if parsed.scheme() != "http" && parsed.scheme() != "https" {
+            return Err(NexusError::Schema(format!(
+                "REST URL must use http(s), got {} scheme",
+                parsed.scheme()
+            )));
+        }
+
+        Ok(raw)
+    }
+
+    /// HTTP method to use when building the outgoing request.
+    pub fn method(&self) -> reqwest::Method {
+        self.method.as_reqwest()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
@@ -65,6 +163,7 @@ pub enum RestDataType {
     Utf8,
 }
 
+/// Pagination strategy for paginated REST sources.
 #[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RestPagination {
@@ -104,9 +203,25 @@ pub enum RestPagination {
 /// right fields for each direction instead of one form trying to cover both.
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct WebhookSinkConfig {
-    /// Full URL of the target endpoint, e.g. `"https://api.example.com/v1/events"`.
-    pub url: String,
-    /// HTTP method used to send each row/batch.
+    /// Legacy full URL field. If present, it takes precedence over `url`,
+    /// `base_url`, and `path`, preserving old configs that stored the
+    /// complete endpoint address in a single `uri` key.
+    #[serde(default)]
+    pub uri: Option<String>,
+    /// Legacy full URL field. Used when `uri` is absent and either replaces
+    /// `base_url`/`path` entirely or fills in for a missing `base_url`.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Scheme + host of the target API, e.g. `"https://api.example.com"` —
+    /// no trailing slash needed. Empty when the full URL is supplied via
+    /// `uri` or `url`.
+    #[serde(default)]
+    pub base_url: String,
+    /// Path appended to `base_url`, e.g. `"/v1/events"`. Leading slashes
+    /// are normalized automatically.
+    #[serde(default)]
+    pub path: String,
+    /// HTTP method used to send each row/batch. Defaults to `POST`.
     #[serde(default)]
     pub method: WebhookMethod,
     /// Extra HTTP headers sent with every request — this is where an API
@@ -133,21 +248,70 @@ pub struct WebhookSinkConfig {
     pub requests_per_second: u32,
 }
 
+impl WebhookSinkConfig {
+    /// Resolve the final request URL, honoring legacy single-key configs.
+    ///
+    /// Priority:
+    /// 1. `uri` — old single-field URL.
+    /// 2. `url` — alternate legacy single-field URL.
+    /// 3. `base_url` + `path` — new split form.
+    ///
+    /// The resulting string is validated to be a non-protocol-relative,
+    /// HTTP(S) URL.
+    pub fn url(&self) -> Result<String, NexusError> {
+        let raw = if let Some(uri) = &self.uri {
+            uri.clone()
+        } else if let Some(url) = &self.url {
+            url.clone()
+        } else {
+            format!(
+                "{}/{}",
+                self.base_url.trim_end_matches('/'),
+                self.path.trim_start_matches('/')
+            )
+        };
+
+        if raw.starts_with("//") {
+            return Err(NexusError::Schema(
+                "Webhook URL must not be protocol-relative (//host)".to_string(),
+            ));
+        }
+
+        let parsed = Url::parse(&raw)
+            .map_err(|e| NexusError::Schema(format!("Webhook URL is invalid: {e}")))?;
+        if parsed.scheme() != "http" && parsed.scheme() != "https" {
+            return Err(NexusError::Schema(format!(
+                "Webhook URL must use http(s), got {} scheme",
+                parsed.scheme()
+            )));
+        }
+
+        Ok(raw)
+    }
+}
+
+/// HTTP method used by the webhook sink.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum WebhookMethod {
+    /// Send each payload via POST (default).
     #[default]
     Post,
+    /// Send each payload via PUT.
     Put,
+    /// Send each payload via PATCH.
     Patch,
+    /// Send each payload via DELETE.
     Delete,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WebhookBodyMode {
+    /// Send the whole batch as one JSON array body.
     #[default]
     Array,
+    /// Send one request per row, each with a JSON object body.
     PerRow,
 }
 

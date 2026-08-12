@@ -33,15 +33,16 @@ impl MilvusSink {
         // so validate it before splicing it into any expression string.
         validate_identifier(&cfg.primary_key)?;
 
+        let url = cfg.url();
         let client = with_timeout(cfg.timeout_seconds, "milvus connect", async {
-            Client::new(cfg.url.clone())
+            Client::new(url)
                 .await
                 .map_err(|e| NexusError::Connector(format!("milvus connect failed: {e}")))
         })
         .await?;
         Ok(Self {
             client,
-            collection: cfg.collection.clone(),
+            collection: cfg.collection_name(),
             primary_key: cfg.primary_key.clone(),
             embedding_column: cfg.embedding_column.clone(),
             timeout_seconds: cfg.timeout_seconds,

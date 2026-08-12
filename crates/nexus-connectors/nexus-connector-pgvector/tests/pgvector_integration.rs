@@ -101,7 +101,7 @@ async fn text_chunk_embed_pgvector_end_to_end() {
 
     // --- write to pgvector ---
     let sink_cfg = PgVectorConnectorConfig {
-        uri: uri.clone(),
+        uri: Some(uri.clone()),
         table: "docs".to_string(),
         primary_key: "id".to_string(),
         embedding_column: "embedding".to_string(),

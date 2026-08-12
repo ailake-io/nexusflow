@@ -5,7 +5,8 @@ use async_trait::async_trait;
 use deltalake::operations::create::CreateBuilder;
 use deltalake::table::builder::ensure_table_uri;
 use deltalake::writer::{DeltaWriter, RecordBatchWriter};
-use deltalake::{open_table, DeltaTable};
+use deltalake::{open_table, open_table_with_storage_options, DeltaTable};
+use std::collections::HashMap;
 use nexus_core::{split_by_opcode, with_timeout, CheckpointCursor, NexusError, Sink};
 
 /// Delta Lake sink (Marco 6 — `deltalake` crate directly). Table creation

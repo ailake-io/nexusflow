@@ -3,7 +3,7 @@ use crate::rows::{delta_schema_to_arrow, normalize_batch};
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use async_trait::async_trait;
-use deltalake::open_table;
+use deltalake::{open_table, open_table_with_storage_options};
 use deltalake::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use deltalake::table::builder::ensure_table_uri;
 use futures::stream::{self, BoxStream};
@@ -51,12 +51,17 @@ fn read_file_batches(
 
 impl DeltaSource {
     pub async fn connect(cfg: &DeltaConnectorConfig) -> Result<Self, NexusError> {
-        let url = ensure_table_uri(&cfg.table_uri)
+        let table_uri = cfg.table_uri();
+        let url = ensure_table_uri(&table_uri)
             .map_err(|e| NexusError::Connector(format!("delta table uri invalid: {e}")))?;
+        let storage_options = cfg.storage_options();
         let table = with_timeout(cfg.timeout_seconds, "delta open_table", async {
-            open_table(url)
-                .await
-                .map_err(|e| NexusError::Connector(format!("delta open_table failed: {e}")))
+            if storage_options.is_empty() {
+                open_table(url).await
+            } else {
+                open_table_with_storage_options(url, storage_options).await
+            }
+            .map_err(|e| NexusError::Connector(format!("delta open_table failed: {e}")))
         })
         .await?;
         // Derived from Delta's own declared table schema (metadata), not any
@@ -69,7 +74,7 @@ impl DeltaSource {
         let schema = delta_schema_to_arrow(&delta_schema)?;
 
         Ok(Self {
-            table_uri: cfg.table_uri.clone(),
+            table_uri,
             schema,
             timeout_seconds: cfg.timeout_seconds,
         })

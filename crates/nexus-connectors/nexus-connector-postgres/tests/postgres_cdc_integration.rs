@@ -69,7 +69,7 @@ async fn postgres_native_cdc_carries_correct_opcode_per_row() {
         .expect("test table + publication created");
 
     let config = PostgresCdcConfig {
-        uri: uri.clone(),
+        uri: Some(uri.clone()),
         table: table.clone(),
         publication_name: publication.clone(),
         slot_name: slot.clone(),

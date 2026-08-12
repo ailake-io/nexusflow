@@ -26,8 +26,11 @@ impl LanceDbSink {
         // so validate it before splicing it into any predicate string.
         validate_identifier(&cfg.primary_key)?;
 
+        let uri = cfg.connection_uri();
+        let table = cfg.table_name();
+
         let connection = with_timeout(cfg.timeout_seconds, "lancedb connect", async {
-            lancedb::connect(&cfg.uri)
+            lancedb::connect(&uri)
                 .execute()
                 .await
                 .map_err(|e| NexusError::Connector(format!("lancedb connect failed: {e}")))
@@ -41,11 +44,11 @@ impl LanceDbSink {
                 .map_err(|e| NexusError::Connector(format!("lancedb list tables failed: {e}")))
         })
         .await?;
-        let table_exists = table_names.iter().any(|n| n == &cfg.table);
+        let table_exists = table_names.iter().any(|n| n == &table);
 
         Ok(Self {
             connection,
-            table: cfg.table.clone(),
+            table,
             primary_key: cfg.primary_key.clone(),
             table_exists,
             timeout_seconds: cfg.timeout_seconds,

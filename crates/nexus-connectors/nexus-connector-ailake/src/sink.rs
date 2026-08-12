@@ -35,9 +35,13 @@ const FORMAT_VERSION: u8 = 2;
 
 impl AilakeSink {
     pub fn connect(cfg: &AilakeConnectorConfig) -> Result<Self, NexusError> {
-        let store: Arc<dyn Store> = Arc::new(LocalStore::new(&cfg.warehouse));
+        let warehouse = cfg.warehouse();
+        let namespace = cfg.namespace();
+        let table_name = cfg.table_name();
+
+        let store: Arc<dyn Store> = Arc::new(LocalStore::new(warehouse));
         let catalog: Arc<dyn CatalogProvider> = Arc::new(HadoopCatalog::new(store.clone(), ""));
-        let table = TableIdent::new(&cfg.namespace, &cfg.table);
+        let table = TableIdent::new(namespace, table_name);
         let policy = VectorStoragePolicy::default_f16(
             &cfg.embedding_column,
             cfg.dimension,

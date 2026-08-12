@@ -21,12 +21,12 @@ pub struct QdrantSink {
 
 impl QdrantSink {
     pub fn connect(cfg: &QdrantConnectorConfig) -> Result<Self, NexusError> {
-        let client = Qdrant::from_url(&cfg.url)
+        let client = Qdrant::from_url(&cfg.url())
             .build()
             .map_err(|e| NexusError::Connector(format!("qdrant connect failed: {e}")))?;
         Ok(Self {
             client,
-            collection: cfg.collection.clone(),
+            collection: cfg.collection_name(),
             primary_key: cfg.primary_key.clone(),
             embedding_column: cfg.embedding_column.clone(),
             timeout_seconds: cfg.timeout_seconds,
