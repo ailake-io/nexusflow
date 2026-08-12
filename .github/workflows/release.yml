@@ -30,6 +30,13 @@ name: Release
 #   runners hit the same billing block, and Mac isn't a current priority
 #   (ROADMAP.md's Pendências ativas item 5).
 #
+# All jobs run self-hosted on the same Linux machine as ci.yml's heavy jobs
+# — hosted ubuntu-latest runners are blocked account-wide by the billing
+# issue mentioned above, so docker-publish/publish cannot rely on them
+# either. The `concurrency` group below serializes this workflow with CI
+# (and with other release runs) so the shared machine never runs two heavy
+# cargo/docker builds at once.
+#
 # Continuous-release model, not tag-triggered: on `main`, this is the last
 # stage of a deliberate 3-stage chain — CI -> connectors-heavy -> Release —
 # so `build`/`docker-publish`/`publish` only run once both of those already
@@ -63,6 +70,15 @@ on:
 
 permissions:
   contents: read
+
+# Same fixed group as ci.yml — all release jobs share the same physical
+# self-hosted Linux machine as CI's heavy jobs. A fixed group with no
+# github.ref/github.sha in the key serializes across every branch/PR, not
+# just concurrent runs of the same one; cancel-in-progress: false queues
+# the new run instead of cancelling in-progress work.
+concurrency:
+  group: ci-self-hosted-runner
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -164,21 +180,23 @@ jobs:
       - name: Build native Linux packages (deb/rpm/AppImage)
         if: matrix.os == 'linux' && matrix.arch == 'x86_64'
         run: |
-          # No sudo on the self-hosted runner this now builds on (see the
-          # deps step above) — rpmbuild is assumed already present there;
-          # rpmbuild's own "command not found" is a clear enough failure if
-          # it isn't, no need to duplicate that check here.
+          # No sudo on the self-hosted runner (see the deps step above) —
+          # rpmbuild and appimagetool must already be available on this host.
           if ! command -v rpmbuild >/dev/null; then
-            sudo apt-get install -y rpm
+            echo "rpmbuild not found; install the 'rpm' package on the self-hosted host."
+            exit 1
           fi
-          curl -fL -o /tmp/appimagetool \
-            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
-          chmod +x /tmp/appimagetool
+          if ! command -v appimagetool >/dev/null; then
+            curl -fL -o /tmp/appimagetool \
+              https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+            chmod +x /tmp/appimagetool
+            APPIMAGETOOL="/tmp/appimagetool --appimage-extract-and-run"
+          fi
           ./scripts/package-deb.sh target/package
           ./scripts/package-rpm.sh target/package
           # appimagetool is itself an AppImage; --appimage-extract-and-run
           # avoids depending on FUSE being available on the runner.
-          APPIMAGETOOL="/tmp/appimagetool --appimage-extract-and-run" \
+          APPIMAGETOOL="${APPIMAGETOOL:-appimagetool --appimage-extract-and-run}" \
             ./scripts/package-appimage.sh target/package
 
       - uses: actions/upload-artifact@v4
@@ -201,13 +219,14 @@ jobs:
     if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
     name: docker-publish
     needs: build
-    runs-on: ubuntu-latest
-    # linux/arm64 compiles connectors-all's full Rust workspace under QEMU
-    # emulation (no native arm64 Docker builder wired up here, unlike the
-    # `build` job above which uses a real ubuntu-24.04-arm runner for the
-    # tarball) — emulated cargo builds run several times slower than
-    # native, hence the generous timeout versus the amd64-only job this
-    # replaced (60min).
+    runs-on: [self-hosted, Linux]
+    # Self-hosted Linux (same machine as ci.yml's docker-image job) — hosted
+    # ubuntu-latest is blocked account-wide by the billing issue described in
+    # this file's header. linux/arm64 compiles connectors-all's full Rust
+    # workspace under QEMU emulation (no native arm64 Docker builder wired up
+    # here) — emulated cargo builds run several times slower than native,
+    # hence the generous timeout versus the amd64-only job this replaced
+    # (60min).
     timeout-minutes: 180
     permissions:
       contents: read
@@ -272,7 +291,11 @@ jobs:
   publish:
     if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
     needs: [build, docker-publish]
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux]
+    # Self-hosted Linux (same machine as everything else here) — hosted
+    # ubuntu-latest is blocked account-wide by the billing issue described in
+    # this file's header. Needs `gpg` and `sha256sum` present on the host
+    # (both are standard on Ubuntu/Debian).
     timeout-minutes: 15
     permissions:
       contents: write
