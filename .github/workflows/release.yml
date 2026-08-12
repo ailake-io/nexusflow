@@ -211,7 +211,9 @@ jobs:
   # job definition (last present as of this commit's parent).
 
   docker-publish:
-    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
+    # Disabled by request: only Linux binaries/installers are being produced
+    # for now; Docker image publishing will be re-enabled later.
+    if: false
     name: docker-publish
     needs: build
     runs-on: [self-hosted, Linux]
@@ -280,7 +282,7 @@ jobs:
 
   publish:
     if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
-    needs: [build, docker-publish]
+    needs: build
     runs-on: [self-hosted, Linux]
     # Self-hosted Linux (same machine as everything else here) — hosted
     # ubuntu-latest is blocked account-wide by the billing issue described in
