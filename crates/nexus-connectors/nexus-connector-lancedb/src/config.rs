@@ -89,7 +89,11 @@ impl LanceDbConnectorConfig {
         }
 
         if let Some(bucket) = &self.storage_options.s3_bucket {
-            let path = self.path.as_deref().unwrap_or_default().trim_start_matches('/');
+            let path = self
+                .path
+                .as_deref()
+                .unwrap_or_default()
+                .trim_start_matches('/');
             if path.is_empty() {
                 return format!("s3://{bucket}");
             }

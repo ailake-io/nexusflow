@@ -9,7 +9,9 @@
 use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use futures::StreamExt;
-use nexus_connector_csv::{CsvConnectorConfig, CsvDataType, CsvFieldSpec, CsvSink, CsvSource, StorageType};
+use nexus_connector_csv::{
+    CsvConnectorConfig, CsvDataType, CsvFieldSpec, CsvSink, CsvSource, StorageType,
+};
 use nexus_core::{Sink, Source};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -214,7 +216,12 @@ fn legacy_uri_takes_precedence() {
 
 #[test]
 fn local_storage_uri_uses_path() {
-    let cfg = cfg_with(None, StorageType::Local, "/data/events.csv".to_string(), None);
+    let cfg = cfg_with(
+        None,
+        StorageType::Local,
+        "/data/events.csv".to_string(),
+        None,
+    );
     assert_eq!(cfg.uri().unwrap(), "/data/events.csv");
 }
 

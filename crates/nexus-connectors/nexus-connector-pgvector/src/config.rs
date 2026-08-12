@@ -111,7 +111,10 @@ impl PgVectorConnectorConfig {
 
         let mut params: Vec<String> = Vec::new();
         if let Some(schema) = &self.schema {
-            params.push(format!("options=-csearch_path%3D{}", percent_encode(schema)));
+            params.push(format!(
+                "options=-csearch_path%3D{}",
+                percent_encode(schema)
+            ));
         }
         let ssl_mode = match self.ssl_mode {
             PgVectorSslMode::Disable => "disable",

@@ -122,8 +122,8 @@ impl RestConnectorConfig {
             ));
         }
 
-        let parsed =
-            Url::parse(&raw).map_err(|e| NexusError::Schema(format!("REST URL is invalid: {e}")))?;
+        let parsed = Url::parse(&raw)
+            .map_err(|e| NexusError::Schema(format!("REST URL is invalid: {e}")))?;
         if parsed.scheme() != "http" && parsed.scheme() != "https" {
             return Err(NexusError::Schema(format!(
                 "REST URL must use http(s), got {} scheme",

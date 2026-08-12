@@ -5,8 +5,8 @@ use arrow_array::{BooleanArray, RecordBatch};
 use arrow_schema::SchemaRef;
 use arrow_select::filter::filter_record_batch;
 use async_trait::async_trait;
-use nexus_core::{split_by_opcode, CheckpointCursor, NexusError, Sink};
 use bytes::Bytes;
+use nexus_core::{split_by_opcode, CheckpointCursor, NexusError, Sink};
 use object_store::path::Path as ObjectPath;
 use object_store::{ObjectStore, PutPayload};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -43,9 +43,7 @@ impl ParquetSink {
     }
 
     /// Existing row groups, or `None` if the object doesn't exist yet.
-    async fn read_existing(
-        &self,
-    ) -> Result<Option<(SchemaRef, Vec<RecordBatch>)>, NexusError> {
+    async fn read_existing(&self) -> Result<Option<(SchemaRef, Vec<RecordBatch>)>, NexusError> {
         let bytes = match self.store.get(&self.path).await {
             Ok(result) => result,
             Err(object_store::Error::NotFound { .. }) => return Ok(None),
@@ -63,9 +61,7 @@ impl ParquetSink {
 
         let (schema, batches) = tokio::task::spawn_blocking(move || {
             let builder = ParquetRecordBatchReaderBuilder::try_new(Bytes::from(bytes.to_vec()))
-                .map_err(|e| {
-                    NexusError::Connector(format!("parquet reader build failed: {e}"))
-                })?;
+                .map_err(|e| NexusError::Connector(format!("parquet reader build failed: {e}")))?;
             let schema = builder.schema().clone();
             let reader = builder
                 .build()
@@ -81,7 +77,11 @@ impl ParquetSink {
         Ok(Some((schema, batches)))
     }
 
-    async fn write_all(&self, schema: SchemaRef, row_groups: &[RecordBatch]) -> Result<(), NexusError> {
+    async fn write_all(
+        &self,
+        schema: SchemaRef,
+        row_groups: &[RecordBatch],
+    ) -> Result<(), NexusError> {
         let mut props_builder = WriterProperties::builder().set_compression(self.compression);
         if let Some(size) = self.row_group_size {
             props_builder = props_builder.set_max_row_group_size(size);

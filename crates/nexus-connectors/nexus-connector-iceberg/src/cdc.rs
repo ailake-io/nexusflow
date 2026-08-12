@@ -44,10 +44,7 @@ impl IcebergCdcSource {
 
 async fn load_table(cfg: &IcebergCdcConfig) -> Result<Table, NexusError> {
     let catalog = catalog::connect(&IcebergCdcConfigAsBatch(cfg).into()).await?;
-    let ident = TableIdent::new(
-        NamespaceIdent::new(cfg.namespace()),
-        cfg.table_name(),
-    );
+    let ident = TableIdent::new(NamespaceIdent::new(cfg.namespace()), cfg.table_name());
     with_timeout(cfg.timeout_seconds, "iceberg-cdc load_table", async {
         catalog
             .load_table(&ident)

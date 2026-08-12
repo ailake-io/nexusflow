@@ -187,7 +187,10 @@ mod config_helpers {
             bucket: Some("my-container".to_string()),
             ..Default::default()
         };
-        assert_eq!(cfg.uri().unwrap(), "az://my-container/folder/orders.parquet");
+        assert_eq!(
+            cfg.uri().unwrap(),
+            "az://my-container/folder/orders.parquet"
+        );
     }
 
     #[test]
@@ -213,8 +216,14 @@ mod config_helpers {
         };
         let opts = cfg.storage_options();
         assert_eq!(opts.get("aws_access_key_id"), Some(&"AKIA".to_string()));
-        assert_eq!(opts.get("aws_secret_access_key"), Some(&"secret".to_string()));
+        assert_eq!(
+            opts.get("aws_secret_access_key"),
+            Some(&"secret".to_string())
+        );
         assert_eq!(opts.get("aws_region"), Some(&"us-east-1".to_string()));
-        assert_eq!(opts.get("aws_endpoint"), Some(&"http://localhost:9000".to_string()));
+        assert_eq!(
+            opts.get("aws_endpoint"),
+            Some(&"http://localhost:9000".to_string())
+        );
     }
 }

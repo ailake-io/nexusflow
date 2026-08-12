@@ -139,7 +139,10 @@ impl MongoConnectorConfig {
             )
         };
 
-        format!("mongodb://{}{}/{}{}", auth, hosts, self.database, opt_string)
+        format!(
+            "mongodb://{}{}/{}{}",
+            auth, hosts, self.database, opt_string
+        )
     }
 }
 
@@ -148,7 +151,10 @@ impl MongoConnectorConfig {
 /// characters most likely to appear in MongoDB credentials and would otherwise
 /// break URI parsing.
 fn encode_userinfo(value: &str) -> String {
-    value.replace('%', "%25").replace(':', "%3A").replace('@', "%40")
+    value
+        .replace('%', "%25")
+        .replace(':', "%3A")
+        .replace('@', "%40")
 }
 
 fn default_timeout_seconds() -> u64 {
@@ -297,7 +303,10 @@ impl MongoCdcConfig {
             )
         };
 
-        format!("mongodb://{}{}/{}{}", auth, hosts, self.database, opt_string)
+        format!(
+            "mongodb://{}{}/{}{}",
+            auth, hosts, self.database, opt_string
+        )
     }
 }
 

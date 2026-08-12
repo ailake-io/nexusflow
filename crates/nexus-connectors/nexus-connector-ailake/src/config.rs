@@ -306,7 +306,6 @@ impl AilakeCdcConfig {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,7 +406,10 @@ mod tests {
         assert_eq!(opts.get("region"), Some(&"us-west-2".to_string()));
         assert_eq!(opts.get("access_key_id"), Some(&"AKIA".to_string()));
         assert_eq!(opts.get("secret_access_key"), Some(&"secret".to_string()));
-        assert_eq!(opts.get("endpoint"), Some(&"http://localhost:9000".to_string()));
+        assert_eq!(
+            opts.get("endpoint"),
+            Some(&"http://localhost:9000".to_string())
+        );
     }
 
     #[test]

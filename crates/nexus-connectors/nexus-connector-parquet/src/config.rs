@@ -130,7 +130,11 @@ impl ParquetConnectorConfig {
                     .ok_or_else(|| {
                         NexusError::Connector("S3 storage requires a bucket name".to_string())
                     })?;
-                Ok(format!("s3://{}/{}", bucket, self.path.trim_start_matches('/')))
+                Ok(format!(
+                    "s3://{}/{}",
+                    bucket,
+                    self.path.trim_start_matches('/')
+                ))
             }
             StorageType::Gcs => {
                 let bucket = self
@@ -140,7 +144,11 @@ impl ParquetConnectorConfig {
                     .ok_or_else(|| {
                         NexusError::Connector("GCS storage requires a bucket name".to_string())
                     })?;
-                Ok(format!("gs://{}/{}", bucket, self.path.trim_start_matches('/')))
+                Ok(format!(
+                    "gs://{}/{}",
+                    bucket,
+                    self.path.trim_start_matches('/')
+                ))
             }
             StorageType::Azure => {
                 let container = self
@@ -148,9 +156,7 @@ impl ParquetConnectorConfig {
                     .as_deref()
                     .filter(|s| !s.is_empty())
                     .ok_or_else(|| {
-                        NexusError::Connector(
-                            "Azure storage requires a container name".to_string(),
-                        )
+                        NexusError::Connector("Azure storage requires a container name".to_string())
                     })?;
                 Ok(format!(
                     "az://{}/{}",

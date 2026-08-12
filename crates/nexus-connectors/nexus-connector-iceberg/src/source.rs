@@ -22,10 +22,7 @@ pub struct IcebergSource {
 impl IcebergSource {
     pub async fn connect(cfg: &IcebergConnectorConfig) -> Result<Self, NexusError> {
         let catalog = catalog::connect(cfg).await?;
-        let ident = TableIdent::new(
-            NamespaceIdent::new(cfg.namespace()),
-            cfg.table_name(),
-        );
+        let ident = TableIdent::new(NamespaceIdent::new(cfg.namespace()), cfg.table_name());
         let table = with_timeout(cfg.timeout_seconds, "iceberg load_table", async {
             catalog
                 .load_table(&ident)

@@ -164,7 +164,12 @@ impl IcebergConnectorConfig {
             .as_ref()
             .filter(|s| !s.is_empty())
             .cloned()
-            .or_else(|| self.catalog_path.as_ref().filter(|s| !s.is_empty()).cloned())
+            .or_else(|| {
+                self.catalog_path
+                    .as_ref()
+                    .filter(|s| !s.is_empty())
+                    .cloned()
+            })
             .unwrap_or_default()
     }
 
@@ -178,7 +183,12 @@ impl IcebergConnectorConfig {
             .as_ref()
             .filter(|s| !s.is_empty())
             .cloned()
-            .or_else(|| self.warehouse_path.as_ref().filter(|s| !s.is_empty()).cloned())
+            .or_else(|| {
+                self.warehouse_path
+                    .as_ref()
+                    .filter(|s| !s.is_empty())
+                    .cloned()
+            })
             .unwrap_or_default();
         if raw.is_empty() || raw.contains("://") {
             raw
@@ -195,7 +205,12 @@ impl IcebergConnectorConfig {
             .as_ref()
             .filter(|s| !s.is_empty())
             .cloned()
-            .or_else(|| self.namespace_name.as_ref().filter(|s| !s.is_empty()).cloned())
+            .or_else(|| {
+                self.namespace_name
+                    .as_ref()
+                    .filter(|s| !s.is_empty())
+                    .cloned()
+            })
             .unwrap_or_default()
     }
 
@@ -292,7 +307,12 @@ impl IcebergCdcConfig {
             .as_ref()
             .filter(|s| !s.is_empty())
             .cloned()
-            .or_else(|| self.catalog_path.as_ref().filter(|s| !s.is_empty()).cloned())
+            .or_else(|| {
+                self.catalog_path
+                    .as_ref()
+                    .filter(|s| !s.is_empty())
+                    .cloned()
+            })
             .unwrap_or_default()
     }
 
@@ -304,7 +324,12 @@ impl IcebergCdcConfig {
             .as_ref()
             .filter(|s| !s.is_empty())
             .cloned()
-            .or_else(|| self.warehouse_path.as_ref().filter(|s| !s.is_empty()).cloned())
+            .or_else(|| {
+                self.warehouse_path
+                    .as_ref()
+                    .filter(|s| !s.is_empty())
+                    .cloned()
+            })
             .unwrap_or_default();
         if raw.is_empty() || raw.contains("://") {
             raw
@@ -320,7 +345,12 @@ impl IcebergCdcConfig {
             .as_ref()
             .filter(|s| !s.is_empty())
             .cloned()
-            .or_else(|| self.namespace_name.as_ref().filter(|s| !s.is_empty()).cloned())
+            .or_else(|| {
+                self.namespace_name
+                    .as_ref()
+                    .filter(|s| !s.is_empty())
+                    .cloned()
+            })
             .unwrap_or_default()
     }
 
@@ -454,7 +484,10 @@ mod tests {
         let map = cfg.storage_options();
         assert_eq!(map.get("s3.bucket"), Some(&"bucket".to_string()));
         assert_eq!(map.get("s3.access-key-id"), Some(&"key".to_string()));
-        assert_eq!(map.get("s3.endpoint"), Some(&"http://minio:9000".to_string()));
+        assert_eq!(
+            map.get("s3.endpoint"),
+            Some(&"http://minio:9000".to_string())
+        );
         assert!(!map.contains_key("s3.region"));
         assert!(!map.contains_key("s3.secret-access-key"));
     }

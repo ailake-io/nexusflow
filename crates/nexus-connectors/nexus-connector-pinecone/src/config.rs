@@ -112,20 +112,14 @@ mod tests {
     #[test]
     fn host_returns_legacy_host_normalized() {
         let cfg = sample_config();
-        assert_eq!(
-            cfg.host(),
-            "https://my-index.svc.us-east1-aws.pinecone.io"
-        );
+        assert_eq!(cfg.host(), "https://my-index.svc.us-east1-aws.pinecone.io");
     }
 
     #[test]
     fn host_trims_trailing_slash() {
         let mut cfg = sample_config();
         cfg.host = "https://my-index.svc.us-east1-aws.pinecone.io/".to_string();
-        assert_eq!(
-            cfg.host(),
-            "https://my-index.svc.us-east1-aws.pinecone.io"
-        );
+        assert_eq!(cfg.host(), "https://my-index.svc.us-east1-aws.pinecone.io");
     }
 
     #[test]
@@ -146,9 +140,6 @@ mod tests {
     fn legacy_host_takes_priority_over_grpc_url() {
         let mut cfg = sample_config();
         cfg.grpc_url = Some("https://grpc-host.pinecone.io".to_string());
-        assert_eq!(
-            cfg.host(),
-            "https://my-index.svc.us-east1-aws.pinecone.io"
-        );
+        assert_eq!(cfg.host(), "https://my-index.svc.us-east1-aws.pinecone.io");
     }
 }

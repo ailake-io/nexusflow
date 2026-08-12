@@ -41,7 +41,11 @@ impl ParquetSource {
             .map_err(|e| NexusError::Connector(format!("parquet reader build failed: {e}")))?;
         let schema = builder.schema().clone();
 
-        Ok(Self { store, path, schema })
+        Ok(Self {
+            store,
+            path,
+            schema,
+        })
     }
 }
 
@@ -61,8 +65,8 @@ impl Source for ParquetSource {
             .await
             .map_err(|e| NexusError::Connector(format!("parquet source read failed: {e}")))?;
 
-        let reader = tokio::task::spawn_blocking(
-            move || -> Result<ParquetRecordBatchReader, NexusError> {
+        let reader =
+            tokio::task::spawn_blocking(move || -> Result<ParquetRecordBatchReader, NexusError> {
                 let builder = ParquetRecordBatchReaderBuilder::try_new(Bytes::from(bytes.to_vec()))
                     .map_err(|e| {
                         NexusError::Connector(format!("parquet reader build failed: {e}"))
@@ -70,10 +74,9 @@ impl Source for ParquetSource {
                 builder
                     .build()
                     .map_err(|e| NexusError::Connector(format!("parquet reader build failed: {e}")))
-            },
-        )
-        .await
-        .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))??;
+            })
+            .await
+            .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))??;
 
         Ok(Box::pin(stream::iter(reader.map(|r| {
             r.map_err(|e| NexusError::Connector(format!("parquet read failed: {e}")))
