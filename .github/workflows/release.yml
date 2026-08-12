@@ -118,7 +118,7 @@ jobs:
           # pull_request (the PR's merge commit), so this is a no-op there.
           ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@23bce251a8e2d71ebf0d2714b4c79b1ffdfbbf53 # v2.7.7
+      - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
         with:
           shared-key: release-${{ matrix.os }}-${{ matrix.arch }}
       - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
