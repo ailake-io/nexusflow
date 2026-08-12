@@ -70,6 +70,9 @@ export interface PipelineSpec {
    * the server's scheduler. Unset means the pipeline only runs when
    * explicitly triggered. */
   schedule?: string
+  /** When true, the spec is saved as a draft and the server skips validation
+   * of connector configs/embedding/dbt. Drafts cannot be executed. */
+  draft?: boolean
 }
 
 export type ConnectorRole = 'source' | 'sink'
@@ -166,7 +169,11 @@ export interface PipelineMeta {
  * client-side with the same rules, instead of round-tripping to the server
  * to find out.
  */
-export function toPipelineSpec(nodes: DagNode[], meta: PipelineMeta): PipelineSpec {
+export function toPipelineSpec(
+  nodes: DagNode[],
+  meta: PipelineMeta,
+  allowDraft = false,
+): PipelineSpec {
   if (!meta.pipelineId.trim()) {
     throw new DagSerializationError('pipeline_id must not be empty')
   }
@@ -175,53 +182,64 @@ export function toPipelineSpec(nodes: DagNode[], meta: PipelineMeta): PipelineSp
   const transformNodes = nodes.filter(isTransformNode)
   const dbtNodes = nodes.filter(isDbtNode)
   const embeddingNodes = nodes.filter(isEmbeddingNode)
-  if (transformNodes.length > 1) {
-    throw new DagSerializationError('at most one transform node is allowed')
-  }
-  if (dbtNodes.length > 1) {
-    throw new DagSerializationError('at most one dbt node is allowed')
-  }
-  if (embeddingNodes.length > 1) {
-    throw new DagSerializationError('at most one embedding node is allowed')
+  if (!allowDraft) {
+    if (transformNodes.length > 1) {
+      throw new DagSerializationError('at most one transform node is allowed')
+    }
+    if (dbtNodes.length > 1) {
+      throw new DagSerializationError('at most one dbt node is allowed')
+    }
+    if (embeddingNodes.length > 1) {
+      throw new DagSerializationError('at most one embedding node is allowed')
+    }
   }
 
   const sources = connectorNodes
     .filter((n) => n.data.role === 'source')
-    .map((n) => toNodeSpec(n))
+    .map((n) => toNodeSpec(n, allowDraft))
+    .filter((s): s is NodeSpec => s !== undefined)
   const sinks = connectorNodes
     .filter((n) => n.data.role === 'sink')
-    .map((n) => toNodeSpec(n))
+    .map((n) => toNodeSpec(n, allowDraft))
+    .filter((s): s is NodeSpec => s !== undefined)
 
-  if (sources.length === 0) {
-    throw new DagSerializationError('sources must not be empty')
-  }
-  if (sinks.length === 0) {
-    throw new DagSerializationError('sinks must not be empty')
+  if (!allowDraft) {
+    if (sources.length === 0) {
+      throw new DagSerializationError('sources must not be empty')
+    }
+    if (sinks.length === 0) {
+      throw new DagSerializationError('sinks must not be empty')
+    }
   }
 
   const transform =
     transformNodes.length === 1 ? { sql: transformNodes[0].data.sql } : undefined
 
-  if (!transform && (sources.length !== 1 || sinks.length !== 1)) {
-    throw new DagSerializationError(
-      'without a transform, the pipeline must be strictly linear: exactly 1 source and 1 sink',
-    )
-  }
-  if (transform && !transform.sql.trim()) {
-    throw new DagSerializationError('transform.sql must not be empty')
+  if (!allowDraft) {
+    if (!transform && (sources.length !== 1 || sinks.length !== 1)) {
+      throw new DagSerializationError(
+        'without a transform, the pipeline must be strictly linear: exactly 1 source and 1 sink',
+      )
+    }
+    if (transform && !transform.sql.trim()) {
+      throw new DagSerializationError('transform.sql must not be empty')
+    }
   }
 
   let dbt: DbtConfig | undefined
   if (dbtNodes.length === 1) {
     const data = dbtNodes[0].data
-    if (!data.projectDir.trim()) {
+    if (!allowDraft && !data.projectDir.trim()) {
       throw new DagSerializationError('dbt node: project_dir must not be empty')
     }
-    dbt = { project_dir: data.projectDir.trim(), command: data.command }
-    if (data.select.trim()) dbt.select = data.select.trim()
+    if (data.projectDir.trim()) {
+      dbt = { project_dir: data.projectDir.trim(), command: data.command }
+      if (data.select.trim()) dbt.select = data.select.trim()
+    }
   }
 
-  const embedding = embeddingNodes.length === 1 ? toEmbeddingSpec(embeddingNodes[0].data) : undefined
+  const embedding =
+    embeddingNodes.length === 1 ? toEmbeddingSpec(embeddingNodes[0].data, allowDraft) : undefined
 
   const spec: PipelineSpec = {
     pipeline_id: meta.pipelineId,
@@ -234,46 +252,57 @@ export function toPipelineSpec(nodes: DagNode[], meta: PipelineMeta): PipelineSp
   if (meta.channelCapacity !== undefined) spec.channel_capacity = meta.channelCapacity
   if (meta.partitions !== undefined) spec.partitions = meta.partitions
   if (meta.schedule?.trim()) spec.schedule = meta.schedule.trim()
+  if (allowDraft) spec.draft = true
   return spec
 }
 
-function toEmbeddingSpec(data: EmbeddingNodeData): EmbeddingSpec {
-  if (!data.sourceColumn.trim()) {
-    throw new DagSerializationError('embedding node: source_column must not be empty')
-  }
-  if (!data.outputColumn.trim()) {
-    throw new DagSerializationError('embedding node: output_column must not be empty')
-  }
-  if (!(data.dimension > 0)) {
-    throw new DagSerializationError('embedding node: dimension must be > 0')
+function toEmbeddingSpec(data: EmbeddingNodeData, allowDraft = false): EmbeddingSpec | undefined {
+  if (!allowDraft) {
+    if (!data.sourceColumn.trim()) {
+      throw new DagSerializationError('embedding node: source_column must not be empty')
+    }
+    if (!data.outputColumn.trim()) {
+      throw new DagSerializationError('embedding node: output_column must not be empty')
+    }
+    if (!(data.dimension > 0)) {
+      throw new DagSerializationError('embedding node: dimension must be > 0')
+    }
   }
 
-  let model: EmbeddingModelSpec
+  let model: EmbeddingModelSpec | undefined
   if (data.backend === 'onnx') {
-    if (!data.repo.trim() || !data.filename.trim() || !data.tokenizerFilename.trim()) {
+    const hasOnnxFields = data.repo.trim() && data.filename.trim() && data.tokenizerFilename.trim()
+    if (!allowDraft && !hasOnnxFields) {
       throw new DagSerializationError('embedding node: repo, filename and tokenizer_filename are required for the onnx backend')
     }
-    if (!(data.maxLength > 0)) {
+    if (!allowDraft && !(data.maxLength > 0)) {
       throw new DagSerializationError('embedding node: max_length must be > 0')
     }
-    model = {
-      backend: 'onnx',
-      repo: data.repo.trim(),
-      filename: data.filename.trim(),
-      tokenizer_filename: data.tokenizerFilename.trim(),
-      max_length: data.maxLength,
+    if (hasOnnxFields) {
+      model = {
+        backend: 'onnx',
+        repo: data.repo.trim(),
+        filename: data.filename.trim(),
+        tokenizer_filename: data.tokenizerFilename.trim(),
+        max_length: data.maxLength,
+      }
     }
   } else {
-    if (!data.baseUrl.trim() || !data.model.trim()) {
+    const hasApiFields = data.baseUrl.trim() && data.model.trim()
+    if (!allowDraft && !hasApiFields) {
       throw new DagSerializationError('embedding node: base_url and model are required for the api backend')
     }
-    model = { backend: 'api', base_url: data.baseUrl.trim(), model: data.model.trim() }
-    if (data.apiKeyEnv.trim()) model.api_key_env = data.apiKeyEnv.trim()
+    if (hasApiFields) {
+      model = { backend: 'api', base_url: data.baseUrl.trim(), model: data.model.trim() }
+      if (data.apiKeyEnv.trim()) model.api_key_env = data.apiKeyEnv.trim()
+    }
   }
 
-  if (!(data.chunkSize > 0)) {
+  if (!allowDraft && !(data.chunkSize > 0)) {
     throw new DagSerializationError('embedding node: chunk_size must be > 0')
   }
+
+  if (!model) return undefined
 
   let chunking: ChunkingSpec
   if (data.strategy === 'fixed_window') {
@@ -300,16 +329,21 @@ function toEmbeddingSpec(data: EmbeddingNodeData): EmbeddingSpec {
   }
 }
 
-function toNodeSpec(node: Node<ConnectorNodeData>): NodeSpec {
+function toNodeSpec(node: Node<ConnectorNodeData>, allowDraft = false): NodeSpec | undefined {
   let config: unknown
   try {
     config = node.data.config.trim() === '' ? {} : JSON.parse(node.data.config)
   } catch {
-    throw new DagSerializationError(
-      `node "${node.data.name || node.data.connector}": config is not valid JSON`,
-    )
+    if (allowDraft) {
+      config = {}
+    } else {
+      throw new DagSerializationError(
+        `node "${node.data.name || node.data.connector}": config is not valid JSON`,
+      )
+    }
   }
   if (!node.data.connector.trim()) {
+    if (allowDraft) return undefined
     throw new DagSerializationError('every connector node needs a connector name')
   }
   const spec: NodeSpec = { connector: node.data.connector, config }

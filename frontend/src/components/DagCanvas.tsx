@@ -193,7 +193,7 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
 
   const handleSave = useCallback(async () => {
     if (!token) throw new Error('not logged in')
-    const spec = toPipelineSpec(nodes, meta)
+    const spec = toPipelineSpec(nodes, meta, true)
     setSaving(true)
     try {
       try {
@@ -236,6 +236,23 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
     loadSpec(pipelineToLoad)
     onPipelineLoaded?.()
   }, [pipelineToLoad, loadSpec, onPipelineLoaded])
+
+  // Delete/Backspace removes the selected node (and its edges) unless the
+  // user is typing in an input/textarea/select.
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if (event.key !== 'Delete' && event.key !== 'Backspace') return
+      const target = event.target as HTMLElement | null
+      if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return
+      if (!selectedId) return
+      event.preventDefault()
+      setNodes((current) => current.filter((n) => n.id !== selectedId))
+      setEdges((current) => current.filter((e) => e.source !== selectedId && e.target !== selectedId))
+      setSelectedId(null)
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [selectedId])
 
   const selectedNode = nodes.find((n) => n.id === selectedId) ?? null
 
