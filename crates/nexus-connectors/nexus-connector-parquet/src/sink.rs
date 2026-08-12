@@ -84,7 +84,7 @@ impl ParquetSink {
     ) -> Result<(), NexusError> {
         let mut props_builder = WriterProperties::builder().set_compression(self.compression);
         if let Some(size) = self.row_group_size {
-            props_builder = props_builder.set_max_row_group_size(size);
+            props_builder = props_builder.set_max_row_group_row_count(size);
         }
         let props = props_builder.build();
 

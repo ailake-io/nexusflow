@@ -3,7 +3,7 @@ use serde::Deserialize;
 /// SSL/TLS mode for the PostgreSQL connection used by the pgvector sink.
 ///
 /// Maps to the `sslmode` parameter in PostgreSQL connection strings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum PgVectorSslMode {
     /// Only try a non-SSL connection.
@@ -11,6 +11,7 @@ pub enum PgVectorSslMode {
     /// First try a non-SSL connection; if that fails, try an SSL connection.
     Allow,
     /// First try an SSL connection; if that fails, try a non-SSL connection.
+    #[default]
     Prefer,
     /// Only try an SSL connection. If a root CA file is present, verify the
     /// server certificate in the same way as if `verify-ca` was specified.
@@ -22,12 +23,6 @@ pub enum PgVectorSslMode {
     /// issued by a trusted CA and that the requested server host name matches
     /// that in the certificate.
     VerifyFull,
-}
-
-impl Default for PgVectorSslMode {
-    fn default() -> Self {
-        PgVectorSslMode::Prefer
-    }
 }
 
 /// pgvector sink config — the AI Lakehouse destination for Marco 5
