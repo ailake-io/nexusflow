@@ -136,7 +136,7 @@ impl KafkaConnectorConfig {
         use rdkafka::ClientConfig;
 
         let mut config = ClientConfig::new();
-        config.set("bootstrap.servers", &self.bootstrap_servers());
+        config.set("bootstrap.servers", self.bootstrap_servers());
         config.set("group.id", &self.group_id);
         config.set("enable.auto.commit", "false");
         config.set("auto.offset.reset", "earliest");

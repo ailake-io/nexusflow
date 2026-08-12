@@ -5,7 +5,7 @@ use std::collections::HashMap;
 /// rather than the default embedded local filesystem. Currently the connector
 /// uses `LocalStore`, so these values are collected and exposed for future
 /// S3-compatible backends and are ignored by the local implementation.
-#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
 pub struct AilakeStorageOptions {
     /// S3 bucket that contains the AI-Lake warehouse. Ignored for local
     /// warehouses; used when the warehouse is resolved to an S3-compatible
@@ -28,18 +28,6 @@ pub struct AilakeStorageOptions {
     /// MinIO. Leave unset to use real AWS S3.
     #[serde(default)]
     pub s3_endpoint: Option<String>,
-}
-
-impl Default for AilakeStorageOptions {
-    fn default() -> Self {
-        Self {
-            s3_bucket: None,
-            s3_region: None,
-            s3_access_key: None,
-            s3_secret_key: None,
-            s3_endpoint: None,
-        }
-    }
 }
 
 /// AI-Lake sink/source config. AI-Lake (github.com/ailake-io/ai-lakehouse) is

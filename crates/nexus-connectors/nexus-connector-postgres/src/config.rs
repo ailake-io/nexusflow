@@ -3,7 +3,7 @@ use serde::Deserialize;
 /// SSL/TLS mode for the PostgreSQL connection.
 ///
 /// Maps to the `sslmode` parameter in PostgreSQL connection strings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum PostgresSslMode {
     /// Only try a non-SSL connection.
@@ -11,6 +11,7 @@ pub enum PostgresSslMode {
     /// First try a non-SSL connection; if that fails, try an SSL connection.
     Allow,
     /// First try an SSL connection; if that fails, try a non-SSL connection.
+    #[default]
     Prefer,
     /// Only try an SSL connection. If a root CA file is present, verify the
     /// server certificate in the same way as if `verify-ca` was specified.
@@ -22,12 +23,6 @@ pub enum PostgresSslMode {
     /// issued by a trusted CA and that the requested server host name matches
     /// that in the certificate.
     VerifyFull,
-}
-
-impl Default for PostgresSslMode {
-    fn default() -> Self {
-        PostgresSslMode::Prefer
-    }
 }
 
 /// Static connector config resolved at node-configuration time (not runtime).
