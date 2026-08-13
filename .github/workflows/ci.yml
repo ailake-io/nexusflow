@@ -153,6 +153,11 @@ jobs:
         run: |
           jwt_secret="$(openssl rand -hex 32)"
           encryption_key="$(openssl rand -hex 32)"
+          # Ensure no leaked container from a previous run on this self-hosted host.
+          docker rm -f nexusflow-ci >/dev/null 2>&1 || true
+          # Always clean up, even if healthcheck/assertions fail.
+          cleanup() { docker rm -f nexusflow-ci >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
           docker run -d --name nexusflow-ci -p 8080:8080 \
             -e NEXUS_JWT_SECRET="$jwt_secret" \
             -e NEXUS_ENCRYPTION_KEY="$encryption_key" \
@@ -167,7 +172,6 @@ jobs:
           status=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/)
           health=$(curl -sf http://localhost:8080/health)
           docker logs nexusflow-ci
-          docker rm -f nexusflow-ci
           [ "$status" = "200" ] || { echo "GET / returned $status, expected 200"; exit 1; }
           [ "$health" = "ok" ] || { echo "GET /health returned '$health', expected ok"; exit 1; }
 

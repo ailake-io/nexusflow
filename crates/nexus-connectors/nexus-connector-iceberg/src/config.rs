@@ -249,7 +249,7 @@ impl IcebergConnectorConfig {
 /// No `fields` list needed — Iceberg tables are self-describing, same
 /// reason the batch `IcebergConnectorConfig` never needed one.
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
-#[allow(dead_code)]
+#[cfg(feature = "cdc")]
 pub struct IcebergCdcConfig {
     /// Legacy combined catalog URI. Keep using this if you already have a full
     /// URI such as `sqlite:///abs/path/catalog.db?mode=rwc` — it takes
@@ -302,6 +302,7 @@ pub struct IcebergCdcConfig {
     pub timeout_seconds: u64,
 }
 
+#[cfg(feature = "cdc")]
 impl IcebergCdcConfig {
     /// Returns the effective catalog URI, preferring the legacy `catalog_uri`
     /// field, then `catalog_path`.
@@ -496,6 +497,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "cdc")]
     fn cdc_legacy_fields_take_priority() {
         let cfg = IcebergCdcConfig {
             catalog_uri: Some("sqlite:///legacy/catalog.db?mode=rwc".to_string()),
