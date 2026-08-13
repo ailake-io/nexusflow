@@ -64,7 +64,7 @@ export function SchemaForm({ schema, defs, value, onChange, idPrefix }: SchemaFo
                 id={fieldId}
                 value={(value[key] as string) ?? ''}
                 onChange={(e) => setField(key, e.target.value)}
-                className="mt-1.5 flex h-9 w-full rounded-lg border border-input bg-transparent px-3 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring"
+                className="mt-1.5 flex h-9 w-full rounded-lg border border-input bg-card px-3 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring"
               >
                 <option value="" disabled>
                   {t('schemaForm.select')}…

@@ -75,18 +75,9 @@ async fn fetch_page(
     config: &RestConnectorConfig,
     query: &[(String, String)],
 ) -> Result<Value, NexusError> {
-    if config.path.starts_with("//") {
-        return Err(NexusError::Schema(
-            "REST path must not be protocol-relative (//host)".to_string(),
-        ));
-    }
-    let url = format!(
-        "{}/{}",
-        config.base_url.trim_end_matches('/'),
-        config.path.trim_start_matches('/')
-    );
-    // Defence in depth: parse and reject non-HTTP(S) schemes that could
-    // emerge from a misconfigured or malicious base_url/path.
+    let url = config.url()?;
+    // Defence in depth: re-parse and reject non-HTTP(S) schemes even though
+    // `config.url()` already validated, so this function stays self-contained.
     let url =
         Url::parse(&url).map_err(|e| NexusError::Schema(format!("REST URL is invalid: {e}")))?;
     if url.scheme() != "http" && url.scheme() != "https" {
@@ -96,7 +87,8 @@ async fn fetch_page(
         )));
     }
 
-    let mut request = client.get(url).query(query);
+    let method = config.method();
+    let mut request = client.request(method, url).query(query);
     for (key, value) in &config.headers {
         request = request.header(key, value);
     }

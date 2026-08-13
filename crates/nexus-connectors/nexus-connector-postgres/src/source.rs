@@ -97,7 +97,7 @@ impl PostgresSource {
             quote_identifier(&cfg.primary_key)?;
         }
 
-        let uri = cfg.uri.clone();
+        let uri = cfg.connection_string();
         let table = cfg.table.clone();
         let (connection, schema) = with_timeout(cfg.timeout_seconds, "postgres connect", async {
             tokio::task::spawn_blocking(

@@ -669,6 +669,7 @@ mod tests {
             dbt: None,
             post_dbt_sinks: Vec::new(),
             schedule: None,
+            draft: false,
         }
     }
 

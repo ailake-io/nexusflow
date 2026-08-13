@@ -620,10 +620,12 @@ async fn create_pipeline_handler(
 ) -> Result<(StatusCode, Json<PipelineSummary>), ApiError> {
     spec.validate()
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
-    spec.validate_security_with(state.allow_internal_hosts)
-        .map_err(|e| ApiError::bad_request(e.to_string()))?;
-    connectors::validate_pipeline_configs(&spec)
-        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    if !spec.draft {
+        spec.validate_security_with(state.allow_internal_hosts)
+            .map_err(|e| ApiError::bad_request(e.to_string()))?;
+        connectors::validate_pipeline_configs(&spec)
+            .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    }
     state.pipelines.create(&spec, &state.secrets).await?;
     let summary = state
         .pipelines
@@ -775,10 +777,12 @@ async fn update_pipeline_handler(
     }
     spec.validate()
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
-    spec.validate_security_with(state.allow_internal_hosts)
-        .map_err(|e| ApiError::bad_request(e.to_string()))?;
-    connectors::validate_pipeline_configs(&spec)
-        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    if !spec.draft {
+        spec.validate_security_with(state.allow_internal_hosts)
+            .map_err(|e| ApiError::bad_request(e.to_string()))?;
+        connectors::validate_pipeline_configs(&spec)
+            .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    }
     state.pipelines.update(&id, &spec, &state.secrets).await?;
     Ok(Json(
         state.pipelines.get_summary(&id, &state.secrets).await?,

@@ -60,6 +60,11 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
   const [meta, setMeta] = useState<PipelineMeta>({ pipelineId: '' })
   const [runTriggerError, setRunTriggerError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [autoSaveEnabled, setAutoSaveEnabled] = useState(() => {
+    if (typeof window === 'undefined') return false
+    return window.localStorage.getItem('nexusflow-autosave') === 'true'
+  })
+  const [autoSaveStatus, setAutoSaveStatus] = useState<string | null>(null)
 
   const onNodesChange: OnNodesChange<DagNode> = useCallback(
     (changes) => setNodes((current) => applyNodeChanges(changes, current)),
@@ -193,7 +198,7 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
 
   const handleSave = useCallback(async () => {
     if (!token) throw new Error('not logged in')
-    const spec = toPipelineSpec(nodes, meta)
+    const spec = toPipelineSpec(nodes, meta, true)
     setSaving(true)
     try {
       try {
@@ -209,6 +214,49 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
       setSaving(false)
     }
   }, [nodes, meta, token])
+
+  const saveRef = useRef(handleSave)
+  const savingRef = useRef(saving)
+  useEffect(() => {
+    saveRef.current = handleSave
+  }, [handleSave])
+  useEffect(() => {
+    savingRef.current = saving
+  }, [saving])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem('nexusflow-autosave', String(autoSaveEnabled))
+  }, [autoSaveEnabled])
+
+  useEffect(() => {
+    if (!autoSaveEnabled || !meta.pipelineId.trim()) {
+      setAutoSaveStatus(null)
+      return
+    }
+    const id = setInterval(() => {
+      if (savingRef.current) return
+      saveRef
+        .current()
+        .then(() => setAutoSaveStatus(t('ioPanel.autoSaveSaved')))
+        .catch((err) =>
+          setAutoSaveStatus(
+            t('ioPanel.autoSaveError', { msg: err instanceof Error ? err.message : String(err) }),
+          ),
+        )
+    }, 60000)
+    return () => clearInterval(id)
+  }, [autoSaveEnabled, meta.pipelineId, t])
+
+  const handleNewPipeline = useCallback(() => {
+    if (nodes.length > 0 && !window.confirm(t('ioPanel.newPipelineConfirm'))) return
+    nextNodeId = 1
+    setNodes([])
+    setEdges([])
+    setSelectedId(null)
+    setMeta({ pipelineId: '' })
+    setRunTriggerError(null)
+  }, [nodes.length, t])
 
   const loadSpec = useCallback((spec: PipelineSpec) => {
     const { nodes: importedNodes, edges: importedEdges } = fromPipelineSpec(spec)
@@ -237,6 +285,23 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
     onPipelineLoaded?.()
   }, [pipelineToLoad, loadSpec, onPipelineLoaded])
 
+  // Delete/Backspace removes the selected node (and its edges) unless the
+  // user is typing in an input/textarea/select.
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if (event.key !== 'Delete' && event.key !== 'Backspace') return
+      const target = event.target as HTMLElement | null
+      if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return
+      if (!selectedId) return
+      event.preventDefault()
+      setNodes((current) => current.filter((n) => n.id !== selectedId))
+      setEdges((current) => current.filter((e) => e.source !== selectedId && e.target !== selectedId))
+      setSelectedId(null)
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [selectedId])
+
   const selectedNode = nodes.find((n) => n.id === selectedId) ?? null
 
   return (
@@ -248,8 +313,12 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
         onImport={handleImport}
         onRun={handleRun}
         onSave={handleSave}
+        onNewPipeline={handleNewPipeline}
         running={execution.status === 'starting' || execution.status === 'running'}
         saving={saving}
+        autoSaveEnabled={autoSaveEnabled}
+        onToggleAutoSave={() => setAutoSaveEnabled((v) => !v)}
+        autoSaveStatus={autoSaveStatus}
       />
       {runTriggerError && (
         <div className="flex items-center gap-2 border-b border-red-500/20 bg-red-500/10 px-4 py-2 text-xs text-red-400">

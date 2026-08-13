@@ -31,12 +31,15 @@ Mais opções (curl|sh, .deb/AppImage, build from source, habilitar conectores e
 | Arquivo | Conteúdo |
 |---|---|
 | [`docs/GETTING_STARTED.md`](./docs/GETTING_STARTED.md) | Instalação, configuração e primeiro pipeline — comece por aqui |
+| [`docs/USER_GUIDE.md`](./docs/USER_GUIDE.md) | Referência completa: config de cada conector, transform, embeddings, agendamento |
+| [`docs/PROJECT_REVIEW.md`](./docs/PROJECT_REVIEW.md) | Backlog técnico unificado: bugs, melhorias e divergências documentação × código |
 | [`CLAUDE.md`](./CLAUDE.md) | Visão geral, stack, estrutura de diretórios, regras de código pro assistente AI |
 | [`ARCHITECTURE.md`](./ARCHITECTURE.md) | Arquitetura técnica detalhada: roteador de conectores, streaming/backpressure, checkpointing, pipeline de embeddings |
 | [`ROADMAP.md`](./ROADMAP.md) | Fases de desenvolvimento, milestones, critérios de conclusão do MVP |
-| [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md) | Detalhamento de engenharia marco a marco: crates/arquivos concretos, ordem de execução, critério de "pronto" |
 | [`CONTRIBUTING.md`](./CONTRIBUTING.md) | Como contribuir, convenções de código, processo de PR |
 | [`LICENSING.md`](./LICENSING.md) | Modelo open-core: o que é OSS vs. o que é pago |
+| [`docs/ENTERPRISE_CONNECTORS.md`](./docs/ENTERPRISE_CONNECTORS.md) | Design de conectores enterprise (trabalho futuro) |
+| [`docs/ENTERPRISE_LICENSING.md`](./docs/ENTERPRISE_LICENSING.md) | Design do sistema de licenciamento enterprise (trabalho futuro) |
 | [`LICENSE`](./LICENSE) | Apache License 2.0 (community edition) |
 
 ## Licença

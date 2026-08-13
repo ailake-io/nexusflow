@@ -6,8 +6,9 @@ mod config;
 mod rows;
 mod sink;
 mod source;
+mod store;
 
-pub use config::ParquetConnectorConfig;
+pub use config::{ParquetCompression, ParquetConnectorConfig, StorageType};
 pub use sink::ParquetSink;
 pub use source::ParquetSource;
 

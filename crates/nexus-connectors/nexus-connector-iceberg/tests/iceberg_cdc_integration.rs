@@ -37,13 +37,21 @@ fn batch(ids: Vec<i64>, statuses: Vec<&str>) -> RecordBatch {
 async fn cdc_source_replays_every_append_as_insert() {
     let dir = tempfile::tempdir().expect("tempdir creates");
     let batch_cfg = IcebergConnectorConfig {
-        catalog_uri: format!(
+        catalog_uri: Some(format!(
             "sqlite://{}?mode=rwc",
             dir.path().join("catalog.db").to_str().unwrap()
-        ),
-        warehouse_location: format!("file://{}", dir.path().join("warehouse").to_str().unwrap()),
-        namespace: "ns".to_string(),
-        table: "orders".to_string(),
+        )),
+        catalog_path: None,
+        warehouse_location: Some(format!(
+            "file://{}",
+            dir.path().join("warehouse").to_str().unwrap()
+        )),
+        warehouse_path: None,
+        namespace: Some("ns".to_string()),
+        namespace_name: None,
+        table: Some("orders".to_string()),
+        table_name: None,
+        storage_options: Default::default(),
         format_version: IcebergFormatVersion::V2,
         timeout_seconds: 30,
     };
@@ -58,9 +66,14 @@ async fn cdc_source_replays_every_append_as_insert() {
 
     let cdc_cfg = IcebergCdcConfig {
         catalog_uri: batch_cfg.catalog_uri,
+        catalog_path: batch_cfg.catalog_path,
         warehouse_location: batch_cfg.warehouse_location,
+        warehouse_path: batch_cfg.warehouse_path,
         namespace: batch_cfg.namespace,
+        namespace_name: batch_cfg.namespace_name,
         table: batch_cfg.table,
+        table_name: batch_cfg.table_name,
+        storage_options: batch_cfg.storage_options,
         starting_snapshot_id: None,
         timeout_seconds: 30,
     };

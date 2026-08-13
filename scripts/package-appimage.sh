@@ -11,7 +11,15 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION="$(grep -A3 '^\[workspace.package\]' "$REPO_ROOT/Cargo.toml" | grep '^version' | head -1 | cut -d '"' -f2)"
 OUT_DIR="${1:-$REPO_ROOT/target/package}"
+
+# APPIMAGETOOL may be either a bare binary ("appimagetool" or "/tmp/appimagetool")
+# or a binary followed by flags ("/tmp/appimagetool --appimage-extract-and-run").
+# Split it so command -v only checks the binary and flags are passed separately.
 APPIMAGETOOL="${APPIMAGETOOL:-appimagetool}"
+read -ra APPIMAGETOOL_ARGS <<< "$APPIMAGETOOL"
+APPIMAGETOOL_BIN="${APPIMAGETOOL_ARGS[0]}"
+APPIMAGETOOL_FLAGS=("${APPIMAGETOOL_ARGS[@]:1}")
+
 WORK_DIR="$(mktemp -d)"
 APPDIR="$WORK_DIR/NexusFlow.AppDir"
 trap 'rm -rf "$WORK_DIR"' EXIT
@@ -21,7 +29,7 @@ ADBC_DIR="$REPO_ROOT/target/adbc"
 for f in "$BIN" "$ADBC_DIR/libadbc_driver_postgresql.so" "$ADBC_DIR/libadbc_driver_sqlite.so"; do
   [ -f "$f" ] || { echo "missing $f — build it first (see this script's header)" >&2; exit 1; }
 done
-command -v "$APPIMAGETOOL" >/dev/null || {
+command -v "$APPIMAGETOOL_BIN" >/dev/null || {
   echo "appimagetool not found — set \$APPIMAGETOOL or put it on PATH" >&2
   exit 1
 }
@@ -35,5 +43,5 @@ install -m 644 "$REPO_ROOT/packaging/linux/nexusflow.desktop" "$APPDIR/nexusflow
 install -m 644 "$REPO_ROOT/frontend/public/favicon.svg" "$APPDIR/nexusflow.svg"
 
 mkdir -p "$OUT_DIR"
-ARCH=x86_64 "$APPIMAGETOOL" "$APPDIR" "$OUT_DIR/NexusFlow-${VERSION}-x86_64.AppImage"
+ARCH=x86_64 "$APPIMAGETOOL_BIN" "${APPIMAGETOOL_FLAGS[@]}" "$APPDIR" "$OUT_DIR/NexusFlow-${VERSION}-x86_64.AppImage"
 echo "==> built $OUT_DIR/NexusFlow-${VERSION}-x86_64.AppImage"

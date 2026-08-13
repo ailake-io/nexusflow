@@ -77,7 +77,7 @@ fn fetch_all_inner(
 ) -> Result<(), NexusError> {
     let env = Environment::new().map_err(|e| NexusError::Connector(format!("odbc env: {e}")))?;
     let conn = env
-        .connect_with_connection_string(&config.connection_string, ConnectionOptions::default())
+        .connect_with_connection_string(&config.connection_string(), ConnectionOptions::default())
         .map_err(|e| NexusError::Connector(format!("odbc connect: {e}")))?;
 
     let sql = build_select_sql(&config.table, &config.fields)?;

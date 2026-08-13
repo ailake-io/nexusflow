@@ -18,13 +18,21 @@ use std::sync::Arc;
 
 fn test_cfg(dir: &std::path::Path, format_version: IcebergFormatVersion) -> IcebergConnectorConfig {
     IcebergConnectorConfig {
-        catalog_uri: format!(
+        catalog_uri: Some(format!(
             "sqlite://{}?mode=rwc",
             dir.join("catalog.db").to_str().unwrap()
-        ),
-        warehouse_location: format!("file://{}", dir.join("warehouse").to_str().unwrap()),
-        namespace: "ns".to_string(),
-        table: "orders".to_string(),
+        )),
+        catalog_path: None,
+        warehouse_location: Some(format!(
+            "file://{}",
+            dir.join("warehouse").to_str().unwrap()
+        )),
+        warehouse_path: None,
+        namespace: Some("ns".to_string()),
+        namespace_name: None,
+        table: Some("orders".to_string()),
+        table_name: None,
+        storage_options: Default::default(),
         format_version,
         timeout_seconds: 30,
     }

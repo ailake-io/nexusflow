@@ -61,6 +61,9 @@ async fn cdc_source_replays_inserts_and_deletes_from_change_data_feed() {
 
     let batch_cfg = DeltaConnectorConfig {
         table_uri: table_uri.clone(),
+        path: None,
+        table_name: None,
+        storage_options: nexus_connector_deltalake::StorageOptions::default(),
         primary_key: "id".to_string(),
         timeout_seconds: 30,
     };
@@ -97,6 +100,9 @@ async fn cdc_source_replays_inserts_and_deletes_from_change_data_feed() {
     // --- read the whole feed from version 0 ---
     let cdc_cfg = DeltaCdcConfig {
         table_uri,
+        path: None,
+        table_name: None,
+        storage_options: nexus_connector_deltalake::StorageOptions::default(),
         starting_version: Some(0),
         timeout_seconds: 30,
     };

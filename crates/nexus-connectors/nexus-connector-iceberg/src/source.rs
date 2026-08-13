@@ -22,10 +22,7 @@ pub struct IcebergSource {
 impl IcebergSource {
     pub async fn connect(cfg: &IcebergConnectorConfig) -> Result<Self, NexusError> {
         let catalog = catalog::connect(cfg).await?;
-        let ident = TableIdent::new(
-            NamespaceIdent::new(cfg.namespace.clone()),
-            cfg.table.clone(),
-        );
+        let ident = TableIdent::new(NamespaceIdent::new(cfg.namespace()), cfg.table_name());
         let table = with_timeout(cfg.timeout_seconds, "iceberg load_table", async {
             catalog
                 .load_table(&ident)
@@ -54,8 +51,8 @@ impl Source for IcebergSource {
         // the Marco 5 LanceDB source and the Marco 6 Delta source hit.
         let catalog = catalog::connect(&self.cfg).await?;
         let ident = TableIdent::new(
-            NamespaceIdent::new(self.cfg.namespace.clone()),
-            self.cfg.table.clone(),
+            NamespaceIdent::new(self.cfg.namespace()),
+            self.cfg.table_name(),
         );
         let table = with_timeout(self.cfg.timeout_seconds, "iceberg load_table", async {
             catalog

@@ -71,11 +71,15 @@ async fn text_chunk_embed_ailake_end_to_end() {
     // --- write to ailake ---
     let sink_cfg = AilakeConnectorConfig {
         warehouse: warehouse.clone(),
+        warehouse_path: None,
         namespace: "ns".to_string(),
+        namespace_name: None,
         table: "docs".to_string(),
+        table_name: None,
         primary_key: "id".to_string(),
         embedding_column: "embedding".to_string(),
         dimension: 384,
+        storage_options: nexus_connector_ailake::AilakeStorageOptions::default(),
         timeout_seconds: 30,
     };
     let mut sink = AilakeSink::connect(&sink_cfg).expect("sink connects");
@@ -181,11 +185,15 @@ async fn upsert_replaces_prior_row_instead_of_duplicating_it() {
     let dir = tempfile::tempdir().expect("tempdir creates");
     let cfg = AilakeConnectorConfig {
         warehouse: dir.path().to_str().unwrap().to_string(),
+        warehouse_path: None,
         namespace: "ns".to_string(),
+        namespace_name: None,
         table: "docs".to_string(),
+        table_name: None,
         primary_key: "id".to_string(),
         embedding_column: "embedding".to_string(),
         dimension: DIMENSION as u32,
+        storage_options: nexus_connector_ailake::AilakeStorageOptions::default(),
         timeout_seconds: 30,
     };
     let mut sink = AilakeSink::connect(&cfg).expect("sink connects");

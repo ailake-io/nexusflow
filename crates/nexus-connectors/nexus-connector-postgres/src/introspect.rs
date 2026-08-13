@@ -16,7 +16,7 @@ pub async fn table_schema(cfg: &PostgresConnectorConfig) -> Result<SchemaRef, Ne
     with_timeout(timeout_seconds, "postgres table_schema", async {
         tokio::task::spawn_blocking(move || {
             quote_identifier(&cfg.table)?;
-            let connection = open_connection(&cfg.uri)?;
+            let connection = open_connection(&cfg.connection_string())?;
             connection
                 .get_table_schema(None, None, &cfg.table)
                 .map(Arc::new)
@@ -53,7 +53,7 @@ pub async fn primary_key_bounds(
             let pk = quote_identifier(&cfg.primary_key)?;
             let table = quote_identifier(&cfg.table)?;
 
-            let mut connection = open_connection(&cfg.uri)?;
+            let mut connection = open_connection(&cfg.connection_string())?;
             let schema = connection
                 .get_table_schema(None, None, &cfg.table)
                 .map_err(|e| NexusError::Schema(e.to_string()))?;

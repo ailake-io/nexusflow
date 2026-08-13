@@ -273,6 +273,5 @@ Se `dbt.output` estiver setado no spec (aponta pro model/tabela que o dbt acabou
 |---|---|
 | [`USER_GUIDE.md`](./USER_GUIDE.md) | Referência completa: config exata de cada um dos 18 conectores, transform SQL, embeddings, dbt ELT/ETL, preview, agendamento |
 | [`ARCHITECTURE.md`](../ARCHITECTURE.md) | Roteador de conectores, streaming/backpressure, checkpointing |
-| [`IMPLEMENTATION_PLAN.md`](../IMPLEMENTATION_PLAN.md) | Detalhamento marco a marco |
 | [`ROADMAP.md`](../ROADMAP.md) | Fases e critério de "pronto" |
 | [`CONTRIBUTING.md`](../CONTRIBUTING.md) | Como contribuir |

@@ -57,6 +57,9 @@ async fn write_batch_upserts_vectors_with_metadata_and_values() {
         dimension: 2,
         namespace: None,
         timeout_seconds: 30,
+        port: None,
+        grpc_url: None,
+        index_name: None,
     };
     let mut sink = PineconeSink::connect(&cfg).expect("sink connects");
     sink.write_batch(sample_batch())
@@ -90,6 +93,9 @@ async fn write_batch_deletes_rows_with_delete_opcode() {
         dimension: 2,
         namespace: None,
         timeout_seconds: 30,
+        port: None,
+        grpc_url: None,
+        index_name: None,
     };
     let mut sink = PineconeSink::connect(&cfg).expect("sink connects");
 
@@ -143,6 +149,9 @@ async fn write_batch_includes_namespace_when_configured() {
         dimension: 2,
         namespace: Some("docs-ns".to_string()),
         timeout_seconds: 30,
+        port: None,
+        grpc_url: None,
+        index_name: None,
     };
     let mut sink = PineconeSink::connect(&cfg).expect("sink connects");
     sink.write_batch(sample_batch())

@@ -69,7 +69,14 @@ async fn postgres_native_cdc_carries_correct_opcode_per_row() {
         .expect("test table + publication created");
 
     let config = PostgresCdcConfig {
-        uri: uri.clone(),
+        uri: Some(uri.clone()),
+        host: "localhost".to_string(),
+        port: 5432,
+        username: String::new(),
+        password: String::new(),
+        database: String::new(),
+        schema: None,
+        ssl_mode: nexus_connector_postgres::PostgresSslMode::Prefer,
         table: table.clone(),
         publication_name: publication.clone(),
         slot_name: slot.clone(),

@@ -43,11 +43,15 @@ async fn cdc_source_replays_inserts_and_a_real_delete() {
     let dir = tempfile::tempdir().expect("tempdir creates");
     let batch_cfg = AilakeConnectorConfig {
         warehouse: dir.path().to_str().unwrap().to_string(),
+        warehouse_path: None,
         namespace: "ns".to_string(),
+        namespace_name: None,
         table: "docs".to_string(),
+        table_name: None,
         primary_key: "id".to_string(),
         embedding_column: "embedding".to_string(),
         dimension: DIMENSION as u32,
+        storage_options: nexus_connector_ailake::AilakeStorageOptions::default(),
         timeout_seconds: 30,
     };
     let mut sink = AilakeSink::connect(&batch_cfg).expect("sink connects");
@@ -82,11 +86,15 @@ async fn cdc_source_replays_inserts_and_a_real_delete() {
 
     let cdc_cfg = AilakeCdcConfig {
         warehouse: batch_cfg.warehouse,
+        warehouse_path: batch_cfg.warehouse_path,
         namespace: batch_cfg.namespace,
+        namespace_name: batch_cfg.namespace_name,
         table: batch_cfg.table,
+        table_name: batch_cfg.table_name,
         primary_key: batch_cfg.primary_key,
         embedding_column: batch_cfg.embedding_column,
         dimension: batch_cfg.dimension,
+        storage_options: batch_cfg.storage_options,
         starting_snapshot_id: None,
         timeout_seconds: 30,
     };

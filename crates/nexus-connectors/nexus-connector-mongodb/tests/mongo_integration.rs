@@ -43,10 +43,16 @@ async fn source_reads_documents_as_record_batches() {
         .expect("seed insert");
 
     let config = MongoConnectorConfig {
-        uri,
+        connection_string: Some(uri),
+        hosts: Vec::new(),
+        username: None,
+        password: None,
+        auth_database: None,
         database: "nexus".into(),
         collection: "events".into(),
         primary_key: "id".into(),
+        read_preference: None,
+        tls: None,
         fields: fields(),
         batch_size: 1000,
         timeout_seconds: 30,
@@ -73,10 +79,16 @@ async fn sink_upsert_is_idempotent_on_replay() {
     let uri = format!("mongodb://127.0.0.1:{port}");
 
     let config = MongoConnectorConfig {
-        uri: uri.clone(),
+        connection_string: Some(uri.clone()),
+        hosts: Vec::new(),
+        username: None,
+        password: None,
+        auth_database: None,
         database: "nexus".into(),
         collection: "events_copy".into(),
         primary_key: "id".into(),
+        read_preference: None,
+        tls: None,
         fields: fields(),
         batch_size: 1000,
         timeout_seconds: 30,

@@ -176,6 +176,12 @@ pub struct PipelineSpec {
     /// before this field existed.
     #[serde(default)]
     pub schedule: Option<String>,
+    /// When true, the spec is saved as a draft: only `pipeline_id` is
+    /// validated, and connector configs/embedding/dbt are not checked.
+    /// Drafts cannot be executed; they must be completed and re-saved
+    /// with `draft=false` (or omitted) before running.
+    #[serde(default)]
+    pub draft: bool,
 }
 
 fn default_channel_capacity() -> usize {
@@ -218,6 +224,9 @@ impl PipelineSpec {
             return Err(NexusError::Schema(
                 "pipeline_id must only contain ASCII letters, digits, '_' or '-'".into(),
             ));
+        }
+        if self.draft {
+            return Ok(());
         }
         if self.sources.is_empty() {
             return Err(NexusError::Schema("sources must not be empty".into()));

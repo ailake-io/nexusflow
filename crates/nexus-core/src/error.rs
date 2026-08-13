@@ -20,7 +20,7 @@ pub enum NexusError {
 /// Runs `fut` with a hard deadline, turning a stalled connector call (dead
 /// TCP connection, unreachable host, wedged server) into a `NexusError`
 /// instead of blocking the pipeline forever (C15,
-/// docs/REVIEW_ACTION_PLAN.md). `op` names the call in the error message
+/// docs/PROJECT_REVIEW.md). `op` names the call in the error message
 /// (e.g. `"mongodb connect"`) — connectors otherwise share the same
 /// `NexusError::Connector` variant for every failure mode.
 pub async fn with_timeout<T>(

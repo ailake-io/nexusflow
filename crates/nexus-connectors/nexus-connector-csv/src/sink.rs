@@ -1,6 +1,6 @@
 use crate::config::CsvConnectorConfig;
 use crate::rows::extract_pk_strings;
-use crate::schema::{build_schema, delimiter_byte, primary_key_or_err};
+use crate::schema::{build_schema, delimiter_byte, primary_key_or_err, quote_byte};
 use crate::store::open_store;
 use arrow_array::{BooleanArray, RecordBatch};
 use arrow_csv::{ReaderBuilder, WriterBuilder};
@@ -26,6 +26,8 @@ pub struct CsvSink {
     path: ObjectPath,
     schema: SchemaRef,
     delimiter: u8,
+    quote: u8,
+    escape: Option<u8>,
     has_header: bool,
     primary_key: String,
     timeout_seconds: u64,
@@ -34,12 +36,14 @@ pub struct CsvSink {
 impl CsvSink {
     pub fn connect(cfg: &CsvConnectorConfig) -> Result<Self, NexusError> {
         let primary_key = primary_key_or_err(cfg)?;
-        let (store, path) = open_store(&cfg.uri, &cfg.storage_options)?;
+        let (store, path) = open_store(&cfg.uri()?, &cfg.storage_options())?;
         Ok(Self {
             store,
             path,
             schema: build_schema(&cfg.fields),
             delimiter: delimiter_byte(cfg.delimiter)?,
+            quote: quote_byte(cfg.quote)?,
+            escape: cfg.escape.map(quote_byte).transpose()?,
             has_header: cfg.has_header,
             primary_key,
             timeout_seconds: cfg.timeout_seconds,
@@ -58,12 +62,19 @@ impl CsvSink {
 
         let schema = self.schema.clone();
         let delimiter = self.delimiter;
+        let quote = self.quote;
+        let escape = self.escape;
         let has_header = self.has_header;
         let batches =
             tokio::task::spawn_blocking(move || -> Result<Vec<RecordBatch>, NexusError> {
-                let reader = ReaderBuilder::new(schema)
+                let mut builder = ReaderBuilder::new(schema)
                     .with_delimiter(delimiter)
                     .with_header(has_header)
+                    .with_quote(quote);
+                if let Some(escape) = escape {
+                    builder = builder.with_escape(escape);
+                }
+                let reader = builder
                     .build(Cursor::new(bytes))
                     .map_err(|e| NexusError::Connector(format!("csv reader build failed: {e}")))?;
                 reader
@@ -78,10 +89,14 @@ impl CsvSink {
     fn write_all(&self, row_groups: &[RecordBatch]) -> Result<Vec<u8>, NexusError> {
         let mut buf = Vec::new();
         {
-            let mut writer = WriterBuilder::new()
+            let mut builder = WriterBuilder::new()
                 .with_delimiter(self.delimiter)
                 .with_header(self.has_header)
-                .build(&mut buf);
+                .with_quote(self.quote);
+            if let Some(escape) = self.escape {
+                builder = builder.with_escape(escape);
+            }
+            let mut writer = builder.build(&mut buf);
             for batch in row_groups {
                 if batch.num_rows() == 0 {
                     continue;

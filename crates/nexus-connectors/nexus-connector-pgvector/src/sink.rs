@@ -31,7 +31,7 @@ impl PgVectorSink {
         columns: &[String],
     ) -> Result<Self, NexusError> {
         let (client, connection) = with_timeout(cfg.timeout_seconds, "pgvector connect", async {
-            tokio_postgres::connect(&cfg.uri, NoTls)
+            tokio_postgres::connect(&cfg.connection_string(), NoTls)
                 .await
                 .map_err(|e| NexusError::Connector(format!("pgvector connect failed: {e}")))
         })

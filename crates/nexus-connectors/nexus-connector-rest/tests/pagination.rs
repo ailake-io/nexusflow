@@ -1,6 +1,6 @@
 use futures::StreamExt;
 use nexus_connector_rest::{
-    RestConnectorConfig, RestDataType, RestFieldSpec, RestPagination, RestSource,
+    RestConnectorConfig, RestDataType, RestFieldSpec, RestMethod, RestPagination, RestSource,
 };
 use nexus_core::Source;
 use serde_json::json;
@@ -36,8 +36,11 @@ async fn no_pagination_reads_single_page() {
         .await;
 
     let config = RestConnectorConfig {
+        uri: None,
+        url: None,
         base_url: server.uri(),
         path: "/users".into(),
+        method: RestMethod::Get,
         headers: HashMap::new(),
         fields: fields(),
         rows_path: None,
@@ -56,6 +59,43 @@ async fn no_pagination_reads_single_page() {
         total_rows += batch.unwrap().num_rows();
     }
     assert_eq!(total_rows, 2);
+}
+
+#[tokio::test]
+async fn legacy_url_takes_precedence() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/legacy/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": 1, "name": "alice"},
+        ])))
+        .mount(&server)
+        .await;
+
+    let config = RestConnectorConfig {
+        uri: None,
+        url: Some(format!("{}/legacy/users", server.uri())),
+        base_url: String::new(),
+        path: String::new(),
+        method: RestMethod::Get,
+        headers: HashMap::new(),
+        fields: fields(),
+        rows_path: None,
+        pagination: RestPagination::None,
+        max_pages: 10,
+        timeout_seconds: 5,
+        retries: 0,
+        retry_backoff_seconds: 0,
+        requests_per_second: 0,
+    };
+
+    let mut source = RestSource::connect(&config).unwrap();
+    let mut stream = source.read_batches().await.unwrap();
+    let mut total_rows = 0;
+    while let Some(batch) = stream.next().await {
+        total_rows += batch.unwrap().num_rows();
+    }
+    assert_eq!(total_rows, 1);
 }
 
 #[tokio::test]
@@ -83,8 +123,11 @@ async fn offset_pagination_stops_on_short_page() {
         .await;
 
     let config = RestConnectorConfig {
+        uri: None,
+        url: None,
         base_url: server.uri(),
         path: "/users".into(),
+        method: RestMethod::Get,
         headers: HashMap::new(),
         fields: fields(),
         rows_path: Some("items".into()),
@@ -136,8 +179,11 @@ async fn cursor_pagination_stops_when_next_cursor_absent() {
         .await;
 
     let config = RestConnectorConfig {
+        uri: None,
+        url: None,
         base_url: server.uri(),
         path: "/users".into(),
+        method: RestMethod::Get,
         headers: HashMap::new(),
         fields: fields(),
         rows_path: Some("items".into()),

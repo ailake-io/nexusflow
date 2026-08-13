@@ -16,6 +16,7 @@ pub struct ChromaSink {
     collection_url: String,
     primary_key: String,
     embedding_column: String,
+    api_key: Option<String>,
 }
 
 impl ChromaSink {
@@ -24,12 +25,18 @@ impl ChromaSink {
             .timeout(std::time::Duration::from_secs(cfg.timeout_seconds))
             .build()
             .map_err(|e| NexusError::Connector(format!("chroma client build failed: {e}")))?;
-        let host = cfg.host.trim_end_matches('/');
+        let base_url = cfg.base_url();
         let get_url = format!(
-            "{host}/api/v2/tenants/{}/databases/{}/collections/{}",
-            cfg.tenant, cfg.database, cfg.collection
+            "{base_url}/api/v2/tenants/{}/databases/{}/collections/{}",
+            cfg.tenant(),
+            cfg.database(),
+            cfg.collection_name()
         );
-        let response = client.get(&get_url).send().await.map_err(|e| {
+        let mut request = client.get(&get_url);
+        if let Some(auth) = cfg.authorization_header() {
+            request = request.header("Authorization", auth);
+        }
+        let response = request.send().await.map_err(|e| {
             NexusError::Connector(format!("chroma get_collection request failed: {e}"))
         })?;
         if !response.status().is_success() {
@@ -50,19 +57,25 @@ impl ChromaSink {
         Ok(Self {
             client,
             collection_url: format!(
-                "{host}/api/v2/tenants/{}/databases/{}/collections/{collection_id}",
-                cfg.tenant, cfg.database
+                "{base_url}/api/v2/tenants/{}/databases/{}/collections/{collection_id}",
+                cfg.tenant(),
+                cfg.database()
             ),
             primary_key: cfg.primary_key.clone(),
             embedding_column: cfg.embedding_column.clone(),
+            api_key: cfg.api_key.clone(),
         })
     }
 
     async fn post(&self, endpoint: &str, body: Value) -> Result<(), NexusError> {
-        let response = self
+        let mut request = self
             .client
             .post(format!("{}/{endpoint}", self.collection_url))
-            .json(&body)
+            .json(&body);
+        if let Some(ref auth) = self.api_key {
+            request = request.header("Authorization", format!("Bearer {auth}"));
+        }
+        let response = request
             .send()
             .await
             .map_err(|e| NexusError::Connector(format!("chroma {endpoint} request failed: {e}")))?;
