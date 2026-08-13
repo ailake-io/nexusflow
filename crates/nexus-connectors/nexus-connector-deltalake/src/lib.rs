@@ -12,7 +12,7 @@ mod source;
 pub use cdc::DeltaCdcSource;
 #[cfg(feature = "cdc")]
 pub use config::DeltaCdcConfig;
-pub use config::DeltaConnectorConfig;
+pub use config::{DeltaConnectorConfig, StorageOptions};
 pub use sink::DeltaSink;
 pub use source::DeltaSource;
 

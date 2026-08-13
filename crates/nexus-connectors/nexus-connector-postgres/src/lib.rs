@@ -16,7 +16,7 @@ mod source;
 
 #[cfg(feature = "cdc")]
 pub use cdc::PostgresCdcSource;
-pub use config::PostgresConnectorConfig;
+pub use config::{PostgresConnectorConfig, PostgresSslMode};
 #[cfg(feature = "cdc")]
 pub use config::{PostgresCdcConfig, PostgresCdcDataType, PostgresCdcFieldSpec};
 pub use driver::DRIVER_PATH_ENV;

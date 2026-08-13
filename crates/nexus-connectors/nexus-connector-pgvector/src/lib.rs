@@ -9,7 +9,7 @@ mod rows;
 mod sink;
 mod sql;
 
-pub use config::PgVectorConnectorConfig;
+pub use config::{PgVectorConnectorConfig, PgVectorSslMode};
 pub use sink::PgVectorSink;
 
 nexus_core::submit_connector!(

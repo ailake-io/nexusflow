@@ -14,8 +14,7 @@ mod source;
 #[cfg(feature = "cdc")]
 pub use cdc::AilakeCdcSource;
 #[cfg(feature = "cdc")]
-pub use config::AilakeCdcConfig;
-pub use config::AilakeConnectorConfig;
+pub use config::{AilakeCdcConfig, AilakeConnectorConfig, AilakeStorageOptions};
 pub use sink::AilakeSink;
 pub use source::AilakeSource;
 
