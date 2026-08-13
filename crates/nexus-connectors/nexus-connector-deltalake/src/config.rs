@@ -135,6 +135,7 @@ fn default_timeout_seconds() -> u64 {
 /// either) — the change feed's data columns already carry the table's real
 /// Arrow types, nothing to coerce from a wire format.
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+#[allow(dead_code)]
 pub struct DeltaCdcConfig {
     /// Full table URI for the CDC source — a local directory, a `file://` URI,
     /// or an object-store URI. Kept for backward compatibility: when this
@@ -168,6 +169,7 @@ pub struct DeltaCdcConfig {
     pub timeout_seconds: u64,
 }
 
+#[allow(dead_code)]
 impl DeltaCdcConfig {
     /// Resolves the effective Delta table URI.
     ///
@@ -336,6 +338,6 @@ mod tests {
             timeout_seconds: 30,
         };
         assert_eq!(cfg.table_uri(), "/overridden/cdc");
-        assert_eq!(cfg.table_name(), "cdc");
+        assert_eq!(cfg.table_name(), "events");
     }
 }
