@@ -152,7 +152,7 @@ async fn migrate_license(sqlite: &SqlitePool, pg: &PgPool) -> anyhow::Result<usi
         let jwt: String = row.try_get("jwt")?;
         let installed_at: String = row.try_get("installed_at")?;
         let result = sqlx::query(
-            "INSERT INTO license (id, jwt, installed_at) VALUES ($1, $2, $3) \
+            "INSERT INTO license (id, jwt, installed_at) VALUES ($1, $2, $3::timestamptz) \
              ON CONFLICT (id) DO NOTHING",
         )
         .bind(id)
