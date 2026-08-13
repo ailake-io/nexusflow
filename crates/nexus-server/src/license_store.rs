@@ -69,18 +69,22 @@ impl LicenseStore {
     /// wouldn't pass its own verification later.
     pub async fn install(&self, jwt: &str) -> Result<LicenseClaims, LicenseStoreError> {
         let claims = license::verify(jwt)?;
-        let sql = self.q(
-            r#"
+        let sql = self.q(r#"
             INSERT INTO license (id, jwt) VALUES (1, ?)
             ON CONFLICT(id) DO UPDATE SET jwt = excluded.jwt, installed_at = excluded.installed_at
-            "#,
-        );
+            "#);
         match &self.pool {
             MetadataPool::Sqlite(p) => {
-                sqlx::query(sqlx::AssertSqlSafe(sql)).bind(jwt).execute(p).await?;
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .bind(jwt)
+                    .execute(p)
+                    .await?;
             }
             MetadataPool::Postgres(p) => {
-                sqlx::query(sqlx::AssertSqlSafe(sql)).bind(jwt).execute(p).await?;
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .bind(jwt)
+                    .execute(p)
+                    .await?;
             }
         }
         Ok(claims)
@@ -95,10 +99,14 @@ impl LicenseStore {
         let sql = self.q("SELECT jwt FROM license WHERE id = 1");
         let row: Option<(String,)> = match &self.pool {
             MetadataPool::Sqlite(p) => {
-                sqlx::query_as(sqlx::AssertSqlSafe(sql)).fetch_optional(p).await?
+                sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .fetch_optional(p)
+                    .await?
             }
             MetadataPool::Postgres(p) => {
-                sqlx::query_as(sqlx::AssertSqlSafe(sql)).fetch_optional(p).await?
+                sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .fetch_optional(p)
+                    .await?
             }
         };
         Ok(row.and_then(|(jwt,)| license::verify(&jwt).ok()))
