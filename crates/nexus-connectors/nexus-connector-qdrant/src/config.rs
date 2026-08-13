@@ -115,7 +115,7 @@ impl QdrantConnectorConfig {
 
         let host = self.host.trim();
         let normalized_host = if host.is_empty() {
-            "localhost".to_string()
+            "http://localhost".to_string()
         } else if host.starts_with("http://") || host.starts_with("https://") {
             host.to_string()
         } else {
