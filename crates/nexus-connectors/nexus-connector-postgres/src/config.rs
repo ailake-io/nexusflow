@@ -47,11 +47,13 @@ pub struct PostgresConnectorConfig {
     #[serde(default = "default_port")]
     pub port: u16,
     /// User name to authenticate with.
+    #[serde(default)]
     pub username: String,
     /// Password for the provided user name.
     #[serde(default)]
     pub password: String,
     /// Database name to connect to.
+    #[serde(default)]
     pub database: String,
     /// Schema / `search_path` to use for the target table.
     ///
@@ -187,11 +189,13 @@ pub struct PostgresCdcConfig {
     #[serde(default = "default_port")]
     pub port: u16,
     /// User name to authenticate with.
+    #[serde(default)]
     pub username: String,
     /// Password for the provided user name.
     #[serde(default)]
     pub password: String,
     /// Database name to connect to.
+    #[serde(default)]
     pub database: String,
     /// Schema used to qualify the target table when matching replication
     /// events. Defaults to the user's default search path (usually `public`).
