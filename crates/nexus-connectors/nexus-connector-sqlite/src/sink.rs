@@ -24,7 +24,7 @@ impl SqliteSink {
         cfg: &SqliteConnectorConfig,
         columns: &[String],
     ) -> Result<Self, NexusError> {
-        let uri = cfg.uri.clone();
+        let uri = cfg.connection_url();
         let connection = with_timeout(cfg.timeout_seconds, "sqlite connect", async {
             tokio::task::spawn_blocking(move || open_connection(&uri))
                 .await

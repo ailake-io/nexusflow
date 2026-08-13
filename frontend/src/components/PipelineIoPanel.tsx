@@ -7,6 +7,8 @@ import {
   Loader2,
   CheckCircle2,
   AlertCircle,
+  FilePlus,
+  Timer,
 } from 'lucide-react'
 import { useI18n } from '@/lib/i18n'
 import { Button } from '@/components/ui/button'
@@ -22,8 +24,12 @@ interface PipelineIoPanelProps {
   onImport: (json: string) => void
   onRun: () => void
   onSave: () => Promise<void>
+  onNewPipeline: () => void
   running: boolean
   saving: boolean
+  autoSaveEnabled: boolean
+  onToggleAutoSave: () => void
+  autoSaveStatus: string | null
 }
 
 /**
@@ -41,8 +47,12 @@ export function PipelineIoPanel({
   onImport,
   onRun,
   onSave,
+  onNewPipeline,
   running,
   saving,
+  autoSaveEnabled,
+  onToggleAutoSave,
+  autoSaveStatus,
 }: PipelineIoPanelProps) {
   const { t } = useI18n()
   const [text, setText] = useState('')
@@ -148,6 +158,21 @@ export function PipelineIoPanel({
         </div>
 
         <div className="ml-auto flex items-center gap-2">
+          <Button type="button" variant="outline" onClick={onNewPipeline} className="gap-1.5">
+            <FilePlus className="h-3.5 w-3.5" />
+            {t('ioPanel.newPipeline')}
+          </Button>
+          <Button
+            type="button"
+            variant={autoSaveEnabled ? 'default' : 'outline'}
+            onClick={onToggleAutoSave}
+            disabled={!meta.pipelineId.trim()}
+            title={!meta.pipelineId.trim() ? t('ioPanel.autoSaveNeedsId') : ''}
+            className="gap-1.5"
+          >
+            <Timer className="h-3.5 w-3.5" />
+            {autoSaveEnabled ? t('ioPanel.autoSaveOn') : t('ioPanel.autoSave')}
+          </Button>
           <Button
             type="button"
             onClick={handleSave}
@@ -178,7 +203,7 @@ export function PipelineIoPanel({
         </div>
       </div>
 
-      {(error || saved) && (
+      {(error || saved || autoSaveStatus) && (
         <div className="flex flex-wrap items-center gap-2">
           {error && (
             <div className="flex items-center gap-2 rounded-md border border-red-500/20 bg-red-500/10 px-3 py-1.5 text-xs text-red-400">
@@ -190,6 +215,12 @@ export function PipelineIoPanel({
             <div className="flex items-center gap-2 rounded-md border border-emerald-500/20 bg-emerald-500/10 px-3 py-1.5 text-xs text-emerald-400">
               <CheckCircle2 className="h-3.5 w-3.5" />
               {t('ioPanel.saved')}
+            </div>
+          )}
+          {autoSaveStatus && (
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Timer className="h-3.5 w-3.5" />
+              {autoSaveStatus}
             </div>
           )}
         </div>

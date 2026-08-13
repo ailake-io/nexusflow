@@ -17,7 +17,7 @@ import {
 const ROLES: Role[] = ['read', 'execute', 'write', 'admin']
 
 const selectClassName =
-  'flex h-9 w-full min-w-0 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-1.5 text-sm text-foreground shadow-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50'
+  'flex h-9 w-full min-w-0 rounded-lg border border-white/10 bg-card px-3 py-1.5 text-sm text-foreground shadow-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50'
 
 /**
  * Admin-only user management (ROADMAP.md Pendências ativas #9): the backend

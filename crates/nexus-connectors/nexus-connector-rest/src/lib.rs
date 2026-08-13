@@ -10,7 +10,7 @@ mod sink;
 mod source;
 
 pub use config::{
-    RestConnectorConfig, RestDataType, RestFieldSpec, RestPagination, WebhookBodyMode,
+    RestConnectorConfig, RestDataType, RestFieldSpec, RestMethod, RestPagination, WebhookBodyMode,
     WebhookMethod, WebhookSinkConfig,
 };
 pub use sink::WebhookSink;

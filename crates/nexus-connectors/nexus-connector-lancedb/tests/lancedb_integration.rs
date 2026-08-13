@@ -68,8 +68,11 @@ async fn text_chunk_embed_lancedb_end_to_end() {
 
     // --- write to lancedb ---
     let sink_cfg = LanceDbConnectorConfig {
-        uri: uri.clone(),
-        table: "docs".to_string(),
+        uri: Some(uri.clone()),
+        path: None,
+        storage_options: nexus_connector_lancedb::LanceDbStorageOptions::default(),
+        table: Some("docs".to_string()),
+        table_name: None,
         primary_key: "id".to_string(),
         embedding_column: "embedding".to_string(),
         dimension: 384,

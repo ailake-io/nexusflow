@@ -10,7 +10,7 @@ use rdkafka::error::KafkaError;
 use rdkafka::message::Message;
 use rdkafka::topic_partition_list::TopicPartitionList;
 use rdkafka::types::RDKafkaErrorCode;
-use rdkafka::{ClientConfig, Offset};
+use rdkafka::Offset;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -37,15 +37,12 @@ pub struct KafkaSource {
 
 impl KafkaSource {
     pub fn connect(config: &KafkaConnectorConfig) -> Result<Self, NexusError> {
-        let consumer: StreamConsumer = ClientConfig::new()
-            .set("bootstrap.servers", &config.bootstrap_servers)
-            .set("group.id", &config.group_id)
-            // Manual offset commit: the engine's checkpoint is the source of
-            // truth, not a background heartbeat. `read_batches` commits once
-            // the returned batches have been successfully produced, matching
-            // the at-least-once contract of the other sources.
-            .set("enable.auto.commit", "false")
-            .set("auto.offset.reset", "earliest")
+        // Manual offset commit: the engine's checkpoint is the source of
+        // truth, not a background heartbeat. `read_batches` commits once
+        // the returned batches have been successfully produced, matching
+        // the at-least-once contract of the other sources.
+        let consumer: StreamConsumer = config
+            .client_config()
             .create()
             .map_err(|e| NexusError::Connector(format!("kafka consumer create failed: {e}")))?;
 

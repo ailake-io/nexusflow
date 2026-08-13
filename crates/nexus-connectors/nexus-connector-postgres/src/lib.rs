@@ -16,9 +16,9 @@ mod source;
 
 #[cfg(feature = "cdc")]
 pub use cdc::PostgresCdcSource;
-pub use config::PostgresConnectorConfig;
 #[cfg(feature = "cdc")]
 pub use config::{PostgresCdcConfig, PostgresCdcDataType, PostgresCdcFieldSpec};
+pub use config::{PostgresConnectorConfig, PostgresSslMode};
 pub use driver::DRIVER_PATH_ENV;
 pub use introspect::{primary_key_bounds, table_schema, PkPartitionKind};
 pub use sink::PostgresSink;

@@ -1,5 +1,5 @@
 use crate::config::CsvConnectorConfig;
-use crate::schema::{build_schema, delimiter_byte};
+use crate::schema::{build_schema, delimiter_byte, quote_byte};
 use crate::store::open_store;
 use arrow_array::RecordBatch;
 use arrow_csv::ReaderBuilder;
@@ -22,6 +22,8 @@ pub struct CsvSource {
     path: ObjectPath,
     schema: SchemaRef,
     delimiter: u8,
+    quote: u8,
+    escape: Option<u8>,
     has_header: bool,
     batch_size: usize,
     timeout_seconds: u64,
@@ -29,12 +31,14 @@ pub struct CsvSource {
 
 impl CsvSource {
     pub fn connect(cfg: &CsvConnectorConfig) -> Result<Self, NexusError> {
-        let (store, path) = open_store(&cfg.uri, &cfg.storage_options)?;
+        let (store, path) = open_store(&cfg.uri()?, &cfg.storage_options())?;
         Ok(Self {
             store,
             path,
             schema: build_schema(&cfg.fields),
             delimiter: delimiter_byte(cfg.delimiter)?,
+            quote: quote_byte(cfg.quote)?,
+            escape: cfg.escape.map(quote_byte).transpose()?,
             has_header: cfg.has_header,
             batch_size: cfg.batch_size,
             timeout_seconds: cfg.timeout_seconds,
@@ -60,14 +64,21 @@ impl Source for CsvSource {
 
         let schema = self.schema.clone();
         let delimiter = self.delimiter;
+        let quote = self.quote;
+        let escape = self.escape;
         let has_header = self.has_header;
         let batch_size = self.batch_size;
         let batches =
             tokio::task::spawn_blocking(move || -> Result<Vec<RecordBatch>, NexusError> {
-                let reader = ReaderBuilder::new(schema)
+                let mut builder = ReaderBuilder::new(schema)
                     .with_delimiter(delimiter)
                     .with_header(has_header)
                     .with_batch_size(batch_size)
+                    .with_quote(quote);
+                if let Some(escape) = escape {
+                    builder = builder.with_escape(escape);
+                }
+                let reader = builder
                     .build(Cursor::new(bytes))
                     .map_err(|e| NexusError::Connector(format!("csv reader build failed: {e}")))?;
                 reader

@@ -30,21 +30,22 @@ impl WebhookSink {
         })
     }
 
-    fn build_request(&self, body: &Value) -> reqwest::RequestBuilder {
+    fn build_request(&self, body: &Value) -> Result<reqwest::RequestBuilder, NexusError> {
+        let url = self.config.url()?;
         let mut request = match self.config.method {
-            WebhookMethod::Post => self.client.post(&self.config.url),
-            WebhookMethod::Put => self.client.put(&self.config.url),
-            WebhookMethod::Patch => self.client.patch(&self.config.url),
-            WebhookMethod::Delete => self.client.delete(&self.config.url),
+            WebhookMethod::Post => self.client.post(url),
+            WebhookMethod::Put => self.client.put(url),
+            WebhookMethod::Patch => self.client.patch(url),
+            WebhookMethod::Delete => self.client.delete(url),
         };
         for (key, value) in &self.config.headers {
             request = request.header(key, value);
         }
-        request.json(body)
+        Ok(request.json(body))
     }
 
     async fn send_once(&self, body: &Value) -> Result<(), NexusError> {
-        self.build_request(body)
+        self.build_request(body)?
             .send()
             .await
             .map_err(|e| NexusError::Connector(format!("webhook request failed: {e}")))?

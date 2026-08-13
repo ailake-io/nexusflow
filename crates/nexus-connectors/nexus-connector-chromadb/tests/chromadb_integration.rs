@@ -110,6 +110,8 @@ async fn text_chunk_embed_chromadb_end_to_end() {
     // --- write to chromadb ---
     let sink_cfg = ChromaConnectorConfig {
         host: host.clone(),
+        port: None,
+        api_key: None,
         tenant: "default_tenant".to_string(),
         database: "default_database".to_string(),
         collection: "docs".to_string(),

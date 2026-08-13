@@ -96,7 +96,12 @@ async fn text_chunk_embed_qdrant_end_to_end() {
     // --- write to qdrant ---
     let sink_cfg = QdrantConnectorConfig {
         url: url.clone(),
+        host: String::new(),
+        port: 6334,
+        grpc_url: String::new(),
+        api_key: String::new(),
         collection: "docs".to_string(),
+        collection_name: String::new(),
         primary_key: "id".to_string(),
         embedding_column: "embedding".to_string(),
         dimension: 384,

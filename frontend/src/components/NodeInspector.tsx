@@ -99,7 +99,7 @@ export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps
                   // unbuildable node, so fall back to the batch connector.
                   onChange(node.id, role === 'sink' && isCdc ? { role, connector: batchName } : { role })
                 }}
-                className="mt-1.5 flex h-9 w-full rounded-lg border border-input bg-transparent px-3 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring"
+                className="mt-1.5 flex h-9 w-full rounded-lg border border-input bg-card px-3 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring"
               >
                 <option value="source">{t('pipelines.source')}</option>
                 <option value="sink">{t('pipelines.sink')}</option>
@@ -242,7 +242,7 @@ export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps
                 id="dbt-command"
                 value={data.command}
                 onChange={(e) => onChange(node.id, { command: e.target.value as DbtCommand })}
-                className="mt-1.5 flex h-9 w-full rounded-lg border border-input bg-transparent px-3 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring"
+                className="mt-1.5 flex h-9 w-full rounded-lg border border-input bg-card px-3 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring"
               >
                 <option value="run">{t('canvas.dbtRun')}</option>
                 <option value="build">{t('canvas.dbtBuild')}</option>
@@ -327,7 +327,7 @@ export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps
               id="embedding-backend"
               value={data.backend}
               onChange={(e) => onChange(node.id, { backend: e.target.value as EmbeddingBackend })}
-              className="mt-1.5 flex h-9 w-full rounded-lg border border-input bg-transparent px-3 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring"
+              className="mt-1.5 flex h-9 w-full rounded-lg border border-input bg-card px-3 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring"
             >
               <option value="onnx">{t('canvas.embeddingBackendOnnx')}</option>
               <option value="api">{t('canvas.embeddingBackendApi')}</option>
@@ -439,7 +439,7 @@ export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps
               id="embedding-strategy"
               value={data.strategy}
               onChange={(e) => onChange(node.id, { strategy: e.target.value as ChunkingStrategy })}
-              className="mt-1.5 flex h-9 w-full rounded-lg border border-input bg-transparent px-3 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring"
+              className="mt-1.5 flex h-9 w-full rounded-lg border border-input bg-card px-3 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring"
             >
               <option value="fixed_window">{t('canvas.embeddingStrategyFixed')}</option>
               <option value="recursive_character">{t('canvas.embeddingStrategyRecursive')}</option>

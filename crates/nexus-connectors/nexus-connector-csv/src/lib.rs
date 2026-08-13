@@ -11,7 +11,7 @@ mod sink;
 mod source;
 mod store;
 
-pub use config::{CsvConnectorConfig, CsvDataType, CsvFieldSpec};
+pub use config::{CsvConnectorConfig, CsvDataType, CsvFieldSpec, StorageType};
 pub use sink::CsvSink;
 pub use source::CsvSource;
 

@@ -16,5 +16,6 @@ tokio = { version = "1.53.1", features = ["rt"] }
 
 [dev-dependencies]
 nexus-ai = { path = "../../nexus-ai", features = ["cpu"] }
+serde_json = "1.0"
 testcontainers = "0.27.3"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }

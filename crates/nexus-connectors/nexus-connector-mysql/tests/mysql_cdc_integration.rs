@@ -55,6 +55,7 @@ async fn mysql_native_cdc_carries_correct_opcode_per_row() {
         .expect("replication grants");
 
     let config = MySqlCdcConfig {
+        uri: None,
         host: host.to_string(),
         port,
         username: "replicator".to_string(),

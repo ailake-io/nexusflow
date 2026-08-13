@@ -42,9 +42,16 @@ async fn consumes_json_messages_as_record_batches() {
     }
 
     let config = KafkaConnectorConfig {
-        bootstrap_servers,
+        bootstrap_servers: Some(bootstrap_servers),
+        brokers: Vec::new(),
+        port: 9092,
         topic: topic.to_string(),
         group_id: "nexus-test".to_string(),
+        client_id: None,
+        security_protocol: None,
+        sasl_mechanism: None,
+        sasl_username: None,
+        sasl_password: None,
         fields: vec![
             KafkaFieldSpec {
                 name: "id".into(),
@@ -111,9 +118,16 @@ async fn resumes_from_explicit_start_offset() {
     }
 
     let base_config = KafkaConnectorConfig {
-        bootstrap_servers,
+        bootstrap_servers: Some(bootstrap_servers),
+        brokers: Vec::new(),
+        port: 9092,
         topic: topic.to_string(),
         group_id: "nexus-resume-test".to_string(),
+        client_id: None,
+        security_protocol: None,
+        sasl_mechanism: None,
+        sasl_username: None,
+        sasl_password: None,
         fields: vec![KafkaFieldSpec {
             name: "id".into(),
             data_type: KafkaDataType::Int64,

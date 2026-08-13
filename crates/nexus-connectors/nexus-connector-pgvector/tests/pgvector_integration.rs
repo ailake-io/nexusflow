@@ -101,7 +101,14 @@ async fn text_chunk_embed_pgvector_end_to_end() {
 
     // --- write to pgvector ---
     let sink_cfg = PgVectorConnectorConfig {
-        uri: uri.clone(),
+        uri: Some(uri.clone()),
+        host: "localhost".to_string(),
+        port: 5432,
+        username: String::new(),
+        password: String::new(),
+        database: String::new(),
+        schema: None,
+        ssl_mode: nexus_connector_pgvector::PgVectorSslMode::Prefer,
         table: "docs".to_string(),
         primary_key: "id".to_string(),
         embedding_column: "embedding".to_string(),

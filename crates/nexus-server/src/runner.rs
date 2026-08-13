@@ -482,7 +482,7 @@ async fn apply_embedding_stage(
 
     // Load the embedding backend once per run, not once per batch — ONNX
     // model loading and tokenizer initialization are expensive and must not
-    // repeat for every RecordBatch (REVIEW_ACTION_PLAN C13).
+    // repeat for every RecordBatch (PROJECT_REVIEW.md C13).
     let mut backend = nexus_ai::embedding::load_embedding_backend(spec).await?;
 
     let mut out = Vec::with_capacity(inputs.len());

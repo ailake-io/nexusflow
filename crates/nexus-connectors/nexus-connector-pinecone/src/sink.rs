@@ -28,7 +28,7 @@ impl PineconeSink {
             .map_err(|e| NexusError::Connector(format!("pinecone client build failed: {e}")))?;
         Ok(Self {
             client,
-            host: cfg.host.trim_end_matches('/').to_string(),
+            host: cfg.host(),
             api_key: cfg.api_key.clone(),
             primary_key: cfg.primary_key.clone(),
             embedding_column: cfg.embedding_column.clone(),

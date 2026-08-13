@@ -6,7 +6,9 @@
 use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use futures::StreamExt;
-use nexus_connector_parquet::{ParquetConnectorConfig, ParquetSink, ParquetSource};
+use nexus_connector_parquet::{
+    ParquetCompression, ParquetConnectorConfig, ParquetSink, ParquetSource, StorageType,
+};
 use nexus_core::{Sink, Source};
 use std::sync::Arc;
 
@@ -18,6 +20,9 @@ async fn writes_reads_back_and_deletes_via_rewrite() {
     let cfg = ParquetConnectorConfig {
         path: path.to_str().unwrap().to_string(),
         primary_key: "id".to_string(),
+        storage: StorageType::Local,
+        compression: ParquetCompression::Snappy,
+        ..Default::default()
     };
 
     let schema = Arc::new(Schema::new(vec![
@@ -124,4 +129,101 @@ async fn writes_reads_back_and_deletes_via_rewrite() {
         vec![(2, "paid".to_string()), (3, "pending".to_string()),],
         "id=1 must have been deleted, id=2 updated, id=3 unchanged: {rows:?}"
     );
+}
+
+#[cfg(test)]
+mod config_helpers {
+    use nexus_connector_parquet::{ParquetConnectorConfig, StorageType};
+
+    #[test]
+    fn legacy_uri_takes_precedence() {
+        let cfg = ParquetConnectorConfig {
+            uri: Some("s3://legacy-bucket/key.parquet".to_string()),
+            path: "/local/file.parquet".to_string(),
+            storage: StorageType::Local,
+            bucket: None,
+            ..Default::default()
+        };
+        assert_eq!(cfg.uri().unwrap(), "s3://legacy-bucket/key.parquet");
+    }
+
+    #[test]
+    fn local_storage_uses_path() {
+        let cfg = ParquetConnectorConfig {
+            path: "/data/orders.parquet".to_string(),
+            storage: StorageType::Local,
+            ..Default::default()
+        };
+        assert_eq!(cfg.uri().unwrap(), "/data/orders.parquet");
+    }
+
+    #[test]
+    fn s3_uri_is_built_from_parts() {
+        let cfg = ParquetConnectorConfig {
+            path: "/folder/orders.parquet".to_string(),
+            storage: StorageType::S3,
+            bucket: Some("my-bucket".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.uri().unwrap(), "s3://my-bucket/folder/orders.parquet");
+    }
+
+    #[test]
+    fn gcs_uri_is_built_from_parts() {
+        let cfg = ParquetConnectorConfig {
+            path: "folder/orders.parquet".to_string(),
+            storage: StorageType::Gcs,
+            bucket: Some("my-bucket".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.uri().unwrap(), "gs://my-bucket/folder/orders.parquet");
+    }
+
+    #[test]
+    fn azure_uri_is_built_from_parts() {
+        let cfg = ParquetConnectorConfig {
+            path: "/folder/orders.parquet".to_string(),
+            storage: StorageType::Azure,
+            bucket: Some("my-container".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            cfg.uri().unwrap(),
+            "az://my-container/folder/orders.parquet"
+        );
+    }
+
+    #[test]
+    fn cloud_storage_requires_bucket() {
+        let cfg = ParquetConnectorConfig {
+            path: "orders.parquet".to_string(),
+            storage: StorageType::S3,
+            bucket: None,
+            ..Default::default()
+        };
+        assert!(cfg.uri().is_err());
+    }
+
+    #[test]
+    fn s3_storage_options_map_credentials() {
+        let cfg = ParquetConnectorConfig {
+            storage: StorageType::S3,
+            access_key_id: Some("AKIA".to_string()),
+            secret_access_key: Some("secret".to_string()),
+            region: Some("us-east-1".to_string()),
+            endpoint: Some("http://localhost:9000".to_string()),
+            ..Default::default()
+        };
+        let opts = cfg.storage_options();
+        assert_eq!(opts.get("aws_access_key_id"), Some(&"AKIA".to_string()));
+        assert_eq!(
+            opts.get("aws_secret_access_key"),
+            Some(&"secret".to_string())
+        );
+        assert_eq!(opts.get("aws_region"), Some(&"us-east-1".to_string()));
+        assert_eq!(
+            opts.get("aws_endpoint"),
+            Some(&"http://localhost:9000".to_string())
+        );
+    }
 }

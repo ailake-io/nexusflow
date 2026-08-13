@@ -56,7 +56,7 @@ fn run_worker(
 ) -> Result<(), NexusError> {
     let env = Environment::new().map_err(|e| NexusError::Connector(format!("odbc env: {e}")))?;
     let conn: Connection<'_> = env
-        .connect_with_connection_string(&config.connection_string, ConnectionOptions::default())
+        .connect_with_connection_string(&config.connection_string(), ConnectionOptions::default())
         .map_err(|e| NexusError::Connector(format!("odbc connect: {e}")))?;
 
     conn.set_autocommit(false)

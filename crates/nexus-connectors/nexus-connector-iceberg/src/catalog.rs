@@ -13,8 +13,8 @@ use std::sync::Arc;
 pub async fn connect(cfg: &IcebergConnectorConfig) -> Result<SqlCatalog, NexusError> {
     with_timeout(cfg.timeout_seconds, "iceberg catalog load", async {
         SqlCatalogBuilder::default()
-            .uri(&cfg.catalog_uri)
-            .warehouse_location(&cfg.warehouse_location)
+            .uri(cfg.catalog_uri())
+            .warehouse_location(cfg.warehouse_location())
             .sql_bind_style(SqlBindStyle::QMark)
             .with_storage_factory(Arc::new(LocalFsStorageFactory))
             .load("nexus", HashMap::new())
