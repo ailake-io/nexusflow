@@ -48,21 +48,45 @@ Single-binary NexusFlow server: REST/WebSocket API, embedded web UI,
 connector router (ADBC/Arrow Flight/bridging) and AI embedding pipeline.
 
 %install
-mkdir -p %{buildroot}/usr/lib/nexusflow %{buildroot}/usr/bin %{buildroot}/usr/share/applications %{buildroot}/usr/share/icons/hicolor/scalable/apps
+mkdir -p %{buildroot}/usr/lib/nexusflow %{buildroot}/usr/bin %{buildroot}/usr/share/applications %{buildroot}/usr/share/icons/hicolor/scalable/apps %{buildroot}/usr/lib/systemd/system %{buildroot}/var/lib/nexusflow %{buildroot}/etc/nexusflow
 install -m 755 $BIN %{buildroot}/usr/lib/nexusflow/nexusflow-bin
 install -m 755 $ADBC_DIR/libadbc_driver_postgresql.so %{buildroot}/usr/lib/nexusflow/
 install -m 755 $ADBC_DIR/libadbc_driver_sqlite.so %{buildroot}/usr/lib/nexusflow/
 install -m 755 $REPO_ROOT/packaging/linux/nexusflow-wrapper.sh %{buildroot}/usr/bin/nexusflow
 install -m 644 $REPO_ROOT/packaging/linux/nexusflow.desktop %{buildroot}/usr/share/applications/
+install -m 644 $REPO_ROOT/packaging/linux/nexusflow.service %{buildroot}/usr/lib/systemd/system/
 install -m 644 $REPO_ROOT/frontend/public/favicon.svg %{buildroot}/usr/share/icons/hicolor/scalable/apps/nexusflow.svg
 
+%post
+if ! id -u nexusflow >/dev/null 2>&1; then
+  useradd -r -m -d /var/lib/nexusflow -s /sbin/nologin nexusflow
+fi
+mkdir -p /var/lib/nexusflow /etc/nexusflow
+chown nexusflow:nexusflow /var/lib/nexusflow
+if [ ! -f /etc/nexusflow/nexusflow.env ]; then
+  cat > /etc/nexusflow/nexusflow.env <<'ENV'
+# NexusFlow environment configuration
+# NEXUS_JWT_SECRET=change-me
+# NEXUS_ENCRYPTION_KEY=change-me
+ENV
+  chmod 640 /etc/nexusflow/nexusflow.env
+  chown root:nexusflow /etc/nexusflow/nexusflow.env
+fi
+if [ -d /run/systemd/system ]; then
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  systemctl preset nexusflow.service >/dev/null 2>&1 || true
+fi
+
 %files
-/usr/lib/nexusflow/nexusflow-bin
-/usr/lib/nexusflow/libadbc_driver_postgresql.so
-/usr/lib/nexusflow/libadbc_driver_sqlite.so
-/usr/bin/nexusflow
-/usr/share/applications/nexusflow.desktop
-/usr/share/icons/hicolor/scalable/apps/nexusflow.svg
+%attr(755, root, root) /usr/lib/nexusflow/nexusflow-bin
+%attr(755, root, root) /usr/lib/nexusflow/libadbc_driver_postgresql.so
+%attr(755, root, root) /usr/lib/nexusflow/libadbc_driver_sqlite.so
+%attr(755, root, root) /usr/bin/nexusflow
+%attr(644, root, root) /usr/share/applications/nexusflow.desktop
+%attr(644, root, root) /usr/lib/systemd/system/nexusflow.service
+%attr(644, root, root) /usr/share/icons/hicolor/scalable/apps/nexusflow.svg
+%attr(750, nexusflow, nexusflow) %dir /var/lib/nexusflow
+%attr(750, root, nexusflow) %dir /etc/nexusflow
 EOF
 
 rpmbuild --define "_topdir $RPMBUILD_ROOT" -bb "$RPMBUILD_ROOT/SPECS/nexusflow.spec"

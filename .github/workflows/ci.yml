@@ -3,6 +3,8 @@ name: CI
 on:
   push:
     branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
   workflow_dispatch:
 
 permissions:
@@ -238,7 +240,7 @@ jobs:
         uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
           path: target/adbc
-          key: adbc-drivers-${{ runner.os }}-${{ hashFiles('scripts/build-adbc-postgresql-driver.sh', 'scripts/build-adbc-sqlite-driver.sh') }}
+          key: adbc-drivers-apache-arrow-adbc-24-${{ runner.os }}-${{ hashFiles('scripts/build-adbc-postgresql-driver.sh', 'scripts/build-adbc-sqlite-driver.sh') }}
 
       - name: Build ADBC drivers
         if: steps.adbc-cache.outputs.cache-hit != 'true'

@@ -21,21 +21,20 @@
 #   ./scripts/build-adbc-sqlite-driver.sh [OUT_DIR]
 #
 # Env:
-#   ADBC_ADBC_REF   git ref of apache/arrow-adbc to build (default: main)
+#   ADBC_ADBC_REF   git ref of apache/arrow-adbc to build (default pinned below)
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_DIR="${1:-$REPO_ROOT/target/adbc}"
-ADBC_REF="${ADBC_ADBC_REF:-main}"
+ADBC_REF="${ADBC_ADBC_REF:-apache-arrow-adbc-24}"
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 mkdir -p "$OUT_DIR"
 
 echo "==> cloning apache/arrow-adbc@${ADBC_REF} (shallow)"
-git clone --depth 1 --branch "$ADBC_REF" https://github.com/apache/arrow-adbc.git "$WORK_DIR/arrow-adbc" \
-  || git clone --depth 1 https://github.com/apache/arrow-adbc.git "$WORK_DIR/arrow-adbc"
+git clone --depth 1 --branch "$ADBC_REF" https://github.com/apache/arrow-adbc.git "$WORK_DIR/arrow-adbc"
 
 echo "==> configuring cmake"
 mkdir -p "$WORK_DIR/build"

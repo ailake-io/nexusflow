@@ -12,7 +12,7 @@
 # profile does not, keeping the base image small. This runtime stage is
 # functional today and ready for the day the CUDA EP is validated.
 
-ARG RUNTIME_IMAGE=ubuntu:24.04
+ARG RUNTIME_IMAGE=ubuntu:24.04@sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea
 # `docker build --build-arg FEATURES=embed-ui,connectors-all .` links every
 # optional connector (nexus-server/Cargo.toml) into the binary — default
 # stays embed-ui only, same size/behavior as before this arg existed. When
@@ -21,7 +21,7 @@ ARG RUNTIME_IMAGE=ubuntu:24.04
 # `zlib1g` if you hit a missing-.so at container start.
 ARG FEATURES=embed-ui
 
-FROM node:22-slim AS frontend
+FROM node:22-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 AS frontend
 WORKDIR /src/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
@@ -32,7 +32,7 @@ RUN npm run build
 # crates/nexus-connectors/nexus-connector-postgres/src/driver.rs) — built
 # here from apache/arrow-adbc source, same as scripts/build-adbc-*.sh do for
 # local dev and CI (.github/workflows/ci.yml's `test` job).
-FROM debian:bookworm-slim AS adbc
+FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241 AS adbc
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git ca-certificates cmake make g++ pkg-config libpq-dev libsqlite3-dev libfmt-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -41,7 +41,7 @@ COPY scripts/build-adbc-postgresql-driver.sh scripts/build-adbc-sqlite-driver.sh
 RUN scripts/build-adbc-postgresql-driver.sh /out \
  && scripts/build-adbc-sqlite-driver.sh /out
 
-FROM rust:1-slim-trixie AS builder
+FROM rust:1-slim-trixie@sha256:8e8cf8f7fd54a2d23d5a743b3a03f56e26b6c774276c33fa0595111704ebb15c AS builder
 ARG FEATURES
 # Trixie gives us glibc/libstdc++ new enough to link the prebuilt ONNX
 # Runtime that ort-sys pulls in when the `embeddings` feature is enabled.

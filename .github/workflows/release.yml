@@ -181,8 +181,11 @@ jobs:
             exit 1
           fi
           if ! command -v appimagetool >/dev/null; then
+            # Pinned to the continuous release's SHA-256; verify before use (M34).
+            APP_IMAGE_SHA256="a6d71e2b6cd66f8e8d16c37ad164658985e0cf5fcaa950c90a482890cb9d13e0"
             curl -fL -o /tmp/appimagetool \
               https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+            echo "$APP_IMAGE_SHA256  /tmp/appimagetool" | sha256sum -c -
             chmod +x /tmp/appimagetool
             APPIMAGETOOL="/tmp/appimagetool --appimage-extract-and-run"
           fi
