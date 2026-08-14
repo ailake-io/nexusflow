@@ -39,6 +39,12 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  useEffect(() => {
+    if (typeof document !== 'undefined') {
+      document.documentElement.lang = language
+    }
+  }, [language])
+
   const t = (key: string, vars?: Record<string, string | number>): string => {
     const messages = translations[language] as Record<string, unknown>
     let value = getNestedValue(messages, key)

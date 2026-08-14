@@ -6,7 +6,6 @@ import {
   type DagNode,
   type EmbeddingNodeData,
   type PipelineMeta,
-  type TransformNodeData,
 } from './dag'
 
 function sourceNode(overrides: Partial<ConnectorNodeData> = {}): DagNode {
