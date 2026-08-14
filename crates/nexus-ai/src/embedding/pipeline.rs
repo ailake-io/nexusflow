@@ -36,7 +36,7 @@ impl EmbeddingBackend {
                 let texts = texts.to_vec();
                 tokio::task::spawn_blocking(move || model.embed_batch(&texts))
                     .await
-                    .map_err(|e| EmbeddingError::Inference(e.to_string()))?
+                    .map_err(|e| EmbeddingError::Ort(e.to_string()))?
             }
             #[cfg(feature = "api")]
             EmbeddingBackend::Api(model) => model.embed_batch(texts).await,

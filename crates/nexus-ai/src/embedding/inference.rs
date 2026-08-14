@@ -58,7 +58,9 @@ pub struct EmbeddingModelConfig {
 /// ARCHITECTURE.md §4.3/§8 — chunking and embedding are pure/no-I/O once
 /// the model is loaded; only `load` itself does I/O (download + cache).
 pub struct EmbeddingModel {
-    session: Session,
+    // Mutex allows `embed_batch` to take `&self` while `ort::Session::run`
+    // requires `&mut self`; the lock is held only for the forward pass.
+    session: std::sync::Mutex<Session>,
     tokenizer: Tokenizer,
     dimension: usize,
     max_length: usize,
@@ -80,7 +82,7 @@ impl EmbeddingModel {
         let session = builder.commit_from_file(&model_path).map_err(ort_err)?;
 
         Ok(Self {
-            session,
+            session: std::sync::Mutex::new(session),
             tokenizer,
             dimension: cfg.dimension,
             max_length: cfg.max_length,
@@ -131,8 +133,11 @@ impl EmbeddingModel {
             Tensor::from_array((shape, attention_mask.clone())).map_err(ort_err)?;
         let token_type_ids_tensor = Tensor::from_array((shape, token_type_ids)).map_err(ort_err)?;
 
-        let outputs = self
+        let mut session = self
             .session
+            .lock()
+            .map_err(|e| EmbeddingError::Ort(e.to_string()))?;
+        let outputs = session
             .run(ort::inputs![
                 "input_ids" => input_ids_tensor,
                 "attention_mask" => attention_mask_tensor,
