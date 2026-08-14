@@ -428,7 +428,7 @@ fn new_empty_array(data_type: &DataType) -> Result<ArrayRef, EmbeddingError> {
             let values = new_empty_array(field.data_type())?;
             Arc::new(
                 FixedSizeListArray::try_new(field.clone(), *size, values, None)
-                    .map_err(|e| EmbeddingError::Arrow(e))?,
+                    .map_err(EmbeddingError::Arrow)?,
             ) as ArrayRef
         }
         other => {

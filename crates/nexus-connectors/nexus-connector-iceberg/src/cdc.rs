@@ -73,6 +73,7 @@ impl From<IcebergCdcConfigAsBatch<'_>> for crate::config::IcebergConnectorConfig
             table_name: cfg.table_name.clone(),
             storage_options: cfg.storage_options.clone(),
             format_version: Default::default(),
+            primary_key: None,
             timeout_seconds: cfg.timeout_seconds,
         }
     }
