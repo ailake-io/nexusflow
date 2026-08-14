@@ -1391,7 +1391,11 @@ pub async fn run() -> anyhow::Result<()> {
 
     let app = router(state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
+    let port: u16 = std::env::var("NEXUS_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8080);
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
     tracing::info!(%addr, "nexus-server listening");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
