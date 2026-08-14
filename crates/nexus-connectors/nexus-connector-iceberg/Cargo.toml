@@ -17,6 +17,7 @@ cdc = []
 [dependencies]
 arrow-array = "58.4.0"
 arrow-schema = "58.4.0"
+arrow-select = "58.4.0"
 async-trait = "0.1.91"
 futures = "0.3.33"
 iceberg = "0.10.0"
