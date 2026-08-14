@@ -91,7 +91,7 @@ impl EmbeddingModel {
     /// input text (mean-pooled over token embeddings when the model outputs
     /// per-token hidden states; used as-is when it already outputs a single
     /// pooled vector per input).
-    pub fn embed_batch(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+    pub fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
         if texts.is_empty() {
             return Ok(Vec::new());
         }

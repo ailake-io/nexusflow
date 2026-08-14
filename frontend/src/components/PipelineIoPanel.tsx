@@ -151,7 +151,7 @@ export function PipelineIoPanel({
           <Input
             id="schedule"
             value={meta.schedule ?? ''}
-            placeholder="ex.: 0 */6 * * *"
+            placeholder={t('ioPanel.schedulePlaceholder')}
             onChange={(e) => onMetaChange({ ...meta, schedule: e.target.value })}
             className="mt-1.5 w-52"
           />

@@ -212,9 +212,25 @@ jobs:
   # present there. Re-add once that's done — see git history for the full
   # job definition (last present as of this commit's parent).
 
+  smoke-test:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    needs: build
+    runs-on: [self-hosted, Linux]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@65a9edc5881444af0b9093a5e628f2fe47ea3b2e # v4.1.7
+        with:
+          name: nexusflow-linux-x86_64
+          path: dist
+      - name: Smoke test tarball
+        run: |
+          cd dist
+          tar -xzf nexusflow-linux-x86_64.tar.gz
+          ./nexusflow-bin --version
+
   github-release:
     if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
-    needs: build
+    needs: [build, smoke-test]
     runs-on: [self-hosted, Linux]
     # Self-hosted Linux (same machine as everything else here) — hosted
     # ubuntu-latest is blocked account-wide by the billing issue described in

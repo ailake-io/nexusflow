@@ -28,6 +28,7 @@ function statusVariant(status: 'running' | 'success' | 'failed' | null) {
 }
 
 function NodeBadge({ node }: { node: NodeSummary }) {
+  const { t } = useI18n()
   return (
     <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-xs">
       <Database className="h-3 w-3 text-muted-foreground" />
@@ -38,7 +39,7 @@ function NodeBadge({ node }: { node: NodeSummary }) {
        * here except this mask, there's no plaintext to accidentally leak. */}
       <span
         className="text-muted-foreground"
-        title="connector config is never exposed once saved"
+        title={t('pipelines.configMaskHint')}
       >
         ••••
       </span>

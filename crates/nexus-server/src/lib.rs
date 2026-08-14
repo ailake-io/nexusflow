@@ -483,7 +483,7 @@ pub(crate) async fn start_pipeline_run(
     // still show up in `GET /pipelines/{id}/runs`, same as always-persisted
     // ones.
     let run_id = state.pipelines.start_run(&spec.pipeline_id).await?;
-    let (progress_tx, log_tx) = state.progress.start(run_id);
+    let (progress_tx, log_tx) = state.progress.start(run_id).await;
     let logger = RunLogger::new(run_id, log_tx, state.run_logs.clone());
 
     let supervisor = state.clone();
@@ -532,7 +532,7 @@ async fn execute_pipeline_run(
         Some(&logger),
     )
     .await;
-    state.progress.finish(run_id);
+    state.progress.finish(run_id).await;
 
     match result {
         Ok(stats) => {
@@ -1069,6 +1069,7 @@ async fn authorize_progress_subscription(
     state
         .progress
         .subscribe(run_id)
+        .await
         .ok_or_else(|| ApiError::not_found(format!("run {run_id} not found or already finished")))
 }
 
@@ -1390,7 +1391,11 @@ pub async fn run() -> anyhow::Result<()> {
 
     let app = router(state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
+    let port: u16 = std::env::var("NEXUS_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8080);
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
     tracing::info!(%addr, "nexus-server listening");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -2600,7 +2605,7 @@ mod tests {
         let err = anyhow::anyhow!(
             "ADBC error: failed to connect to postgres://admin:s3cret@db.internal:5432/app: timeout"
         );
-        let (_progress_tx, log_tx) = state.progress.start(run_id);
+        let (_progress_tx, log_tx) = state.progress.start(run_id).await;
         let logger = RunLogger::new(run_id, log_tx, state.run_logs.clone());
         record_run_failure(&state, run_id, "p1", &err, &logger).await;
 
@@ -2640,7 +2645,7 @@ mod tests {
         let token = bearer(&state, Role::Read);
         let token = token.strip_prefix("Bearer ").unwrap();
         let run_id = state.pipelines.start_run("p1").await.unwrap();
-        let (tx, _log_tx) = state.progress.start(run_id);
+        let (tx, _log_tx) = state.progress.start(run_id).await;
 
         let (mut rx, _log_rx) = authorize_progress_subscription(&state, token, run_id)
             .await
@@ -2663,8 +2668,8 @@ mod tests {
         let token = bearer(&state, Role::Read);
         let token = token.strip_prefix("Bearer ").unwrap();
         let run_id = state.pipelines.start_run("p1").await.unwrap();
-        state.progress.start(run_id);
-        state.progress.finish(run_id);
+        state.progress.start(run_id).await;
+        state.progress.finish(run_id).await;
 
         let err = authorize_progress_subscription(&state, token, run_id)
             .await
@@ -2688,7 +2693,7 @@ mod tests {
         let token = bearer(&state, Role::Read);
         let token = token.strip_prefix("Bearer ").unwrap().to_string();
         let run_id = state.pipelines.start_run("p1").await.unwrap();
-        let (tx, _log_tx) = state.progress.start(run_id);
+        let (tx, _log_tx) = state.progress.start(run_id).await;
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();

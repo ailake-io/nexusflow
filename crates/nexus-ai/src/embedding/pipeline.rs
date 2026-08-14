@@ -7,6 +7,9 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use nexus_core::{ChunkingSpec, EmbeddingModelSpec, EmbeddingSpec};
 use std::sync::Arc;
 
+#[cfg(feature = "cpu")]
+use crate::embedding::EmbeddingModel;
+
 /// A loaded embedding backend that can embed multiple batches without
 /// reloading the model/session each time. Created once per pipeline run via
 /// [`load_embedding_backend`] and reused across every batch of that run.
@@ -18,17 +21,23 @@ pub enum EmbeddingBackend {
     // value to be sized for the larger one regardless of which is active
     // (clippy::large_enum_variant, real with cpu+api both compiled in).
     #[cfg(feature = "cpu")]
-    Onnx(Box<crate::embedding::EmbeddingModel>),
+    Onnx(Arc<EmbeddingModel>),
     #[cfg(feature = "api")]
     Api(crate::embedding::ApiEmbeddingModel),
 }
 
 #[cfg(any(feature = "cpu", feature = "api"))]
 impl EmbeddingBackend {
-    pub async fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+    pub async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
         match self {
             #[cfg(feature = "cpu")]
-            EmbeddingBackend::Onnx(model) => model.embed_batch(texts),
+            EmbeddingBackend::Onnx(model) => {
+                let model = Arc::clone(model);
+                let texts = texts.to_vec();
+                tokio::task::spawn_blocking(move || model.embed_batch(&texts))
+                    .await
+                    .map_err(|e| EmbeddingError::Inference(e.to_string()))?
+            }
             #[cfg(feature = "api")]
             EmbeddingBackend::Api(model) => model.embed_batch(texts).await,
         }
@@ -63,8 +72,8 @@ pub async fn load_embedding_backend(
                 dimension: spec.dimension,
                 max_length: *max_length,
             };
-            let model = crate::embedding::EmbeddingModel::load(&model_cfg).await?;
-            Ok(EmbeddingBackend::Onnx(Box::new(model)))
+            let model = EmbeddingModel::load(&model_cfg).await?;
+            Ok(EmbeddingBackend::Onnx(Arc::new(model)))
         }
         #[cfg(not(feature = "cpu"))]
         EmbeddingModelSpec::Onnx { .. } => Err(EmbeddingError::UnsupportedBackend(
@@ -100,7 +109,7 @@ pub async fn load_embedding_backend(
 pub async fn apply_embedding(
     batch: &RecordBatch,
     spec: &EmbeddingSpec,
-    backend: &mut EmbeddingBackend,
+    backend: &EmbeddingBackend,
 ) -> Result<RecordBatch, EmbeddingError> {
     let source_idx = batch.schema().index_of(&spec.source_column).map_err(|_| {
         EmbeddingError::Arrow(arrow_schema::ArrowError::InvalidArgumentError(format!(
@@ -577,8 +586,7 @@ mod tests {
             },
         };
 
-        let mut backend = backend;
-        let out = apply_embedding(&batch, &spec, &mut backend).await.unwrap();
+        let out = apply_embedding(&batch, &spec, &backend).await.unwrap();
 
         // Row with NULL text is dropped; the other two rows produce one chunk
         // each.

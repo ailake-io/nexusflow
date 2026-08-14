@@ -39,6 +39,13 @@ function flagFor(p: PipelineSummary): FlagColor {
   return 'gray'
 }
 
+function statusLabelKey(color: FlagColor): 'success' | 'running' | 'failed' | 'scheduled' {
+  if (color === 'green') return 'success'
+  if (color === 'yellow') return 'running'
+  if (color === 'red') return 'failed'
+  return 'scheduled'
+}
+
 /**
  * Dashboard tab: every saved pipeline at a glance — one colored flag per
  * row (green/yellow/red/gray) instead of the detailed connector badges the
@@ -50,8 +57,33 @@ export function PipelineStatusBoard() {
   const { pipelines, loading, error, refresh } = usePipelines()
 
   useEffect(() => {
-    const id = setInterval(refresh, POLL_INTERVAL_MS)
-    return () => clearInterval(id)
+    let id: ReturnType<typeof setInterval> | null = null
+
+    function start() {
+      id = setInterval(refresh, POLL_INTERVAL_MS)
+    }
+
+    function stop() {
+      if (id !== null) {
+        clearInterval(id)
+        id = null
+      }
+    }
+
+    function handleVisibility() {
+      if (document.hidden) {
+        stop()
+      } else {
+        start()
+      }
+    }
+
+    start()
+    document.addEventListener('visibilitychange', handleVisibility)
+    return () => {
+      stop()
+      document.removeEventListener('visibilitychange', handleVisibility)
+    }
   }, [refresh])
 
   const counts = pipelines.reduce(
@@ -75,8 +107,7 @@ export function PipelineStatusBoard() {
           {flagOrder.map((color) => {
             const config = FLAG_CONFIG[color]
             const Icon = config.icon
-            const labelKey: 'success' | 'running' | 'failed' | 'scheduled' =
-              color === 'green' ? 'success' : color === 'yellow' ? 'running' : color === 'red' ? 'failed' : 'scheduled'
+            const labelKey = statusLabelKey(color)
             return (
               <div
                 key={color}
@@ -128,14 +159,7 @@ export function PipelineStatusBoard() {
               {pipelines.map((p) => {
                 const color = flagFor(p)
                 const config = FLAG_CONFIG[color]
-                const labelKey: 'success' | 'running' | 'failed' | 'scheduled' =
-                  color === 'green'
-                    ? 'success'
-                    : color === 'yellow'
-                      ? 'running'
-                      : color === 'red'
-                        ? 'failed'
-                        : 'scheduled'
+                const labelKey = statusLabelKey(color)
                 return (
                   <tr key={p.pipeline_id} className="transition-colors hover:bg-white/[0.02]">
                     <td className="px-4 py-3">

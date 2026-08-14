@@ -3,8 +3,8 @@ use chrono::{DateTime, Utc};
 use nexus_core::{ProgressEvent, ProgressSender};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use tokio::sync::broadcast;
+use std::sync::Arc;
+use tokio::sync::{broadcast, Mutex};
 
 /// Severity of one execution log line — kept to 3 levels (no `Debug`/`Trace`)
 /// since these are user-facing narration of a pipeline run, not developer
@@ -113,17 +113,17 @@ pub struct ProgressHub {
 const CHANNEL_CAPACITY: usize = 256;
 
 impl ProgressHub {
-    pub fn start(&self, run_id: i64) -> (ProgressSender, LogSender) {
+    pub async fn start(&self, run_id: i64) -> (ProgressSender, LogSender) {
         let (ptx, _) = broadcast::channel(CHANNEL_CAPACITY);
         let (ltx, _) = broadcast::channel(CHANNEL_CAPACITY);
         self.channels
             .lock()
-            .unwrap()
+            .await
             .insert(run_id, (ptx.clone(), ltx.clone()));
         (ptx, ltx)
     }
 
-    pub fn subscribe(
+    pub async fn subscribe(
         &self,
         run_id: i64,
     ) -> Option<(
@@ -132,13 +132,13 @@ impl ProgressHub {
     )> {
         self.channels
             .lock()
-            .unwrap()
+            .await
             .get(&run_id)
             .map(|(ptx, ltx)| (ptx.subscribe(), ltx.subscribe()))
     }
 
-    pub fn finish(&self, run_id: i64) {
-        self.channels.lock().unwrap().remove(&run_id);
+    pub async fn finish(&self, run_id: i64) {
+        self.channels.lock().await.remove(&run_id);
     }
 }
 
@@ -146,17 +146,17 @@ impl ProgressHub {
 mod tests {
     use super::*;
 
-    #[test]
-    fn subscribe_before_start_returns_none() {
+    #[tokio::test]
+    async fn subscribe_before_start_returns_none() {
         let hub = ProgressHub::default();
-        assert!(hub.subscribe(1).is_none());
+        assert!(hub.subscribe(1).await.is_none());
     }
 
     #[tokio::test]
     async fn subscriber_receives_events_sent_after_start() {
         let hub = ProgressHub::default();
-        let (tx, _log_tx) = hub.start(1);
-        let (mut rx, _log_rx) = hub.subscribe(1).unwrap();
+        let (tx, _log_tx) = hub.start(1).await;
+        let (mut rx, _log_rx) = hub.subscribe(1).await.unwrap();
 
         tx.send(ProgressEvent {
             partition_id: "p0".to_string(),
@@ -174,8 +174,8 @@ mod tests {
     #[tokio::test]
     async fn log_subscriber_receives_log_events_sent_after_start() {
         let hub = ProgressHub::default();
-        let (_tx, log_tx) = hub.start(1);
-        let (_rx, mut log_rx) = hub.subscribe(1).unwrap();
+        let (_tx, log_tx) = hub.start(1).await;
+        let (_rx, mut log_rx) = hub.subscribe(1).await.unwrap();
 
         log_tx
             .send(RunLogEvent {
@@ -189,20 +189,20 @@ mod tests {
         assert_eq!(event.message, "hello");
     }
 
-    #[test]
-    fn subscribe_after_finish_returns_none() {
+    #[tokio::test]
+    async fn subscribe_after_finish_returns_none() {
         let hub = ProgressHub::default();
-        hub.start(1);
-        hub.finish(1);
-        assert!(hub.subscribe(1).is_none());
+        hub.start(1).await;
+        hub.finish(1).await;
+        assert!(hub.subscribe(1).await.is_none());
     }
 
     #[tokio::test]
     async fn multiple_subscribers_each_get_every_event() {
         let hub = ProgressHub::default();
-        let (tx, _log_tx) = hub.start(1);
-        let (mut rx_a, _) = hub.subscribe(1).unwrap();
-        let (mut rx_b, _) = hub.subscribe(1).unwrap();
+        let (tx, _log_tx) = hub.start(1).await;
+        let (mut rx_a, _) = hub.subscribe(1).await.unwrap();
+        let (mut rx_b, _) = hub.subscribe(1).await.unwrap();
 
         tx.send(ProgressEvent {
             partition_id: "p0".to_string(),

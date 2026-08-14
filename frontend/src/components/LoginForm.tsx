@@ -44,15 +44,8 @@ export function LoginForm() {
 
         <div className="relative z-10 max-w-sm">
           <h2 className="text-3xl font-semibold tracking-tight text-foreground">
-            {t('auth.headline')
-              .split(/(visually|visualmente)/i)
-              .map((part, i) =>
-                /^(visually|visualmente)$/i.test(part) ? (
-                  <span key={i} className="text-primary">{part}</span>
-                ) : (
-                  part
-                ),
-              )}
+            {t('auth.headlinePrefix')}
+            <span className="text-primary">{t('auth.headlineHighlight')}</span>
           </h2>
           <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
             {t('auth.subheadline')}

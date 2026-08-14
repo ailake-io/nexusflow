@@ -292,7 +292,7 @@ impl PipelineStore {
             "SELECT p.spec_ciphertext, p.created_at, p.updated_at, r.status, r.started_at \
              FROM pipelines p LEFT JOIN pipeline_runs r ON r.id = ( \
                  SELECT id FROM pipeline_runs WHERE pipeline_id = p.id \
-                 ORDER BY started_at DESC LIMIT 1 \
+                 ORDER BY id DESC LIMIT 1 \
              ) WHERE p.id = ?",
         );
         let row: Option<SummaryRow> = match &self.pool {
@@ -359,7 +359,7 @@ impl PipelineStore {
             "SELECT p.spec_ciphertext, p.created_at, p.updated_at, r.status, r.started_at \
              FROM pipelines p LEFT JOIN pipeline_runs r ON r.id = ( \
                  SELECT id FROM pipeline_runs WHERE pipeline_id = p.id \
-                 ORDER BY started_at DESC LIMIT 1 \
+                 ORDER BY id DESC LIMIT 1 \
              ) ORDER BY p.created_at LIMIT ? OFFSET ?",
         );
         let rows: Vec<SummaryRow> = match &self.pool {
@@ -564,7 +564,7 @@ impl PipelineStore {
         let sql = self.q(
             "SELECT id, pipeline_id, started_at, finished_at, status, error, stats_json, \
                  dbt_summary_json FROM pipeline_runs WHERE pipeline_id = ? \
-                 ORDER BY started_at DESC LIMIT ? OFFSET ?",
+                 ORDER BY id DESC LIMIT ? OFFSET ?",
         );
         let rows: Vec<RunRow> = match &self.pool {
             MetadataPool::Sqlite(p) => {
