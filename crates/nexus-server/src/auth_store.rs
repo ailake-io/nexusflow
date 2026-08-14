@@ -16,9 +16,7 @@ fn validate_username(username: &str) -> anyhow::Result<()> {
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
     {
-        anyhow::bail!(
-            "username must only contain ASCII letters, digits, '_' or '-'"
-        );
+        anyhow::bail!("username must only contain ASCII letters, digits, '_' or '-'");
     }
     Ok(())
 }
@@ -139,10 +137,8 @@ impl AuthStore {
             .ok_or_else(|| anyhow::anyhow!("Role serializes to a string"))?
             .to_string();
 
-        let sql = self.q(
-            "INSERT INTO users (username, password_hash, role) \
-             SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM users)",
-        );
+        let sql = self.q("INSERT INTO users (username, password_hash, role) \
+             SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM users)");
         match &self.pool {
             MetadataPool::Sqlite(p) => {
                 sqlx::query(sqlx::AssertSqlSafe(sql))

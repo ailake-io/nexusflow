@@ -54,7 +54,9 @@ pub fn split_by_opcode(batch: &RecordBatch) -> Result<Option<CdcSplit>, NexusErr
     // A null opcode is ambiguous (not insert/update/delete) and masks corrupt
     // CDC data — fail loudly instead of silently dropping the row.
     if (0..opcode_col.len()).any(|i| opcode_col.is_null(i)) {
-        return Err(NexusError::Schema(format!("{OPCODE_COLUMN} cannot be null")));
+        return Err(NexusError::Schema(format!(
+            "{OPCODE_COLUMN} cannot be null"
+        )));
     }
 
     // Reject unknown opcodes instead of treating them as upserts (M08).
