@@ -1,7 +1,11 @@
 use crate::catalog;
 use crate::config::{IcebergConnectorConfig, IcebergFormatVersion};
-use arrow_array::RecordBatch;
+use arrow_array::{
+    Array, BooleanArray, Int32Array, Int64Array, RecordBatch, StringArray, UInt32Array, UInt64Array,
+};
+use arrow_select::filter::filter;
 use async_trait::async_trait;
+use futures::{StreamExt, TryStreamExt};
 use iceberg::arrow::{arrow_schema_to_schema_auto_assign_ids, schema_to_arrow_schema};
 use iceberg::spec::{DataFileFormat, FormatVersion};
 use iceberg::transaction::{ApplyTransactionAction, Transaction};
@@ -15,7 +19,7 @@ use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
 use iceberg::{Catalog, NamespaceIdent, TableCreation, TableIdent};
 use nexus_core::{split_by_opcode, with_timeout, CheckpointCursor, NexusError, Sink};
 use parquet::file::properties::WriterProperties;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Iceberg sink (Marco 6 — `iceberg` crate + `iceberg-catalog-sql`).
@@ -104,6 +108,11 @@ impl IcebergSink {
                 .map_err(|e| NexusError::Connector(format!("iceberg create_table failed: {e}")))?
         };
 
+        let batch = self.dedup_against_existing(&table, batch).await?;
+        if batch.num_rows() == 0 {
+            return Ok(());
+        }
+
         // The writer matches columns to the table's Iceberg schema by field
         // id, stamped as Parquet field-id metadata on each Arrow field — not
         // by position. Our caller's batch has no such metadata (it didn't
@@ -165,6 +174,56 @@ impl IcebergSink {
             .map_err(|e| NexusError::Connector(format!("iceberg commit failed: {e}")))?;
         Ok(())
     }
+
+    /// When `primary_key` is configured, drop rows whose key already exists in
+    /// the current table snapshot. This makes Iceberg appends idempotent and
+    /// prevents duplicate lines on retry/resume (A01).
+    ///
+    /// **Cost:** scans the entire current snapshot on every write call, so it
+    /// trades memory/CPU for idempotency. For very large tables prefer a
+    /// dedicated merge-on-read pipeline once iceberg-rust exposes equality
+    /// deletes.
+    async fn dedup_against_existing(
+        &self,
+        table: &iceberg::table::Table,
+        batch: RecordBatch,
+    ) -> Result<RecordBatch, NexusError> {
+        let pk_name = match self.cfg.primary_key.as_deref() {
+            None | Some("") => return Ok(batch),
+            Some(name) => name,
+        };
+
+        let scan = table
+            .scan()
+            .select_all()
+            .build()
+            .map_err(|e| NexusError::Connector(format!("iceberg dedup scan build failed: {e}")))?;
+        let stream = with_timeout(
+            self.cfg.timeout_seconds,
+            "iceberg dedup scan to_arrow",
+            async {
+                scan.to_arrow()
+                    .await
+                    .map_err(|e| NexusError::Connector(format!("iceberg dedup scan failed: {e}")))
+            },
+        )
+        .await?;
+        let batches: Vec<RecordBatch> = stream
+            .map(|r| {
+                r.map_err(|e| NexusError::Connector(format!("iceberg dedup scan read failed: {e}")))
+            })
+            .try_collect()
+            .await?;
+
+        let mut existing = HashSet::new();
+        for existing_batch in &batches {
+            for key in extract_key_strings(existing_batch, pk_name)? {
+                existing.insert(key);
+            }
+        }
+
+        filter_batch_by_pk(batch, pk_name, &existing)
+    }
 }
 
 #[async_trait]
@@ -188,4 +247,78 @@ impl Sink for IcebergSink {
     async fn commit_checkpoint(&mut self, _cursor: CheckpointCursor) -> Result<(), NexusError> {
         Ok(())
     }
+}
+
+/// Extract every non-null value of the named primary-key column as a `String`,
+/// regardless of its Arrow type. Composite keys are not supported yet.
+fn extract_key_strings(batch: &RecordBatch, pk_name: &str) -> Result<Vec<String>, NexusError> {
+    let col = batch
+        .column_by_name(pk_name)
+        .ok_or_else(|| NexusError::Schema(format!("primary_key column '{pk_name}' not found")))?;
+    Ok(string_values(col))
+}
+
+fn string_values(array: &dyn Array) -> Vec<String> {
+    use arrow_array::LargeStringArray;
+    if let Some(a) = array.as_any().downcast_ref::<StringArray>() {
+        (0..a.len())
+            .filter(|&i| a.is_valid(i))
+            .map(|i| a.value(i).to_string())
+            .collect()
+    } else if let Some(a) = array.as_any().downcast_ref::<LargeStringArray>() {
+        (0..a.len())
+            .filter(|&i| a.is_valid(i))
+            .map(|i| a.value(i).to_string())
+            .collect()
+    } else if let Some(a) = array.as_any().downcast_ref::<Int32Array>() {
+        (0..a.len())
+            .filter(|&i| a.is_valid(i))
+            .map(|i| a.value(i).to_string())
+            .collect()
+    } else if let Some(a) = array.as_any().downcast_ref::<Int64Array>() {
+        (0..a.len())
+            .filter(|&i| a.is_valid(i))
+            .map(|i| a.value(i).to_string())
+            .collect()
+    } else if let Some(a) = array.as_any().downcast_ref::<UInt32Array>() {
+        (0..a.len())
+            .filter(|&i| a.is_valid(i))
+            .map(|i| a.value(i).to_string())
+            .collect()
+    } else if let Some(a) = array.as_any().downcast_ref::<UInt64Array>() {
+        (0..a.len())
+            .filter(|&i| a.is_valid(i))
+            .map(|i| a.value(i).to_string())
+            .collect()
+    } else {
+        vec![]
+    }
+}
+
+/// Keep only rows whose primary-key value is **not** already in `existing`.
+fn filter_batch_by_pk(
+    batch: RecordBatch,
+    pk_name: &str,
+    existing: &HashSet<String>,
+) -> Result<RecordBatch, NexusError> {
+    let pk_col = batch
+        .column_by_name(pk_name)
+        .ok_or_else(|| NexusError::Schema(format!("primary_key column '{pk_name}' not found")))?;
+    let keep: Vec<bool> = string_values(pk_col.as_ref())
+        .into_iter()
+        .map(|key| !existing.contains(&key))
+        .collect();
+    let mask = BooleanArray::from(keep);
+
+    let filtered_columns: Vec<arrow_array::ArrayRef> = batch
+        .columns()
+        .iter()
+        .map(|col| {
+            filter(col, &mask)
+                .map_err(|e| NexusError::Schema(format!("iceberg dedup filter failed: {e}")))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    RecordBatch::try_new(batch.schema(), filtered_columns)
+        .map_err(|e| NexusError::Schema(format!("iceberg dedup batch rebuild failed: {e}")))
 }

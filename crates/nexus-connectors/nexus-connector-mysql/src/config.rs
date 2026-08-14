@@ -58,6 +58,13 @@ pub struct MySqlCdcConfig {
     /// current end of the binlog.
     #[serde(default)]
     pub binlog_position: Option<u32>,
+    /// Maximum number of change events to collect in a single run. After this
+    /// many events the source ends cleanly, letting the run finish and the
+    /// scheduler start the next micro-batch. The MySQL replication stream
+    /// resumes from the last binlog position, so the next run picks up where
+    /// this one left off.
+    #[serde(default = "default_max_batch_events")]
+    pub max_batch_events: u64,
 }
 
 impl MySqlCdcConfig {
@@ -87,6 +94,10 @@ fn default_port() -> u16 {
 
 fn default_server_id() -> u32 {
     65535
+}
+
+fn default_max_batch_events() -> u64 {
+    1000
 }
 
 /// Minimal percent-encoding helper for connection-string components.
@@ -143,6 +154,7 @@ mod tests {
             fields: vec![],
             binlog_filename: None,
             binlog_position: None,
+            max_batch_events: 1000,
         };
         assert_eq!(cfg.connection_string(), "mysql://legacy");
     }
@@ -161,6 +173,7 @@ mod tests {
             fields: vec![],
             binlog_filename: None,
             binlog_position: None,
+            max_batch_events: 1000,
         };
         assert_eq!(
             cfg.connection_string(),

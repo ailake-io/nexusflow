@@ -9,3 +9,5 @@
 # workspace's own CI checks.
 crates/nexus-connectors/target
 graphify-out/
+.agents/
+skills-lock.json

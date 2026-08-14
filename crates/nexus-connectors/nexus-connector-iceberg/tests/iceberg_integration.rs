@@ -34,6 +34,7 @@ fn test_cfg(dir: &std::path::Path, format_version: IcebergFormatVersion) -> Iceb
         table_name: None,
         storage_options: Default::default(),
         format_version,
+        primary_key: None,
         timeout_seconds: 30,
     }
 }
@@ -149,4 +150,55 @@ async fn cdc_delete_batches_are_rejected_not_silently_dropped() {
         msg.contains("not supported"),
         "expected a clear 'not supported' error, got: {msg}"
     );
+}
+
+#[tokio::test]
+async fn primary_key_dedup_prevents_duplicates_on_retry() {
+    let dir = tempfile::tempdir().expect("tempdir creates");
+    let mut cfg = test_cfg(dir.path(), IcebergFormatVersion::V2);
+    cfg.primary_key = Some("id".to_string());
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("status", DataType::Utf8, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int64Array::from(vec![1, 2, 3])),
+            Arc::new(StringArray::from(vec!["a", "b", "c"])),
+        ],
+    )
+    .unwrap();
+
+    let mut sink = IcebergSink::connect(&cfg).expect("sink connects");
+    sink.write_batch(batch).await.expect("writes first batch");
+
+    // Retry with overlapping keys plus one new row: only row 4 should be
+    // appended because 1/2/3 already exist.
+    let retry = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int64Array::from(vec![1, 2, 3, 4])),
+            Arc::new(StringArray::from(vec!["a2", "b2", "c2", "d"])),
+        ],
+    )
+    .unwrap();
+    sink.write_batch(retry).await.expect("writes retry batch");
+
+    let mut source = IcebergSource::connect(&cfg).await.expect("source connects");
+    let mut stream = source.read_batches().await.expect("reads batches");
+    let mut ids = Vec::new();
+    while let Some(batch) = stream.next().await {
+        let batch = batch.expect("batch reads ok");
+        let id_col = batch
+            .column(batch.schema().index_of("id").unwrap())
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap()
+            .clone();
+        ids.extend((0..id_col.len()).map(|i| id_col.value(i)));
+    }
+    ids.sort();
+    assert_eq!(ids, vec![1, 2, 3, 4], "duplicate PK rows must be dropped");
 }

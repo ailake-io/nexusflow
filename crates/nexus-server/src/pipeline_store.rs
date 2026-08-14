@@ -491,6 +491,31 @@ impl PipelineStore {
         Ok(())
     }
 
+    /// Returns true if there is at least one run for `pipeline_id` whose
+    /// status is still `'running'`. Used by the manual run handler to reject
+    /// overlapping manual runs with 409 Conflict (A02); the scheduler already
+    /// avoids overlap on its own, so this check is only applied there.
+    pub async fn has_running_run(&self, pipeline_id: &str) -> Result<bool, PipelineStoreError> {
+        let sql = self.q(
+            "SELECT 1 FROM pipeline_runs WHERE pipeline_id = ? AND status = 'running' LIMIT 1",
+        );
+        let row: Option<(i32,)> = match &self.pool {
+            MetadataPool::Sqlite(p) => {
+                sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .bind(pipeline_id)
+                    .fetch_optional(p)
+                    .await?
+            }
+            MetadataPool::Postgres(p) => {
+                sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .bind(pipeline_id)
+                    .fetch_optional(p)
+                    .await?
+            }
+        };
+        Ok(row.is_some())
+    }
+
     /// Boot-time reaper: any run still marked 'running' when the process
     /// starts belongs to a dead process — while it lives, a run's
     /// supervisor task always records its terminal state (see lib.rs'
@@ -880,6 +905,18 @@ mod tests {
 
         assert_eq!(store.list_runs("p1", 100, 0).await.unwrap().len(), 1);
         assert_eq!(store.list_runs("p2", 100, 0).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn has_running_run_detects_active_run() {
+        let store = PipelineStore::connect("sqlite::memory:").await.unwrap();
+        assert!(!store.has_running_run("p1").await.unwrap());
+
+        let run_id = store.start_run("p1").await.unwrap();
+        assert!(store.has_running_run("p1").await.unwrap());
+
+        store.finish_run_success(run_id, &[], None).await.unwrap();
+        assert!(!store.has_running_run("p1").await.unwrap());
     }
 
     /// Proves the Postgres branch — most notably `start_run`'s `INSERT ...

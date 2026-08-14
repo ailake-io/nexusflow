@@ -208,6 +208,12 @@ export const translations = {
         toggle: 'Logs',
         empty: 'No log lines yet.',
       },
+      errors: {
+        connectionFailed: 'Progress connection failed.',
+        connectionTimeout: 'Progress connection timed out due to inactivity.',
+        settleTimeout: 'Run did not report a final status within the expected window.',
+        unknown: 'Run failed: {message}',
+      },
     },
     common: {
       loading: 'Loading…',
@@ -439,6 +445,12 @@ export const translations = {
       logs: {
         toggle: 'Logs',
         empty: 'Nenhuma linha de log ainda.',
+      },
+      errors: {
+        connectionFailed: 'Conexão de progresso falhou.',
+        connectionTimeout: 'Conexão de progresso encerrou por inatividade.',
+        settleTimeout: 'A execução não reportou status final no prazo esperado.',
+        unknown: 'Execução falhou: {message}',
       },
     },
     common: {

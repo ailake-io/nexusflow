@@ -363,23 +363,34 @@ async fn write_one_sink_stream(
     let mut rows_written = 0usize;
     let mut bytes_written = 0usize;
 
-    while let Ok(item) = rx.recv().await {
-        let batch = item?;
-        sink.write_batch(batch.clone()).await?;
-        let batch_rows = batch.num_rows();
-        let batch_bytes = batch.get_array_memory_size();
-        batches_written += 1;
-        rows_written += batch_rows;
-        bytes_written += batch_bytes;
-        metrics::record_batch(&name, batch_rows as u64, batch_bytes as u64);
-        if let Some(tx) = &progress {
-            let _ = tx.send(ProgressEvent {
-                partition_id: name.clone(),
-                batches_written,
-                rows_written,
-                bytes_written,
-                done: false,
-            });
+    loop {
+        match rx.recv().await {
+            Ok(Ok(batch)) => {
+                sink.write_batch(batch.clone()).await?;
+                let batch_rows = batch.num_rows();
+                let batch_bytes = batch.get_array_memory_size();
+                batches_written += 1;
+                rows_written += batch_rows;
+                bytes_written += batch_bytes;
+                metrics::record_batch(&name, batch_rows as u64, batch_bytes as u64);
+                if let Some(tx) = &progress {
+                    let _ = tx.send(ProgressEvent {
+                        partition_id: name.clone(),
+                        batches_written,
+                        rows_written,
+                        bytes_written,
+                        done: false,
+                    });
+                }
+            }
+            Ok(Err(e)) => return Err(e),
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                return Err(NexusError::Connector(format!(
+                    "sink '{name}' lagged behind broadcast channel and lost {n} batch(es); \
+                     aborting to avoid silent data loss"
+                )));
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
         }
     }
 
