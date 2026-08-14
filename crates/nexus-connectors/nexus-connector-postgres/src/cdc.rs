@@ -28,6 +28,7 @@ pub struct PostgresCdcSource {
     schema: SchemaRef,
     fields: Vec<PostgresCdcFieldSpec>,
     table: String,
+    max_batch_events: u64,
 }
 
 impl PostgresCdcSource {
@@ -54,6 +55,7 @@ impl PostgresCdcSource {
             schema: build_schema(&config.fields),
             fields: config.fields.clone(),
             table: config.table.clone(),
+            max_batch_events: config.max_batch_events,
         })
     }
 }
@@ -122,42 +124,46 @@ impl Source for PostgresCdcSource {
         let fields = self.fields.clone();
         let table = self.table.clone();
 
+        let max_batch_events = self.max_batch_events;
         let stream = futures::stream::unfold(
-            (&mut self.event_stream, Vec::<Value>::new(), false),
-            move |(event_stream, mut buffer, mut finished)| {
+            (&mut self.event_stream, Vec::<Value>::new(), false, 0u64),
+            move |(event_stream, mut buffer, mut finished, mut events_seen)| {
                 let schema = schema.clone();
                 let fields = fields.clone();
                 let table = table.clone();
                 async move {
                     loop {
-                        if finished {
+                        if finished || events_seen >= max_batch_events {
                             return if buffer.is_empty() {
                                 None
                             } else {
                                 let batch =
                                     RecordBatchBuilder::from_json_rows(schema.clone(), &buffer);
-                                Some((batch, (event_stream, Vec::new(), finished)))
+                                Some((batch, (event_stream, Vec::new(), finished, events_seen)))
                             };
                         }
                         if buffer.len() >= BATCH_SIZE {
                             let batch = RecordBatchBuilder::from_json_rows(schema.clone(), &buffer);
-                            return Some((batch, (event_stream, Vec::new(), finished)));
+                            return Some((batch, (event_stream, Vec::new(), finished, events_seen)));
                         }
 
                         match tokio::time::timeout(FLUSH_ON_IDLE, event_stream.next_event()).await {
                             Ok(Ok(event)) => match event.event_type {
                                 EventType::Insert { table: t, data, .. } if *t == *table => {
                                     buffer.push(row_data_to_json(&data, &fields, "I"));
+                                    events_seen += 1;
                                 }
                                 EventType::Update {
                                     table: t, new_data, ..
                                 } if *t == *table => {
                                     buffer.push(row_data_to_json(&new_data, &fields, "U"));
+                                    events_seen += 1;
                                 }
                                 EventType::Delete {
                                     table: t, old_data, ..
                                 } if *t == *table => {
                                     buffer.push(row_data_to_json(&old_data, &fields, "D"));
+                                    events_seen += 1;
                                 }
                                 // Different table in the same publication, or a
                                 // control message (Begin/Commit/Truncate/...) —
@@ -170,14 +176,14 @@ impl Source for PostgresCdcSource {
                                     Err(NexusError::Connector(format!(
                                         "postgres-cdc stream error: {e}"
                                     ))),
-                                    (event_stream, buffer, finished),
+                                    (event_stream, buffer, finished, events_seen),
                                 ));
                             }
                             Err(_elapsed) => {
                                 if !buffer.is_empty() {
                                     let batch =
                                         RecordBatchBuilder::from_json_rows(schema.clone(), &buffer);
-                                    return Some((batch, (event_stream, Vec::new(), finished)));
+                                    return Some((batch, (event_stream, Vec::new(), finished, events_seen)));
                                 }
                                 // Idle, nothing buffered — keep waiting.
                             }

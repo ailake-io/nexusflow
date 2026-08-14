@@ -143,6 +143,10 @@ fn default_timeout_seconds() -> u64 {
     30
 }
 
+fn default_max_batch_events() -> u64 {
+    1000
+}
+
 /// Minimal percent-encoding helper for connection-string components.
 ///
 /// Only encodes characters that are unsafe inside the userinfo/path segments
@@ -226,6 +230,13 @@ pub struct PostgresCdcConfig {
     /// pipeline indefinitely (C15).
     #[serde(default = "default_timeout_seconds")]
     pub timeout_seconds: u64,
+    /// Maximum number of change events to collect in a single run. After this
+    /// many events the source ends cleanly, letting the run finish and the
+    /// scheduler start the next micro-batch. The Postgres replication slot
+    /// keeps the unconsumed position server-side, so the next run resumes from
+    /// where this one stopped.
+    #[serde(default = "default_max_batch_events")]
+    pub max_batch_events: u64,
 }
 
 #[cfg(feature = "cdc")]
@@ -378,6 +389,7 @@ mod tests {
             slot_name: "slot".to_string(),
             fields: vec![],
             timeout_seconds: 30,
+            max_batch_events: 1000,
         };
         assert_eq!(cfg.connection_string(), "postgresql://legacy");
     }
