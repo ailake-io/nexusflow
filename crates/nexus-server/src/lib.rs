@@ -447,6 +447,17 @@ async fn run_pipeline_handler(
         ));
     };
 
+    if state
+        .pipelines
+        .has_running_run(&id)
+        .await
+        .map_err(ApiError::internal)?
+    {
+        return Err(ApiError::conflict(
+            "a run for this pipeline is already in progress",
+        ));
+    }
+
     let run_id = start_pipeline_run(&state, &effective_spec)
         .await
         .map_err(ApiError::internal)?;
@@ -1765,6 +1776,48 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn run_rejects_overlap_when_a_run_is_already_in_progress() {
+        let state = test_state().await;
+        let write_token = bearer(&state, Role::Write);
+        let execute_token = bearer(&state, Role::Execute);
+        let app = router(state.clone());
+
+        // Persist a pipeline so the manual run uses the stored definition.
+        let create_response = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/pipelines",
+                &write_token,
+                sample_pipeline("p1"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(create_response.status(), StatusCode::CREATED);
+
+        // Seed a run that is still 'running' without going through the handler.
+        state.pipelines.start_run("p1").await.unwrap();
+
+        // A second manual run must be rejected with 409 Conflict (A02).
+        let body = sample_pipeline("p1");
+        let response = app
+            .oneshot(json_request(
+                "POST",
+                "/pipelines/p1/run",
+                &execute_token,
+                body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let json = body_json(response).await;
+        assert!(json["error"]
+            .as_str()
+            .unwrap()
+            .contains("already in progress"));
     }
 
     /// Polls GET /pipelines/{id}/runs until the newest run reaches a
