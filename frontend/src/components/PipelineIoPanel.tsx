@@ -227,6 +227,7 @@ export function PipelineIoPanel({
       )}
 
       <textarea
+        aria-label={t('ioPanel.placeholder')}
         value={text}
         onChange={(e) => setText(e.target.value)}
         rows={5}

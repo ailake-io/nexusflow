@@ -10,6 +10,7 @@ import {
   type RunLogEvent,
   type RunRecord,
 } from '@/lib/api'
+import { useI18n } from '@/lib/i18n'
 import type { PipelineSpec } from '@/lib/dag'
 
 export type ExecutionStatus = 'idle' | 'starting' | 'running' | 'success' | 'failed'
@@ -44,6 +45,7 @@ const WS_INACTIVITY_TIMEOUT_MS = 30_000
  * (ARCHITECTURE.md §8).
  */
 export function useRunProgress(): UseRunProgressResult {
+  const { t } = useI18n()
   const [status, setStatus] = useState<ExecutionStatus>('idle')
   const [runId, setRunId] = useState<number | null>(null)
   const [partitions, setPartitions] = useState<Record<string, PartitionProgress>>({})
@@ -60,7 +62,7 @@ export function useRunProgress(): UseRunProgressResult {
     if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current)
     inactivityTimerRef.current = setTimeout(() => {
       wsRef.current?.close()
-      setError('progress connection timed out due to inactivity')
+      setError(t('execution.errors.connectionTimeout'))
       setStatus('failed')
     }, WS_INACTIVITY_TIMEOUT_MS)
   }, [])
@@ -109,9 +111,13 @@ export function useRunProgress(): UseRunProgressResult {
           applyFinalRecord(record)
         } else if (attempt < SETTLE_POLL_MAX_ATTEMPTS) {
           setTimeout(() => void settleFinalRecord(attempt + 1), SETTLE_POLL_INTERVAL_MS)
+        } else {
+          // Still not settled after ~5s: surface a clear error so the run
+          // button is re-enabled and the user knows the UI stopped waiting
+          // (M17/M18).
+          setError(t('execution.errors.settleTimeout'))
+          setStatus('failed')
         }
-        // Still not settled after ~5s: leave the UI in 'running' — the runs
-        // list shows the authoritative state on the next page load.
       }
 
       const ws = new WebSocket(progressSocketUrl(pipelineId, id), `nexusflow-${token}`)
@@ -156,7 +162,7 @@ export function useRunProgress(): UseRunProgressResult {
 
       ws.onerror = () => {
         clearInactivityTimer()
-        setError('progress connection failed')
+        setError(t('execution.errors.connectionFailed'))
         setStatus('failed')
       }
 
@@ -165,7 +171,7 @@ export function useRunProgress(): UseRunProgressResult {
         void settleFinalRecord(0)
       }
     },
-    [applyFinalRecord, cleanupRun, clearInactivityTimer, resetInactivityTimer],
+    [applyFinalRecord, cleanupRun, clearInactivityTimer, resetInactivityTimer, t],
   )
 
   const run = useCallback(
@@ -189,10 +195,11 @@ export function useRunProgress(): UseRunProgressResult {
         // Validation-level failures (bad body, path/id mismatch) are
         // rejected synchronously with 4xx before any run row exists.
         setStatus('failed')
-        setError(err instanceof Error ? err.message : String(err))
+        const message = err instanceof Error ? err.message : String(err)
+        setError(t('execution.errors.unknown', { message }))
       }
     },
-    [connectSocket, cleanupRun],
+    [connectSocket, cleanupRun, t],
   )
 
   return { status, runId, partitions, hardwareStats, error, dbtSummary, logs, run }

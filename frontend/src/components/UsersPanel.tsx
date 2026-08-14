@@ -126,10 +126,14 @@ export function UsersPanel() {
         </div>
         <div className="flex flex-wrap items-end gap-3">
           <div className="flex-1 min-w-[160px]">
-            <label className="mb-1 block text-[10px] uppercase tracking-wider text-muted-foreground">
+            <label
+              htmlFor="new-username"
+              className="mb-1 block text-[10px] uppercase tracking-wider text-muted-foreground"
+            >
               {t('admin.username')}
             </label>
             <Input
+              id="new-username"
               value={newUsername}
               onChange={(e) => setNewUsername(e.target.value)}
               required
@@ -137,10 +141,14 @@ export function UsersPanel() {
             />
           </div>
           <div className="flex-1 min-w-[160px]">
-            <label className="mb-1 block text-[10px] uppercase tracking-wider text-muted-foreground">
+            <label
+              htmlFor="new-password"
+              className="mb-1 block text-[10px] uppercase tracking-wider text-muted-foreground"
+            >
               {t('admin.password')}
             </label>
             <Input
+              id="new-password"
               type="password"
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
@@ -150,14 +158,19 @@ export function UsersPanel() {
             />
           </div>
           <div className="min-w-[140px]">
-            <label className="mb-1 block text-[10px] uppercase tracking-wider text-muted-foreground">
+            <label
+              htmlFor="new-role"
+              className="mb-1 block text-[10px] uppercase tracking-wider text-muted-foreground"
+            >
               {t('admin.role')}
             </label>
             <select
+              id="new-role"
               value={newRole}
               onChange={(e) => setNewRole(e.target.value as Role)}
               disabled={creating}
               className={selectClassName}
+              aria-label={t('admin.role')}
             >
               {ROLES.map((r) => (
                 <option key={r} value={r}>
