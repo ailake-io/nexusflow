@@ -53,6 +53,7 @@ async fn cdc_source_replays_every_append_as_insert() {
         table_name: None,
         storage_options: Default::default(),
         format_version: IcebergFormatVersion::V2,
+        primary_key: None,
         timeout_seconds: 30,
     };
 

@@ -79,6 +79,7 @@ async fn mysql_native_cdc_carries_correct_opcode_per_row() {
         ],
         binlog_filename: None,
         binlog_position: None,
+        max_batch_events: 1000,
     };
 
     // `read_batches` spawns the replication thread, which starts streaming
