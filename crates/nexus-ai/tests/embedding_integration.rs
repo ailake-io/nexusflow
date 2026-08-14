@@ -28,7 +28,7 @@ async fn embeds_sentences_with_correct_semantic_similarity() {
         max_length: 128,
     };
 
-    let mut model = EmbeddingModel::load(&cfg).await.expect("model loads");
+    let model = EmbeddingModel::load(&cfg).await.expect("model loads");
 
     let texts = vec![
         "The cat sits on the mat.".to_string(),
