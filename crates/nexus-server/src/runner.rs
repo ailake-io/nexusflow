@@ -489,7 +489,7 @@ async fn apply_embedding_stage(
     for (name, schema, batches) in inputs {
         let mut embedded = Vec::with_capacity(batches.len());
         for batch in &batches {
-            embedded.push(nexus_ai::embedding::apply_embedding(batch, spec, &mut backend).await?);
+            embedded.push(nexus_ai::embedding::apply_embedding(batch, spec, &backend).await?);
         }
         out.push((name, schema, embedded));
     }
