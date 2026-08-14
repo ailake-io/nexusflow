@@ -496,9 +496,8 @@ impl PipelineStore {
     /// overlapping manual runs with 409 Conflict (A02); the scheduler already
     /// avoids overlap on its own, so this check is only applied there.
     pub async fn has_running_run(&self, pipeline_id: &str) -> Result<bool, PipelineStoreError> {
-        let sql = self.q(
-            "SELECT 1 FROM pipeline_runs WHERE pipeline_id = ? AND status = 'running' LIMIT 1",
-        );
+        let sql = self
+            .q("SELECT 1 FROM pipeline_runs WHERE pipeline_id = ? AND status = 'running' LIMIT 1");
         let row: Option<(i32,)> = match &self.pool {
             MetadataPool::Sqlite(p) => {
                 sqlx::query_as(sqlx::AssertSqlSafe(sql))

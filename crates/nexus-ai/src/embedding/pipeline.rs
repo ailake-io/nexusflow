@@ -394,15 +394,9 @@ fn new_empty_array(data_type: &DataType) -> Result<ArrayRef, EmbeddingError> {
         DataType::Int32 => Arc::new(arrow_array::Int32Array::from(Vec::<i32>::new())) as ArrayRef,
         DataType::Int64 => Arc::new(arrow_array::Int64Array::from(Vec::<i64>::new())) as ArrayRef,
         DataType::UInt8 => Arc::new(arrow_array::UInt8Array::from(Vec::<u8>::new())) as ArrayRef,
-        DataType::UInt16 => {
-            Arc::new(arrow_array::UInt16Array::from(Vec::<u16>::new())) as ArrayRef
-        }
-        DataType::UInt32 => {
-            Arc::new(arrow_array::UInt32Array::from(Vec::<u32>::new())) as ArrayRef
-        }
-        DataType::UInt64 => {
-            Arc::new(arrow_array::UInt64Array::from(Vec::<u64>::new())) as ArrayRef
-        }
+        DataType::UInt16 => Arc::new(arrow_array::UInt16Array::from(Vec::<u16>::new())) as ArrayRef,
+        DataType::UInt32 => Arc::new(arrow_array::UInt32Array::from(Vec::<u32>::new())) as ArrayRef,
+        DataType::UInt64 => Arc::new(arrow_array::UInt64Array::from(Vec::<u64>::new())) as ArrayRef,
         DataType::Float32 => {
             Arc::new(arrow_array::Float32Array::from(Vec::<f32>::new())) as ArrayRef
         }
@@ -412,14 +406,11 @@ fn new_empty_array(data_type: &DataType) -> Result<ArrayRef, EmbeddingError> {
         DataType::Boolean => {
             Arc::new(arrow_array::BooleanArray::from(Vec::<bool>::new())) as ArrayRef
         }
-        DataType::Date32 => {
-            Arc::new(arrow_array::Date32Array::from(Vec::<i32>::new())) as ArrayRef
-        }
-        DataType::Date64 => {
-            Arc::new(arrow_array::Date64Array::from(Vec::<i64>::new())) as ArrayRef
-        }
+        DataType::Date32 => Arc::new(arrow_array::Date32Array::from(Vec::<i32>::new())) as ArrayRef,
+        DataType::Date64 => Arc::new(arrow_array::Date64Array::from(Vec::<i64>::new())) as ArrayRef,
         DataType::Timestamp(arrow_schema::TimeUnit::Second, tz) => Arc::new(
-            arrow_array::TimestampSecondArray::from(Vec::<i64>::new()).with_timezone_opt(tz.clone()),
+            arrow_array::TimestampSecondArray::from(Vec::<i64>::new())
+                .with_timezone_opt(tz.clone()),
         ) as ArrayRef,
         DataType::Timestamp(arrow_schema::TimeUnit::Millisecond, tz) => Arc::new(
             arrow_array::TimestampMillisecondArray::from(Vec::<i64>::new())
