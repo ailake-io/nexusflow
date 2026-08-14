@@ -144,7 +144,10 @@ impl Source for PostgresCdcSource {
                         }
                         if buffer.len() >= BATCH_SIZE {
                             let batch = RecordBatchBuilder::from_json_rows(schema.clone(), &buffer);
-                            return Some((batch, (event_stream, Vec::new(), finished, events_seen)));
+                            return Some((
+                                batch,
+                                (event_stream, Vec::new(), finished, events_seen),
+                            ));
                         }
 
                         match tokio::time::timeout(FLUSH_ON_IDLE, event_stream.next_event()).await {
@@ -183,7 +186,10 @@ impl Source for PostgresCdcSource {
                                 if !buffer.is_empty() {
                                     let batch =
                                         RecordBatchBuilder::from_json_rows(schema.clone(), &buffer);
-                                    return Some((batch, (event_stream, Vec::new(), finished, events_seen)));
+                                    return Some((
+                                        batch,
+                                        (event_stream, Vec::new(), finished, events_seen),
+                                    ));
                                 }
                                 // Idle, nothing buffered — keep waiting.
                             }

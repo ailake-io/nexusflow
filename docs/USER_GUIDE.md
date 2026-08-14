@@ -1,6 +1,6 @@
 # Guia de uso do NexusFlow — instalação a conector por conector
 
-Referência completa e prática: da instalação até a configuração exata de cada um dos 18 conectores, transformações (SQL, embeddings, dbt) e recursos de execução (preview, agendamento). Para o passo a passo mínimo de "primeiro pipeline", ver [`GETTING_STARTED.md`](./GETTING_STARTED.md); para arquitetura interna, [`ARCHITECTURE.md`](../ARCHITECTURE.md).
+Referência completa e prática: da instalação até a configuração exata de cada um dos 24 conectores, transformações (SQL, embeddings, dbt) e recursos de execução (preview, agendamento). Para o passo a passo mínimo de "primeiro pipeline", ver [`GETTING_STARTED.md`](./GETTING_STARTED.md); para arquitetura interna, [`ARCHITECTURE.md`](../ARCHITECTURE.md).
 
 ## Índice
 
@@ -32,7 +32,7 @@ docker run -d --name nexusflow -p 8080:8080 \
 
 Variáveis de ambiente completas: ver [`GETTING_STARTED.md` §3](./GETTING_STARTED.md#3-variáveis-de-ambiente). As duas obrigatórias são `NEXUS_JWT_SECRET` e `NEXUS_ENCRYPTION_KEY` — sem elas o processo não sobe.
 
-**Conectores linkados no binário**: binários pré-buildados (release, `.deb`, AppImage, rpm, imagem Docker `:full`) já vêm com os 18 conectores ligados. Buildando a partir do source, cada conector é uma feature Cargo opcional (`cargo build --features embed-ui,connectors-all` liga todos de uma vez) — ver [`GETTING_STARTED.md` §2](./GETTING_STARTED.md#2-habilitando-conectores). O catálogo em `GET /connectors` sempre reflete exatamente o que foi compilado; a UI nunca mostra um conector que não está no binário.
+**Conectores linkados no binário**: binários pré-buildados (release, `.deb`, AppImage, rpm, imagem Docker `:full`) já vêm com os 24 conectores ligados (`embed-ui,connectors-all`: 18 batch + 6 CDC nativos; a feature `rest` registra `rest` e `webhook` como nomes separados no catálogo). Buildando a partir do source, cada conector é uma feature Cargo opcional (`cargo build --features embed-ui,connectors-all` liga todos de uma vez) — ver [`GETTING_STARTED.md` §2](./GETTING_STARTED.md#2-habilitando-conectores). O catálogo em `GET /connectors` sempre reflete exatamente o que foi compilado; a UI nunca mostra um conector que não está no binário.
 
 ---
 
@@ -299,7 +299,7 @@ Fala com a API REST v2 do Chroma (`/api/v1` está deprecado). `tenant`/`database
   "format_version": "v2", "timeout_seconds": 30
 }}
 ```
-Totalmente embarcado (catálogo SQLite + warehouse local, sem metastore externo). `format_version` (`"v2"` default ou `"v3"`) só afeta tabela nova. **Limitação conhecida**: sink é *append-only* na versão atual do `iceberg-rust` — reexecuções duplicam linhas até o crate ganhar suporte a *equality-delete*; deletes de CDC são rejeitados com erro explícito.
+Totalmente embarcado (catálogo SQLite + warehouse local, sem metastore externo). `format_version` (`"v2"` default ou `"v3"`) só afeta tabela nova. Configure `primary_key` no sink para descartar linhas já existentes e evitar duplicatas em reexecuções. Deletes de CDC são rejeitados com erro explícito.
 
 #### `parquet`
 ```json

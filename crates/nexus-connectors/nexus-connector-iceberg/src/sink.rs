@@ -193,11 +193,10 @@ impl IcebergSink {
             Some(name) => name,
         };
 
-        let scan = table
-            .scan()
-            .select_all()
-            .build()
-            .map_err(|e| NexusError::Connector(format!("iceberg dedup scan build failed: {e}")))?;
+        let scan =
+            table.scan().select_all().build().map_err(|e| {
+                NexusError::Connector(format!("iceberg dedup scan build failed: {e}"))
+            })?;
         let stream = with_timeout(
             self.cfg.timeout_seconds,
             "iceberg dedup scan to_arrow",

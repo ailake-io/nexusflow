@@ -39,7 +39,7 @@ docker run --gpus all -d -p 8080:8080 -e NEXUS_JWT_SECRET=... -e NEXUS_ENCRYPTIO
 curl -fsSL https://raw.githubusercontent.com/ailake-io/nexusflow/develop/scripts/install.sh | sh
 ```
 
-Baixa o binário + drivers ADBC pra `~/.local/share/nexusflow` e cria `~/.local/bin/nexusflow`. Precisa de um [release](https://github.com/ailake-io/nexusflow/releases) publicado — ver `.github/workflows/release.yml`. O binário do release já vem com **todos** os 18 conectores linkados (`embed-ui,connectors-all`, não só postgres/sqlite — ver seção 2 abaixo); pra `odbc`/`kafka` funcionarem, precisa de `unixodbc`/`libsasl2` no sistema (o instalador avisa no final se faltar).
+Baixa o binário + drivers ADBC pra `~/.local/share/nexusflow` e cria `~/.local/bin/nexusflow`. Precisa de um [release](https://github.com/ailake-io/nexusflow/releases) publicado — ver `.github/workflows/release.yml`. O binário do release já vem com **todos** os 24 conectores linkados (`embed-ui,connectors-all`, não só postgres/sqlite — ver seção 2 abaixo); pra `odbc`/`kafka` funcionarem, precisa de `unixodbc`/`libsasl2` no sistema (o instalador avisa no final se faltar).
 
 ### Pacotes nativos (Linux)
 
@@ -77,7 +77,7 @@ export NEXUS_ADMIN_PASSWORD="troque-isto"
 
 Isso só se aplica a quem builda a partir do source (seção 1, "Build a partir do source") — os binários pré-buildados (script de instalação, `.deb`/AppImage/rpm, imagem Docker `:full`) já vêm com `connectors-all` ligado, ver seção 1.
 
-Por padrão um `cargo build` sem flags só liga `postgres` e `sqlite`. Os outros 16 conectores (mongodb, kafka, rest, odbc, milvus, qdrant, lancedb, pgvector, pinecone, chromadb, deltalake, iceberg, parquet, ailake, csv, webhook) são features Cargo opcionais — cada um só entra no binário se for pedido:
+Por padrão um `cargo build` sem flags só liga `postgres` e `sqlite`. A feature `connectors-all` habilita as outras **22 entradas de conector** no catálogo (24 nomes no total, pois a feature `rest` registra tanto `rest` quanto `webhook`): mongodb, kafka, rest, webhook, odbc, milvus, qdrant, lancedb, pgvector, pinecone, chromadb, deltalake, iceberg, parquet, ailake, csv e os 6 CDCs nativos (postgres-cdc, mongodb-cdc, mysql-cdc, deltalake-cdc, iceberg-cdc, ailake-cdc). Cada um só entra no binário se sua feature for pedida:
 
 ```bash
 # um conector específico
@@ -96,14 +96,15 @@ Para gerar embeddings no pipeline, adicione um nó `embedding` ao spec (ou arras
 ```json
 {
   "pipeline_id": "rag-pipeline",
-  "sources": [{"connector": "postgres", "config": {"table": "docs"}}],
-  "transform": {"sql": "SELECT id, chunk_text, embedding FROM source0"},
+  "sources": [{"connector": "postgres", "config": {"uri": "postgres://user:pw@host/db", "table": "docs", "primary_key": "id"}}],
+  "transform": {"sql": "SELECT id, body, embedding FROM source0"},
   "sinks": [{"connector": "lancedb", "config": {"uri": "/tmp/vectors", "table": "docs", "primary_key": "id", "embedding_column": "embedding", "dimension": 384}}],
   "embedding": {
     "source_column": "body",
     "output_column": "embedding",
     "dimension": 384,
     "model": {
+      "backend": "onnx",
       "repo": "sentence-transformers/all-MiniLM-L6-v2",
       "filename": "model.onnx",
       "tokenizer_filename": "tokenizer.json",
@@ -116,9 +117,11 @@ Para gerar embeddings no pipeline, adicione um nó `embedding` ao spec (ou arras
 
 A feature Cargo `embeddings` (incluída em `connectors-all`) liga o crate `nexus-ai` e suas dependências ONNX/HF Hub. Sem ela, um spec com `embedding` retorna erro claro.
 
+> **Reprodutibilidade do modelo:** o backend ONNX fixa a revision em `"main"` ao baixar do Hugging Face. Para garantir que o mesmo peso seja usado em todos os ambientes, prefira servir o arquivo via `filename`/`repo` fixos e cache compartilhado, ou use o backend `api` com um modelo específico.
+
 ### Limitações conhecidas de sinks
 
-- **Iceberg** — o sink é *append-only* na versão atual do `iceberg-rust` (0.10.0): não há commit de *equality-delete*/`upsert` na API pública. Reexecuções de pipeline/partição duplicarão linhas até que essa capacidade chegue. CDC deletes são rejeitados explicitamente com erro claro.
+- **Iceberg** — o sink é *append-only* na versão atual do `iceberg-rust` (0.10.0): não há commit de *equality-delete*/`upsert` na API pública. Para evitar duplicatas em reexecuções, configure `primary_key` no sink — linhas com chave já existente são descartadas antes do `fast_append`. CDC deletes são rejeitados explicitamente com erro claro.
 - **Parquet** — implementa CDC upsert/delete como reescrita completa do arquivo; é correto, mas `O(tamanho da tabela)` por batch. A reescrita usa arquivo temporário + `rename` atômico para evitar perda do arquivo original em caso de crash.
 - **Kafka source** — `enable.auto.commit` está desligado; offsets são commitados manualmente ao final de cada `read_batches`, alinhados com o checkpoint do pipeline.
 
@@ -134,6 +137,7 @@ A feature Cargo `embeddings` (incluída em `connectors-all`) liga o crate `nexus
 | `NEXUS_ADMIN_USERNAME` / `NEXUS_ADMIN_PASSWORD` | não | — | Se as duas estiverem setadas e a tabela de usuários estiver vazia, cria a conta Admin inicial (idempotente — não roda de novo depois). |
 | `NEXUS_SLACK_WEBHOOK_URL` | não | — | Sem ela, falhas de pipeline não disparam alerta no Slack. |
 | `NEXUS_OTLP_ENDPOINT` | não | — | Endpoint OTLP/HTTP pra exportar traces. Sem ela, traces ficam só como log JSON local; métricas Prometheus em `/metrics` funcionam de qualquer jeito. |
+| `NEXUS_ALLOW_INTERNAL_HOSTS` | não | `false` | Quando `true`, permite URLs de conectores apontando para `localhost`, `127.0.0.1` e IPs de LAN privados. Útil para testes locais; em produção mantenha `false` para mitigar SSRF. |
 | `ADBC_DRIVER_POSTGRESQL_PATH` / `ADBC_DRIVER_SQLITE_PATH` | sim (se usar postgres/sqlite) | — | Caminho pro `.so`/`.dylib` do driver ADBC — não existe distribuição via crates.io, tem que buildar com `scripts/build-adbc-*-driver.sh`. |
 
 ### Metadados em Postgres (multi-réplica / k8s)
@@ -194,8 +198,8 @@ curl -s -X POST http://localhost:8080/pipelines \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{
     "pipeline_id": "meu-pipeline",
-    "sources": [{"connector": "postgres", "config": {"uri": "postgres://user:pw@host/db", "table": "events"}}],
-    "sinks": [{"connector": "postgres", "config": {"uri": "postgres://user:pw@host/db", "table": "events_copy"}}],
+    "sources": [{"connector": "postgres", "config": {"uri": "postgres://user:pw@host/db", "table": "events", "primary_key": "id"}}],
+    "sinks": [{"connector": "postgres", "config": {"uri": "postgres://user:pw@host/db", "table": "events_copy", "primary_key": "id"}}],
     "schedule": "0 */6 * * *"
   }'
 
@@ -204,9 +208,9 @@ curl -s -X POST http://localhost:8080/pipelines \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{
     "pipeline_id": "meu-pipeline-sqlite",
-    "sources": [{"connector": "postgres", "config": {"uri": "postgres://user:pw@host/db", "table": "events"}}],
-    "transform": {"sql": "SELECT * FROM events"},
-    "sinks": [{"connector": "sqlite", "config": {"path": "/tmp/out.db", "table": "events"}}]
+    "sources": [{"connector": "postgres", "config": {"uri": "postgres://user:pw@host/db", "table": "events", "primary_key": "id"}}],
+    "transform": {"sql": "SELECT * FROM source0"},
+    "sinks": [{"connector": "sqlite", "config": {"path": "/tmp/out.db", "table": "events", "primary_key": "id"}}]
   }'
 
 # atualizar (mesmo body, PUT em vez de POST)
@@ -271,7 +275,7 @@ Se `dbt.output` estiver setado no spec (aponta pro model/tabela que o dbt acabou
 
 | Arquivo | Conteúdo |
 |---|---|
-| [`USER_GUIDE.md`](./USER_GUIDE.md) | Referência completa: config exata de cada um dos 18 conectores, transform SQL, embeddings, dbt ELT/ETL, preview, agendamento |
+| [`USER_GUIDE.md`](./USER_GUIDE.md) | Referência completa: config exata de cada um dos 24 conectores, transform SQL, embeddings, dbt ELT/ETL, preview, agendamento |
 | [`ARCHITECTURE.md`](../ARCHITECTURE.md) | Roteador de conectores, streaming/backpressure, checkpointing |
 | [`ROADMAP.md`](../ROADMAP.md) | Fases e critério de "pronto" |
 | [`CONTRIBUTING.md`](../CONTRIBUTING.md) | Como contribuir |
