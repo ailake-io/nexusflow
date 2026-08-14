@@ -86,7 +86,7 @@ async fn text_chunk_embed_chromadb_end_to_end() {
         dimension: 384,
         max_length: 128,
     };
-    let mut model = EmbeddingModel::load(&embedding_cfg)
+    let model = EmbeddingModel::load(&embedding_cfg)
         .await
         .expect("embedding model loads");
     let embeddings = model.embed_batch(&chunks).expect("embeds chunks");
