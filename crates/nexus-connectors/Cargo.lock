@@ -6964,6 +6964,7 @@ version = "0.1.0"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-schema 58.4.0",
+ "arrow-select 58.4.0",
  "async-trait",
  "futures",
  "iceberg",
