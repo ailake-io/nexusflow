@@ -22,6 +22,7 @@ impl WebhookSink {
     pub fn connect(config: &WebhookSinkConfig) -> Result<Self, NexusError> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(config.timeout_seconds))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| NexusError::Connector(format!("webhook client build failed: {e}")))?;
         Ok(Self {
@@ -63,8 +64,8 @@ impl WebhookSink {
                     if attempt == self.config.retries || !is_transient_error(&err) {
                         return Err(err);
                     }
-                    let delay =
-                        Duration::from_secs(self.config.retry_backoff_seconds) * 2u32.pow(attempt);
+                    let delay = Duration::from_secs(self.config.retry_backoff_seconds)
+                        * 2u32.saturating_pow(attempt);
                     tracing::warn!(
                         "webhook request failed (attempt {}/{}): {err}, retrying in {:?}",
                         attempt + 1,
