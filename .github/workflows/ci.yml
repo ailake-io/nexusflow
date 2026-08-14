@@ -199,6 +199,7 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
       - run: npm run build
+      - run: npm test
       - run: npm run lint
       # --audit-level=high: low/moderate advisories in this ecosystem are
       # overwhelmingly transitive dev-tooling noise (see npm's own advisory
