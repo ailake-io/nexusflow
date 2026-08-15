@@ -23,9 +23,10 @@ const UsersPanel = lazy(() => import('@/components/UsersPanel'))
 type View = 'canvas' | 'pipelines' | 'status' | 'admin'
 
 function ViewFallback() {
+  const { t } = useI18n()
   return (
     <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-      <span className="animate-pulse">Loading…</span>
+      <span className="animate-pulse">{t('common.loading')}</span>
     </div>
   )
 }

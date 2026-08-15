@@ -5,6 +5,22 @@ use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, Salt
 use argon2::Argon2;
 use std::borrow::Cow;
 
+fn validate_username(username: &str) -> anyhow::Result<()> {
+    if username.is_empty() {
+        anyhow::bail!("username must not be empty");
+    }
+    if username.len() > 64 {
+        anyhow::bail!("username must not exceed 64 characters");
+    }
+    if !username
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        anyhow::bail!("username must only contain ASCII letters, digits, '_' or '-'");
+    }
+    Ok(())
+}
+
 /// User credentials + role, persisted separately from `CheckpointStore` (own
 /// table). No public signup for MVP self-host (ARCHITECTURE.md §10,
 /// ROADMAP.md Fase 7) — the only account is seeded from
@@ -102,28 +118,46 @@ impl AuthStore {
 
     /// Seeds the admin account from env vars if (and only if) no users
     /// exist yet — safe to call on every startup, a no-op after the first.
+    /// The check+insert is expressed as a single conditional INSERT so it
+    /// remains race-free even if multiple processes boot at the same time
+    /// (B29).
     pub async fn seed_admin_if_empty(
         &self,
         admin_username: &str,
         admin_password: &str,
     ) -> anyhow::Result<()> {
-        let count: i64 = match &self.pool {
+        validate_username(admin_username)?;
+        let salt = SaltString::generate(&mut OsRng);
+        let password_hash = Argon2::default()
+            .hash_password(admin_password.as_bytes(), &salt)
+            .map_err(|e| anyhow::anyhow!("password hashing failed: {e}"))?
+            .to_string();
+        let role_str = serde_json::to_value(Role::Admin)?
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Role serializes to a string"))?
+            .to_string();
+
+        let sql = self.q("INSERT INTO users (username, password_hash, role) \
+             SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM users)");
+        match &self.pool {
             MetadataPool::Sqlite(p) => {
-                sqlx::query_scalar("SELECT COUNT(*) FROM users")
-                    .fetch_one(p)
-                    .await?
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .bind(admin_username)
+                    .bind(password_hash)
+                    .bind(role_str)
+                    .execute(p)
+                    .await?;
             }
             MetadataPool::Postgres(p) => {
-                sqlx::query_scalar("SELECT COUNT(*) FROM users")
-                    .fetch_one(p)
-                    .await?
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .bind(admin_username)
+                    .bind(password_hash)
+                    .bind(role_str)
+                    .execute(p)
+                    .await?;
             }
-        };
-        if count > 0 {
-            return Ok(());
         }
-        self.create_user(admin_username, admin_password, Role::Admin)
-            .await
+        Ok(())
     }
 
     pub async fn create_user(
@@ -132,6 +166,7 @@ impl AuthStore {
         password: &str,
         role: Role,
     ) -> anyhow::Result<()> {
+        validate_username(username)?;
         let salt = SaltString::generate(&mut OsRng);
         let password_hash = Argon2::default()
             .hash_password(password.as_bytes(), &salt)
@@ -139,7 +174,7 @@ impl AuthStore {
             .to_string();
         let role_str = serde_json::to_value(role)?
             .as_str()
-            .expect("Role serializes to a string")
+            .ok_or_else(|| anyhow::anyhow!("Role serializes to a string"))?
             .to_string();
 
         let sql = self.q("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)");

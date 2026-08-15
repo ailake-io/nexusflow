@@ -28,6 +28,7 @@ done
 
 mkdir -p "$STAGE/usr/lib/nexusflow" "$STAGE/usr/bin" \
   "$STAGE/usr/share/applications" "$STAGE/usr/share/icons/hicolor/scalable/apps" \
+  "$STAGE/lib/systemd/system" "$STAGE/var/lib/nexusflow" "$STAGE/etc/nexusflow" \
   "$STAGE/DEBIAN"
 
 install -m 755 "$BIN" "$STAGE/usr/lib/nexusflow/nexusflow-bin"
@@ -35,6 +36,7 @@ install -m 755 "$ADBC_DIR/libadbc_driver_postgresql.so" "$STAGE/usr/lib/nexusflo
 install -m 755 "$ADBC_DIR/libadbc_driver_sqlite.so" "$STAGE/usr/lib/nexusflow/"
 install -m 755 "$REPO_ROOT/packaging/linux/nexusflow-wrapper.sh" "$STAGE/usr/bin/nexusflow"
 install -m 644 "$REPO_ROOT/packaging/linux/nexusflow.desktop" "$STAGE/usr/share/applications/"
+install -m 644 "$REPO_ROOT/packaging/linux/nexusflow.service" "$STAGE/lib/systemd/system/"
 install -m 644 "$REPO_ROOT/frontend/public/favicon.svg" \
   "$STAGE/usr/share/icons/hicolor/scalable/apps/nexusflow.svg"
 
@@ -59,6 +61,36 @@ Description: Universal Rust data & vector ETL/lakehouse framework
  Single-binary NexusFlow server: REST/WebSocket API, embedded web UI,
  connector router (ADBC/Arrow Flight/bridging) and AI embedding pipeline.
 EOF
+
+cat > "$STAGE/DEBIAN/postinst" <<'EOF'
+#!/bin/sh
+set -e
+
+if ! id -u nexusflow >/dev/null 2>&1; then
+  useradd -r -m -d /var/lib/nexusflow -s /usr/sbin/nologin nexusflow
+fi
+
+mkdir -p /var/lib/nexusflow /etc/nexusflow
+chown nexusflow:nexusflow /var/lib/nexusflow
+
+if [ ! -f /etc/nexusflow/nexusflow.env ]; then
+  cat > /etc/nexusflow/nexusflow.env <<'ENV'
+# NexusFlow environment configuration
+# NEXUS_JWT_SECRET=change-me
+# NEXUS_ENCRYPTION_KEY=change-me
+ENV
+  chmod 640 /etc/nexusflow/nexusflow.env
+  chown root:nexusflow /etc/nexusflow/nexusflow.env
+fi
+
+if [ -d /run/systemd/system ]; then
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  systemctl enable nexusflow.service >/dev/null 2>&1 || true
+fi
+
+#DEBHELPER#
+EOF
+chmod 755 "$STAGE/DEBIAN/postinst"
 
 mkdir -p "$OUT_DIR"
 dpkg-deb --build --root-owner-group "$STAGE" "$OUT_DIR/nexusflow_${VERSION}_${ARCH}.deb"

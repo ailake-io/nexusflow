@@ -1,0 +1,28 @@
+[Unit]
+Description=NexusFlow universal data & vector ETL/lakehouse server
+Documentation=https://github.com/ailake-io/nexusflow
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nexusflow
+Group=nexusflow
+WorkingDirectory=/var/lib/nexusflow
+Environment="RUST_LOG=info"
+EnvironmentFile=-/etc/nexusflow/nexusflow.env
+ExecStart=/usr/bin/nexusflow server --bind 0.0.0.0:8080
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nexusflow
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/nexusflow
+
+[Install]
+WantedBy=multi-user.target

@@ -32,7 +32,7 @@ spec:
         fsGroup: 1001
       containers:
         - name: nexusflow
-          image: ghcr.io/ailake-io/nexusflow:latest
+          image: ghcr.io/ailake-io/nexusflow:${NEXUSFLOW_VERSION:?NEXUSFLOW_VERSION must be set}
           ports:
             - name: http
               containerPort: 8080

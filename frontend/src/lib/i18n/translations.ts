@@ -25,7 +25,8 @@ export const translations = {
       signIn: 'Sign in',
       signingIn: 'Signing in…',
       loginFailed: 'Login failed',
-      headline: 'Build data pipelines visually.',
+      headlinePrefix: 'Build data pipelines ',
+      headlineHighlight: 'visually.',
       subheadline:
         'Connect sources and sinks, transform with SQL, run dbt models, and stream CDC events — all from one canvas.',
       featureConnectors: '20+ connectors',
@@ -53,6 +54,7 @@ export const translations = {
       source: 'source',
       sink: 'sink',
       transform: 'transform',
+      configMaskHint: 'Connector config is never exposed once saved.',
       runsOn: 'Runs on cron: {schedule}',
       history: {
         toggle: 'History',
@@ -110,7 +112,7 @@ export const translations = {
     canvas: {
       connectors: 'Connectors',
       dragToCanvas: 'Drag to canvas',
-      connectorNode: 'Connector node',
+      connectorNode: 'Connector: {name}',
       transform: 'Transform',
       transformDesc: 'SQL transformation',
       dbt: 'dbt',
@@ -170,6 +172,7 @@ export const translations = {
       partitions: 'partitions',
       channelCapacity: 'channel_capacity',
       schedule: 'schedule (cron)',
+      schedulePlaceholder: 'e.g. 0 */6 * * *',
       scheduleHint:
         'Optional. Unix cron with 5 fields (minute hour day-of-month month day-of-week), e.g. "0 */6 * * *" runs every 6 hours, "*/15 * * * *" every 15 minutes, "0 3 * * *" daily at 3 AM. Leave blank to run manually only (Run button or API).',
       save: 'Save',
@@ -263,7 +266,8 @@ export const translations = {
       signIn: 'Entrar',
       signingIn: 'Entrando…',
       loginFailed: 'Falha no login',
-      headline: 'Construa pipelines de dados visualmente.',
+      headlinePrefix: 'Construa pipelines de dados ',
+      headlineHighlight: 'visualmente.',
       subheadline:
         'Conecte fontes e destinos, transforme com SQL, execute modelos dbt e transmita eventos CDC — tudo em um canvas.',
       featureConnectors: '20+ conectores',
@@ -291,6 +295,7 @@ export const translations = {
       source: 'fonte',
       sink: 'destino',
       transform: 'transform',
+      configMaskHint: 'A config do conector nunca é exposta depois de salva.',
       runsOn: 'Roda no cron: {schedule}',
       history: {
         toggle: 'Histórico',
@@ -348,7 +353,7 @@ export const translations = {
     canvas: {
       connectors: 'Conectores',
       dragToCanvas: 'Arraste para o canvas',
-      connectorNode: 'Node de conector',
+      connectorNode: 'Conector: {name}',
       transform: 'Transformação',
       transformDesc: 'Transformação SQL',
       dbt: 'dbt',
@@ -408,6 +413,7 @@ export const translations = {
       partitions: 'partições',
       channelCapacity: 'channel_capacity',
       schedule: 'schedule (cron)',
+      schedulePlaceholder: 'ex.: 0 */6 * * *',
       scheduleHint:
         'Opcional. Cron Unix com 5 campos (minuto hora dia-do-mês mês dia-da-semana), ex.: "0 */6 * * *" roda a cada 6 horas, "*/15 * * * *" a cada 15 minutos, "0 3 * * *" todo dia às 3h. Deixe em branco para rodar apenas manualmente (botão Run ou API).',
       save: 'Salvar',

@@ -39,7 +39,12 @@ import {
   type TransformNodeData,
 } from '@/lib/dag'
 
-let nextNodeId = 1
+function newNodeId(): string {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return `node-${crypto.randomUUID()}`
+  }
+  return `node-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
 
 interface CanvasInnerProps {
   pipelineToLoad?: PipelineSpec | null
@@ -94,7 +99,7 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
       if (!connector) return
 
       const position = screenToFlowPosition({ x: event.clientX, y: event.clientY })
-      const id = `node-${nextNodeId++}`
+      const id = newNodeId()
       const newNode: DagNode = {
         id,
         type: 'connector',
@@ -107,7 +112,7 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
   )
 
   const addTransformNode = useCallback(() => {
-    const id = `node-${nextNodeId++}`
+    const id = newNodeId()
     setNodes((current) => [
       ...current,
       {
@@ -120,7 +125,7 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
   }, [])
 
   const addDbtNode = useCallback(() => {
-    const id = `node-${nextNodeId++}`
+    const id = newNodeId()
     setNodes((current) => [
       ...current,
       {
@@ -133,7 +138,7 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
   }, [])
 
   const addEmbeddingNode = useCallback(() => {
-    const id = `node-${nextNodeId++}`
+    const id = newNodeId()
     setNodes((current) => [
       ...current,
       {
@@ -250,7 +255,6 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
 
   const handleNewPipeline = useCallback(() => {
     if (nodes.length > 0 && !window.confirm(t('ioPanel.newPipelineConfirm'))) return
-    nextNodeId = 1
     setNodes([])
     setEdges([])
     setSelectedId(null)
@@ -272,7 +276,13 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
   }, [])
 
   const handleImport = useCallback(
-    (json: string) => loadSpec(JSON.parse(json) as PipelineSpec),
+    (json: string) => {
+      const parsed = JSON.parse(json)
+      if (!parsed || typeof parsed !== 'object' || typeof parsed.pipeline_id !== 'string') {
+        throw new Error('invalid PipelineSpec: pipeline_id is required')
+      }
+      loadSpec(parsed as PipelineSpec)
+    },
     [loadSpec],
   )
 

@@ -214,6 +214,7 @@ Limpeza feita:
 1. Corrigir exemplos do `GETTING_STARTED` (A05, A06, A07, A08, A09).
 2. Atualizar contagem de conectores, documentar CDC e `NEXUS_ALLOW_INTERNAL_HOSTS` (M25–M31).
 3. Pin de ADBC, AppImage, Dockerfile; .deb/.rpm com systemd; CI em PRs (M32–M38).
+4. **Pendente (M37):** isolamento de runners self-hosted para PRs. Justificativa atual: repositório privado (apenas colaboradores confiáveis abrem PRs) e GitHub-hosted runners bloqueados por billing. Quando o repo tornar-se público ou o billing for resolvido, migrar os jobs de PR para GitHub-hosted ou adicionar environment de aprovação manual.
 
 ### Fase 5 — Dívida Técnica e Plataformas (semana 4+)
 1. Itens moderados restantes (M01–M16, M22–M24).

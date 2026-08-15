@@ -181,8 +181,11 @@ jobs:
             exit 1
           fi
           if ! command -v appimagetool >/dev/null; then
+            # Pinned to the continuous release's SHA-256; verify before use (M34).
+            APP_IMAGE_SHA256="a6d71e2b6cd66f8e8d16c37ad164658985e0cf5fcaa950c90a482890cb9d13e0"
             curl -fL -o /tmp/appimagetool \
               https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+            echo "$APP_IMAGE_SHA256  /tmp/appimagetool" | sha256sum -c -
             chmod +x /tmp/appimagetool
             APPIMAGETOOL="/tmp/appimagetool --appimage-extract-and-run"
           fi
@@ -209,9 +212,25 @@ jobs:
   # present there. Re-add once that's done — see git history for the full
   # job definition (last present as of this commit's parent).
 
+  smoke-test:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    needs: build
+    runs-on: [self-hosted, Linux]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@65a9edc5881444af0b9093a5e628f2fe47ea3b2e # v4.1.7
+        with:
+          name: nexusflow-linux-x86_64
+          path: dist
+      - name: Smoke test tarball
+        run: |
+          cd dist
+          tar -xzf nexusflow-linux-x86_64.tar.gz
+          ./nexusflow-bin --version
+
   github-release:
     if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
-    needs: build
+    needs: [build, smoke-test]
     runs-on: [self-hosted, Linux]
     # Self-hosted Linux (same machine as everything else here) — hosted
     # ubuntu-latest is blocked account-wide by the billing issue described in
@@ -229,11 +248,37 @@ jobs:
           # explicitly. github.sha already resolves correctly for
           # pull_request (the PR's merge commit), so this is a no-op there.
           ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
-      - name: Read version from Cargo.toml
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine next version
         id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          version="$(grep -A3 '^\[workspace.package\]' Cargo.toml | grep '^version' | head -1 | cut -d '"' -f2)"
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          current_version="$(grep -A3 '^\[workspace.package\]' Cargo.toml | grep '^version' | head -1 | cut -d '"' -f2)"
+          version="$current_version"
+
+          # Bump patch while a release already exists for this tag.
+          while gh release view "v$version" >/dev/null 2>&1; do
+            version="$(echo "$version" | awk -F. '{$NF+=1} OFS="."')"
+          done
+
+          if [ "$version" != "$current_version" ]; then
+            sed -i "s/^version = \"[^\"]*\"/version = \"$version\"/" Cargo.toml
+            git add Cargo.toml
+            git commit -m "chore(release): bump version to v$version [skip ci]"
+            git push origin main
+          fi
+
+          # Make sure subsequent steps read the bumped Cargo.toml.
+          git checkout main
+          git pull origin main
           echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - uses: actions/download-artifact@65a9edc5881444af0b9093a5e628f2fe47ea3b2e # v4.1.7
         with:
           path: dist
@@ -246,9 +291,9 @@ jobs:
         with:
           tag_name: v${{ steps.version.outputs.version }}
           name: v${{ steps.version.outputs.version }}
-          # `main` is the release branch under this continuous-release model
-          # (see this file's header comment) — every push re-publishes the
-          # same tag with fresh assets until the workspace version bumps.
+          # Each successful run on main bumps the patch version (if needed)
+          # and creates a fresh release; assets are replaced only when the
+          # version stays the same, which no longer happens on main.
           files: |
             dist/*.tar.gz
             dist/*.deb

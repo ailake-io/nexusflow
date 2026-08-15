@@ -340,7 +340,6 @@ mod tests {
             fields: Vec::new(),
             batch_size: 1000,
             timeout_seconds: 30,
-            max_batch_events: 1000,
         }
     }
 

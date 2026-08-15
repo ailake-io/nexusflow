@@ -52,6 +52,7 @@ async fn mongo_native_cdc_carries_correct_opcode_per_row() {
         fields: fields(),
         resume_token: None,
         batch_size: 1000,
+        max_batch_events: 1000,
         timeout_seconds: 5,
     };
 
