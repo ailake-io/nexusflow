@@ -143,6 +143,7 @@ fn default_timeout_seconds() -> u64 {
     30
 }
 
+#[cfg(feature = "cdc")]
 fn default_max_batch_events() -> u64 {
     1000
 }
