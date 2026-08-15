@@ -233,30 +233,34 @@ impl Source for MySqlCdcSource {
         })??;
 
         let schema = self.schema.clone();
+        let max_batch_events = self.config.max_batch_events;
         let stream = futures::stream::unfold(
-            (rx, Vec::<Value>::new(), false),
-            move |(mut rx, mut buffer, mut finished)| {
+            (rx, Vec::<Value>::new(), false, 0u64),
+            move |(mut rx, mut buffer, mut finished, mut events_seen)| {
                 let schema = schema.clone();
                 async move {
                     loop {
-                        if finished {
+                        if finished || events_seen >= max_batch_events {
                             return if buffer.is_empty() {
                                 None
                             } else {
                                 let batch =
                                     RecordBatchBuilder::from_json_rows(schema.clone(), &buffer);
-                                Some((batch, (rx, Vec::new(), finished)))
+                                Some((batch, (rx, Vec::new(), finished, events_seen)))
                             };
                         }
                         if buffer.len() >= BATCH_SIZE {
                             let batch = RecordBatchBuilder::from_json_rows(schema.clone(), &buffer);
-                            return Some((batch, (rx, Vec::new(), finished)));
+                            return Some((batch, (rx, Vec::new(), finished, events_seen)));
                         }
                         match tokio::time::timeout(FLUSH_ON_IDLE, rx.recv()).await {
-                            Ok(Some(Ok(row))) => buffer.push(row),
+                            Ok(Some(Ok(row))) => {
+                                buffer.push(row);
+                                events_seen += 1;
+                            }
                             Ok(Some(Err(e))) => {
                                 finished = true;
-                                return Some((Err(e), (rx, buffer, finished)));
+                                return Some((Err(e), (rx, buffer, finished, events_seen)));
                             }
                             Ok(None) => {
                                 finished = true;
@@ -265,7 +269,7 @@ impl Source for MySqlCdcSource {
                                 if !buffer.is_empty() {
                                     let batch =
                                         RecordBatchBuilder::from_json_rows(schema.clone(), &buffer);
-                                    return Some((batch, (rx, Vec::new(), finished)));
+                                    return Some((batch, (rx, Vec::new(), finished, events_seen)));
                                 }
                                 // Idle, nothing buffered — keep waiting.
                             }

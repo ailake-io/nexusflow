@@ -63,16 +63,25 @@ curl -fsSL "$url" -o "$work_dir/$asset"
 
 # Verify tarball integrity against the published SHA256SUMS before extracting.
 sums_url="https://github.com/$REPO/releases/download/$version/SHA256SUMS"
-if curl -fsSL "$sums_url" -o "$work_dir/SHA256SUMS"; then
-  (
-    cd "$work_dir"
-    sha256sum -c "SHA256SUMS" --ignore-missing || {
-      echo "error: checksum verification failed for $asset" >&2
-      exit 1
-    }
-  )
-else
-  echo "warning: could not download SHA256SUMS; skipping checksum verification" >&2
+if ! curl -fsSL "$sums_url" -o "$work_dir/SHA256SUMS"; then
+  echo "error: could not download SHA256SUMS for $version" >&2
+  exit 1
+fi
+(
+  cd "$work_dir"
+  sha256sum -c "SHA256SUMS" --ignore-missing || {
+    echo "error: checksum verification failed for $asset" >&2
+    exit 1
+  }
+)
+
+# Verify GPG signature if SHA256SUMS.asc is published and gpg is available.
+asc_url="https://github.com/$REPO/releases/download/$version/SHA256SUMS.asc"
+if command -v gpg >/dev/null 2>&1 && curl -fsSL "$asc_url" -o "$work_dir/SHA256SUMS.asc"; then
+  if ! gpg --verify "$work_dir/SHA256SUMS.asc" "$work_dir/SHA256SUMS" >/dev/null 2>&1; then
+    echo "error: GPG signature verification failed for SHA256SUMS" >&2
+    exit 1
+  fi
 fi
 
 tar -xzf "$work_dir/$asset" -C "$work_dir"

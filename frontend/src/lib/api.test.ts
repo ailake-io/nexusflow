@@ -48,7 +48,7 @@ describe('request', () => {
       json: () => Promise.resolve({ error: 'unauthorized' }),
     }))
 
-    await expect(runPipeline('token', { pipeline_id: 'p1' })).rejects.toThrow()
+    await expect(runPipeline('token', { pipeline_id: 'p1' } as unknown as import('@/lib/dag').PipelineSpec)).rejects.toThrow()
     expect(handler).toHaveBeenCalledOnce()
   })
 

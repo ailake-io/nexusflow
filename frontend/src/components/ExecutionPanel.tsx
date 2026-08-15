@@ -31,8 +31,10 @@ export function ExecutionPanel({
 
   const rows = Object.values(partitions)
 
-  const statusConfig: Record<ExecutionStatus, { label: string; variant: 'idle' | 'running' | 'success' | 'failed' }> = {
-    idle: { label: t('status.scheduled'), variant: 'idle' },
+  const statusConfig: Record<
+    Exclude<ExecutionStatus, 'idle'>,
+    { label: string; variant: 'running' | 'success' | 'failed' }
+  > = {
     starting: { label: t('status.running') + '…', variant: 'running' },
     running: { label: t('status.running'), variant: 'running' },
     success: { label: t('status.success'), variant: 'success' },

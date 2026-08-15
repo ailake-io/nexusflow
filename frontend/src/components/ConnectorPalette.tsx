@@ -59,7 +59,22 @@ export function ConnectorPalette({ connectors, loading, error }: ConnectorPalett
               key={connector.name}
               draggable
               onDragStart={(e) => onDragStart(e, connector.name)}
-              className="group flex cursor-grab items-center gap-2.5 rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2 text-sm transition-colors hover:border-primary/30 hover:bg-primary/5 active:cursor-grabbing"
+              role="button"
+              tabIndex={0}
+              aria-label={t('canvas.connectorNode', { name: connector.name })}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  // Keyboard-initiated drag start — the canvas still needs a
+                  // pointer drop, but this makes the item focusable and
+                  // actionable for screen-reader/keyboard users (B35).
+                  const dataTransfer = new DataTransfer()
+                  dataTransfer.setData('application/nexusflow-connector', connector.name)
+                  const event = new DragEvent('dragstart', { dataTransfer })
+                  onDragStart(event as unknown as DragEvent<HTMLDivElement>, connector.name)
+                }
+              }}
+              className="group flex cursor-grab items-center gap-2.5 rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2 text-sm transition-colors hover:border-primary/30 hover:bg-primary/5 active:cursor-grabbing focus:outline-none focus:ring-2 focus:ring-primary/50"
             >
               <Database className="h-3.5 w-3.5 text-muted-foreground group-hover:text-primary" />
               <span className="font-medium text-foreground">{connector.name}</span>

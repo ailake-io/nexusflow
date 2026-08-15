@@ -1,14 +1,18 @@
+use crate::db::{rewrite_placeholders, MetadataPool};
 use crate::license::{self, LicenseClaims, LicenseError};
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
-use std::str::FromStr;
+use std::borrow::Cow;
 
 /// Persists the single active license key (raw JWT — its own signature
 /// already makes it tamper-evident, so there's nothing extra to encrypt).
 /// Only one license is active at a time: installing a new one replaces the
 /// old (`docs/ENTERPRISE_LICENSING.md` v1 scope — no multi-license support).
+///
+/// Backed by the same `MetadataPool` abstraction as `AuthStore` and
+/// `PipelineStore`, so it works with SQLite (default) or Postgres
+/// (multi-replica deployments).
 #[derive(Clone)]
 pub struct LicenseStore {
-    pool: SqlitePool,
+    pool: MetadataPool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -20,21 +24,43 @@ pub enum LicenseStoreError {
 }
 
 impl LicenseStore {
-    pub async fn connect(database_url: &str) -> anyhow::Result<Self> {
-        let options = SqliteConnectOptions::from_str(database_url)?.create_if_missing(true);
-        let pool = SqlitePool::connect_with(options).await?;
+    /// Every query is written with SQLite-style `?` placeholders; `q()`
+    /// rewrites them to `$1, $2, ...` when running against Postgres.
+    fn q(&self, sql: &'static str) -> Cow<'static, str> {
+        rewrite_placeholders(sql, self.pool.is_postgres())
+    }
 
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS license (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
-                jwt TEXT NOT NULL,
-                installed_at TEXT NOT NULL DEFAULT (datetime('now'))
-            )
-            "#,
-        )
-        .execute(&pool)
-        .await?;
+    pub async fn connect(database_url: &str) -> anyhow::Result<Self> {
+        let pool = MetadataPool::connect(database_url).await?;
+
+        match &pool {
+            MetadataPool::Sqlite(p) => {
+                sqlx::query(
+                    r#"
+                    CREATE TABLE IF NOT EXISTS license (
+                        id INTEGER PRIMARY KEY CHECK (id = 1),
+                        jwt TEXT NOT NULL,
+                        installed_at TEXT NOT NULL DEFAULT (datetime('now'))
+                    )
+                    "#,
+                )
+                .execute(p)
+                .await?;
+            }
+            MetadataPool::Postgres(p) => {
+                sqlx::query(
+                    r#"
+                    CREATE TABLE IF NOT EXISTS license (
+                        id INTEGER PRIMARY KEY CHECK (id = 1),
+                        jwt TEXT NOT NULL,
+                        installed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    )
+                    "#,
+                )
+                .execute(p)
+                .await?;
+            }
+        }
 
         Ok(Self { pool })
     }
@@ -43,15 +69,24 @@ impl LicenseStore {
     /// wouldn't pass its own verification later.
     pub async fn install(&self, jwt: &str) -> Result<LicenseClaims, LicenseStoreError> {
         let claims = license::verify(jwt)?;
-        sqlx::query(
-            r#"
-            INSERT INTO license (id, jwt, installed_at) VALUES (1, ?, datetime('now'))
+        let sql = self.q(r#"
+            INSERT INTO license (id, jwt) VALUES (1, ?)
             ON CONFLICT(id) DO UPDATE SET jwt = excluded.jwt, installed_at = excluded.installed_at
-            "#,
-        )
-        .bind(jwt)
-        .execute(&self.pool)
-        .await?;
+            "#);
+        match &self.pool {
+            MetadataPool::Sqlite(p) => {
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .bind(jwt)
+                    .execute(p)
+                    .await?;
+            }
+            MetadataPool::Postgres(p) => {
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .bind(jwt)
+                    .execute(p)
+                    .await?;
+            }
+        }
         Ok(claims)
     }
 
@@ -61,9 +96,19 @@ impl LicenseStore {
     /// point of view, "expired" and "never installed" both mean "no active
     /// license."
     pub async fn active(&self) -> Result<Option<LicenseClaims>, sqlx::Error> {
-        let row: Option<(String,)> = sqlx::query_as("SELECT jwt FROM license WHERE id = 1")
-            .fetch_optional(&self.pool)
-            .await?;
+        let sql = self.q("SELECT jwt FROM license WHERE id = 1");
+        let row: Option<(String,)> = match &self.pool {
+            MetadataPool::Sqlite(p) => {
+                sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .fetch_optional(p)
+                    .await?
+            }
+            MetadataPool::Postgres(p) => {
+                sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .fetch_optional(p)
+                    .await?
+            }
+        };
         Ok(row.and_then(|(jwt,)| license::verify(&jwt).ok()))
     }
 }
@@ -129,7 +174,10 @@ mod tests {
         // when installed and has since expired.
         sqlx::query("INSERT INTO license (id, jwt) VALUES (1, ?)")
             .bind(sign(&expired))
-            .execute(&store.pool)
+            .execute(match &store.pool {
+                MetadataPool::Sqlite(p) => p,
+                MetadataPool::Postgres(_) => unreachable!(),
+            })
             .await
             .unwrap();
 

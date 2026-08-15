@@ -28,6 +28,7 @@ pub struct MongoCdcSource {
     resume_token: Option<String>,
     batch_size: usize,
     timeout_seconds: u64,
+    max_batch_events: u64,
 }
 
 impl MongoCdcSource {
@@ -48,6 +49,7 @@ impl MongoCdcSource {
             resume_token: config.resume_token.clone(),
             batch_size: config.batch_size,
             timeout_seconds: config.timeout_seconds,
+            max_batch_events: config.max_batch_events,
         })
     }
 }
@@ -82,6 +84,8 @@ struct MongoCdcStream {
     finished: bool,
     idle_timeout: Duration,
     deadline: Pin<Box<Sleep>>,
+    max_batch_events: u64,
+    events_seen: u64,
 }
 
 impl MongoCdcStream {
@@ -139,7 +143,7 @@ impl Stream for MongoCdcStream {
             if self.buffer.len() >= self.batch_size {
                 return Poll::Ready(Some(self.flush_batch()));
             }
-            if self.finished {
+            if self.finished || self.events_seen >= self.max_batch_events {
                 return if self.buffer.is_empty() {
                     Poll::Ready(None)
                 } else {
@@ -153,6 +157,7 @@ impl Stream for MongoCdcStream {
                     self.deadline.as_mut().reset(deadline);
                     if let Some(row) = Self::event_to_row(event) {
                         self.buffer.push(row);
+                        self.events_seen += 1;
                     }
                 }
                 Poll::Ready(Some(Err(e))) => {
@@ -222,6 +227,8 @@ impl Source for MongoCdcSource {
             finished: false,
             idle_timeout,
             deadline: Box::pin(tokio::time::sleep(idle_timeout)),
+            max_batch_events: self.max_batch_events,
+            events_seen: 0,
         }))
     }
 

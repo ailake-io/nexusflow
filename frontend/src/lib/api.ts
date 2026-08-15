@@ -160,7 +160,7 @@ export interface RunRecord {
  */
 export function runPipeline(
   token: string,
-  spec: { pipeline_id: string },
+  spec: PipelineSpec,
 ): Promise<{ run_id: number }> {
   return request<{ run_id: number }>(
     `/pipelines/${encodeURIComponent(spec.pipeline_id)}/run`,

@@ -14,6 +14,7 @@
 use crate::auth_store::AuthStore;
 use crate::checkpoint_store::CheckpointStore;
 use crate::db::MetadataPool;
+use crate::license_store::LicenseStore;
 use crate::pipeline_store::PipelineStore;
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::{PgPool, Row, SqlitePool};
@@ -23,6 +24,7 @@ use std::str::FromStr;
 pub struct MigrationSummary {
     pub users: usize,
     pub audit_log: usize,
+    pub license: usize,
     pub pipelines: usize,
     pub pipeline_runs: usize,
     pub checkpoints: usize,
@@ -42,6 +44,7 @@ pub async fn run(
     checkpoint_postgres_url: &str,
 ) -> anyhow::Result<MigrationSummary> {
     AuthStore::connect(auth_postgres_url).await?;
+    LicenseStore::connect(auth_postgres_url).await?;
     PipelineStore::connect(pipelines_postgres_url).await?;
     CheckpointStore::connect(checkpoint_postgres_url).await?;
 
@@ -55,6 +58,7 @@ pub async fn run(
 
     let users = migrate_users(&auth_sqlite, &auth_pg).await?;
     let audit_log = migrate_audit_log(&auth_sqlite, &auth_pg).await?;
+    let license = migrate_license(&auth_sqlite, &auth_pg).await?;
     let pipelines = migrate_pipelines(&pipelines_sqlite, &pipelines_pg).await?;
     let pipeline_runs = migrate_pipeline_runs(&pipelines_sqlite, &pipelines_pg).await?;
     let checkpoints = migrate_checkpoints(&checkpoint_sqlite, &checkpoint_pg).await?;
@@ -62,6 +66,7 @@ pub async fn run(
     Ok(MigrationSummary {
         users,
         audit_log,
+        license,
         pipelines,
         pipeline_runs,
         checkpoints,
@@ -134,6 +139,29 @@ async fn migrate_audit_log(sqlite: &SqlitePool, pg: &PgPool) -> anyhow::Result<u
         migrated += result.rows_affected() as usize;
     }
     reset_serial_sequence(pg, "audit_log", "id").await?;
+    Ok(migrated)
+}
+
+async fn migrate_license(sqlite: &SqlitePool, pg: &PgPool) -> anyhow::Result<usize> {
+    let rows = sqlx::query("SELECT id, jwt, installed_at FROM license")
+        .fetch_all(sqlite)
+        .await?;
+    let mut migrated = 0usize;
+    for row in rows {
+        let id: i64 = row.try_get("id")?;
+        let jwt: String = row.try_get("jwt")?;
+        let installed_at: String = row.try_get("installed_at")?;
+        let result = sqlx::query(
+            "INSERT INTO license (id, jwt, installed_at) VALUES ($1, $2, $3::timestamptz) \
+             ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(id)
+        .bind(jwt)
+        .bind(installed_at)
+        .execute(pg)
+        .await?;
+        migrated += result.rows_affected() as usize;
+    }
     Ok(migrated)
 }
 
@@ -260,6 +288,7 @@ mod tests {
     use super::*;
     use crate::auth::Role;
     use crate::crypto::SecretCipher;
+    use crate::license::test_support::{claims, sign};
     use nexus_core::{NodeSpec, PipelineSpec};
     use testcontainers_modules::postgres;
     use testcontainers_modules::testcontainers::runners::AsyncRunner;
@@ -305,6 +334,12 @@ mod tests {
         let auth_store = AuthStore::connect(&auth_sqlite_url).await.unwrap();
         auth_store
             .create_user("alice", "hunter2", Role::Write)
+            .await
+            .unwrap();
+
+        let license_store = LicenseStore::connect(&auth_sqlite_url).await.unwrap();
+        license_store
+            .install(&sign(&claims(vec!["snowflake"])))
             .await
             .unwrap();
 
@@ -354,6 +389,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(summary.users, 1);
+        assert_eq!(summary.license, 1);
         assert_eq!(summary.pipelines, 1);
         assert_eq!(summary.pipeline_runs, 2);
         assert_eq!(summary.checkpoints, 1);

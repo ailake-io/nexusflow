@@ -93,6 +93,7 @@ async fn postgres_native_cdc_carries_correct_opcode_per_row() {
             },
         ],
         timeout_seconds: 30,
+        max_batch_events: 1000,
     };
 
     // Connects and starts replication (creating the slot) *before* the DML

@@ -59,6 +59,16 @@ pub fn split_by_opcode(batch: &RecordBatch) -> Result<Option<CdcSplit>, NexusErr
         )));
     }
 
+    // Reject unknown opcodes instead of treating them as upserts (M08).
+    for i in 0..opcode_col.len() {
+        let value = opcode_col.value(i);
+        if Opcode::from_letter(value).is_none() {
+            return Err(NexusError::Schema(format!(
+                "{OPCODE_COLUMN} has unknown value {value:?}"
+            )));
+        }
+    }
+
     let is_delete: BooleanArray = (0..opcode_col.len())
         .map(|i| Some(opcode_col.value(i) == Opcode::Delete.as_str()))
         .collect();
@@ -145,6 +155,14 @@ mod tests {
             .downcast_ref::<Int64Array>()
             .unwrap();
         assert_eq!(delete_ids.values(), &[3, 4]);
+    }
+
+    #[test]
+    fn rejects_unknown_opcode() {
+        let batch = batch_with_opcodes(&[1], &["X"]);
+        let err = split_by_opcode(&batch).expect_err("unknown opcode must fail");
+        assert!(matches!(err, NexusError::Schema(_)));
+        assert!(err.to_string().contains("unknown value \"X\""));
     }
 
     #[test]

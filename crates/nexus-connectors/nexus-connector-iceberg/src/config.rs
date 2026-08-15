@@ -144,6 +144,12 @@ pub struct IcebergConnectorConfig {
     /// that already exists.
     #[serde(default)]
     pub format_version: IcebergFormatVersion,
+    /// Optional primary-key column used by the sink to make appends
+    /// idempotent. When set, rows whose key already exists in the current
+    /// table snapshot are silently dropped before the append. This prevents
+    /// duplicate lines on retry/resume (A01). Leave unset for pure append.
+    #[serde(default)]
+    pub primary_key: Option<String>,
     /// Timeout in seconds for each catalog/table call — both the SQLite
     /// catalog and local warehouse are embedded today, but this still
     /// guards against a locked catalog file or a future remote storage
@@ -249,7 +255,7 @@ impl IcebergConnectorConfig {
 /// No `fields` list needed — Iceberg tables are self-describing, same
 /// reason the batch `IcebergConnectorConfig` never needed one.
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
-#[allow(dead_code)]
+#[cfg(feature = "cdc")]
 pub struct IcebergCdcConfig {
     /// Legacy combined catalog URI. Keep using this if you already have a full
     /// URI such as `sqlite:///abs/path/catalog.db?mode=rwc` — it takes
@@ -302,6 +308,7 @@ pub struct IcebergCdcConfig {
     pub timeout_seconds: u64,
 }
 
+#[cfg(feature = "cdc")]
 impl IcebergCdcConfig {
     /// Returns the effective catalog URI, preferring the legacy `catalog_uri`
     /// field, then `catalog_path`.
@@ -390,6 +397,7 @@ mod tests {
             table_name: Some("new_table".to_string()),
             storage_options: StorageOptions::default(),
             format_version: IcebergFormatVersion::V2,
+            primary_key: None,
             timeout_seconds: 30,
         }
     }
@@ -416,6 +424,7 @@ mod tests {
             table_name: Some("new_table".to_string()),
             storage_options: StorageOptions::default(),
             format_version: IcebergFormatVersion::V2,
+            primary_key: None,
             timeout_seconds: 30,
         };
         assert_eq!(cfg.catalog_uri(), "/new/catalog.db");
@@ -437,6 +446,7 @@ mod tests {
             table_name: None,
             storage_options: StorageOptions::default(),
             format_version: IcebergFormatVersion::V2,
+            primary_key: None,
             timeout_seconds: 30,
         };
         assert_eq!(cfg.warehouse_location(), "file:///data/warehouse");
@@ -455,6 +465,7 @@ mod tests {
             table_name: None,
             storage_options: StorageOptions::default(),
             format_version: IcebergFormatVersion::V2,
+            primary_key: None,
             timeout_seconds: 30,
         };
         assert!(cfg.catalog_uri().is_empty());
@@ -482,6 +493,7 @@ mod tests {
                 s3_endpoint: Some("http://minio:9000".to_string()),
             },
             format_version: IcebergFormatVersion::V2,
+            primary_key: None,
             timeout_seconds: 30,
         };
         let map = cfg.storage_options();
@@ -496,6 +508,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "cdc")]
     fn cdc_legacy_fields_take_priority() {
         let cfg = IcebergCdcConfig {
             catalog_uri: Some("sqlite:///legacy/catalog.db?mode=rwc".to_string()),

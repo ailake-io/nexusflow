@@ -190,6 +190,10 @@ fn default_batch_size() -> usize {
     1000
 }
 
+fn default_max_batch_events() -> u64 {
+    1000
+}
+
 /// Config for the native Change Streams CDC source (`"mongodb-cdc"`) — a
 /// separate connector name from `"mongodb"` rather than a mode flag on
 /// `MongoConnectorConfig`, so the existing batch connector's config shape
@@ -255,6 +259,13 @@ pub struct MongoCdcConfig {
     /// indefinitely (C15).
     #[serde(default = "default_timeout_seconds")]
     pub timeout_seconds: u64,
+    /// Maximum number of change events to collect in a single run. After this
+    /// many events the source ends cleanly, letting the run finish and the
+    /// scheduler start the next micro-batch. The MongoDB resume token persists
+    /// the last processed event, so the next run picks up where this one left
+    /// off.
+    #[serde(default = "default_max_batch_events")]
+    pub max_batch_events: u64,
 }
 
 impl MongoCdcConfig {
@@ -386,6 +397,7 @@ mod tests {
             resume_token: None,
             batch_size: 1000,
             timeout_seconds: 30,
+            max_batch_events: 1000,
         };
         assert_eq!(
             cfg.connection_string(),

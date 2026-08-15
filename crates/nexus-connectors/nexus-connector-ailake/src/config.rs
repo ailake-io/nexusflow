@@ -184,6 +184,7 @@ fn default_timeout_seconds() -> u64 {
 /// of the window's *starting* snapshot, which this diff-based approach
 /// doesn't do — so both are tagged `I` for now.
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+#[cfg(feature = "cdc")]
 pub struct AilakeCdcConfig {
     /// Local filesystem root for the AI-Lake warehouse. This is the legacy
     /// field; `warehouse_path` is preferred for new canvas nodes.
@@ -230,6 +231,7 @@ pub struct AilakeCdcConfig {
     pub timeout_seconds: u64,
 }
 
+#[cfg(feature = "cdc")]
 impl AilakeCdcConfig {
     /// Resolves the effective warehouse root. The legacy `warehouse` field
     /// takes priority for backwards compatibility.
@@ -314,6 +316,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "cdc")]
     fn sample_cdc_config() -> AilakeCdcConfig {
         AilakeCdcConfig {
             warehouse: "/tmp/wh".to_string(),
@@ -401,6 +404,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "cdc")]
     fn cdc_legacy_fields_take_priority() {
         let cfg = sample_cdc_config();
         assert_eq!(cfg.warehouse(), "/tmp/wh");
@@ -409,6 +413,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "cdc")]
     fn cdc_new_fields_used_when_legacy_empty() {
         let cfg = AilakeCdcConfig {
             warehouse: "".to_string(),
@@ -425,6 +430,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "cdc")]
     fn cdc_storage_options_collects_s3_settings() {
         let cfg = AilakeCdcConfig {
             storage_options: AilakeStorageOptions {
