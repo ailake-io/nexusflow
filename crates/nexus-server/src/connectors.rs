@@ -32,6 +32,8 @@ use nexus_connector_mongodb::{
 };
 #[cfg(feature = "mysql-cdc")]
 use nexus_connector_mysql::{MySqlCdcConfig, MySqlCdcSource};
+#[cfg(feature = "mysql")]
+use nexus_connector_mysql::{MySqlConnectorConfig, MySqlSink, MySqlSource};
 #[cfg(feature = "odbc")]
 use nexus_connector_odbc::{OdbcConnectorConfig, OdbcSink, OdbcSource};
 #[cfg(feature = "parquet")]
@@ -71,6 +73,10 @@ pub fn validate_source_config(node: &NodeSpec) -> anyhow::Result<()> {
         #[cfg(feature = "mongodb")]
         "mongodb" => {
             let _: MongoConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "mysql")]
+        "mysql" => {
+            let _: MySqlConnectorConfig = serde_json::from_value(node.config.clone())?;
         }
         #[cfg(feature = "kafka")]
         "kafka" => {
@@ -151,6 +157,11 @@ pub async fn build_source(
         "mongodb" => {
             let cfg: MongoConnectorConfig = serde_json::from_value(node.config.clone())?;
             Box::new(MongoSource::connect(&cfg).await?)
+        }
+        #[cfg(feature = "mysql")]
+        "mysql" => {
+            let cfg: MySqlConnectorConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(MySqlSource::connect(&cfg).await?)
         }
         #[cfg(feature = "kafka")]
         "kafka" => {
@@ -240,6 +251,10 @@ pub fn validate_sink_config(node: &NodeSpec) -> anyhow::Result<()> {
         #[cfg(feature = "mongodb")]
         "mongodb" => {
             let _: MongoConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "mysql")]
+        "mysql" => {
+            let _: MySqlConnectorConfig = serde_json::from_value(node.config.clone())?;
         }
         #[cfg(feature = "odbc")]
         "odbc" => {
@@ -342,6 +357,11 @@ pub async fn build_sink(
         "mongodb" => {
             let cfg: MongoConnectorConfig = serde_json::from_value(node.config.clone())?;
             Box::new(MongoSink::connect(&cfg).await?)
+        }
+        #[cfg(feature = "mysql")]
+        "mysql" => {
+            let cfg: MySqlConnectorConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(MySqlSink::connect(&cfg).await?)
         }
         #[cfg(feature = "odbc")]
         "odbc" => {

@@ -1,3 +1,5 @@
+#![cfg(feature = "cdc")]
+
 //! End-to-end native CDC: real MySQL binlog replication (row-based), no
 //! Debezium/Kafka in front — ARCHITECTURE.md §7.
 
