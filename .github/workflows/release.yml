@@ -66,6 +66,15 @@ on:
   # pre-merge, never github-release (no publish side effects on a PR).
   pull_request:
     branches: [main]
+  # Manual escape hatch: `workflow_run` delivery from GitHub can lag several
+  # minutes behind the source workflow's completion (observed on this repo —
+  # see git history around this line), and re-running the upstream
+  # connectors-heavy run reuses its run id instead of emitting a fresh
+  # `completed` event, so it doesn't reliably re-fire this trigger either.
+  # `gh workflow run release.yml --ref main` covers that gap without editing
+  # anything — same pattern as ci.yml/connectors-heavy.yml's own
+  # `workflow_dispatch`.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -229,7 +238,7 @@ jobs:
           ./nexusflow-bin --version
 
   github-release:
-    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
+    if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') || github.event_name == 'workflow_dispatch'
     needs: [build, smoke-test]
     runs-on: [self-hosted, Linux]
     # Self-hosted Linux (same machine as everything else here) — hosted

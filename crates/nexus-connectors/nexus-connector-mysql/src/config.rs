@@ -1,13 +1,92 @@
 use serde::Deserialize;
 
+/// Batch connector config (`"mysql"`) — no ADBC driver exists for MySQL
+/// upstream (unlike Postgres/SQLite), so this is a bridging connector like
+/// `nexus-connector-mongodb`: `mysql_async` for the wire protocol,
+/// `RecordBatchBuilder` to get to Arrow. See ARCHITECTURE.md §2/§4.1.
+///
+/// You can either provide a complete `uri` (legacy form, takes precedence) or
+/// fill the individual connection fields (`host`, `port`, `username`, ...).
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct MySqlConnectorConfig {
+    /// Full `mysql://user:pass@host:port/db` connection URI.
+    ///
+    /// When provided, this value is used exactly as-is and all other
+    /// connection fields are ignored. Keeps backward compatibility with older
+    /// pipelines that already store a complete connection string.
+    #[serde(default)]
+    pub uri: Option<String>,
+    /// Database server host name or IP address (e.g. `localhost` or
+    /// `db.example.com`).
+    pub host: String,
+    /// TCP port the MySQL server is listening on.
+    #[serde(default = "default_port")]
+    pub port: u16,
+    /// User name used to connect to the MySQL server.
+    pub username: String,
+    /// Password for `username`.
+    pub password: String,
+    /// Database (schema) name that contains `table`.
+    pub database: String,
+    /// Table name this connector reads from or writes to.
+    pub table: String,
+    /// Column used as the upsert key on the sink side — see
+    /// ARCHITECTURE.md §5 (idempotency is a `Sink` contract, not optional).
+    /// Also used to build the `DELETE ... WHERE` clause for rows carrying the
+    /// `__opcode = "D"` marker (same convention as `mongodb`/CDC sinks).
+    pub primary_key: String,
+    /// Target schema, matched **by name** to `table`'s actual columns (unlike
+    /// `mysql-cdc`'s positional matching — a plain `SELECT`/`INSERT` here
+    /// names its columns explicitly, so there's no binlog ambiguity to work
+    /// around). Same 4-primitive-type ceiling as every other bridging
+    /// connector.
+    pub fields: Vec<MySqlCdcFieldSpec>,
+    /// How many rows to fold into a single `RecordBatch` while scanning, and
+    /// the batch size for `exec_batch` writes on the sink side.
+    #[serde(default = "default_batch_size")]
+    pub batch_size: usize,
+    /// Timeout in seconds for each call to MySQL (connect, query, exec) — a
+    /// stalled connection would otherwise block the pipeline indefinitely
+    /// (C15).
+    #[serde(default = "default_timeout_seconds")]
+    pub timeout_seconds: u64,
+}
+
+impl MySqlConnectorConfig {
+    /// Returns the MySQL connection URI.
+    ///
+    /// If a legacy `uri` is present it is returned unchanged; otherwise a
+    /// `mysql://` URI is built from the individual fields.
+    pub fn connection_string(&self) -> String {
+        if let Some(uri) = &self.uri {
+            return uri.clone();
+        }
+
+        format!(
+            "mysql://{}:{}@{}:{}/{}",
+            percent_encode(&self.username),
+            percent_encode(&self.password),
+            percent_encode(&self.host),
+            self.port,
+            percent_encode(&self.database)
+        )
+    }
+}
+
+fn default_batch_size() -> usize {
+    1000
+}
+
 /// Native CDC source config (`"mysql-cdc"`) — reads the binlog directly, no
-/// Debezium/Kafka in front (`ARCHITECTURE.md §7`). CDC-only: no batch mode,
-/// same posture as `nexus-connector-kafka` (a connector inherently built
-/// around a streaming protocol, not a table scan).
+/// Debezium/Kafka in front (`ARCHITECTURE.md §7`). CDC is the only streaming
+/// mode; this crate's batch mode above (`"mysql"`) is the table-scan
+/// counterpart, same split as `nexus-connector-mongodb`'s `mongodb`/
+/// `mongodb-cdc`.
 ///
 /// You can either provide a complete `uri` (legacy form, takes precedence) or
 /// fill the individual connection fields (`host`, `port`, `username`, ...),
 /// which are used to open the MySQL replication connection.
+#[cfg(feature = "cdc")]
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct MySqlCdcConfig {
     /// Full `mysql://user:pass@host:port/db` connection URI.
@@ -67,6 +146,7 @@ pub struct MySqlCdcConfig {
     pub max_batch_events: u64,
 }
 
+#[cfg(feature = "cdc")]
 impl MySqlCdcConfig {
     /// Returns the MySQL connection URI.
     ///
@@ -92,10 +172,16 @@ fn default_port() -> u16 {
     3306
 }
 
+fn default_timeout_seconds() -> u64 {
+    30
+}
+
+#[cfg(feature = "cdc")]
 fn default_server_id() -> u32 {
     65535
 }
 
+#[cfg(feature = "cdc")]
 fn default_max_batch_events() -> u64 {
     1000
 }
@@ -141,6 +227,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn batch_connection_string_returns_uri_when_present() {
+        let cfg = MySqlConnectorConfig {
+            uri: Some("mysql://legacy".to_string()),
+            host: "ignored".to_string(),
+            port: 3307,
+            username: "ignored".to_string(),
+            password: "ignored".to_string(),
+            database: "ignored".to_string(),
+            table: "t".to_string(),
+            primary_key: "id".to_string(),
+            fields: vec![],
+            batch_size: 1000,
+            timeout_seconds: 30,
+        };
+        assert_eq!(cfg.connection_string(), "mysql://legacy");
+    }
+
+    #[test]
+    fn batch_connection_string_builds_from_fields() {
+        let cfg = MySqlConnectorConfig {
+            uri: None,
+            host: "db.example.com".to_string(),
+            port: 3306,
+            username: "app".to_string(),
+            password: "s3cr@t".to_string(),
+            database: "production".to_string(),
+            table: "events".to_string(),
+            primary_key: "id".to_string(),
+            fields: vec![],
+            batch_size: 1000,
+            timeout_seconds: 30,
+        };
+        assert_eq!(
+            cfg.connection_string(),
+            "mysql://app:s3cr%40t@db.example.com:3306/production"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "cdc")]
     fn connection_string_returns_uri_when_present() {
         let cfg = MySqlCdcConfig {
             uri: Some("mysql://legacy".to_string()),
@@ -160,6 +286,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "cdc")]
     fn connection_string_builds_from_fields() {
         let cfg = MySqlCdcConfig {
             uri: None,

@@ -49,7 +49,7 @@ embed-ui = ["dep:rust-embed"]
 # is itself `#[cfg]`-gated behind that inner feature, so it'd silently
 # never show up in the catalog (see each crate's own src/lib.rs).
 connectors-all = [
-    "mongodb", "kafka", "rest", "odbc", "milvus", "qdrant", "lancedb",
+    "mongodb", "mysql", "kafka", "rest", "odbc", "milvus", "qdrant", "lancedb",
     "pgvector", "pinecone", "chromadb", "deltalake", "iceberg", "parquet",
     "ailake", "csv", "embeddings", "embeddings-api",
     "postgres-cdc", "mysql-cdc", "deltalake-cdc", "iceberg-cdc", "ailake-cdc",
@@ -63,7 +63,11 @@ postgres-cdc = ["nexus-connector-postgres/cdc"]
 # in that crate — enabling "mongodb" here is enough to get "mongodb-cdc" in
 # the connector catalog too.
 mongodb = ["dep:nexus-connector-mongodb"]
-mysql-cdc = ["dep:nexus-connector-mysql"]
+mysql = ["dep:nexus-connector-mysql"]
+# Native binlog CDC for MySQL — forwards to that crate's own `cdc` feature
+# (ARCHITECTURE.md §7), which is what actually gates the mysql_cdc
+# dependency (same split as postgres-cdc above).
+mysql-cdc = ["dep:nexus-connector-mysql", "nexus-connector-mysql/cdc"]
 kafka = ["dep:nexus-connector-kafka", "nexus-connector-kafka/consumer"]
 rest = ["dep:nexus-connector-rest"]
 odbc = ["dep:nexus-connector-odbc", "nexus-connector-odbc/legacy"]
