@@ -235,8 +235,23 @@ mod tests {
         // lock — alive); `.close()` actually terminates that session, the
         // same effect a real process crash / TCP-level disconnect has.
         conn_a.take().unwrap().close().await.unwrap();
+
+        // `.close()` resolving only means the client side is done (Terminate
+        // sent, socket closed) — it's not a guarantee Postgres has finished
+        // tearing down that session server-side and released its advisory
+        // lock in that same instant. Under host load that gap is wide enough
+        // to flake a single immediate check (observed in CI), so poll for
+        // up to 2s instead of asserting on the very next attempt.
+        let mut took_over = false;
+        for _ in 0..40 {
+            if is_leader(&replica_b, &mut conn_b).await {
+                took_over = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
         assert!(
-            is_leader(&replica_b, &mut conn_b).await,
+            took_over,
             "replica B takes over after A's connection actually closes"
         );
     }
