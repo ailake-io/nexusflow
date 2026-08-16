@@ -76,10 +76,21 @@ on:
   # see git history around this line), and re-running the upstream
   # connectors-heavy run reuses its run id instead of emitting a fresh
   # `completed` event, so it doesn't reliably re-fire this trigger either.
-  # `gh workflow run release.yml --ref main` covers that gap without editing
-  # anything — same pattern as ci.yml/connectors-heavy.yml's own
-  # `workflow_dispatch`.
+  # `gh workflow run release.yml --ref main -f version=X.Y.Z` covers that gap
+  # without editing anything — same pattern as ci.yml/connectors-heavy.yml's
+  # own `workflow_dispatch`.
+  #
+  # `version` is required and has no default on purpose: this is the only
+  # path where the version is a human decision rather than derived from
+  # Cargo.toml (see the "Determine version" step) — forces whoever runs this
+  # by hand to say explicitly what they're publishing instead of silently
+  # reusing whatever happens to be committed.
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 0.1.0) — updates Cargo.toml and publishes/completes that tag"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -264,32 +275,41 @@ jobs:
           ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Determine next version
+      - name: Determine version
         id: version
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISPATCH_VERSION: ${{ github.event.inputs.version }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           current_version="$(grep -A3 '^\[workspace.package\]' Cargo.toml | grep '^version' | head -1 | cut -d '"' -f2)"
-          version="$current_version"
 
-          # Bump patch while a release already exists for this tag.
-          while gh release view "v$version" >/dev/null 2>&1; do
-            version="$(echo "$version" | awk -F. -v OFS=. '{$NF+=1; print}')"
-          done
+          # workflow_dispatch: the version is whatever was typed in, full
+          # stop — never auto-derived. The automatic CI -> connectors-heavy
+          # -> Release chain has no way to take input (workflow_run doesn't
+          # carry one), so it always publishes/completes whatever version is
+          # currently committed to Cargo.toml — no auto-bump. Concretely:
+          # merging a change that doesn't touch Cargo.toml's version just
+          # re-completes that same tag's release (upsert via `--clobber`
+          # below) instead of minting a new one every single merge.
+          if [ -n "${DISPATCH_VERSION:-}" ]; then
+            version="$DISPATCH_VERSION"
+          else
+            version="$current_version"
+          fi
 
           if [ "$version" != "$current_version" ]; then
             sed -i "s/^version = \"[^\"]*\"/version = \"$version\"/" Cargo.toml
             git add Cargo.toml
-            git commit -m "chore(release): bump version to v$version [skip ci]"
+            git commit -m "chore(release): set version to v$version [skip ci]"
             # actions/checkout leaves a detached HEAD, not a local `main`
             # branch — `git push origin main` has nothing to push and fails
             # with "src refspec main does not match any". Push the commit
             # directly by ref instead; the working directory already has the
-            # bumped Cargo.toml (from the sed+commit above), no re-checkout
+            # updated Cargo.toml (from the sed+commit above), no re-checkout
             # needed for subsequent steps to read it.
             git push origin HEAD:main
           fi
