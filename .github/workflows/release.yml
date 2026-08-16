@@ -41,15 +41,16 @@ name: Release
 # stage of a deliberate chain — CI -> connectors-heavy -> Release build ->
 # GitHub Release — so `build`/`github-release` only run once both of those
 # already succeeded on that commit (see the `workflow_run` trigger below and
-# each job's `if:`). `build` also runs on every PR targeting `main`
-# independently of that chain, for pre-merge validation only — never
-# `github-release` (no publish side effects on a PR). `github-release` derives
+# each job's `if:`). No separate PR-time path — a PR only gets exercised by
+# this workflow if/when it's merged and runs the real chain; `workflow_dispatch`
+# is the only other way in (manual escape hatch, see below). `github-release` derives
 # its tag/name directly from the workspace version in Cargo.toml (currently
 # v0.1.0) rather than requiring a separate `git tag` push — every successful
-# run of the chain re-publishes that same version's release
-# (softprops/action-gh-release upserts: new assets replace old ones on the
-# existing tag rather than erroring) until someone bumps the workspace
-# version, at which point a new tag/release is created instead.
+# run of the chain re-publishes that same version's release (the
+# `github-release` job's own release-and-upload step upserts: new assets
+# replace old ones on the existing tag via `gh release upload --clobber`
+# rather than erroring) until someone bumps the workspace version, at which
+# point a new tag/release is created instead.
 
 on:
   # Last step of the CI -> connectors-heavy -> Release chain on main (see
@@ -57,24 +58,39 @@ on:
   # `workflow_run` is the only way to sequence separate workflow files,
   # there's no cross-file `needs:`. The job-level `if:`s below only let
   # github-release actually run when connectors-heavy's main-branch run
-  # succeeded.
+  # succeeded, and connectors-heavy.yml itself only runs when CI succeeded
+  # — so this single trigger already transitively requires both CI and
+  # connectors-heavy to be green before Release does anything.
+  #
+  # No independent `pull_request:` trigger here on purpose (removed) — it
+  # used to race CI instead of depending on it, so a PR could show this
+  # workflow green while CI was still red on the very same commit. Release
+  # only ever runs as step 3 of the chain above, or via the manual dispatch
+  # below.
   workflow_run:
     workflows: ["connectors-heavy"]
     types: [completed]
-    branches: [main]
-  # PR validation stays independent of the chain above — build is exercised
-  # pre-merge, never github-release (no publish side effects on a PR).
-  pull_request:
     branches: [main]
   # Manual escape hatch: `workflow_run` delivery from GitHub can lag several
   # minutes behind the source workflow's completion (observed on this repo —
   # see git history around this line), and re-running the upstream
   # connectors-heavy run reuses its run id instead of emitting a fresh
   # `completed` event, so it doesn't reliably re-fire this trigger either.
-  # `gh workflow run release.yml --ref main` covers that gap without editing
-  # anything — same pattern as ci.yml/connectors-heavy.yml's own
-  # `workflow_dispatch`.
+  # `gh workflow run release.yml --ref main -f version=X.Y.Z` covers that gap
+  # without editing anything — same pattern as ci.yml/connectors-heavy.yml's
+  # own `workflow_dispatch`.
+  #
+  # `version` is required and has no default on purpose: this is the only
+  # path where the version is a human decision rather than derived from
+  # Cargo.toml (see the "Determine version" step) — forces whoever runs this
+  # by hand to say explicitly what they're publishing instead of silently
+  # reusing whatever happens to be committed.
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 0.1.0) — updates Cargo.toml and publishes/completes that tag"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -123,7 +139,7 @@ jobs:
           # workflow_run's default ref/sha is the repo's default branch, not
           # the commit connectors-heavy just validated on main — pin
           # explicitly. github.sha already resolves correctly for
-          # pull_request (the PR's merge commit), so this is a no-op there.
+          # workflow_dispatch, so this is a no-op there.
           ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
@@ -255,36 +271,45 @@ jobs:
           # workflow_run's default ref/sha is the repo's default branch, not
           # the commit connectors-heavy just validated on main — pin
           # explicitly. github.sha already resolves correctly for
-          # pull_request (the PR's merge commit), so this is a no-op there.
+          # workflow_dispatch, so this is a no-op there.
           ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Determine next version
+      - name: Determine version
         id: version
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISPATCH_VERSION: ${{ github.event.inputs.version }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           current_version="$(grep -A3 '^\[workspace.package\]' Cargo.toml | grep '^version' | head -1 | cut -d '"' -f2)"
-          version="$current_version"
 
-          # Bump patch while a release already exists for this tag.
-          while gh release view "v$version" >/dev/null 2>&1; do
-            version="$(echo "$version" | awk -F. -v OFS=. '{$NF+=1; print}')"
-          done
+          # workflow_dispatch: the version is whatever was typed in, full
+          # stop — never auto-derived. The automatic CI -> connectors-heavy
+          # -> Release chain has no way to take input (workflow_run doesn't
+          # carry one), so it always publishes/completes whatever version is
+          # currently committed to Cargo.toml — no auto-bump. Concretely:
+          # merging a change that doesn't touch Cargo.toml's version just
+          # re-completes that same tag's release (upsert via `--clobber`
+          # below) instead of minting a new one every single merge.
+          if [ -n "${DISPATCH_VERSION:-}" ]; then
+            version="$DISPATCH_VERSION"
+          else
+            version="$current_version"
+          fi
 
           if [ "$version" != "$current_version" ]; then
             sed -i "s/^version = \"[^\"]*\"/version = \"$version\"/" Cargo.toml
             git add Cargo.toml
-            git commit -m "chore(release): bump version to v$version [skip ci]"
+            git commit -m "chore(release): set version to v$version [skip ci]"
             # actions/checkout leaves a detached HEAD, not a local `main`
             # branch — `git push origin main` has nothing to push and fails
             # with "src refspec main does not match any". Push the commit
             # directly by ref instead; the working directory already has the
-            # bumped Cargo.toml (from the sed+commit above), no re-checkout
+            # updated Cargo.toml (from the sed+commit above), no re-checkout
             # needed for subsequent steps to read it.
             git push origin HEAD:main
           fi
@@ -299,17 +324,28 @@ jobs:
         run: |
           cd dist
           sha256sum *.tar.gz *.deb *.rpm *.AppImage > SHA256SUMS
-      - uses: softprops/action-gh-release@7b4da11513bf3f43f9999e90eabced41ab8bb048 # v2.2.0
-        with:
-          tag_name: v${{ steps.version.outputs.version }}
-          name: v${{ steps.version.outputs.version }}
-          # Each successful run on main bumps the patch version (if needed)
-          # and creates a fresh release; assets are replaced only when the
-          # version stays the same, which no longer happens on main.
-          files: |
-            dist/*.tar.gz
-            dist/*.deb
-            dist/*.rpm
-            dist/*.AppImage
-            dist/SHA256SUMS
-          generate_release_notes: true
+      - name: Create release and upload assets one at a time
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="v${{ steps.version.outputs.version }}"
+
+          # softprops/action-gh-release uploads every asset concurrently in
+          # one call, which repeatedly failed on this runner's connection to
+          # GitHub's upload API ("Request body length does not match
+          # content-length header") for the large binaries specifically —
+          # small files always succeeded. `gh release upload`, invoked once
+          # per file in a loop, uploads strictly sequentially instead.
+          #
+          # Idempotent: a prior failed attempt may have already created the
+          # release (with some assets missing) — `create` only if it isn't
+          # there yet, and `--clobber` lets upload replace whatever partial
+          # assets exist from that attempt.
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --title "$tag" --generate-notes
+          fi
+
+          for f in dist/*.tar.gz dist/*.deb dist/*.rpm dist/*.AppImage dist/SHA256SUMS; do
+            gh release upload "$tag" "$f" --clobber
+          done
