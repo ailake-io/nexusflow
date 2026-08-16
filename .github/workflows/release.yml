@@ -46,10 +46,11 @@ name: Release
 # `github-release` (no publish side effects on a PR). `github-release` derives
 # its tag/name directly from the workspace version in Cargo.toml (currently
 # v0.1.0) rather than requiring a separate `git tag` push — every successful
-# run of the chain re-publishes that same version's release
-# (softprops/action-gh-release upserts: new assets replace old ones on the
-# existing tag rather than erroring) until someone bumps the workspace
-# version, at which point a new tag/release is created instead.
+# run of the chain re-publishes that same version's release (the
+# `github-release` job's own release-and-upload step upserts: new assets
+# replace old ones on the existing tag via `gh release upload --clobber`
+# rather than erroring) until someone bumps the workspace version, at which
+# point a new tag/release is created instead.
 
 on:
   # Last step of the CI -> connectors-heavy -> Release chain on main (see
@@ -299,17 +300,28 @@ jobs:
         run: |
           cd dist
           sha256sum *.tar.gz *.deb *.rpm *.AppImage > SHA256SUMS
-      - uses: softprops/action-gh-release@7b4da11513bf3f43f9999e90eabced41ab8bb048 # v2.2.0
-        with:
-          tag_name: v${{ steps.version.outputs.version }}
-          name: v${{ steps.version.outputs.version }}
-          # Each successful run on main bumps the patch version (if needed)
-          # and creates a fresh release; assets are replaced only when the
-          # version stays the same, which no longer happens on main.
-          files: |
-            dist/*.tar.gz
-            dist/*.deb
-            dist/*.rpm
-            dist/*.AppImage
-            dist/SHA256SUMS
-          generate_release_notes: true
+      - name: Create release and upload assets one at a time
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="v${{ steps.version.outputs.version }}"
+
+          # softprops/action-gh-release uploads every asset concurrently in
+          # one call, which repeatedly failed on this runner's connection to
+          # GitHub's upload API ("Request body length does not match
+          # content-length header") for the large binaries specifically —
+          # small files always succeeded. `gh release upload`, invoked once
+          # per file in a loop, uploads strictly sequentially instead.
+          #
+          # Idempotent: a prior failed attempt may have already created the
+          # release (with some assets missing) — `create` only if it isn't
+          # there yet, and `--clobber` lets upload replace whatever partial
+          # assets exist from that attempt.
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --title "$tag" --generate-notes
+          fi
+
+          for f in dist/*.tar.gz dist/*.deb dist/*.rpm dist/*.AppImage dist/SHA256SUMS; do
+            gh release upload "$tag" "$f" --clobber
+          done
