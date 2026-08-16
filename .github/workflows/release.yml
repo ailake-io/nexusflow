@@ -41,9 +41,9 @@ name: Release
 # stage of a deliberate chain — CI -> connectors-heavy -> Release build ->
 # GitHub Release — so `build`/`github-release` only run once both of those
 # already succeeded on that commit (see the `workflow_run` trigger below and
-# each job's `if:`). `build` also runs on every PR targeting `main`
-# independently of that chain, for pre-merge validation only — never
-# `github-release` (no publish side effects on a PR). `github-release` derives
+# each job's `if:`). No separate PR-time path — a PR only gets exercised by
+# this workflow if/when it's merged and runs the real chain; `workflow_dispatch`
+# is the only other way in (manual escape hatch, see below). `github-release` derives
 # its tag/name directly from the workspace version in Cargo.toml (currently
 # v0.1.0) rather than requiring a separate `git tag` push — every successful
 # run of the chain re-publishes that same version's release (the
@@ -58,14 +58,18 @@ on:
   # `workflow_run` is the only way to sequence separate workflow files,
   # there's no cross-file `needs:`. The job-level `if:`s below only let
   # github-release actually run when connectors-heavy's main-branch run
-  # succeeded.
+  # succeeded, and connectors-heavy.yml itself only runs when CI succeeded
+  # — so this single trigger already transitively requires both CI and
+  # connectors-heavy to be green before Release does anything.
+  #
+  # No independent `pull_request:` trigger here on purpose (removed) — it
+  # used to race CI instead of depending on it, so a PR could show this
+  # workflow green while CI was still red on the very same commit. Release
+  # only ever runs as step 3 of the chain above, or via the manual dispatch
+  # below.
   workflow_run:
     workflows: ["connectors-heavy"]
     types: [completed]
-    branches: [main]
-  # PR validation stays independent of the chain above — build is exercised
-  # pre-merge, never github-release (no publish side effects on a PR).
-  pull_request:
     branches: [main]
   # Manual escape hatch: `workflow_run` delivery from GitHub can lag several
   # minutes behind the source workflow's completion (observed on this repo —
@@ -124,7 +128,7 @@ jobs:
           # workflow_run's default ref/sha is the repo's default branch, not
           # the commit connectors-heavy just validated on main — pin
           # explicitly. github.sha already resolves correctly for
-          # pull_request (the PR's merge commit), so this is a no-op there.
+          # workflow_dispatch, so this is a no-op there.
           ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
@@ -256,7 +260,7 @@ jobs:
           # workflow_run's default ref/sha is the repo's default branch, not
           # the commit connectors-heavy just validated on main — pin
           # explicitly. github.sha already resolves correctly for
-          # pull_request (the PR's merge commit), so this is a no-op there.
+          # workflow_dispatch, so this is a no-op there.
           ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
