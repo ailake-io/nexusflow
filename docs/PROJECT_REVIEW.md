@@ -87,6 +87,44 @@ Documento único de backlog técnico. Consolida:
 | **B33** | `telemetry.rs` `try_init()` não é idempotente. | `crates/nexus-server/src/telemetry.rs:34` | Tornar idempotente. |
 | **B34** | `nexus-ai` não valida assinatura/checksum do modelo. | `crates/nexus-ai/src/embedding/model.rs:30-40` | Documentar risco; planejar pin de hash. |
 
+### 2.4 Itens resolvidos nesta branch
+
+> Branch `fix/a08-a09-onnx-revision-docker-image` — correções aplicadas e validadas com `cargo fmt`, `cargo clippy -D warnings`, `cargo test -p nexus-server --lib --features embed-ui,connectors-all` e `npm test -- --run`.
+
+| ID | Resolução |
+|---|---|
+| **A08** | `revision` configurável no `EmbeddingModelSpec` / `EmbeddingNodeData`. |
+| **A09** | Imagem Docker `:full` publicada no GHCR via `release.yml`. |
+| **M03** | `resolves_to_internal_host` valida IP resolvido em `dag.rs`. |
+| **M05** | `"parquet"` adicionado a `is_local_path_connector`. |
+| **M09** | `DeltaSink::open()` distingue `NotFound`/ausência de tabela de outros erros. |
+| **M13** | `AlertNotifier` rastreia handles e aguarda em `shutdown()`. |
+| **M18** | Mensagens de erro do `dag.ts` i18n pt/en. |
+| **M26** | Seção §4.9 CDC no `USER_GUIDE.md`. |
+| **M27** | Forwards `embeddings`/`embeddings-api`/`postgres-cdc`/`mysql-cdc`/`deltalake-cdc`/`iceberg-cdc`/`ailake-cdc` no `Cargo.toml` raiz. |
+| **M28** | Chunking `semantic` no `ChunkingSpec` (core, nexus-ai, frontend). |
+| **M29** | `ENTERPRISE_LICENSING.md` já reflete estado real (rotas não implementadas marcadas com ❌). |
+| **M30** | `CLAUDE.md`/`ROADMAP.md` descrevem GHCR como registry ativo e Docker Hub como pendente. |
+| **M31** | `install.sh` restringido a Linux x86_64. |
+| **M34** | `appimagetool` pinado à tag `1.9.1` com SHA-256 verificado. |
+| **M37** | Risco documentado no `ci.yml` (`concurrency` + comentário); runners self-hosted são infraestrutura única do projeto hoje. |
+| **B01** | `PipelineStore::create` captura violação UNIQUE no INSERT. |
+| **B02** | Upsert vazio usa `DO NOTHING`. |
+| **B03** | Backoff REST usa `saturating_mul`/`saturating_pow`. |
+| **B05/B06** | IP do cliente extraído de `X-Forwarded-For` e passado ao audit log/rate limiter. |
+| **B12** | Caso `idle` no `ExecutionPanel` é retorno `null` válido; status duplicado é intencional (dashboard vs. painel de execução). |
+| **B16** | `actions/upload-artifact` pinado por SHA. |
+| **B23** | Documentos enterprise alinhados. |
+| **B24** | `USER_GUIDE.md` esclarece LanceDB/AILake como exceção que cria automaticamente. |
+| **B25** | Contagem de conectores atualizada. |
+| **B27** | `cache-control` no `embedded_ui.rs`. |
+| **B31** | Índices `pipeline_runs(pipeline_id)`/`pipeline_runs(status)` criados na migração. |
+| **B33** | `telemetry::init()` idempotente via `Once`. |
+| **B34** | Documentado risco de checksum de modelo no `USER_GUIDE.md`. |
+| **B39** | `PipelineIoPanel.tsx` valida JSON no import. |
+| **B40** | `I18nProvider` sincroniza `document.documentElement.lang`. |
+| **B42** | Build Windows removido do release e documentado como pendente de setup do runner. |
+
 ---
 
 ## 3. Itens Críticos Resolvidos
