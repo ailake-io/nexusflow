@@ -1,6 +1,7 @@
 use crate::checkpoint_store::CheckpointStore;
 use crate::connectors::{build_sink, build_source};
 use crate::progress::RunLogger;
+use crate::python_transform;
 use nexus_connector_postgres::{
     primary_key_bounds, split_into_partitions, table_schema, PkPartitionKind,
     PostgresConnectorConfig, PostgresSink, PostgresSource,
@@ -111,7 +112,7 @@ pub async fn run_pipeline(
     progress: Option<ProgressSender>,
     log: Option<&RunLogger>,
 ) -> anyhow::Result<Vec<PartitionStats>> {
-    if spec.has_transform() {
+    if spec.has_transform() || spec.python.is_some() {
         run_transform_pipeline(spec, checkpoints, progress, log).await
     } else {
         run_linear_pipeline(spec, checkpoints, progress, log).await
@@ -258,6 +259,13 @@ async fn run_linear_pipeline(
 /// Unpartitioned — every source is read in full, see ARCHITECTURE.md §6.
 /// Sinks are only built after the transform runs, since their column list
 /// comes from the transform's *output* schema, not any single source's.
+///
+/// Also the entry point for a python-only pipeline (`spec.python` set,
+/// `spec.transform` absent) — see `run_pipeline`'s dispatch condition and
+/// `dag.rs::validate()` for why that still requires exactly 1 source: with
+/// no SQL stage to fan multiple sources into one table, `python` always
+/// operates on a single upstream table's batches. When both are set, the
+/// order is SQL transform, then python, over its output.
 #[tracing::instrument(skip_all, fields(pipeline_id = %spec.pipeline_id))]
 async fn run_transform_pipeline(
     spec: &PipelineSpec,
@@ -265,11 +273,6 @@ async fn run_transform_pipeline(
     progress: Option<ProgressSender>,
     log: Option<&RunLogger>,
 ) -> anyhow::Result<Vec<PartitionStats>> {
-    let transform_spec = spec
-        .transform
-        .as_ref()
-        .expect("run_transform_pipeline called on a spec without a transform");
-
     let done = checkpoints.done_partitions(&spec.pipeline_id).await?;
 
     let mut sources = Vec::with_capacity(spec.sources.len());
@@ -296,8 +299,38 @@ async fn run_transform_pipeline(
         );
     }
 
-    let transform = DataFusionTransform::new(&transform_spec.sql);
-    let output = transform.apply(inputs).await?;
+    let output = if let Some(transform_spec) = &spec.transform {
+        let transform = DataFusionTransform::new(&transform_spec.sql);
+        transform.apply(inputs).await?
+    } else {
+        // No SQL transform — a python-only pipeline, validated as exactly
+        // 1 source (dag.rs::validate()), so there's exactly one entry to
+        // unwrap here.
+        inputs
+            .into_iter()
+            .next()
+            .map(|(_, _, batches)| batches)
+            .unwrap_or_default()
+    };
+
+    let output = if let Some(python_spec) = &spec.python {
+        match output.first().map(|b| b.schema()) {
+            Some(schema) => {
+                log_info(log, "running python transform").await;
+                let result = log_on_err(
+                    log,
+                    "python transform failed",
+                    python_transform::apply(schema, output, python_spec).await,
+                )
+                .await?;
+                log_info(log, "python transform finished").await;
+                result
+            }
+            None => output, // nothing to transform
+        }
+    } else {
+        output
+    };
 
     let columns: Vec<String> = output
         .first()

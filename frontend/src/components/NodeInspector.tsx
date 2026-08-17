@@ -7,6 +7,7 @@ import type {
   DbtNodeData,
   EmbeddingBackend,
   EmbeddingNodeData,
+  PythonNodeData,
   TransformNodeData,
 } from '@/lib/dag'
 import type { ConnectorDescriptor } from '@/lib/api'
@@ -14,7 +15,7 @@ import { useI18n } from '@/lib/i18n'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { SchemaForm } from '@/components/SchemaForm'
-import { Database, Code2, Layers, Sparkles } from 'lucide-react'
+import { Database, Code2, Layers, Sparkles, Terminal } from 'lucide-react'
 
 interface NodeInspectorProps {
   node: DagNode
@@ -25,7 +26,8 @@ interface NodeInspectorProps {
       | Partial<ConnectorNodeData>
       | Partial<TransformNodeData>
       | Partial<DbtNodeData>
-      | Partial<EmbeddingNodeData>,
+      | Partial<EmbeddingNodeData>
+      | Partial<PythonNodeData>,
   ) => void
 }
 
@@ -258,6 +260,55 @@ export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps
                 value={data.select}
                 placeholder={t('canvas.selectPlaceholder')}
                 onChange={(e) => onChange(node.id, { select: e.target.value })}
+                className="mt-1.5"
+              />
+            </div>
+          </div>
+        </div>
+      </aside>
+    )
+  }
+
+  if (data.kind === 'python') {
+    return (
+      <aside className="flex w-80 shrink-0 flex-col border-l bg-card">
+        <div className="border-b border-white/10 px-4 py-3">
+          <div className="flex items-center gap-2">
+            <Terminal className="h-4 w-4 text-sky-400" />
+            <h2 className="text-sm font-semibold text-foreground">{t('canvas.python')}</h2>
+          </div>
+          <p className="mt-0.5 text-[10px] text-muted-foreground">{t('canvas.pythonDesc')}</p>
+        </div>
+        <div className="flex-1 overflow-auto p-4">
+          <div className="flex flex-col gap-4">
+            <div>
+              <Label htmlFor="python-script" className="text-xs font-medium">
+                {t('canvas.pythonScript')}
+              </Label>
+              <textarea
+                id="python-script"
+                value={data.script}
+                onChange={(e) => onChange(node.id, { script: e.target.value })}
+                rows={16}
+                spellCheck={false}
+                placeholder={t('canvas.pythonScriptPlaceholder')}
+                className="mt-1.5 w-full rounded-lg border border-input bg-transparent p-3 font-mono text-xs text-foreground outline-none focus:ring-2 focus:ring-ring"
+              />
+            </div>
+            <div>
+              <Label htmlFor="python-timeout" className="text-xs font-medium">
+                {t('canvas.pythonTimeout')}{' '}
+                <span className="text-muted-foreground">({t('common.optional')})</span>
+              </Label>
+              <Input
+                id="python-timeout"
+                type="number"
+                min={1}
+                value={data.timeoutSeconds || ''}
+                placeholder="60"
+                onChange={(e) =>
+                  onChange(node.id, { timeoutSeconds: Number(e.target.value) || 0 })
+                }
                 className="mt-1.5"
               />
             </div>

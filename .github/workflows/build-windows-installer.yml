@@ -1,0 +1,144 @@
+name: build-windows-installer
+
+# Standalone .msi build — deliberately NOT part of the CI -> connectors-heavy
+# -> Release chain (release.yml). Windows was dropped from that chain
+# because the self-hosted windows-connectors-heavy runner needs a one-time
+# manual vcpkg/OpenSSL setup before `cargo build --features connectors-all`
+# succeeds (nexus-connector-mysql's mysql_cdc only supports native OpenSSL,
+# no rustls option) — see release.yml's header comment for the full story.
+# This workflow only ever runs when a human explicitly triggers it
+# (workflow_dispatch), never on push/PR, and never blocks or is blocked by
+# CI/connectors-heavy/Release — the same self-hosted Windows runner
+# connectors-heavy.yml uses, but a fully independent workflow file.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: >-
+          Existing release tag (e.g. v0.1.1, already published by
+          release.yml) to attach the built .msi to via `gh release upload`.
+          Leave blank to just build and upload the .msi as a workflow
+          artifact, without publishing it anywhere.
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-windows-installer:
+    name: build-windows-installer
+    runs-on: [windows-connectors-heavy]
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      # Same install-if-missing PowerShell block connectors-heavy.yml uses on
+      # this runner (WSL's bash shadows Git Bash in PATH there, which
+      # mangles dtolnay/rust-toolchain's internal temp-script path — see
+      # that workflow's comment).
+      - name: Install Rust stable
+        shell: pwsh
+        run: |
+          $cargoBin = "$env:USERPROFILE\.cargo\bin"
+          if (!(Get-Command rustc.exe -ErrorAction SilentlyContinue)) {
+            Invoke-WebRequest -Uri https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe -OutFile rustup-init.exe
+            $shaBytes = (Invoke-WebRequest -Uri https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe.sha256 -UseBasicParsing).Content
+            $expected = [System.Text.Encoding]::ASCII.GetString($shaBytes).Trim().Split()[0]
+            $actual = (Get-FileHash -Algorithm SHA256 -Path rustup-init.exe).Hash
+            if ($expected -ne $actual) {
+              Write-Error "rustup-init checksum mismatch: expected $expected, got $actual"
+              exit 1
+            }
+            ./rustup-init.exe -y --default-toolchain stable --no-modify-path
+            Remove-Item rustup-init.exe
+          }
+          rustup default stable
+          "$cargoBin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          "C:\Program Files\Git\usr\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          "C:\Program Files\CMake\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      # One-time manual setup this runner needs before this ever succeeds
+      # (see the workflow-level comment above): `vcpkg install
+      # openssl:x64-windows-static-md`, `vcpkg integrate install`, and
+      # VCPKG_ROOT set in the runner's own environment (not here — it has
+      # to survive across jobs/runs, this step only *verifies* it, with a
+      # clear error instead of a cryptic openssl-sys build failure deep in
+      # the cargo build step below).
+      - name: Verify vcpkg OpenSSL is set up
+        shell: pwsh
+        run: |
+          if (-not $env:VCPKG_ROOT) {
+            Write-Error "VCPKG_ROOT is not set on this runner — one-time setup needed: vcpkg install openssl:x64-windows-static-md && vcpkg integrate install, then set VCPKG_ROOT in the runner's environment. See this workflow's header comment."
+            exit 1
+          }
+          $opensslPkg = Join-Path $env:VCPKG_ROOT "installed\x64-windows-static-md\lib\libssl.lib"
+          if (!(Test-Path $opensslPkg)) {
+            Write-Error "openssl:x64-windows-static-md not found under VCPKG_ROOT — run: vcpkg install openssl:x64-windows-static-md"
+            exit 1
+          }
+
+      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+
+      - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # embed-ui bakes frontend/dist into the binary at compile time
+      # (rust-embed) — must exist before `cargo build` below.
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install cargo-wix
+        run: |
+          if (!(Get-Command cargo-wix.exe -ErrorAction SilentlyContinue)) {
+            cargo install cargo-wix --locked
+          }
+
+      # Same feature set as release.yml's Linux build, so GET /connectors
+      # matches across platforms. No ADBC drivers on Windows yet (see
+      # packaging/windows/main.wxs's header comment) — Postgres/SQLite
+      # connectors won't have a driver to dlopen until that's built too.
+      - name: cargo build --release
+        run: cargo build --release -p nexusflow --features embed-ui,connectors-all
+
+      - name: cargo wix
+        run: cargo wix --input packaging\windows\main.wxs --nocapture
+
+      - name: Locate the built .msi
+        id: msi
+        run: |
+          $msi = Get-ChildItem -Path target\wix -Filter *.msi | Select-Object -First 1
+          if (-not $msi) {
+            Write-Error "cargo wix did not produce a .msi under target\wix"
+            exit 1
+          }
+          "path=$($msi.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "name=$($msi.Name)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - uses: actions/upload-artifact@834a144ee995460fba8ed112a2fc961b36a5ec5a # v4.4.3
+        with:
+          name: nexusflow-windows-installer
+          path: ${{ steps.msi.outputs.path }}
+
+      # Only attaches to an existing GitHub Release when `version` was
+      # given — otherwise the artifact above is the whole output, a human
+      # downloads and publishes it by hand whenever ready.
+      - name: Attach to release
+        if: inputs.version != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.version }}
+          MSI_PATH: ${{ steps.msi.outputs.path }}
+        run: gh release upload "$env:RELEASE_TAG" "$env:MSI_PATH" --clobber

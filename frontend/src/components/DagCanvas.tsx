@@ -14,7 +14,7 @@ import {
   type OnSelectionChangeFunc,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { Code2, Layers, Sparkles } from 'lucide-react'
+import { Code2, Layers, Sparkles, Terminal } from 'lucide-react'
 import { useI18n } from '@/lib/i18n'
 import { ConnectorPalette } from '@/components/ConnectorPalette'
 import { dagNodeTypes } from '@/components/dag-node-types'
@@ -35,6 +35,7 @@ import {
   type EmbeddingNodeData,
   type PipelineMeta,
   type PipelineSpec,
+  type PythonNodeData,
   type TransformNodeData,
 } from '@/lib/dag'
 
@@ -136,6 +137,19 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
     ])
   }, [])
 
+  const addPythonNode = useCallback(() => {
+    const id = newNodeId()
+    setNodes((current) => [
+      ...current,
+      {
+        id,
+        type: 'python',
+        position: { x: 480, y: 200 },
+        data: { kind: 'python', script: '', timeoutSeconds: 0 },
+      },
+    ])
+  }, [])
+
   const addEmbeddingNode = useCallback(() => {
     const id = newNodeId()
     setNodes((current) => [
@@ -173,7 +187,8 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
         | Partial<ConnectorNodeData>
         | Partial<TransformNodeData>
         | Partial<DbtNodeData>
-        | Partial<EmbeddingNodeData>,
+        | Partial<EmbeddingNodeData>
+        | Partial<PythonNodeData>,
     ) => {
       setNodes((current) =>
         current.map((n) =>
@@ -367,6 +382,14 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
             >
               <Layers className="h-3.5 w-3.5 text-emerald-400" />
               {t('canvas.addDbt')}
+            </button>
+            <button
+              type="button"
+              onClick={addPythonNode}
+              className="flex items-center gap-2 rounded-lg border border-white/10 bg-card/90 px-3 py-2 text-sm font-medium text-foreground shadow-lg backdrop-blur transition-all hover:border-sky-400/40 hover:bg-card"
+            >
+              <Terminal className="h-3.5 w-3.5 text-sky-400" />
+              {t('canvas.addPython')}
             </button>
             <button
               type="button"

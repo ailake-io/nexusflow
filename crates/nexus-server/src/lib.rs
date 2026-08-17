@@ -15,6 +15,7 @@ mod license_store;
 pub mod migrate;
 mod pipeline_store;
 mod progress;
+mod python_transform;
 mod rate_limit;
 mod run_log_store;
 mod runner;

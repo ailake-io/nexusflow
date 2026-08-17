@@ -7537,6 +7537,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry-prometheus",
  "opentelemetry_sdk",
+ "parquet 58.4.0",
  "prometheus",
  "rand_core 0.6.4",
  "reqwest 0.12.28",
