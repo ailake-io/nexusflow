@@ -31,7 +31,15 @@ export interface DbtConfig {
  * `backend` (`#[serde(tag = "backend")]`), so the JSON carries the
  * discriminator inline rather than as a wrapper key. */
 export type EmbeddingModelSpec =
-  | { backend: 'onnx'; repo: string; filename: string; tokenizer_filename: string; max_length: number }
+  | {
+      backend: 'onnx'
+      repo: string
+      /** Git revision (branch, tag or commit) inside the HF repo. */
+      revision: string
+      filename: string
+      tokenizer_filename: string
+      max_length: number
+    }
   | { backend: 'api'; base_url: string; model: string; api_key_env?: string }
 
 /** Matches nexus-core::ChunkingSpec exactly — tagged on `strategy`. */
@@ -120,6 +128,7 @@ export interface EmbeddingNodeData extends Record<string, unknown> {
   backend: EmbeddingBackend
   // backend: 'onnx'
   repo: string
+  revision: string
   filename: string
   tokenizerFilename: string
   maxLength: number
@@ -282,6 +291,7 @@ function toEmbeddingSpec(data: EmbeddingNodeData, allowDraft = false): Embedding
       model = {
         backend: 'onnx',
         repo: data.repo.trim(),
+        revision: data.revision.trim() || 'main',
         filename: data.filename.trim(),
         tokenizer_filename: data.tokenizerFilename.trim(),
         max_length: data.maxLength,
@@ -455,6 +465,7 @@ const DEFAULT_EMBEDDING_DATA: EmbeddingNodeData = {
   dimension: 384,
   backend: 'onnx',
   repo: '',
+  revision: 'main',
   filename: '',
   tokenizerFilename: '',
   maxLength: 128,
@@ -480,6 +491,7 @@ function fromEmbeddingSpec(spec: EmbeddingSpec): EmbeddingNodeData {
   }
   if (spec.model.backend === 'onnx') {
     data.repo = spec.model.repo
+    data.revision = spec.model.revision
     data.filename = spec.model.filename
     data.tokenizerFilename = spec.model.tokenizer_filename
     data.maxLength = spec.model.max_length

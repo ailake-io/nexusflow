@@ -56,6 +56,7 @@ pub async fn load_embedding_backend(
         #[cfg(feature = "cpu")]
         EmbeddingModelSpec::Onnx {
             repo,
+            revision,
             filename,
             tokenizer_filename,
             max_length,
@@ -65,7 +66,7 @@ pub async fn load_embedding_backend(
             let model_cfg = EmbeddingModelConfig {
                 model: ModelConfig {
                     repo_id: repo.clone(),
-                    revision: "main".to_string(),
+                    revision: revision.clone(),
                     filename: filename.clone(),
                 },
                 tokenizer_filename: tokenizer_filename.clone(),

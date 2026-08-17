@@ -152,6 +152,7 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
           dimension: 384,
           backend: 'onnx',
           repo: '',
+          revision: 'main',
           filename: '',
           tokenizerFilename: '',
           maxLength: 128,

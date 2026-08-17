@@ -32,7 +32,7 @@ docker run -d --name nexusflow -p 8080:8080 \
 
 Variáveis de ambiente completas: ver [`GETTING_STARTED.md` §3](./GETTING_STARTED.md#3-variáveis-de-ambiente). As duas obrigatórias são `NEXUS_JWT_SECRET` e `NEXUS_ENCRYPTION_KEY` — sem elas o processo não sobe.
 
-**Conectores linkados no binário**: binários pré-buildados (release, `.deb`, AppImage, rpm, imagem Docker `:full`) já vêm com os 24 conectores ligados (`embed-ui,connectors-all`: 18 batch + 6 CDC nativos; a feature `rest` registra `rest` e `webhook` como nomes separados no catálogo). Buildando a partir do source, cada conector é uma feature Cargo opcional (`cargo build --features embed-ui,connectors-all` liga todos de uma vez) — ver [`GETTING_STARTED.md` §2](./GETTING_STARTED.md#2-habilitando-conectores). O catálogo em `GET /connectors` sempre reflete exatamente o que foi compilado; a UI nunca mostra um conector que não está no binário.
+**Conectores linkados no binário**: binários pré-buildados (release, `.deb`, AppImage, rpm) e a imagem Docker publicada no GHCR já vêm com os 24 conectores ligados (`embed-ui,connectors-all`: 18 batch + 6 CDC nativos; a feature `rest` registra `rest` e `webhook` como nomes separados no catálogo). Buildando a partir do source, cada conector é uma feature Cargo opcional (`cargo build --features embed-ui,connectors-all` liga todos de uma vez) — ver [`GETTING_STARTED.md` §2](./GETTING_STARTED.md#2-habilitando-conectores). O catálogo em `GET /connectors` sempre reflete exatamente o que foi compilado; a UI nunca mostra um conector que não está no binário.
 
 ---
 
@@ -420,6 +420,7 @@ Node `embedding` opcional, roda **antes** do transform (ou antes dos sinks, se n
 "model": {
   "backend": "onnx",
   "repo": "sentence-transformers/all-MiniLM-L6-v2",
+  "revision": "main",
   "filename": "model.onnx",
   "tokenizer_filename": "tokenizer.json",
   "max_length": 128

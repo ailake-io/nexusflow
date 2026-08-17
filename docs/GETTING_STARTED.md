@@ -8,17 +8,24 @@ Escolha uma das opções abaixo. Todas sobem o mesmo binário: um único process
 
 ### Docker (mais simples)
 
+Imagem publicada no GHCR (já com todos os 24 conectores):
+
 ```bash
-docker build -t nexusflow .
 docker run -d --name nexusflow -p 8080:8080 \
   -e NEXUS_JWT_SECRET="$(openssl rand -hex 32)" \
   -e NEXUS_ENCRYPTION_KEY="$(openssl rand -hex 32)" \
   -e NEXUS_ADMIN_USERNAME=admin \
   -e NEXUS_ADMIN_PASSWORD="troque-isto" \
-  nexusflow
+  ghcr.io/ailake-io/nexusflow:latest
 ```
 
-Com conectores extras (imagem por padrão só liga postgres/sqlite, igual ao binário nativo — ver seção 2 abaixo):
+Build local (imagem por padrão só liga postgres/sqlite, igual ao binário nativo — ver seção 2 abaixo):
+
+```bash
+docker build -t nexusflow .
+```
+
+Com conectores extras no build local:
 
 ```bash
 docker build --build-arg FEATURES=embed-ui,connectors-all -t nexusflow:full .
@@ -75,7 +82,7 @@ export NEXUS_ADMIN_PASSWORD="troque-isto"
 
 ## 2. Habilitando conectores
 
-Isso só se aplica a quem builda a partir do source (seção 1, "Build a partir do source") — os binários pré-buildados (script de instalação, `.deb`/AppImage/rpm, imagem Docker `:full`) já vêm com `connectors-all` ligado, ver seção 1.
+Isso só se aplica a quem builda a partir do source (seção 1, "Build a partir do source") — os binários pré-buildados (script de instalação, `.deb`/AppImage/rpm) e a imagem Docker publicada no GHCR já vêm com `connectors-all` ligado, ver seção 1.
 
 Por padrão um `cargo build` sem flags só liga `postgres` e `sqlite`. A feature `connectors-all` habilita as outras **22 entradas de conector** no catálogo (24 nomes no total, pois a feature `rest` registra tanto `rest` quanto `webhook`): mongodb, kafka, rest, webhook, odbc, milvus, qdrant, lancedb, pgvector, pinecone, chromadb, deltalake, iceberg, parquet, ailake, csv e os 6 CDCs nativos (postgres-cdc, mongodb-cdc, mysql-cdc, deltalake-cdc, iceberg-cdc, ailake-cdc). Cada um só entra no binário se sua feature for pedida:
 
@@ -106,6 +113,7 @@ Para gerar embeddings no pipeline, adicione um nó `embedding` ao spec (ou arras
     "model": {
       "backend": "onnx",
       "repo": "sentence-transformers/all-MiniLM-L6-v2",
+      "revision": "main",
       "filename": "model.onnx",
       "tokenizer_filename": "tokenizer.json",
       "max_length": 128
@@ -117,7 +125,7 @@ Para gerar embeddings no pipeline, adicione um nó `embedding` ao spec (ou arras
 
 A feature Cargo `embeddings` (incluída em `connectors-all`) liga o crate `nexus-ai` e suas dependências ONNX/HF Hub. Sem ela, um spec com `embedding` retorna erro claro.
 
-> **Reprodutibilidade do modelo:** o backend ONNX fixa a revision em `"main"` ao baixar do Hugging Face. Para garantir que o mesmo peso seja usado em todos os ambientes, prefira servir o arquivo via `filename`/`repo` fixos e cache compartilhado, ou use o backend `api` com um modelo específico.
+> **Reprodutibilidade do modelo:** o campo `revision` do backend ONNX fixa a tag/branch/commit do Hugging Face (ex.: `"main"` ou um hash de commit). Use um hash de commit ou tag explícita para garantir que o mesmo peso seja usado em todos os ambientes.
 
 ### Limitações conhecidas de sinks
 

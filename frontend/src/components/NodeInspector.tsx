@@ -349,6 +349,18 @@ export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps
                 />
               </div>
               <div>
+                <Label htmlFor="embedding-revision" className="text-xs font-medium">
+                  {t('canvas.embeddingRevision')}
+                </Label>
+                <Input
+                  id="embedding-revision"
+                  value={data.revision}
+                  placeholder="main"
+                  onChange={(e) => onChange(node.id, { revision: e.target.value })}
+                  className="mt-1.5"
+                />
+              </div>
+              <div>
                 <Label htmlFor="embedding-filename" className="text-xs font-medium">
                   {t('canvas.embeddingFilename')}
                 </Label>

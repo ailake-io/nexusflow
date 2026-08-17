@@ -61,6 +61,7 @@ function embeddingNode(overrides: Partial<EmbeddingNodeData> = {}): DagNode {
       dimension: 384,
       backend: 'onnx',
       repo: 'sentence-transformers/all-MiniLM-L6-v2',
+      revision: 'main',
       filename: 'model.onnx',
       tokenizerFilename: 'tokenizer.json',
       maxLength: 128,
