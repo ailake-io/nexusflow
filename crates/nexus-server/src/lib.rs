@@ -339,9 +339,10 @@ struct LoginResponse {
 
 async fn login_handler(
     State(state): State<AppState>,
-    Extension(rate_limit::ClientIp(client_ip)): Extension<rate_limit::ClientIp>,
+    client_ip: Option<Extension<rate_limit::ClientIp>>,
     Json(body): Json<LoginRequest>,
 ) -> Result<Json<LoginResponse>, ApiError> {
+    let client_ip = client_ip.map(|ext| ext.0 .0).unwrap_or_default();
     let result = state
         .auth_store
         .verify(&body.username, &body.password)

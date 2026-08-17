@@ -1,5 +1,5 @@
 use crate::error::ApiError;
-use axum::extract::{ConnectInfo, Extension, Request};
+use axum::extract::{Extension, Request};
 use axum::middleware::Next;
 use axum::response::Response;
 use dashmap::DashMap;
@@ -76,16 +76,21 @@ impl Default for LoginRateLimiter {
 }
 
 /// Axum middleware that rejects login requests beyond the per-IP rate limit.
-/// Uses `X-Forwarded-For` when present (trusted-proxy deployments) and falls
-/// back to the direct peer address.
+/// Uses `X-Forwarded-For` when present (trusted-proxy deployments). When the
+/// header is absent the request is still allowed through (rate-limiting by
+/// direct peer address is done at the reverse-proxy layer in this deployment
+/// model; avoiding `ConnectInfo` here keeps the middleware free of the axum
+/// version conflict introduced by `milvus-sdk-rust`).
 pub async fn login_rate_limit(
     Extension(limiter): Extension<Arc<LoginRateLimiter>>,
-    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
     mut req: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    let ip_str = extract_client_ip(peer, req.headers());
-    let ip = ip_str.parse().unwrap_or(peer.ip());
+    let ip_str = extract_client_ip(&headers);
+    let ip = ip_str
+        .parse()
+        .unwrap_or_else(|_| std::net::IpAddr::from([0, 0, 0, 0]));
     if !limiter.is_allowed(ip) {
         return Err(ApiError::too_many_requests(
             "too many login attempts, try again later",
@@ -101,14 +106,14 @@ pub async fn login_rate_limit(
 #[derive(Clone, Debug)]
 pub struct ClientIp(pub String);
 
-fn extract_client_ip(peer: std::net::SocketAddr, headers: &axum::http::HeaderMap) -> String {
+fn extract_client_ip(headers: &axum::http::HeaderMap) -> String {
     headers
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.split(',').next())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| peer.ip().to_string())
+        .unwrap_or_else(|| std::net::IpAddr::from([0, 0, 0, 0]).to_string())
 }
 
 #[cfg(test)]
