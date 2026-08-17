@@ -145,6 +145,14 @@ pub enum ChunkingSpec {
         overlap: usize,
         separators: Option<Vec<String>>,
     },
+    Semantic {
+        #[serde(default = "default_similarity_threshold")]
+        similarity_threshold: f32,
+    },
+}
+
+fn default_similarity_threshold() -> f32 {
+    0.8
 }
 
 /// Two shapes, both valid DAGs (ARCHITECTURE.md §4):
@@ -356,6 +364,16 @@ impl PipelineSpec {
                         ));
                     }
                 }
+                ChunkingSpec::Semantic {
+                    similarity_threshold,
+                } => {
+                    if !(0.0..=1.0).contains(similarity_threshold) {
+                        return Err(NexusError::Schema(
+                            "embedding.chunking.similarity_threshold must be between 0.0 and 1.0"
+                                .into(),
+                        ));
+                    }
+                }
             }
         }
 
@@ -554,7 +572,7 @@ fn validate_node_security(
 fn is_local_path_connector(connector: &str) -> bool {
     matches!(
         connector,
-        "sqlite" | "lancedb" | "ailake" | "iceberg" | "deltalake" | "csv"
+        "sqlite" | "lancedb" | "ailake" | "iceberg" | "deltalake" | "csv" | "parquet"
     )
 }
 
@@ -964,7 +982,10 @@ mod tests {
             }
         }"#;
         let err = PipelineSpec::parse(bad).expect_err("empty revision must fail");
-        assert!(err.to_string().contains("revision"), "unexpected error: {err}");
+        assert!(
+            err.to_string().contains("revision"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

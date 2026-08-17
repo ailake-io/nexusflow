@@ -2,6 +2,7 @@ use crate::config::DeltaConnectorConfig;
 use crate::rows::{arrow_schema_to_delta_fields, extract_pk_strings, in_predicate};
 use arrow_array::RecordBatch;
 use async_trait::async_trait;
+use deltalake::errors::DeltaTableError;
 use deltalake::operations::create::CreateBuilder;
 use deltalake::table::builder::ensure_table_uri;
 use deltalake::writer::{DeltaWriter, RecordBatchWriter};
@@ -36,9 +37,20 @@ impl DeltaSink {
         let url = ensure_table_uri(&self.table_uri)
             .map_err(|e| NexusError::Connector(format!("delta table uri invalid: {e}")))?;
         with_timeout(self.timeout_seconds, "delta open_table", async {
-            Ok(open_table(url).await.ok())
+            match open_table(url).await {
+                Ok(table) => Ok(Some(table)),
+                Err(e) if Self::is_missing_table(&e) => Ok(None),
+                Err(e) => Err(NexusError::Connector(format!(
+                    "delta open table failed: {e}"
+                ))),
+            }
         })
         .await
+    }
+
+    fn is_missing_table(err: &DeltaTableError) -> bool {
+        let msg = err.to_string().to_lowercase();
+        msg.contains("not found") || msg.contains("does not exist") || msg.contains("not a table")
     }
 
     async fn ensure_table(&self, batch: &RecordBatch) -> Result<DeltaTable, NexusError> {

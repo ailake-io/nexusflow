@@ -26,6 +26,10 @@ dbt = ["nexus-server/dbt"]
 # single-binary deploy: `npm run build` in frontend/ then
 # `cargo build --release -p nexusflow --features embed-ui`.
 embed-ui = ["nexus-server/embed-ui"]
+# Embedding pipeline stage (local ONNX model).
+embeddings = ["nexus-server/embeddings"]
+# Embedding pipeline stage backed by an external HTTP API.
+embeddings-api = ["nexus-server/embeddings-api"]
 # Forwards nexus-server's per-connector features (see that crate's own
 # Cargo.toml for why each one exists) so `cargo build -p nexusflow
 # --features X` reaches the crate that actually declares X.
@@ -45,6 +49,13 @@ iceberg = ["nexus-server/iceberg"]
 parquet = ["nexus-server/parquet"]
 ailake = ["nexus-server/ailake"]
 csv = ["nexus-server/csv"]
+# Native CDC features (logical/binlog/change-data-feed) — forward to the
+# server crate's matching feature (ARCHITECTURE.md §7).
+postgres-cdc = ["nexus-server/postgres-cdc"]
+mysql-cdc = ["nexus-server/mysql-cdc"]
+deltalake-cdc = ["nexus-server/deltalake-cdc"]
+iceberg-cdc = ["nexus-server/iceberg-cdc"]
+ailake-cdc = ["nexus-server/ailake-cdc"]
 
 [dependencies]
 anyhow = "1.0.104"

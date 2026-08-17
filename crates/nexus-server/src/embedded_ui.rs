@@ -23,5 +23,22 @@ pub async fn handler(uri: Uri) -> Response {
 fn serve(path: &str) -> Option<Response> {
     let file = Assets::get(path)?;
     let mime = file.metadata.mimetype();
-    Some(([(header::CONTENT_TYPE, mime)], file.data).into_response())
+    // Never cache the SPA shell so updates are picked up on hard refresh;
+    // versioned static assets (JS/CSS with hashed filenames) can be cached
+    // aggressively because their URL changes when the content changes.
+    let cache_control = if path == "index.html" || path.is_empty() {
+        "no-cache, no-store, must-revalidate"
+    } else {
+        "public, max-age=3600, immutable"
+    };
+    Some(
+        (
+            [
+                (header::CONTENT_TYPE, mime),
+                (header::CACHE_CONTROL, cache_control),
+            ],
+            file.data,
+        )
+            .into_response(),
+    )
 }

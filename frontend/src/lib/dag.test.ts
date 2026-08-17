@@ -71,6 +71,7 @@ function embeddingNode(overrides: Partial<EmbeddingNodeData> = {}): DagNode {
       strategy: 'fixed_window',
       chunkSize: 256,
       overlap: 0,
+      similarityThreshold: 0.8,
       separators: '',
       ...overrides,
     },

@@ -186,7 +186,7 @@ jobs:
           cp target/adbc/libadbc_driver_sqlite.so "$stage/"
           tar -czf "nexusflow-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" -C "$stage" .
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.2.0
         with:
           name: nexusflow-${{ matrix.os }}-${{ matrix.arch }}
           path: nexusflow-${{ matrix.os }}-${{ matrix.arch }}.tar.gz
@@ -206,10 +206,10 @@ jobs:
             exit 1
           fi
           if ! command -v appimagetool >/dev/null; then
-            # Pinned to the continuous release's SHA-256; verify before use (M34).
-            APP_IMAGE_SHA256="a6d71e2b6cd66f8e8d16c37ad164658985e0cf5fcaa950c90a482890cb9d13e0"
+            # Pinned to appimagetool 1.9.1 release (M34).
+            APP_IMAGE_SHA256="ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0"
             curl -fL -o /tmp/appimagetool \
-              https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+              https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
             echo "$APP_IMAGE_SHA256  /tmp/appimagetool" | sha256sum -c -
             chmod +x /tmp/appimagetool
             APPIMAGETOOL="/tmp/appimagetool --appimage-extract-and-run"
@@ -221,7 +221,7 @@ jobs:
           APPIMAGETOOL="${APPIMAGETOOL:-appimagetool --appimage-extract-and-run}" \
             ./scripts/package-appimage.sh target/package
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.2.0
         if: matrix.os == 'linux' && matrix.arch == 'x86_64'
         with:
           name: nexusflow-linux-packages

@@ -100,7 +100,7 @@ Consolidado dos itens que ficaram faltando/incompletos ao longo das fases abaixo
 - [ ] Ver [`LICENSING.md`](./LICENSING.md)
 
 ## Fase 13 — Todos os conectores linkados no binário (fora do plano original)
-- [x] Os 14 conectores que só existiam no workspace aninhado `crates/nexus-connectors` agora também são feature opcional em `nexus-server` (`connectors-all`), aparecendo de verdade no catálogo `GET /connectors` — antes só postgres/sqlite estavam linkados no binário servido pra UI.
+- [x] Os conectores do workspace aninhado `crates/nexus-connectors` (18 batch + 6 CDC nativos = 24 nomes de catálogo) agora também são feature opcional em `nexus-server` (`connectors-all`), aparecendo de verdade no catálogo `GET /connectors` — antes só postgres/sqlite estavam linkados no binário servido pra UI.
 
 ## Fase 14 — Formulário de config por schema real (fora do plano original)
 - [x] Cada Config struct de conector deriva `schemars::JsonSchema`; `GET /connectors` expõe esse schema (`config_schema`). Canvas renderiza um formulário real (`SchemaForm.tsx`, recursivo: texto/número/boolean/enum/array-de-objeto) em vez de pedir JSON escrito à mão — descrições vêm dos doc comments do Rust. Ver `ARCHITECTURE.md §3`.

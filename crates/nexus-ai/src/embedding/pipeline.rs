@@ -1,5 +1,6 @@
 use crate::chunking::{
-    chunk_fixed_window, chunk_recursive_character, FixedWindowConfig, RecursiveCharacterConfig,
+    chunk_fixed_window, chunk_recursive_character, chunk_semantic, split_sentences,
+    FixedWindowConfig, RecursiveCharacterConfig, SemanticChunkConfig,
 };
 use crate::embedding::{append_embedding_column, EmbeddingError};
 use arrow_array::{Array, ArrayRef, FixedSizeListArray, RecordBatch, StringArray};
@@ -171,6 +172,34 @@ pub async fn apply_embedding(
                     }),
                 },
             ),
+            ChunkingSpec::Semantic {
+                similarity_threshold,
+            } => {
+                let sentences = split_sentences(text);
+                if sentences.is_empty() {
+                    Vec::new()
+                } else {
+                    let embeddings = backend.embed(&sentences).await?;
+                    let idx: std::sync::atomic::AtomicUsize =
+                        std::sync::atomic::AtomicUsize::new(0);
+                    chunk_semantic(
+                        &sentences,
+                        |_sentence| {
+                            let i = idx.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            embeddings.get(i).cloned().unwrap_or_else(|| {
+                                // Fallback: return a zero vector so the chunk
+                                // boundary decision is neutral rather than
+                                // panicking. This should never happen because
+                                // embed() returns one vector per sentence.
+                                vec![0.0f32; spec.dimension]
+                            })
+                        },
+                        &SemanticChunkConfig {
+                            similarity_threshold: *similarity_threshold,
+                        },
+                    )
+                }
+            }
         };
         total_chunks += chunks.len();
         chunks_per_row.push(chunks);

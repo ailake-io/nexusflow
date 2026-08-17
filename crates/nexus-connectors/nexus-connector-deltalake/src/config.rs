@@ -136,6 +136,7 @@ fn default_timeout_seconds() -> u64 {
 /// Arrow types, nothing to coerce from a wire format.
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[cfg(feature = "cdc")]
+#[allow(dead_code)] // Gated by the `cdc` feature; methods consumed by the future CDC source implementation.
 pub struct DeltaCdcConfig {
     /// Full table URI for the CDC source — a local directory, a `file://` URI,
     /// or an object-store URI. Kept for backward compatibility: when this
@@ -170,6 +171,7 @@ pub struct DeltaCdcConfig {
 }
 
 #[cfg(feature = "cdc")]
+#[allow(dead_code)] // Methods consumed by the future CDC source implementation.
 impl DeltaCdcConfig {
     /// Resolves the effective Delta table URI.
     ///

@@ -256,6 +256,7 @@ impl IcebergConnectorConfig {
 /// reason the batch `IcebergConnectorConfig` never needed one.
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[cfg(feature = "cdc")]
+#[allow(dead_code)] // Gated by the `cdc` feature; methods consumed by the future CDC source implementation.
 pub struct IcebergCdcConfig {
     /// Legacy combined catalog URI. Keep using this if you already have a full
     /// URI such as `sqlite:///abs/path/catalog.db?mode=rwc` — it takes
@@ -309,6 +310,7 @@ pub struct IcebergCdcConfig {
 }
 
 #[cfg(feature = "cdc")]
+#[allow(dead_code)] // Methods consumed by the future CDC source implementation.
 impl IcebergCdcConfig {
     /// Returns the effective catalog URI, preferring the legacy `catalog_uri`
     /// field, then `catalog_path`.

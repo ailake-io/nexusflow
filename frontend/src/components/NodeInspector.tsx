@@ -455,38 +455,63 @@ export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps
             >
               <option value="fixed_window">{t('canvas.embeddingStrategyFixed')}</option>
               <option value="recursive_character">{t('canvas.embeddingStrategyRecursive')}</option>
+              <option value="semantic">{t('canvas.embeddingStrategySemantic')}</option>
             </select>
           </div>
-          <div className="flex gap-3">
-            <div className="flex-1">
-              <Label htmlFor="embedding-chunk-size" className="text-xs font-medium">
-                {t('canvas.embeddingChunkSize')}
+          {data.strategy === 'semantic' ? (
+            <div>
+              <Label htmlFor="embedding-similarity-threshold" className="text-xs font-medium">
+                {t('canvas.embeddingSimilarityThreshold')}
               </Label>
               <Input
-                id="embedding-chunk-size"
-                type="number"
-                min={1}
-                value={data.chunkSize || ''}
-                placeholder="256"
-                onChange={(e) => onChange(node.id, { chunkSize: Number(e.target.value) || 0 })}
-                className="mt-1.5"
-              />
-            </div>
-            <div className="flex-1">
-              <Label htmlFor="embedding-overlap" className="text-xs font-medium">
-                {t('canvas.embeddingOverlap')}
-              </Label>
-              <Input
-                id="embedding-overlap"
+                id="embedding-similarity-threshold"
                 type="number"
                 min={0}
-                value={data.overlap}
-                placeholder="0"
-                onChange={(e) => onChange(node.id, { overlap: Number(e.target.value) || 0 })}
+                max={1}
+                step={0.05}
+                value={data.similarityThreshold}
+                placeholder="0.8"
+                onChange={(e) =>
+                  onChange(node.id, { similarityThreshold: Number(e.target.value) || 0 })
+                }
                 className="mt-1.5"
               />
+              <p className="mt-1 text-[10px] text-muted-foreground">
+                {t('canvas.embeddingSimilarityThresholdHint')}
+              </p>
             </div>
-          </div>
+          ) : (
+            <div className="flex gap-3">
+              <div className="flex-1">
+                <Label htmlFor="embedding-chunk-size" className="text-xs font-medium">
+                  {t('canvas.embeddingChunkSize')}
+                </Label>
+                <Input
+                  id="embedding-chunk-size"
+                  type="number"
+                  min={1}
+                  value={data.chunkSize || ''}
+                  placeholder="256"
+                  onChange={(e) => onChange(node.id, { chunkSize: Number(e.target.value) || 0 })}
+                  className="mt-1.5"
+                />
+              </div>
+              <div className="flex-1">
+                <Label htmlFor="embedding-overlap" className="text-xs font-medium">
+                  {t('canvas.embeddingOverlap')}
+                </Label>
+                <Input
+                  id="embedding-overlap"
+                  type="number"
+                  min={0}
+                  value={data.overlap}
+                  placeholder="0"
+                  onChange={(e) => onChange(node.id, { overlap: Number(e.target.value) || 0 })}
+                  className="mt-1.5"
+                />
+              </div>
+            </div>
+          )}
           {data.strategy === 'recursive_character' && (
             <div>
               <Label htmlFor="embedding-separators" className="text-xs font-medium">
