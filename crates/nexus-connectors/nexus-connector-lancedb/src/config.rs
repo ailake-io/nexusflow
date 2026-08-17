@@ -84,8 +84,8 @@ impl LanceDbConnectorConfig {
     /// 2. An object-store URI built from `storage_options.s3_bucket` + `path`.
     /// 3. The local `path` field.
     pub fn connection_uri(&self) -> String {
-        if let Some(uri) = &self.uri {
-            return uri.clone();
+        if let Some(uri) = self.uri.as_deref().filter(|s| !s.is_empty()) {
+            return uri.to_string();
         }
 
         if let Some(bucket) = &self.storage_options.s3_bucket {

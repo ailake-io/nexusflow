@@ -3,7 +3,6 @@ import {
   ReactFlow,
   ReactFlowProvider,
   Background,
-  Controls,
   addEdge,
   applyNodeChanges,
   applyEdgeChanges,
@@ -347,9 +346,9 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
             onConnect={onConnect}
             onSelectionChange={onSelectionChange}
             fitView
+            fitViewOptions={{ maxZoom: 1 }}
           >
             <Background gap={20} size={1} color="oklch(1 0 0 / 8%)" />
-            <Controls />
           </ReactFlow>
 
           <div className="absolute bottom-4 left-4 flex gap-2">

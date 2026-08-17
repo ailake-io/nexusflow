@@ -104,10 +104,10 @@ impl RestConnectorConfig {
     /// The resulting string is validated to be a non-protocol-relative,
     /// HTTP(S) URL.
     pub fn url(&self) -> Result<String, NexusError> {
-        let raw = if let Some(uri) = &self.uri {
-            uri.clone()
-        } else if let Some(url) = &self.url {
-            url.clone()
+        let raw = if let Some(uri) = self.uri.as_deref().filter(|s| !s.is_empty()) {
+            uri.to_string()
+        } else if let Some(url) = self.url.as_deref().filter(|s| !s.is_empty()) {
+            url.to_string()
         } else {
             format!(
                 "{}/{}",
@@ -259,10 +259,10 @@ impl WebhookSinkConfig {
     /// The resulting string is validated to be a non-protocol-relative,
     /// HTTP(S) URL.
     pub fn url(&self) -> Result<String, NexusError> {
-        let raw = if let Some(uri) = &self.uri {
-            uri.clone()
-        } else if let Some(url) = &self.url {
-            url.clone()
+        let raw = if let Some(uri) = self.uri.as_deref().filter(|s| !s.is_empty()) {
+            uri.to_string()
+        } else if let Some(url) = self.url.as_deref().filter(|s| !s.is_empty()) {
+            url.to_string()
         } else {
             format!(
                 "{}/{}",

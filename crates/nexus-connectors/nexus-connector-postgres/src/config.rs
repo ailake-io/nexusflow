@@ -89,8 +89,8 @@ impl PostgresConnectorConfig {
     /// If a legacy `uri` is present it is returned unchanged; otherwise a
     /// `postgresql://` URI is built from the individual fields.
     pub fn connection_string(&self) -> String {
-        if let Some(uri) = &self.uri {
-            return uri.clone();
+        if let Some(uri) = self.uri.as_deref().filter(|s| !s.is_empty()) {
+            return uri.to_string();
         }
 
         let password_part = percent_encode(&self.password);
@@ -247,8 +247,8 @@ impl PostgresCdcConfig {
     /// If a legacy `uri` is present it is returned unchanged; otherwise a
     /// `postgresql://` URI is built from the individual fields.
     pub fn connection_string(&self) -> String {
-        if let Some(uri) = &self.uri {
-            return uri.clone();
+        if let Some(uri) = self.uri.as_deref().filter(|s| !s.is_empty()) {
+            return uri.to_string();
         }
 
         let password_part = percent_encode(&self.password);
@@ -352,6 +352,30 @@ mod tests {
         assert!(cs.starts_with("postgresql://nexus:s3cr%40t@db.example.com:5433/analytics"));
         assert!(cs.contains("options=-csearch_path%3Dstaging"));
         assert!(cs.contains("sslmode=require"));
+    }
+
+    #[test]
+    fn connection_string_falls_back_to_fields_when_uri_is_empty_string() {
+        // The Canvas UI used to always send `uri: Some("")` once the field
+        // had been touched (even if the user meant to leave it blank and
+        // fill host/port/... instead) — this silently broke the connection
+        // instead of falling back, since `Some("")` isn't `None`.
+        let cfg = PostgresConnectorConfig {
+            uri: Some(String::new()),
+            host: "db.example.com".to_string(),
+            port: 5433,
+            username: "nexus".to_string(),
+            password: "s3cr@t".to_string(),
+            database: "analytics".to_string(),
+            schema: None,
+            ssl_mode: PostgresSslMode::Prefer,
+            table: "events".to_string(),
+            primary_key: "id".to_string(),
+            timeout_seconds: 30,
+        };
+        assert!(cfg
+            .connection_string()
+            .starts_with("postgresql://nexus:s3cr%40t@db.example.com:5433/analytics"));
     }
 
     #[test]

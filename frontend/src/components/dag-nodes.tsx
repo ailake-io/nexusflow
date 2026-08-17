@@ -13,7 +13,7 @@ export function ConnectorNodeView({ data, selected }: NodeProps<DagNode>) {
   const isSource = data.role === 'source'
   return (
     <div
-      className={`group min-w-[9rem] rounded-lg border bg-card px-3 py-2 shadow-sm transition-all ${
+      className={`group min-w-[8rem] rounded-lg border bg-card px-2.5 py-1.5 shadow-sm transition-all ${
         selected
           ? 'border-primary shadow-[0_0_0_2px_hsl(var(--color-primary)/0.3)]'
           : 'border-white/10 hover:border-primary/40'
@@ -51,7 +51,7 @@ export function TransformNodeView({ selected }: NodeProps<DagNode>) {
   const { t } = useI18n()
   return (
     <div
-      className={`min-w-[8rem] rounded-lg border bg-card px-3 py-2 shadow-sm transition-all ${
+      className={`min-w-[7rem] rounded-lg border bg-card px-2.5 py-1.5 shadow-sm transition-all ${
         selected
           ? 'border-accent shadow-[0_0_0_2px_hsl(var(--color-accent)/0.3)]'
           : 'border-white/10 hover:border-accent/40'
@@ -87,7 +87,7 @@ export function DbtNodeView({ data, selected }: NodeProps<DagNode>) {
   if (data.kind !== 'dbt') return null
   return (
     <div
-      className={`min-w-[8rem] rounded-lg border bg-card px-3 py-2 shadow-sm transition-all ${
+      className={`min-w-[7rem] rounded-lg border bg-card px-2.5 py-1.5 shadow-sm transition-all ${
         selected
           ? 'border-emerald-400 shadow-[0_0_0_2px_rgba(52,211,153,0.25)]'
           : 'border-white/10 hover:border-emerald-400/40'
@@ -121,7 +121,7 @@ export function EmbeddingNodeView({ data, selected }: NodeProps<DagNode>) {
   if (data.kind !== 'embedding') return null
   return (
     <div
-      className={`min-w-[8rem] rounded-lg border bg-card px-3 py-2 shadow-sm transition-all ${
+      className={`min-w-[7rem] rounded-lg border bg-card px-2.5 py-1.5 shadow-sm transition-all ${
         selected
           ? 'border-fuchsia-400 shadow-[0_0_0_2px_rgba(232,121,249,0.25)]'
           : 'border-white/10 hover:border-fuchsia-400/40'

@@ -46,9 +46,21 @@ export function SchemaForm({ schema, defs, value, onChange, idPrefix }: SchemaFo
     onChange({ ...value, [key]: fieldValue })
   }
 
+  // `uri`/`connection_string` is every connector's legacy single-field
+  // override (still supported server-side for backward compatibility —
+  // see e.g. PostgresConnectorConfig::connection_string), but it fully
+  // bypasses the split host/port/username/... fields below it, which is
+  // exactly the mistake this form exists to prevent (a stray empty value
+  // here used to silently break the connection instead of falling back).
+  // Hidden whenever split fields are actually present as an alternative,
+  // so users always fill those instead.
+  const isLegacyUriOverride = (key: string) =>
+    (key === 'uri' || key === 'connection_string') && Object.keys(properties).length > 1
+
   return (
     <div className="flex flex-col gap-3">
       {Object.entries(properties).map(([key, rawFieldSchema]) => {
+        if (isLegacyUriOverride(key)) return null
         const fieldSchema = resolveRef(rawFieldSchema, defs)
         const fieldId = `${idPrefix}${key}`
         const label = `${key}${required.has(key) ? ' *' : ''}`
