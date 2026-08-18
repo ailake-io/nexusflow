@@ -348,8 +348,10 @@ struct LoginResponse {
 
 async fn login_handler(
     State(state): State<AppState>,
+    client_ip: Option<Extension<rate_limit::ClientIp>>,
     Json(body): Json<LoginRequest>,
 ) -> Result<Json<LoginResponse>, ApiError> {
+    let client_ip = client_ip.map(|ext| ext.0 .0).unwrap_or_default();
     let result = state
         .auth_store
         .verify(&body.username, &body.password)
@@ -366,11 +368,17 @@ async fn login_handler(
     tracing::info!(
         username = %body.username,
         success = log_outcome.0,
+        client_ip = %client_ip,
         "{}", log_outcome.1
     );
     if let Err(e) = state
         .auth_store
-        .log_security_event(Some(&body.username), "login", log_outcome.0, None)
+        .log_security_event(
+            Some(&body.username),
+            "login",
+            log_outcome.0,
+            Some(&client_ip),
+        )
         .await
     {
         tracing::warn!(error = %e, "failed to write login audit log");
@@ -389,10 +397,9 @@ struct LogoutResponse {
 async fn logout_handler(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
-    req: axum::extract::Request,
+    headers: axum::http::HeaderMap,
 ) -> Result<Json<LogoutResponse>, ApiError> {
-    let header = req
-        .headers()
+    let header = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| ApiError::unauthorized("missing Authorization header"))?;

@@ -40,13 +40,22 @@ export interface DbtConfig {
  * `backend` (`#[serde(tag = "backend")]`), so the JSON carries the
  * discriminator inline rather than as a wrapper key. */
 export type EmbeddingModelSpec =
-  | { backend: 'onnx'; repo: string; filename: string; tokenizer_filename: string; max_length: number }
+  | {
+      backend: 'onnx'
+      repo: string
+      /** Git revision (branch, tag or commit) inside the HF repo. */
+      revision: string
+      filename: string
+      tokenizer_filename: string
+      max_length: number
+    }
   | { backend: 'api'; base_url: string; model: string; api_key_env?: string }
 
 /** Matches nexus-core::ChunkingSpec exactly — tagged on `strategy`. */
 export type ChunkingSpec =
   | { strategy: 'fixed_window'; chunk_size: number; overlap?: number }
   | { strategy: 'recursive_character'; chunk_size: number; overlap?: number; separators?: string[] }
+  | { strategy: 'semantic'; similarity_threshold: number }
 
 /** Matches nexus-core::EmbeddingSpec exactly. */
 export interface EmbeddingSpec {
@@ -124,7 +133,7 @@ export interface PythonNodeData extends Record<string, unknown> {
 }
 
 export type EmbeddingBackend = 'onnx' | 'api'
-export type ChunkingStrategy = 'fixed_window' | 'recursive_character'
+export type ChunkingStrategy = 'fixed_window' | 'recursive_character' | 'semantic'
 
 /**
  * Canvas form of `EmbeddingSpec` — like `DbtNodeData`, every field is a
@@ -142,6 +151,7 @@ export interface EmbeddingNodeData extends Record<string, unknown> {
   backend: EmbeddingBackend
   // backend: 'onnx'
   repo: string
+  revision: string
   filename: string
   tokenizerFilename: string
   maxLength: number
@@ -153,6 +163,7 @@ export interface EmbeddingNodeData extends Record<string, unknown> {
   strategy: ChunkingStrategy
   chunkSize: number
   overlap: number
+  similarityThreshold: number
   // strategy: 'recursive_character' only — one separator per line
   separators: string
 }
@@ -187,6 +198,9 @@ export function isEmbeddingNode(node: DagNode): node is Node<EmbeddingNodeData> 
 
 export class DagSerializationError extends Error {}
 
+/** Minimal translation function injected from the React i18n layer. */
+export type DagTranslator = (key: string, vars?: Record<string, string | number>) => string
+
 export interface PipelineMeta {
   pipelineId: string
   channelCapacity?: number
@@ -204,9 +218,14 @@ export function toPipelineSpec(
   nodes: DagNode[],
   meta: PipelineMeta,
   allowDraft = false,
+  t: DagTranslator = defaultT,
 ): PipelineSpec {
+  const err = (key: keyof typeof EN_DAG_ERRORS, vars?: Record<string, string | number>) => {
+    throw new DagSerializationError(t(`dag.errors.${key}`, vars))
+  }
+
   if (!meta.pipelineId.trim()) {
-    throw new DagSerializationError('pipeline_id must not be empty')
+    err('pipelineIdEmpty')
   }
 
   const connectorNodes = nodes.filter(isConnectorNode)
@@ -216,34 +235,34 @@ export function toPipelineSpec(
   const pythonNodes = nodes.filter(isPythonNode)
   if (!allowDraft) {
     if (transformNodes.length > 1) {
-      throw new DagSerializationError('at most one transform node is allowed')
+      err('atMostOneTransform')
     }
     if (dbtNodes.length > 1) {
-      throw new DagSerializationError('at most one dbt node is allowed')
+      err('atMostOneDbt')
     }
     if (embeddingNodes.length > 1) {
-      throw new DagSerializationError('at most one embedding node is allowed')
+      err('atMostOneEmbedding')
     }
     if (pythonNodes.length > 1) {
-      throw new DagSerializationError('at most one python node is allowed')
+      err('atMostOnePython')
     }
   }
 
   const sources = connectorNodes
     .filter((n) => n.data.role === 'source')
-    .map((n) => toNodeSpec(n, allowDraft))
+    .map((n) => toNodeSpec(n, allowDraft, t))
     .filter((s): s is NodeSpec => s !== undefined)
   const sinks = connectorNodes
     .filter((n) => n.data.role === 'sink')
-    .map((n) => toNodeSpec(n, allowDraft))
+    .map((n) => toNodeSpec(n, allowDraft, t))
     .filter((s): s is NodeSpec => s !== undefined)
 
   if (!allowDraft) {
     if (sources.length === 0) {
-      throw new DagSerializationError('sources must not be empty')
+      err('sourcesEmpty')
     }
     if (sinks.length === 0) {
-      throw new DagSerializationError('sinks must not be empty')
+      err('sinksEmpty')
     }
   }
 
@@ -258,20 +277,16 @@ export function toPipelineSpec(
 
   if (!allowDraft) {
     if (!transform && !python && (sources.length !== 1 || sinks.length !== 1)) {
-      throw new DagSerializationError(
-        'without a transform, the pipeline must be strictly linear: exactly 1 source and 1 sink',
-      )
+      err('strictLinearWithoutTransform')
     }
     if (!transform && python && (sources.length !== 1 || sinks.length !== 1)) {
-      throw new DagSerializationError(
-        'without a SQL transform, a python node still requires exactly 1 source and 1 sink',
-      )
+      err('pythonRequiresLinearWithoutTransform')
     }
     if (transform && !transform.sql.trim()) {
-      throw new DagSerializationError('transform.sql must not be empty')
+      err('transformSqlEmpty')
     }
     if (python && !python.script.trim()) {
-      throw new DagSerializationError('python node: script must not be empty')
+      err('pythonScriptEmpty')
     }
   }
 
@@ -279,7 +294,7 @@ export function toPipelineSpec(
   if (dbtNodes.length === 1) {
     const data = dbtNodes[0].data
     if (!allowDraft && !data.projectDir.trim()) {
-      throw new DagSerializationError('dbt node: project_dir must not be empty')
+      err('dbtProjectDirEmpty')
     }
     if (data.projectDir.trim()) {
       dbt = { project_dir: data.projectDir.trim(), command: data.command }
@@ -288,7 +303,9 @@ export function toPipelineSpec(
   }
 
   const embedding =
-    embeddingNodes.length === 1 ? toEmbeddingSpec(embeddingNodes[0].data, allowDraft) : undefined
+    embeddingNodes.length === 1
+      ? toEmbeddingSpec(embeddingNodes[0].data, allowDraft, t)
+      : undefined
 
   const spec: PipelineSpec = {
     pipeline_id: meta.pipelineId,
@@ -306,16 +323,62 @@ export function toPipelineSpec(
   return spec
 }
 
-function toEmbeddingSpec(data: EmbeddingNodeData, allowDraft = false): EmbeddingSpec | undefined {
+const EN_DAG_ERRORS = {
+  pipelineIdEmpty: 'pipeline_id must not be empty',
+  atMostOneTransform: 'at most one transform node is allowed',
+  atMostOneDbt: 'at most one dbt node is allowed',
+  atMostOneEmbedding: 'at most one embedding node is allowed',
+  atMostOnePython: 'at most one python node is allowed',
+  sourcesEmpty: 'sources must not be empty',
+  sinksEmpty: 'sinks must not be empty',
+  strictLinearWithoutTransform:
+    'without a transform, the pipeline must be strictly linear: exactly 1 source and 1 sink',
+  pythonRequiresLinearWithoutTransform:
+    'without a SQL transform, a python node still requires exactly 1 source and 1 sink',
+  transformSqlEmpty: 'transform.sql must not be empty',
+  pythonScriptEmpty: 'python node: script must not be empty',
+  dbtProjectDirEmpty: 'dbt node: project_dir must not be empty',
+  embeddingSourceColumnEmpty: 'embedding node: source_column must not be empty',
+  embeddingOutputColumnEmpty: 'embedding node: output_column must not be empty',
+  embeddingDimensionInvalid: 'embedding node: dimension must be > 0',
+  embeddingOnnxFieldsRequired:
+    'embedding node: repo, filename and tokenizer_filename are required for the onnx backend',
+  embeddingOnnxMaxLengthInvalid: 'embedding node: max_length must be > 0',
+  embeddingApiFieldsRequired:
+    'embedding node: base_url and model are required for the api backend',
+  embeddingChunkSizeInvalid: 'embedding node: chunk_size must be > 0',
+  embeddingSemanticThresholdInvalid:
+    'embedding node: similarity_threshold must be between 0.0 and 1.0',
+  configNotValidJson: 'node "{name}": config is not valid JSON',
+  connectorNameEmpty: 'every connector node needs a connector name',
+}
+
+function defaultT(key: string, vars?: Record<string, string | number>): string {
+  const map: Record<string, string> = EN_DAG_ERRORS
+  const short = key.replace('dag.errors.', '')
+  let value = map[short] ?? key
+  if (!vars) return value
+  return value.replace(/\{(\w+)\}/g, (_, name) => String(vars[name] ?? `{${name}}`))
+}
+
+function toEmbeddingSpec(
+  data: EmbeddingNodeData,
+  allowDraft = false,
+  t: DagTranslator = defaultT,
+): EmbeddingSpec | undefined {
+  const err = (key: keyof typeof EN_DAG_ERRORS, vars?: Record<string, string | number>) => {
+    throw new DagSerializationError(t(`dag.errors.${key}`, vars))
+  }
+
   if (!allowDraft) {
     if (!data.sourceColumn.trim()) {
-      throw new DagSerializationError('embedding node: source_column must not be empty')
+      err('embeddingSourceColumnEmpty')
     }
     if (!data.outputColumn.trim()) {
-      throw new DagSerializationError('embedding node: output_column must not be empty')
+      err('embeddingOutputColumnEmpty')
     }
     if (!(data.dimension > 0)) {
-      throw new DagSerializationError('embedding node: dimension must be > 0')
+      err('embeddingDimensionInvalid')
     }
   }
 
@@ -323,15 +386,16 @@ function toEmbeddingSpec(data: EmbeddingNodeData, allowDraft = false): Embedding
   if (data.backend === 'onnx') {
     const hasOnnxFields = data.repo.trim() && data.filename.trim() && data.tokenizerFilename.trim()
     if (!allowDraft && !hasOnnxFields) {
-      throw new DagSerializationError('embedding node: repo, filename and tokenizer_filename are required for the onnx backend')
+      err('embeddingOnnxFieldsRequired')
     }
     if (!allowDraft && !(data.maxLength > 0)) {
-      throw new DagSerializationError('embedding node: max_length must be > 0')
+      err('embeddingOnnxMaxLengthInvalid')
     }
     if (hasOnnxFields) {
       model = {
         backend: 'onnx',
         repo: data.repo.trim(),
+        revision: data.revision.trim() || 'main',
         filename: data.filename.trim(),
         tokenizer_filename: data.tokenizerFilename.trim(),
         max_length: data.maxLength,
@@ -340,7 +404,7 @@ function toEmbeddingSpec(data: EmbeddingNodeData, allowDraft = false): Embedding
   } else {
     const hasApiFields = data.baseUrl.trim() && data.model.trim()
     if (!allowDraft && !hasApiFields) {
-      throw new DagSerializationError('embedding node: base_url and model are required for the api backend')
+      err('embeddingApiFieldsRequired')
     }
     if (hasApiFields) {
       model = { backend: 'api', base_url: data.baseUrl.trim(), model: data.model.trim() }
@@ -348,8 +412,15 @@ function toEmbeddingSpec(data: EmbeddingNodeData, allowDraft = false): Embedding
     }
   }
 
-  if (!allowDraft && !(data.chunkSize > 0)) {
-    throw new DagSerializationError('embedding node: chunk_size must be > 0')
+  if (!allowDraft && data.strategy !== 'semantic' && !(data.chunkSize > 0)) {
+    err('embeddingChunkSizeInvalid')
+  }
+  if (
+    !allowDraft &&
+    data.strategy === 'semantic' &&
+    !(data.similarityThreshold >= 0 && data.similarityThreshold <= 1)
+  ) {
+    err('embeddingSemanticThresholdInvalid')
   }
 
   if (!model) return undefined
@@ -357,6 +428,11 @@ function toEmbeddingSpec(data: EmbeddingNodeData, allowDraft = false): Embedding
   let chunking: ChunkingSpec
   if (data.strategy === 'fixed_window') {
     chunking = { strategy: 'fixed_window', chunk_size: data.chunkSize, overlap: data.overlap }
+  } else if (data.strategy === 'semantic') {
+    chunking = {
+      strategy: 'semantic',
+      similarity_threshold: data.similarityThreshold,
+    }
   } else {
     const separators = data.separators
       .split('\n')
@@ -379,7 +455,11 @@ function toEmbeddingSpec(data: EmbeddingNodeData, allowDraft = false): Embedding
   }
 }
 
-function toNodeSpec(node: Node<ConnectorNodeData>, allowDraft = false): NodeSpec | undefined {
+function toNodeSpec(
+  node: Node<ConnectorNodeData>,
+  allowDraft = false,
+  t: DagTranslator = defaultT,
+): NodeSpec | undefined {
   let config: unknown
   try {
     config = node.data.config.trim() === '' ? {} : JSON.parse(node.data.config)
@@ -388,13 +468,13 @@ function toNodeSpec(node: Node<ConnectorNodeData>, allowDraft = false): NodeSpec
       config = {}
     } else {
       throw new DagSerializationError(
-        `node "${node.data.name || node.data.connector}": config is not valid JSON`,
+        t('dag.errors.configNotValidJson', { name: node.data.name || node.data.connector }),
       )
     }
   }
   if (!node.data.connector.trim()) {
     if (allowDraft) return undefined
-    throw new DagSerializationError('every connector node needs a connector name')
+    throw new DagSerializationError(t('dag.errors.connectorNameEmpty'))
   }
   const spec: NodeSpec = { connector: node.data.connector, config }
   if (node.data.name.trim()) spec.name = node.data.name.trim()
@@ -531,6 +611,7 @@ const DEFAULT_EMBEDDING_DATA: EmbeddingNodeData = {
   dimension: 384,
   backend: 'onnx',
   repo: '',
+  revision: 'main',
   filename: '',
   tokenizerFilename: '',
   maxLength: 128,
@@ -540,6 +621,7 @@ const DEFAULT_EMBEDDING_DATA: EmbeddingNodeData = {
   strategy: 'fixed_window',
   chunkSize: 256,
   overlap: 0,
+  similarityThreshold: 0.8,
   separators: '',
 }
 
@@ -551,11 +633,15 @@ function fromEmbeddingSpec(spec: EmbeddingSpec): EmbeddingNodeData {
     dimension: spec.dimension,
     backend: spec.model.backend,
     strategy: spec.chunking.strategy,
-    chunkSize: spec.chunking.chunk_size,
-    overlap: spec.chunking.overlap ?? 0,
+    chunkSize: 'chunk_size' in spec.chunking ? spec.chunking.chunk_size : 0,
+    overlap: 'overlap' in spec.chunking ? (spec.chunking.overlap ?? 0) : 0,
+  }
+  if (spec.chunking.strategy === 'semantic') {
+    data.similarityThreshold = spec.chunking.similarity_threshold
   }
   if (spec.model.backend === 'onnx') {
     data.repo = spec.model.repo
+    data.revision = spec.model.revision
     data.filename = spec.model.filename
     data.tokenizerFilename = spec.model.tokenizer_filename
     data.maxLength = spec.model.max_length

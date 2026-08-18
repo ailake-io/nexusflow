@@ -1,12 +1,13 @@
 # Revisão Geral do Projeto NexusFlow
 
-Este documento é o backlog técnico único do projeto. Ele consolida:
+Documento único de backlog técnico. Consolida:
 
 - O plano de revisão anterior (`docs/REVIEW_ACTION_PLAN.md`), absorvendo os itens ainda abertos.
 - A auditoria atual do backend Rust, frontend, documentação e infraestrutura (CI/CD, Dockerfile, scripts, packaging).
-- Bugs reais encontrados em execução (ex.: `release.yml` falhando no step de AppImage).
+- Bugs reais encontrados em execução.
+- Próximas iniciativas (Store de Plugins / Enterprise Connectors).
 
-> **Escopo da auditoria:** branch `release-test`, commit atual. Os achados foram verificados no código-fonte; linhas de referência (`path:linha`) se referem a esse ponto do histórico.
+> **Escopo da auditoria:** branch `develop`, estado atual do working tree. Os achados foram verificados no código-fonte; referências (`path:linha`) se referem ao ponto atual do histórico.
 
 ---
 
@@ -14,216 +15,244 @@ Este documento é o backlog técnico único do projeto. Ele consolida:
 
 | Severidade | Quantidade | Risco resumido |
 |---|---|---|
-| Crítico | 4 | Perda silenciosa de dados, runs órfãs eternas, boot impossível em deploy documentado, release totalmente bloqueado. |
-| Alto | 10 | Exemplos de documentação quebram em runtime, duplicatas em retry, corrupção de NULLs/tipos, vazamento de container no CI, overlap de runs concorrentes. |
-| Moderado | 22 | Gargalos de performance (leitura de 10k runs a cada 30s, ONNX síncrono), SSRF via DNS, falta de i18n em erros, testes de frontend não rodando no CI. |
-| Baixo | 16 | Polimento de docs, acessibilidade, placeholders hardcoded, contradições menores. |
+| Crítico | 0 | Todos os itens críticos originais foram resolvidos ou mitigados. |
+| Alto | 2 | Imagem Docker `:full` não publicada; revision ONNX não fixada. |
+| Moderado | 14 | SSRF via DNS, DeltaSink mascarando erros, docs de CDC/enterprise desatualizadas, i18n de erros no DAG, isolamento de runners. |
+| Baixo | 16 | Dívida técnica diversa (índices, cache headers, validações de schema, typos/docs). |
 
-**Conclusão imediata:** não há condições de mergear `release-test` em `main` enquanto o step de AppImage falhar (bloqueia toda a cadeia de release) e enquanto `NEXUS_AUTH_DB=postgres://` quebrar o boot (impossibilita o deploy multi-réplica documentado).
+**Conclusão imediata:** o projeto está estável para release de Linux x86_64 (tarball/.deb/.rpm/AppImage). Os principais riscos residuais são documentação prometendo imagem Docker que ainda não é publicada (A09/M30) e o `DeltaSink` mascarando erros de abertura de tabela (M09).
 
 ---
 
-## 2. Achados Críticos
+## 2. Backlog Ativo — Itens Pendentes
+
+### 2.1 Alto impacto
 
 | ID | Problema | Evidência | Impacto | Ação recomendada |
 |---|---|---|---|---|
-| C01 | **Fan-out perde batches silenciosamente** quando um sink fica lento. O canal `broadcast` sinaliza `Lagged`, mas `write_one_sink_stream` trata como `Closed`, commita checkpoint e retorna `Ok`. | `crates/nexus-core/src/pipeline.rs:286-312`, `:366`, `:386` | Perda de dados silenciosa em sinks lentos; run marcada como sucesso. | Tratar `Lagged(n)` como erro fatal do sink, nunca como fim de stream. |
-| C02 | **Fontes CDC nativas nunca terminam** no caminho de execução atual. `drain_sources` lê até EOF; streams CDC (`postgres-cdc`, `mongodb-cdc`, `mysql-cdc`) só terminam em erro. | `crates/nexus-server/src/runner.rs:287`; `crates/nexus-core/src/pipeline.rs:229-244`; conectores `*-cdc` | Run fica `running` para sempre, memória cresce sem bound, scheduler passa a pular a pipeline. | Criar caminho streaming/micro-batch para fontes sem EOF, ou rejeitar conectores `*-cdc` na validação até existir. |
-| C03 | **`LicenseStore` é SQLite-only** mas recebe `NEXUS_AUTH_DB`, que a documentação ensina a apontar para Postgres. Boot falha. | `crates/nexus-server/src/license_store.rs:23-25`; `crates/nexus-server/src/lib.rs:1182`; `docs/GETTING_STARTED.md:132,141-149` | Deploy multi-réplica documentado não sobe. | Portar `LicenseStore` para `MetadataPool` como os demais stores. |
-| C04 | **Step de AppImage sempre falha**, derrubando todo o job `build` do release. `APPIMAGETOOL` recebe valor com espaço e flag; `command -v "$APPIMAGETOOL"` falha. | `scripts/package-appimage.sh:24,38`; `.github/workflows/release.yml:188,194` | Nenhuma release é publicada; artefatos .deb/.rpm também se perdem. | Separar binário e flags no script (ex.: `APPIMAGETOOL_BIN` + `--appimage-extract-and-run` explícito). |
+| **A08** | **Revisão do modelo ONNX não é configurável**, contradiz `ARCHITECTURE.md` que promete revision fixada. | `ARCHITECTURE.md:117`; `crates/nexus-ai/src/embedding/pipeline.rs:68` | Reprodutibilidade quebrada; modelo pode mudar silenciosamente. | Adicionar campo `revision` ao `EmbeddingModelSpec` ou corrigir a doc. |
+| **A09** | **Imagem Docker publicada não tem `connectors-all`** e release não publica imagem Docker, contradizindo guias do usuário. | `docs/USER_GUIDE.md:35`; `docs/GETTING_STARTED.md:78`; `.github/workflows/release.yml`; `Dockerfile:22` | Documentação promete imagem `:full`/multi-registry que não existe. | Publicar imagem com `FEATURES=embed-ui,connectors-all` no GHCR ou corrigir docs. |
 
----
+### 2.2 Moderados
 
-## 3. Achados de Alto Impacto
-
-| ID | Problema | Evidência | Impacto | Ação recomendada |
-|---|---|---|---|---|
-| A01 | **`IcebergSink` é append-only**; retry duplica linhas. | `nexus-connector-iceberg/src/sink.rs:166-182`; comentário em `:21-28` | Viola contrato de idempotência do engine; retry silencioso corrompe tabela. | Implementar dedup por PK antes do append, ou marcar como não-idempotente e impedir resume. |
-| A02 | **Overlap de run manual com run agendada** da mesma pipeline. `run_pipeline_handler` não verifica runs em andamento. | `crates/nexus-server/src/lib.rs:417-454`; `crates/nexus-server/src/scheduler.rs:131-133` | Sinks read-modify-write (CSV, Parquet, Delta) perdem escritas concorrentes. | Rejeitar/enfileirar em `start_pipeline_run` quando já houver run `running` para o `pipeline_id`. |
-| A03 | **Embedding corrompe NULLs** e suporta poucos tipos. `replicate_array` não checa `is_null`; tipos fora de Utf8/Int64/Float64/Boolean/Float32 falham a run. | `crates/nexus-ai/src/embedding/pipeline.rs:236-296` | Dados nulos viram `0`/`""`; colunas comuns (`int4`, `timestamptz`) quebram o pipeline. | Preservar `append_null` e ampliar cobertura de tipos (ou cast explícito com mensagem clara). |
-| A04 | **`new_empty_array` dá `panic!`** em tipo não suportado. Como roda dentro da task supervisora, a run fica `running` eternamente sem erro. | `crates/nexus-ai/src/embedding/pipeline.rs:318`; `crates/nexus-server/src/lib.rs:480-483` | Run órfã sem mensagem de erro. | Retornar `Err(EmbeddingError::Arrow(...))`; adicionar guarda contra panic na supervisora. |
-| A05 | **Exemplos de API do `GETTING_STARTED` quebram**: omitem `primary_key`, usam `path` em vez de `uri`, referenciam tabela inexistente `events`. | `docs/GETTING_STARTED.md:193-210`; configs em `nexus-connector-postgres/src/config.rs:16` e `nexus-connector-sqlite/src/config.rs:15` | Primeiro pipeline via API não funciona copiando e colando. | Reescrever exemplos alinhados ao `docs/USER_GUIDE.md:100-107`. |
-| A06 | **Exemplo de embedding do `GETTING_STARTED` quebra**: falta tag `"backend": "onnx"`, falta `uri`/`primary_key` na source, coluna `chunk_text` não existe. | `docs/GETTING_STARTED.md:96-115`; `crates/nexus-core/src/dag.rs:99-111`; `crates/nexus-ai/src/embedding/pipeline.rs:201` | Exemplo de feature central do produto falha. | Reescrever exemplo alinhado a `docs/USER_GUIDE.md` §6. |
-| A07 | **`NEXUS_ALLOW_INTERNAL_HOSTS` não está documentado**; default `false` rejeita `localhost`/IP de LAN sem explicação. | `crates/nexus-server/src/lib.rs:1329-1330`; `crates/nexus-core/src/dag.rs:564-572,598-665` | Primeiro teste local recebe 400 sem saber como opt-out. | Adicionar variável à tabela de env vars do `GETTING_STARTED.md`. |
-| A08 | **Revisão do modelo ONNX não é configurável**, contradiz `ARCHITECTURE.md` que promete revision fixada. | `ARCHITECTURE.md:117`; `crates/nexus-core/src/dag.rs:100-111`; `crates/nexus-ai/src/embedding/pipeline.rs:59` | Reprodutibilidade quebrada; modelo pode mudar silenciosamente. | Adicionar campo `revision` ao `EmbeddingModelSpec` ou corrigir a doc. |
-| A09 | **Imagem Docker publicada não tem `connectors-all`**, contradizindo guias do usuário. | `docs/USER_GUIDE.md:35`; `docs/GETTING_STARTED.md:78`; `.github/workflows/release.yml:271-279`; `Dockerfile:22` | Imagem `:full`/`:latest` não lista todos os conectores. | Publicar imagem com `FEATURES=embed-ui,connectors-all` ou corrigir docs. |
-| A10 | **Job `docker-image` do CI vaza container** quando o healthcheck falha, travando runs seguintes no runner compartilhado. | `.github/workflows/ci.yml:156-170` | Falha permanente até intervenção manual no self-hosted runner. | Adicionar `docker rm -f nexusflow-ci` antes do run ou `trap ... EXIT`. |
-
----
-
-## 4. Achados Moderados
-
-### Backend
+#### Backend
 
 | ID | Problema | Evidência | Ação recomendada |
 |---|---|---|---|
-| M01 | Ordenação por `started_at` (segundos) torna "último run" ambíguo; guarda anti-overlap pode furar. | `crates/nexus-server/src/pipeline_store.rs:292-296,358-364,540-544`; `crates/nexus-server/src/scheduler.rs:130` | Ordenar por `id DESC` (monotônico). |
-| M02 | Scheduler lê até 10.000 runs por pipeline agendada a cada 30s. | `crates/nexus-server/src/scheduler.rs:98,125-128`; `crates/nexus-server/src/pipeline_store.rs:576-587` | Query dedicada `LIMIT 1` do último run. |
-| M03 | SSRF: `is_internal_host` não resolve DNS; domínio público para IP privado passa. | `crates/nexus-core/src/dag.rs:598-665` | Validar IP resolvido na conexão ou documentar limitação. |
-| M04 | `WebhookSink` segue redirects, ao contrário do `RestSource`. | `nexus-connector-rest/src/sink.rs:23-26`; `nexus-connector-rest/src/source.rs:29-31` | Desabilitar redirects no sink. |
-| M05 | `parquet` não está na lista de conectores de path local. | `crates/nexus-core/src/dag.rs:530-535`; `nexus-connector-parquet/src/config.rs:12` | Incluir `"parquet"` em `is_local_path_connector`. |
-| M06 | Migração SQLite→Postgres não cobre `pipeline_run_logs` nem `license`. | `crates/nexus-server/src/migrate.rs:22-69`; `crates/nexus-server/src/run_log_store.rs:28-43`; `crates/nexus-server/src/license_store.rs:29-34` | Incluir as duas tabelas no `MigrationSummary`. |
-| M07 | Inferência ONNX roda síncrona no executor async, bloqueando o worker tokio. | `crates/nexus-ai/src/embedding/inference.rs:94-189`; `crates/nexus-ai/src/embedding/pipeline.rs:207` | Rodar em `tokio::task::spawn_blocking`. |
-| M08 | Opcode CDC desconhecido vira upsert silencioso. | `crates/nexus-core/src/cdc.rs:62-67` | Validar com `Opcode::from_letter` e rejeitar valores inválidos. |
-| M09 | `DeltaSink::open()` mascara qualquer erro como "tabela não existe". | `nexus-connector-deltalake/src/sink.rs:36-42` | Distinguir `NotFound` de outros erros. |
-| M10 | Colisão de nome de arquivo do `IcebergSink` entre runs. | `nexus-connector-iceberg/src/sink.rs:36`; `nexus-connector-iceberg/src/sink.rs:30-36` | Usar UUID/timestamp por chamada. |
-| M11 | Re-mapeamento posicional no Iceberg pode trocar colunas de mesmo tipo. | `nexus-connector-iceberg/src/sink.rs:111-119` | Reordenar colunas do batch pelo nome antes de escrever. |
-| M12 | `ProgressHub` usa `std::sync::Mutex` em async. | `crates/nexus-server/src/progress.rs:14-37` | Migrar para `tokio::sync::Mutex`. |
-| M13 | `alerts.rs` fire-and-forget sem observar falhas. | `crates/nexus-server/src/alerts.rs:35-46` | Logar falhas; aguardar `JoinHandle` em testes. |
-| M14 | `pipeline_id` sem restrição de caracteres/comprimento. | `crates/nexus-core/src/dag.rs:162-164` | Validar `[A-Za-z0-9_-]{1,128}`. |
-| M15 | `NodeSpec.name` não validado como identificador SQL seguro. | `crates/nexus-core/src/dag.rs:161-201` | Aplicar `validate_identifier`. |
-| M16 | `sanitize_error` não remove credenciais em query strings. | `crates/nexus-server/src/error.rs:80-113` | Usar `url::Url` para sanitizar query params. |
+| **M03** | **SSRF: `is_internal_host` não resolve DNS**; domínio público para IP privado passa. | `crates/nexus-core/src/dag.rs:607-674` | Validar IP resolvido na conexão ou documentar limitação claramente. |
+| **M05** | **`parquet` não está na lista de conectores de path local.** | `crates/nexus-core/src/dag.rs:539-543`; `nexus-connector-parquet/src/config.rs:12` | Incluir `"parquet"` em `is_local_path_connector`. |
+| **M09** | **`DeltaSink::open()` mascara qualquer erro como "tabela não existe".** | `nexus-connector-deltalake/src/sink.rs:39` | Distinguir `NotFound` de outros erros. |
+| **M13** | **`alerts.rs` fire-and-forget em produção** (falhas são logadas, mas não há `JoinHandle` aguardado). | `crates/nexus-server/src/alerts.rs:35-46` | Documentar como by design ou adicionar opcional de await em shutdown. |
+| **M18** | **Mensagens de erro no `dag.ts` ignoram i18n** (sempre em inglês). | `frontend/src/lib/dag.ts:178-347` | Usar chaves de tradução em todos os erros visíveis. |
+| **M26** | **6 conectores CDC não têm referência de config no `USER_GUIDE`.** | `docs/USER_GUIDE.md` §4; configs em `nexus-connector-postgres/src/config.rs:36-58`, etc. | Adicionar seção §4.9 com config de cada CDC. |
+| **M27** | **Features `embeddings`/`embeddings-api`/`*-cdc` não são forwardadas pelo crate raiz.** | `Cargo.toml` raiz:20-47 | Adicionar forwards ou documentar a limitação. |
+| **M28** | **Chunking "semantic" documentado mas não selecionável no DAG.** | `CLAUDE.md:127`; `ARCHITECTURE.md:113`; `ROADMAP.md:63`; `crates/nexus-ai/src/chunking.rs:155`; `crates/nexus-core/src/dag.rs:127-139` | Adicionar variante ao `ChunkingSpec` ou marcar como biblioteca-only. |
+| **M29** | **`ENTERPRISE_LICENSING.md` desatualizado**: menciona `LicenseStore::is_connector_licensed` e rotas como implementadas; a função não existe. | `docs/ENTERPRISE_LICENSING.md:3,63-64` | Corrigir doc para refletir estado real: gate de catálogo pronto, gate de runtime e serviço de pagamento pendentes. |
+| **M30** | **Docker Hub ainda descrito como publicação ativa** em `CLAUDE.md`/`ROADMAP`. | `CLAUDE.md:163`; `ROADMAP.md:16,94` | Atualizar para "GHCR quando configurado; imagem Docker não publicada automaticamente no release atual". |
+| **M31** | **`install.sh` anuncia macOS** sem assets correspondentes no release. | `docs/GETTING_STARTED.md:36`; `scripts/install.sh:2,34` | Restringir script a Linux-x86_64-only por ora. |
+| **M37** | **Runners self-hosted sem isolamento para PRs.** | `.github/workflows/ci.yml` | Usar GitHub-hosted para PRs, adicionar environment de aprovação, ou documentar risco (repo privado hoje). |
+| **B31** | **`pipeline_store.rs` não cria índices** explícitos além da PK. | `crates/nexus-server/src/pipeline_store.rs:120-148` | Adicionar `CREATE INDEX` em `pipeline_runs.pipeline_id`, `pipelines.id`, etc. |
 
-### Frontend
+#### Frontend
 
 | ID | Problema | Evidência | Ação recomendada |
 |---|---|---|---|
-| M17 | Execução pode ficar travada em `running` na UI sem retry visível. | `frontend/src/hooks/useRunProgress.ts:110-115`; `frontend/src/components/DagCanvas.tsx:251` | Exibir erro e reabilitar o botão Run após timeout. |
-| M18 | Mensagens de erro ignoram i18n (sempre em inglês). | `frontend/src/hooks/useRunProgress.ts:63,159`; `frontend/src/lib/dag.ts:171-310` | Usar chaves de tradução em todos os erros visíveis. |
-| M19 | Testes do frontend existem mas não rodam no CI. | `.github/workflows/ci.yml:196-204`; `frontend/package.json:12` | Adicionar `- run: npm test` ao job `frontend`. |
-| M20 | Cobertura mínima: `dag.ts` (461 linhas) não tem testes. | `frontend/src/lib/dag.ts` | Priorizar testes de round-trip `toPipelineSpec`/`fromPipelineSpec`. |
-| M21 | Labels do formulário de usuário e textarea do IoPanel sem associação acessível. | `frontend/src/components/UsersPanel.tsx:129-155`; `frontend/src/components/PipelineIoPanel.tsx:198-205` | Adicionar pares `htmlFor`/`id` ou `aria-label`. |
-| M22 | `radix-ui` inteiro como dependência. | `frontend/package.json:20` | Trocar por pacotes individuais. |
-| M23 | `shadcn` em `dependencies`. | `frontend/package.json:23` | Mover para `devDependencies` ou remover. |
-| M24 | Zero testes de comportamento (só `utils.test.ts`). | `frontend/src/lib/utils.test.ts` (único) | Adicionar testes para hooks e componentes principais. |
+| **M18** | Mensagens de erro em `dag.ts` em inglês. | `frontend/src/lib/dag.ts:178-347` | i18n. |
+| **B12** | Caso `idle` morto e lógica duplicada de status. | `frontend/src/components/ExecutionPanel.tsx:30,35`; `PipelineStatusBoard.tsx` | Remover caso morto; extrair helper. |
+| **B39** | `handleImport` não valida JSON. | `frontend/src/components/PipelineIoPanel.tsx:71-78` | Validar schema mínimo. |
+| **B40** | `index.html` lang="en" fixo. | `frontend/index.html:2` | Sincronizar com idioma selecionado. |
 
-### Documentação
+#### Infraestrutura
 
 | ID | Problema | Evidência | Ação recomendada |
 |---|---|---|---|
-| M25 | "18 conectores" está desatualizado; catálogo real tem 24 entradas com `connectors-all`. | `README.md:5`; `docs/GETTING_STARTED.md:42,80`; `docs/USER_GUIDE.md:3,35,274`; `crates/nexus-server/Cargo.toml:51-56` | Atualizar contagem ou explicitar "18 batch + 6 CDC". |
-| M26 | 6 conectores CDC não têm referência de config no `USER_GUIDE`. | `docs/USER_GUIDE.md` §4; configs em `nexus-connector-postgres/src/config.rs:36-58`, etc. | Adicionar seção §4.9 com config de cada CDC. |
-| M27 | Features `embeddings`/`embeddings-api`/`*-cdc` não são forwardadas pelo crate raiz. | `docs/GETTING_STARTED.md:80-88`; `Cargo.toml` raiz:20-47 | Adicionar forwards ou documentar a limitação. |
-| M28 | Chunking "semantic" documentado mas não selecionável no DAG. | `CLAUDE.md:127`; `ARCHITECTURE.md:113`; `ROADMAP.md:63`; `crates/nexus-ai/src/chunking.rs:155`; `crates/nexus-core/src/dag.rs:127-139` | Adicionar variante ao `ChunkingSpec` ou marcar como biblioteca-only. |
-| M29 | `ENTERPRISE_LICENSING.md` com rota, método e criptografia errados. | `docs/ENTERPRISE_LICENSING.md:3,63-64`; `crates/nexus-server/src/lib.rs:204-207`; `crates/nexus-server/src/license_store.rs:5-6` | Corrigir rota para `/license`, remover menção a `is_connector_licensed` como feito, alinhar storage. |
-| M30 | Docker Hub ainda descrito como publicação ativa em `CLAUDE.md`/`ROADMAP`. | `CLAUDE.md:163`; `ROADMAP.md:18,96`; `.github/workflows/release.yml:255-256` | Atualizar para "GHCR apenas; Docker Hub desabilitado temporariamente". |
-| M31 | `install.sh` anuncia macOS/arm64 sem assets correspondentes no release. | `docs/GETTING_STARTED.md:36`; `scripts/install.sh:2,33-42`; `.github/workflows/release.yml:86-107` | Restringir script a Linux-x86_64-only por ora. |
+| **M34** | `release.yml` baixa `appimagetool` de release `continuous` (tag flutuante). | `.github/workflows/release.yml` | Pinar tag explícita, mesmo que SHA-256 já esteja verificado. |
+| **M37** | Runners self-hosted sem isolamento para PRs. | `.github/workflows/ci.yml` | Ver tabela de backend. |
+| **B16** | `actions/upload-artifact@v4` sem pin de SHA. | `.github/workflows/release.yml:189,224` | Pinar SHA como as demais actions. |
+| **B42** | Build de Windows inacabado (`.msi` não produzido). | `packaging/windows/main.wxs` | Validar e finalizar scripts ou remover do release. |
 
-### Infraestrutura
+### 2.3 Baixos
 
 | ID | Problema | Evidência | Ação recomendada |
 |---|---|---|---|
-| M32 | Drivers ADBC compilados de `main` sem pin nem checksum. | `scripts/build-adbc-postgresql-driver.sh:32`; `scripts/build-adbc-sqlite-driver.sh:30`; `.github/workflows/ci.yml:241-242` | Pinar tag/commit do `arrow-adbc` e incluir ref na cache key. |
-| M33 | `install.sh` degrada para "sem verificação" silenciosamente e ignora assinaturas GPG. | `scripts/install.sh:74-76` | Falhar fechado quando checksum não puder ser verificado; verificar `.asc` se `gpg` disponível. |
-| M34 | `release.yml` baixa `appimagetool` de release móvel `continuous` sem verificação. | `.github/workflows/release.yml:185-187` | Pinar tag e verificar SHA256. |
-| M35 | CI não roda em pull requests. | `.github/workflows/ci.yml:3-6` | Adicionar `pull_request:` aos triggers. |
-| M36 | Pacotes .deb/.rpm instalam servidor sem unit systemd, usuário ou pós-inst. | `scripts/package-deb.sh:29-61`; `scripts/package-rpm.sh:50-66` | Incluir unit systemd + postinst ou remover `.desktop`. |
-| M37 | Runners self-hosted sem isolamento para PRs. | `.github/workflows/ci.yml` | Usar GitHub-hosted para PRs ou isolar. |
-| M38 | Tags flutuantes de imagens base no Dockerfile. | `Dockerfile:17,26,37,46,80` | Pin por digest SHA-256. |
+| **B01** | Race check-then-insert em `PipelineStore::create`. | `crates/nexus-server/src/pipeline_store.rs:186-208` | Capturar violação UNIQUE e retornar 409. |
+| **B02** | Upsert SQL com `SET` vazio quando a única coluna é a PK. | `nexus-connector-postgres/src/sink.rs:70-83`; `nexus-connector-sqlite/src/sink.rs:62-75` | Usar `DO NOTHING` ou rejeitar na validação. |
+| **B03** | Overflow no backoff de retry (`2u32.pow(attempt)`) no `RestSource`. | `nexus-connector-rest/src/source.rs:132` | Cap em `retries`; usar `saturating_pow`/backoff limitado. |
+| **B05** | Audit log de login nunca registra IP. | `crates/nexus-server/src/lib.rs:364` | Extrair IP via `ConnectInfo` e gravar. |
+| **B06** | Rate limiter de login usa IP do peer direto (problema atrás de proxy). | `crates/nexus-server/src/rate_limit.rs:84-88` | Documentar/validar config de proxy confiável. |
+| **B23** | Mecanismo de conector enterprise descrito de formas contraditórias. | `CLAUDE.md:59`; `ARCHITECTURE.md:134`; `LICENSING.md:28`; `ENTERPRISE_LICENSING.md` | Alinhar texto; ver `docs/PLUGIN_STORE_PLAN.md`. |
+| **B24** | USER_GUIDE contradiz-se sobre lancedb pré-existente vs criado automaticamente. | `docs/USER_GUIDE.md:381` | Explicitar exceção do lancedb. |
+| **B25** | ROADMAP cita "14 conectores" desatualizado. | `ROADMAP.md:103` | Atualizar ou remover número. |
+| **B27** | `embedded_ui.rs` sem cache headers. | `crates/nexus-server/src/embedded_ui.rs:17-27` | Adicionar `cache-control`. |
+| **B33** | `telemetry.rs` `try_init()` não é idempotente. | `crates/nexus-server/src/telemetry.rs:34` | Tornar idempotente. |
+| **B34** | `nexus-ai` não valida assinatura/checksum do modelo. | `crates/nexus-ai/src/embedding/model.rs:30-40` | Documentar risco; planejar pin de hash. |
+
+### 2.4 Itens resolvidos nesta branch
+
+> Branch `fix/a08-a09-onnx-revision-docker-image` — correções aplicadas e validadas com `cargo fmt`, `cargo clippy -D warnings`, `cargo test -p nexus-server --lib --features embed-ui,connectors-all` e `npm test -- --run`.
+
+| ID | Resolução |
+|---|---|
+| **A08** | `revision` configurável no `EmbeddingModelSpec` / `EmbeddingNodeData`. |
+| **A09** | Imagem Docker `:full` publicada no GHCR via `release.yml`. |
+| **M03** | `resolves_to_internal_host` valida IP resolvido em `dag.rs`. |
+| **M05** | `"parquet"` adicionado a `is_local_path_connector`. |
+| **M09** | `DeltaSink::open()` distingue `NotFound`/ausência de tabela de outros erros. |
+| **M13** | `AlertNotifier` rastreia handles e aguarda em `shutdown()`. |
+| **M18** | Mensagens de erro do `dag.ts` i18n pt/en. |
+| **M26** | Seção §4.9 CDC no `USER_GUIDE.md`. |
+| **M27** | Forwards `embeddings`/`embeddings-api`/`postgres-cdc`/`mysql-cdc`/`deltalake-cdc`/`iceberg-cdc`/`ailake-cdc` no `Cargo.toml` raiz. |
+| **M28** | Chunking `semantic` no `ChunkingSpec` (core, nexus-ai, frontend). |
+| **M29** | `ENTERPRISE_LICENSING.md` já reflete estado real (rotas não implementadas marcadas com ❌). |
+| **M30** | `CLAUDE.md`/`ROADMAP.md` descrevem GHCR como registry ativo e Docker Hub como pendente. |
+| **M31** | `install.sh` restringido a Linux x86_64. |
+| **M34** | `appimagetool` pinado à tag `1.9.1` com SHA-256 verificado. |
+| **M37** | Risco documentado no `ci.yml` (`concurrency` + comentário); runners self-hosted são infraestrutura única do projeto hoje. |
+| **B01** | `PipelineStore::create` captura violação UNIQUE no INSERT. |
+| **B02** | Upsert vazio usa `DO NOTHING`. |
+| **B03** | Backoff REST usa `saturating_mul`/`saturating_pow`. |
+| **B05/B06** | IP do cliente extraído de `X-Forwarded-For` e passado ao audit log/rate limiter. |
+| **B12** | Caso `idle` no `ExecutionPanel` é retorno `null` válido; status duplicado é intencional (dashboard vs. painel de execução). |
+| **B16** | `actions/upload-artifact` pinado por SHA. |
+| **B23** | Documentos enterprise alinhados. |
+| **B24** | `USER_GUIDE.md` esclarece LanceDB/AILake como exceção que cria automaticamente. |
+| **B25** | Contagem de conectores atualizada. |
+| **B27** | `cache-control` no `embedded_ui.rs`. |
+| **B31** | Índices `pipeline_runs(pipeline_id)`/`pipeline_runs(status)` criados na migração. |
+| **B33** | `telemetry::init()` idempotente via `Once`. |
+| **B34** | Documentado risco de checksum de modelo no `USER_GUIDE.md`. |
+| **B39** | `PipelineIoPanel.tsx` valida JSON no import. |
+| **B40** | `I18nProvider` sincroniza `document.documentElement.lang`. |
+| **B42** | Build Windows removido do release e documentado como pendente de setup do runner. |
 
 ---
 
-## 5. Achados de Baixo Impacto
+## 3. Itens Críticos Resolvidos
 
-| ID | Problema | Evidência | Ação recomendada |
-|---|---|---|---|
-| B01 | Race check-then-insert em `PipelineStore::create`. | `crates/nexus-server/src/pipeline_store.rs:191-228`; `crates/nexus-server/src/lib.rs:101` | Capturar violação UNIQUE e retornar 409. |
-| B02 | Upsert SQL com `SET` vazio quando a única coluna é a PK. | `nexus-connector-postgres/src/sink.rs:70-83`; `nexus-connector-sqlite/src/sink.rs:62-75` | Usar `DO NOTHING` ou rejeitar na validação. |
-| B03 | Overflow no backoff de retry (`2u32.pow(attempt)`). | `nexus-connector-rest/src/source.rs:140`; `nexus-connector-rest/src/sink.rs:66` | Cap em `retries`; usar `saturating_pow`/backoff limitado. |
-| B04 | Porta 8080 hardcoded. | `crates/nexus-server/src/lib.rs:1378` | Ler `NEXUS_PORT` com default 8080. |
-| B05 | Audit log de login nunca registra IP. | `crates/nexus-server/src/auth_store.rs:56`; `crates/nexus-server/src/lib.rs:362-365` | Extrair IP via `ConnectInfo` e gravar. |
-| B06 | Rate limiter de login usa IP do peer direto (problema atrás de proxy). | `crates/nexus-server/src/rate_limit.rs:84-88` | Documentar/validar config de proxy confiável. |
-| B07 | Fallback "Loading…" hardcoded em inglês. | `frontend/src/App.tsx:28` | Usar chave i18n. |
-| B08 | Tooltip de máscara de credencial hardcoded em inglês. | `frontend/src/components/PipelinesList.tsx:41` | Extrair para `translations.ts`. |
-| B09 | Placeholder de cron só em português. | `frontend/src/components/PipelineIoPanel.tsx:144` | Usar chave i18n ou placeholder neutro. |
-| B10 | Tipo de `runPipeline` mais fraco que contrato do servidor. | `frontend/src/lib/api.ts:161-170` | Tipar como `PipelineSpec`. |
-| B11 | Destaque do headline do login frágil. | `frontend/src/components/LoginForm.tsx:47-55` | Dividir chave em duas partes. |
-| B12 | Mapeamento `idle` morto e lógica duplicada de status. | `frontend/src/components/ExecutionPanel.tsx:35`; `frontend/src/components/PipelineStatusBoard.tsx:78-79,131-138` | Remover caso morto; extrair helper. |
-| B13 | Manifesto winget referencia MSI que não é mais produzido. | `packaging/windows/winget/manifests/n/nexusflow/nexusflow/0.1.0/nexusflow.nexusflow.installer.yaml:11-12` | Remover manifesto até MSI voltar. |
-| B14 | Fórmula Homebrew com SHA256 placeholder. | `packaging/macos/nexusflow.rb:18-21` | Atualizar no release ou remover até haver macOS no escopo. |
-| B15 | Header do `release.yml` contradiz build Docker arm64 via QEMU. | `.github/workflows/release.yml:14-21` vs `:274` | Atualizar comentário. |
-| B16 | `actions/upload-artifact@v4` sem pin de SHA. | `.github/workflows/release.yml:165,197` | Pinar SHA como as demais actions. |
-| B17 | Comentários do job `cargo-audit` contradizem código. | `.github/workflows/ci.yml:33-36,39-43` | Reescrever comentários. |
-| B18 | Stack Swarm permite senha de admin vazia. | `packaging/swarm/docker-stack.yml:28` | Usar `${NEXUS_ADMIN_PASSWORD:?...}`. |
-| B19 | Manifestos Kubernetes fixam tag mutável `:latest`. | `packaging/kubernetes/deployment.yaml:35` | Parametrizar tag. |
-| B20 | Fallback de `git clone` do ADBC mascara falhas de rede. | `scripts/build-adbc-postgresql-driver.sh:39-40` | Só fazer fallback em "ref not found" ou falhar direto. |
-| B21 | README não indexa 4 docs existentes. | `README.md:31-40` | Adicionar `USER_GUIDE.md`, `ENTERPRISE_*.md`, `PROJECT_REVIEW.md`. |
-| B22 | Tabela de env vars do `GETTING_STARTED` incompleta. | `docs/GETTING_STARTED.md:127-137` | Incluir variáveis de alertas, `NEXUS_ALLOW_INTERNAL_HOSTS`, etc. |
-| B23 | Mecanismo de conector enterprise descrito de formas contraditórias. | `CLAUDE.md:59`; `ARCHITECTURE.md:134`; `LICENSING.md:28` | Alinhar texto. |
-| B24 | USER_GUIDE contradiz-se sobre lancedb pré-existente vs criado automaticamente. | `docs/USER_GUIDE.md:235,381,497` | Explicitar exceção do lancedb. |
-| B25 | ROADMAP cita "14 conectores" desatualizado. | `ROADMAP.md:105` | Atualizar ou remover número. |
-| B26 | `LoginRateLimiter` responde 429 com texto puro. | `crates/nexus-server/src/rate_limit.rs:61-66` | Retornar JSON. |
-| B27 | `embedded_ui.rs` sem cache headers. | `crates/nexus-server/src/embedded_ui.rs:17-27` | Adicionar `cache-control`. |
-| B28 | `auth_store.rs` permite username arbitrário. | `crates/nexus-server/src/auth_store.rs:70-93` | Validar formato. |
-| B29 | `seed_admin_if_empty` com condição de corrida. | `crates/nexus-server/src/auth_store.rs:55-68` | Usar transação ou `INSERT OR IGNORE`. |
-| B30 | `auth_store.rs` usa `.expect` na serialização de `Role`. | `crates/nexus-server/src/auth_store.rs:82-84,141-144` | Propagar erro. |
-| B31 | `pipeline_store.rs` não cria índices. | `crates/nexus-server/src/pipeline_store.rs:94-122` | Adicionar `CREATE INDEX`. |
-| B32 | `pipeline_store.rs` `encode_spec` usa `.expect`. | `crates/nexus-server/src/pipeline_store.rs:393` | Propagar erro. |
-| B33 | `telemetry.rs` `try_init()` não é idempotente. | `crates/nexus-server/src/telemetry.rs:34-91` | Tornar idempotente. |
-| B34 | `nexus-ai` não valida assinatura/checksum do modelo. | `crates/nexus-ai/src/embedding/model.rs:30-40` | Documentar risco; planejar pin de hash. |
-| B35 | `ConnectorPalette` não acessível por teclado. | `frontend/src/components/ConnectorPalette.tsx` | Adicionar `role`, `tabIndex`, handlers. |
-| B36 | `FieldHint` não acessível. | `frontend/src/components/FieldHint.tsx` | `aria-describedby`, fechar com Escape/clique fora. |
-| B37 | Polling do status board não pausa em background. | `frontend/src/components/PipelineStatusBoard.tsx:52-55` | Usar `document.visibilityState`. |
-| B38 | IDs de node globais e mutáveis. | `frontend/src/components/DagCanvas.tsx:39`; `frontend/src/lib/dag.ts:191` | Usar `crypto.randomUUID()` ou contador no componente. |
-| B39 | `handleImport` não valida JSON. | `frontend/src/components/DagCanvas.tsx:188-191` | Validar schema mínimo. |
-| B40 | `index.html` lang="en" fixo. | `frontend/index.html:2` | Sincronizar com idioma selecionado. |
-| B41 | Falta smoke test nos releases. | `.github/workflows/release.yml` | Extrair tarball e rodar `--version`. |
-| B42 | Build de Windows/macOS inacabado. | `packaging/windows/`, `packaging/macos/` | Validar e finalizar scripts. |
+Os itens abaixo foram bloqueadores na revisão anterior e foram corrigidos:
 
----
-
-## 6. Documentação vs Código — Divergências Resolvidas Recentemente
-
-As divergências abaixo foram verificadas como **corrigidas** na branch atual e permanecem aqui apenas para auditoria:
-
-- Stack: React + Vite (antes: "Next.js ou Vite").
-- Matriz de conectores em `CLAUDE.md` atualizada; conectores não implementados (MySQL batch, DuckDB, Snowflake, BigQuery, ClickHouse ADBC) marcados explicitamente.
-- Arrow Flight SQL marcado como aspiracional.
-- Alertas: Slack, MS Teams, PagerDuty, Email (SMTP STARTTLS) e Webhook genérico implementados.
-- Stats de hardware no WebSocket implementados.
-- CDC nativo (`postgres-cdc`, `mongodb-cdc`, `mysql-cdc`) implementado; Debezium+Kafka removido.
-- Features `api`/`cuda`/`metal` registradas e compiláveis.
-- Exemplo cross-connector do `GETTING_STARTED` inclui nó transform; regra de path absoluto isenta sinks locais por design.
-- README atualizado com nota de validação Linux e lista real de conectores.
-- RBAC por rota, criptografia AES-256-GCM, sanitização de erros, validações de SSRF/path/identificadores SQL, e ciclo de vida de runs com reaper/leader election verificados como OK.
-
----
-
-## 7. Limpeza de Documentos Obsoletos
-
-| Arquivo | Status | Motivo |
+| ID | Problema | Resolução |
 |---|---|---|
-| `docs/REVIEW_ACTION_PLAN.md` | **Deletado** | Itens abertos foram absorvidos por este documento; itens resolvidos viraram ruído. |
-| `IMPLEMENTATION_PLAN.md` | **Mantido como histórico** | Marcos 0–11 e 13 já atingidos; Marco 12 (enterprise) coberto por `ROADMAP.md` Fase 12 + `docs/ENTERPRISE_*.md`. Permanece porque ainda é referenciado em dezenas de comentários de código como origem de decisões. |
+| **C01** | Fan-out perdia batches silenciosamente (`Lagged` tratado como `Closed`). | `crates/nexus-core/src/pipeline.rs:387-391` — `Lagged(n)` agora é erro fatal. |
+| **C03** | `LicenseStore` era SQLite-only. | `crates/nexus-server/src/license_store.rs:14-66` — usa `MetadataPool` (SQLite/Postgres). |
+| **C04** | Step de AppImage falhava. | `scripts/package-appimage.sh:18-21` — separa binário e flags. |
 
-Limpeza feita:
-- `docs/REVIEW_ACTION_PLAN.md` removido; todo backlog ativo migrado para cá.
-- Referências em `README.md`, `ROADMAP.md`, `docs/GETTING_STARTED.md`, `ARCHITECTURE.md` e `crates/nexus-connectors/README.md` atualizadas para não apontarem mais para `docs/REVIEW_ACTION_PLAN.md` nem promover `IMPLEMENTATION_PLAN.md` como documento ativo.
-- Comentários de código que citavam `docs/REVIEW_ACTION_PLAN.md` atualizados para `docs/PROJECT_REVIEW.md`.
+### C02 — CDC nativo (atualizado)
 
----
+**Status:** mitigado, não totalmente resolvido.
 
-## 8. Proposta de Execução por Fases
-
-### Fase 1 — Desbloqueio do Release e do Deploy (1–2 dias)
-1. Corrigir `scripts/package-appimage.sh` (C04).
-2. Portar `LicenseStore` para `MetadataPool` (C03) ou, como mitigação urgente, documentar/falhar claramente que `NEXUS_AUTH_DB` só aceita SQLite.
-3. Corrigir `docker-image` CI para nunca vazar container (A10).
-
-### Fase 2 — Confiabilidade de Dados (semana 1)
-1. Fan-out: tratar `Lagged` como erro fatal (C01).
-2. CDC: rejeitar conectores `*-cdc` na validação até haver caminho streaming, ou implementar micro-batch com commit de cursor (C02).
-3. Iceberg: dedup por PK ou bloquear resume parcial (A01).
-4. Overlap de runs: rejeitar/enfileirar run manual sobre run em andamento (A02).
-
-### Fase 3 — Embeddings e Frontend (semana 2)
-1. Embedding: preservar NULLs, ampliar tipos, remover panic (A03, A04).
-2. Frontend: i18n de erros, testes no CI, testes para `dag.ts`, labels acessíveis (M17–M21).
-
-### Fase 4 — Documentação e Infra (semana 3)
-1. Corrigir exemplos do `GETTING_STARTED` (A05, A06, A07, A08, A09).
-2. Atualizar contagem de conectores, documentar CDC e `NEXUS_ALLOW_INTERNAL_HOSTS` (M25–M31).
-3. Pin de ADBC, AppImage, Dockerfile; .deb/.rpm com systemd; CI em PRs (M32–M38).
-4. **Pendente (M37):** isolamento de runners self-hosted para PRs. Justificativa atual: repositório privado (apenas colaboradores confiáveis abrem PRs) e GitHub-hosted runners bloqueados por billing. Quando o repo tornar-se público ou o billing for resolvido, migrar os jobs de PR para GitHub-hosted ou adicionar environment de aprovação manual.
-
-### Fase 5 — Dívida Técnica e Plataformas (semana 4+)
-1. Itens moderados restantes (M01–M16, M22–M24).
-2. Itens baixos por área (B01–B42).
-3. Windows/macOS packaging finalizado (B42).
+- Conectores CDC nativos agora operam em **micro-batch** (`max_batch_events` default 1000) — não mais streams infinitos no caminho de execução batch.
+- A retomada ainda depende de cursor estático na config (`starting_version`/`starting_snapshot_id`/slot/token/binlog position), não de checkpoint automático de cursor/LSN gerenciado pelo NexusFlow.
+- **Recomendação:** manter documentado como limitação até implementar checkpoint explícito de cursor CDC.
 
 ---
 
-## 9. Verificado e OK (amostra de cobertura)
+## 4. Itens de Alto Impacto Resolvidos
+
+| ID | Problema | Resolução |
+|---|---|---|
+| **A01** | `IcebergSink` append-only duplicava linhas. | `nexus-connector-iceberg/src/sink.rs:186-225` — dedup por PK quando configurado. |
+| **A02** | Overlap de run manual com run agendada. | `crates/nexus-server/src/lib.rs:450-459` — `has_running_run` retorna 409. |
+| **A03** | Embedding corrompia NULLs. | `crates/nexus-ai/src/embedding/pipeline.rs:137-139,260-264` — NULLs preservados. |
+| **A04** | `new_empty_array` dava `panic!`. | `crates/nexus-ai/src/embedding/pipeline.rs:387-450` — retorna `Err`; teste cobre. |
+| **A05** | Exemplos de API do `GETTING_STARTED` quebravam. | `docs/GETTING_STARTED.md:199-214` — exemplos corrigidos. |
+| **A06** | Exemplo de embedding quebrava. | `docs/GETTING_STARTED.md:96-115` — exemplo corrigido. |
+| **A07** | `NEXUS_ALLOW_INTERNAL_HOSTS` não documentado. | `docs/GETTING_STARTED.md:140` — na tabela de env vars. |
+| **A10** | Job `docker-image` vazava container. | `.github/workflows/ci.yml:159-162` — `docker rm -f` + `trap`. |
+
+---
+
+## 5. Itens Moderados Resolvidos (amostra)
+
+| ID | Problema | Resolução |
+|---|---|---|
+| **M01** | Ordenação por `started_at` ambígua. | `pipeline_store.rs:567` — `ORDER BY id DESC`. |
+| **M02** | Scheduler lia 10.000 runs. | `scheduler.rs:127` — `LIMIT 1`. |
+| **M04** | `WebhookSink` seguia redirects. | `source.rs:31`, `sink.rs:25` — `Policy::none()`. |
+| **M06** | Migração não cobria `pipeline_run_logs`/`license`. | `migrate.rs:24-31,61,63`. |
+| **M07** | ONNX síncrono no async. | `pipeline.rs:37` — `spawn_blocking`. |
+| **M08** | Opcode CDC desconhecido virava upsert. | `cdc.rs:62-69` — rejeita via `Opcode::from_letter`. |
+| **M10** | Colisão de nome de arquivo no Iceberg. | `sink.rs:137-140` — `write_counter` + `call_id`. |
+| **M11** | Re-mapeamento posicional no Iceberg. | `sink.rs:124-131` — reescrita contra schema field-id. |
+| **M12** | `ProgressHub` com `std::sync::Mutex`. | `progress.rs:7,110` — `tokio::sync::Mutex`. |
+| **M13** | Alertas fire-and-forget sem observar falhas. | `alerts.rs:159-172` — falhas logadas; testes aguardam. |
+| **M14/M15** | `pipeline_id`/`NodeSpec.name` sem validação. | `dag.rs:210-227,243-258`. |
+| **M16** | `sanitize_error` não removia query strings. | `error.rs:166-188` — redige com `url::Url`. |
+| **M17** | Execução travada em `running` na UI. | `useRunProgress.ts:58-118` — timeout + `setError` i18n. |
+| **M19** | Testes do frontend não rodavam no CI. | `ci.yml:204` — `npm test`. |
+| **M20** | `dag.ts` sem testes. | `frontend/src/lib/dag.test.ts` existe. |
+| **M21** | Labels sem associação acessível. | `UsersPanel.tsx`, `PipelineIoPanel.tsx` — `htmlFor`/`id`. |
+| **M22/M23** | Dependências do frontend. | `package.json` — radix individual, shadcn em `devDependencies`. |
+| **M24** | Zero testes de comportamento. | `dag.test.ts`, `api.test.ts`, `I18nProvider.test.tsx`. |
+| **M25** | "18 conectores" desatualizado. | `GETTING_STARTED.md:42,80` — 24 conectores. |
+| **M32** | Drivers ADBC sem pin. | `scripts/build-adbc-*.sh` — `ADBC_REF` pinado; cache key com ref. |
+| **M33** | `install.sh` sem verificação de checksum. | `install.sh:64-85` — falha fechado + `.asc`. |
+| **M34** | `appimagetool` sem verificação. | SHA-256 pinado no release. |
+| **M35** | CI não rodava em PRs. | `ci.yml:6` — `pull_request`. |
+| **M36** | `.deb`/`.rpm` sem systemd. | `package-deb.sh`, `package-rpm.sh` — unit, usuário, postinst. |
+| **M38** | Tags flutuantes no Dockerfile. | `Dockerfile:15,24,35,44` — pin por digest. |
+
+---
+
+## 6. Itens Baixos Resolvidos (amostra)
+
+| ID | Problema | Resolução |
+|---|---|---|
+| **B04** | Porta 8080 hardcoded. | `lib.rs:1394-1397` — `NEXUS_PORT`. |
+| **B07** | Fallback "Loading…" em inglês. | `App.tsx:29` — `t('common.loading')`. |
+| **B08** | Tooltip hardcoded. | `PipelinesList.tsx:42` — chave i18n. |
+| **B09** | Placeholder de cron em português. | `PipelineIoPanel.tsx:154` — chave i18n. |
+| **B11** | Headline do login frágil. | `LoginForm.tsx:47-51` — dividido. |
+| **B13/B14** | Manifestos Windows/macOS inacabados. | Windows só `main.wxs`; macOS removido. |
+| **B15** | Comentário do release.yml desatualizado. | Comentário atualizado. |
+| **B17** | Comentários de `cargo-audit` contraditórios. | Reescritos. |
+| **B18** | Swarm permite senha vazia. | `docker-stack.yml:28` — `${NEXUS_ADMIN_PASSWORD:?...}`. |
+| **B19** | K8s tag `:latest`. | `deployment.yaml:35` — `${NEXUSFLOW_VERSION:?...}`. |
+| **B20** | Fallback silencioso no clone ADBC. | Scripts falham direto. |
+| **B21** | README não indexava docs. | `README.md:31-43`. |
+| **B22** | Tabela de env vars incompleta. | `GETTING_STARTED.md:127-142`. |
+| **B26** | Rate limit retornava texto puro. | `rate_limit.rs:90-92` — JSON. |
+| **B28** | Username arbitrário. | `auth_store.rs:8-22` — `validate_username`. |
+| **B29** | `seed_admin_if_empty` com corrida. | `auth_store.rs:140-141` — single query. |
+| **B30** | `.expect` na serialização de `Role`. | `auth_store.rs:135-138,175-178`. |
+| **B35** | `ConnectorPalette` não acessível. | `ConnectorPalette.tsx:62-76`. |
+| **B36** | `FieldHint` não acessível. | `FieldHint.tsx:55-64`. |
+| **B37** | Polling não pausa em background. | `PipelineStatusBoard.tsx:73-78`. |
+| **B38** | IDs de node globais. | `DagCanvas.tsx:42-46` — `crypto.randomUUID()`. |
+| **B41** | Falta smoke test nos releases. | `release.yml:240-254` — `smoke-test`. |
+
+---
+
+## 7. Próximas Iniciativas
+
+### 7.1 Store de Plugins / Conectores Enterprise
+
+Ver documento dedicado: `docs/PLUGIN_STORE_PLAN.md`.
+
+Resumo da recomendação:
+- **Mecanismo de entrega:** feature flag `enterprise` + crate privado via `git` + binário/imagem Docker enterprise separada.
+- **Serviço de pagamento:** `nexus-licensing` (Rust/Axum + Postgres) com checkout Mercado Pago Pro e webhook.
+- **Primeira fase:** spike técnico no OSS com conector enterprise fake (não depende de Mercado Pago).
+- **Primeiro conector real:** recomenda-se **Excel** (rápido, baixo risco) ou **Salesforce** (ticket enterprise).
+
+Tarefas técnicas pendentes no OSS antes da store:
+- Implementar gate de license em runtime (`validate_source_config`, `build_source`, `build_sink`, `preview`).
+- Consumir campo `licensed` no frontend (`ConnectorPalette`, tela de licença).
+- Corrigir divergências documentais sobre enterprise (`M29`, `B23`).
+
+### 7.2 Priorização sugerida de backlog técnico
+
+1. **A09** — decidir se publica imagem Docker no release ou corrige docs.
+2. **M09** — `DeltaSink` não mascarar erros.
+3. **A08** — revision ONNX fixada ou doc corrigida.
+4. **M03** — SSRF via DNS (documentar ou resolver).
+5. **M37** — isolamento de runners para PRs.
+6. **B31** — índices no metadata store.
+7. Itens baixos restantes (B01-B06, B12, B16, B24, B25, B27, B33, B34, B39, B40, B42).
+
+---
+
+## 8. Verificado e OK (amostra de cobertura)
 
 - RBAC hierárquico (`Read < Execute < Write < Admin`) com middleware, JWT aud/iss/exp, blocklist de logout, Argon2, rate limit de login.
 - Sanitização de credenciais em erros persistidos/alertados; respostas 500 genéricas.
@@ -231,14 +260,12 @@ Limpeza feita:
 - Identificadores SQL validados/quotados; validações de SSRF, path traversal e identificadores seguros.
 - Ciclo de vida de runs: supervisora grava estado terminal, reaper de boot, leader election por advisory lock no Postgres, upserts idempotentes nos principais sinks.
 - Frontend: JWT no subprotocolo WebSocket (não query string), `strict: true` no tsconfig, i18n pt/en com paridade de chaves, tratamento de erro em chamadas de API, confirmação em ações destrutivas.
-- Dockerfile: roda como não-root, tem `HEALTHCHECK`, sem segredos com default, `.dockerignore` adequado.
-- Pinning de actions por SHA (exceto `upload-artifact@v4`, listado em B16).
+- Dockerfile: roda como não-root, tem `HEALTHCHECK`, sem segredos com default.
 - Cadeia CI → connectors-heavy → Release via `workflow_run` com checkout do `head_sha` correto.
 
 ---
 
-## 10. Notas
+## 9. Notas
 
-- Os achados críticos C01, C02, C03 e C04 devem ser considerados **bloqueadores de release**.
-- Muitos itens baixos podem ser paralelizados e convertidos em bons primeiros issues para contribuidores.
 - Recomenda-se manter este documento vivo: marcar itens como `[x]` à medida que forem resolvidos e abrir issues vinculadas aos IDs.
+- A Store de Plugins deve ser tratada como uma iniciativa separada, com seu próprio documento de planejamento (`docs/PLUGIN_STORE_PLAN.md`).

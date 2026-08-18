@@ -142,6 +142,36 @@ fn apply_overlap(chunks: Vec<String>, overlap: usize) -> Vec<String> {
     result
 }
 
+/// Splits text into sentences using a simple regex-free heuristic: periods,
+/// exclamation and question marks followed by whitespace or end-of-string.
+/// Good enough for semantic chunking; a full NLP sentence splitter is left
+/// as future work.
+pub fn split_sentences(text: &str) -> Vec<String> {
+    let mut sentences = Vec::new();
+    let mut current = String::new();
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        current.push(chars[i]);
+        if ['.', '!', '?'].contains(&chars[i]) {
+            let next_is_boundary = chars.get(i + 1).map(|c| c.is_whitespace()).unwrap_or(true);
+            if next_is_boundary {
+                let trimmed = current.trim();
+                if !trimmed.is_empty() {
+                    sentences.push(trimmed.to_string());
+                }
+                current.clear();
+            }
+        }
+        i += 1;
+    }
+    let trimmed = current.trim();
+    if !trimmed.is_empty() {
+        sentences.push(trimmed.to_string());
+    }
+    sentences
+}
+
 /// Similarity-based chunking: groups consecutive sentences together until
 /// the embedding similarity between neighbors drops below `similarity_threshold`
 /// (a topic shift), then starts a new chunk. Takes the embedding function as

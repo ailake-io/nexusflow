@@ -119,6 +119,11 @@ pub enum EmbeddingModelSpec {
     Onnx {
         /// Hugging Face repo id, e.g. "sentence-transformers/all-MiniLM-L6-v2".
         repo: String,
+        /// Git revision (branch, tag or commit) inside the HF repo. Pinned by
+        /// default to "main" for backwards compatibility, but production specs
+        /// should set a commit hash or tag for reproducibility.
+        #[serde(default = "default_onnx_revision")]
+        revision: String,
         /// ONNX model file name inside the repo/revision.
         filename: String,
         /// Tokenizer file name inside the repo/revision.
@@ -140,6 +145,10 @@ pub enum EmbeddingModelSpec {
     },
 }
 
+fn default_onnx_revision() -> String {
+    "main".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "strategy")]
 pub enum ChunkingSpec {
@@ -154,6 +163,14 @@ pub enum ChunkingSpec {
         overlap: usize,
         separators: Option<Vec<String>>,
     },
+    Semantic {
+        #[serde(default = "default_similarity_threshold")]
+        similarity_threshold: f32,
+    },
+}
+
+fn default_similarity_threshold() -> f32 {
+    0.8
 }
 
 /// Two shapes, both valid DAGs (ARCHITECTURE.md §4):
@@ -343,6 +360,7 @@ impl PipelineSpec {
             match &embedding.model {
                 EmbeddingModelSpec::Onnx {
                     repo,
+                    revision,
                     filename,
                     tokenizer_filename,
                     max_length,
@@ -350,6 +368,11 @@ impl PipelineSpec {
                     if repo.trim().is_empty() {
                         return Err(NexusError::Schema(
                             "embedding.model.repo must not be empty".into(),
+                        ));
+                    }
+                    if revision.trim().is_empty() {
+                        return Err(NexusError::Schema(
+                            "embedding.model.revision must not be empty".into(),
                         ));
                     }
                     if filename.trim().is_empty() {
@@ -389,6 +412,16 @@ impl PipelineSpec {
                     if *chunk_size == 0 {
                         return Err(NexusError::Schema(
                             "embedding.chunking.chunk_size must be > 0".into(),
+                        ));
+                    }
+                }
+                ChunkingSpec::Semantic {
+                    similarity_threshold,
+                } => {
+                    if !(0.0..=1.0).contains(similarity_threshold) {
+                        return Err(NexusError::Schema(
+                            "embedding.chunking.similarity_threshold must be between 0.0 and 1.0"
+                                .into(),
                         ));
                     }
                 }
@@ -590,7 +623,7 @@ fn validate_node_security(
 fn is_local_path_connector(connector: &str) -> bool {
     matches!(
         connector,
-        "sqlite" | "lancedb" | "ailake" | "iceberg" | "deltalake" | "csv"
+        "sqlite" | "lancedb" | "ailake" | "iceberg" | "deltalake" | "csv" | "parquet"
     )
 }
 
@@ -894,7 +927,14 @@ mod tests {
         assert_eq!(embedding.source_column, "body");
         assert_eq!(embedding.dimension, 384);
         match &embedding.model {
-            EmbeddingModelSpec::Onnx { max_length, .. } => assert_eq!(*max_length, 128),
+            EmbeddingModelSpec::Onnx {
+                revision,
+                max_length,
+                ..
+            } => {
+                assert_eq!(revision, "main"); // default when omitted
+                assert_eq!(*max_length, 128);
+            }
             EmbeddingModelSpec::Api { .. } => panic!("expected onnx variant"),
         }
     }
@@ -956,6 +996,47 @@ mod tests {
         }"#;
         let err = PipelineSpec::parse(json).expect_err("empty source column must fail");
         assert!(matches!(err, NexusError::Schema(_)));
+    }
+
+    #[test]
+    fn parses_onnx_revision_and_rejects_empty_revision() {
+        let ok = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "postgres", "config": {}}],
+            "transform": {"sql": "SELECT 1"},
+            "sinks": [{"connector": "lancedb", "config": {}}],
+            "embedding": {
+                "source_column": "body",
+                "output_column": "embedding",
+                "dimension": 384,
+                "model": {"backend": "onnx", "repo": "r", "revision": "abc123", "filename": "m.onnx", "tokenizer_filename": "t.json", "max_length": 128},
+                "chunking": {"strategy": "fixed_window", "chunk_size": 256}
+            }
+        }"#;
+        let spec = PipelineSpec::parse(ok).expect("explicit revision parses");
+        match spec.embedding.unwrap().model {
+            EmbeddingModelSpec::Onnx { revision, .. } => assert_eq!(revision, "abc123"),
+            _ => panic!("expected onnx"),
+        }
+
+        let bad = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "postgres", "config": {}}],
+            "transform": {"sql": "SELECT 1"},
+            "sinks": [{"connector": "lancedb", "config": {}}],
+            "embedding": {
+                "source_column": "body",
+                "output_column": "embedding",
+                "dimension": 384,
+                "model": {"backend": "onnx", "repo": "r", "revision": "", "filename": "m.onnx", "tokenizer_filename": "t.json", "max_length": 128},
+                "chunking": {"strategy": "fixed_window", "chunk_size": 256}
+            }
+        }"#;
+        let err = PipelineSpec::parse(bad).expect_err("empty revision must fail");
+        assert!(
+            err.to_string().contains("revision"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
