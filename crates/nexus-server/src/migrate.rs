@@ -308,6 +308,7 @@ mod tests {
                 config: serde_json::json!({"path": "/tmp/out.db"}),
             }],
             embedding: None,
+            python: None,
             channel_capacity: 100,
             partitions: 1,
             dbt: None,

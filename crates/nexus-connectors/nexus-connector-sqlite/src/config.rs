@@ -41,7 +41,11 @@ impl SqliteConnectorConfig {
     /// If a legacy `uri` is present it is returned unchanged; otherwise
     /// `file_path` is returned.
     pub fn connection_url(&self) -> String {
-        self.uri.clone().unwrap_or_else(|| self.file_path.clone())
+        self.uri
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| self.file_path.clone())
     }
 }
 

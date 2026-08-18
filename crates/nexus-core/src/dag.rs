@@ -39,6 +39,24 @@ pub struct TransformSpec {
     pub sql: String,
 }
 
+/// A Python cleaning/transformation stage — `crates/nexus-server/src/
+/// python_transform.rs` runs `script` as an isolated subprocess (same
+/// isolation model as the dbt stage below: no sandboxing beyond process
+/// boundary + timeout, gated behind the same `Role::Write` bar as any
+/// other pipeline edit). The script must define `def transform(df): ...`
+/// operating on a pandas DataFrame; nexus-server handles the Arrow<->
+/// parquet<->pandas plumbing, the user never sees it. Chains after the
+/// SQL transform (if present) — see `PipelineSpec.python` doc comment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PythonTransformSpec {
+    pub script: String,
+    /// Defaults to 60s (see `python_transform::DEFAULT_TIMEOUT_SECONDS`)
+    /// when unset — `0` is rejected by `validate()`, same as a blank
+    /// `script`.
+    #[serde(default)]
+    pub timeout_seconds: Option<u64>,
+}
+
 /// Which dbt command to invoke after the raw load succeeds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -171,6 +189,15 @@ pub struct PipelineSpec {
     /// before the SQL transform (if present) or before the sinks.
     #[serde(default)]
     pub embedding: Option<EmbeddingSpec>,
+    /// Optional Python cleaning/transformation stage, chained after the SQL
+    /// `transform` (if present) and before the sinks — order is `sources ->
+    /// embedding -> transform -> python -> sinks`. When `transform` is
+    /// `None`, `python` still requires exactly 1 source/1 sink (same
+    /// constraint as the transform-less linear path — see `validate()`),
+    /// since there's no SQL stage to fan multiple sources into one table
+    /// first.
+    #[serde(default)]
+    pub python: Option<PythonTransformSpec>,
     #[serde(default = "default_channel_capacity")]
     pub channel_capacity: usize,
     #[serde(default = "default_partitions")]
@@ -276,7 +303,7 @@ impl PipelineSpec {
         }
 
         match &self.transform {
-            None => {
+            None if self.python.is_none() => {
                 if self.sources.len() != 1 || self.sinks.len() != 1 {
                     return Err(NexusError::Schema(
                         "without a transform, the pipeline must be strictly linear: \
@@ -285,10 +312,34 @@ impl PipelineSpec {
                     ));
                 }
             }
+            // A python-only pipeline (no SQL transform) still can't fan-in:
+            // there's no SQL stage to merge multiple sources into the one
+            // table `python` expects. Chain a SQL transform first to join
+            // sources, then `python` runs over its single output instead.
+            None => {
+                if self.sources.len() != 1 || self.sinks.len() != 1 {
+                    return Err(NexusError::Schema(
+                        "without a SQL transform, a python stage still requires exactly 1 \
+                         source and 1 sink (add a transform first to fan-in multiple sources)"
+                            .into(),
+                    ));
+                }
+            }
             Some(t) => {
                 if t.sql.trim().is_empty() {
                     return Err(NexusError::Schema("transform.sql must not be empty".into()));
                 }
+            }
+        }
+
+        if let Some(python) = &self.python {
+            if python.script.trim().is_empty() {
+                return Err(NexusError::Schema("python.script must not be empty".into()));
+            }
+            if python.timeout_seconds == Some(0) {
+                return Err(NexusError::Schema(
+                    "python.timeout_seconds must be > 0".into(),
+                ));
             }
         }
 

@@ -58,8 +58,8 @@ impl MySqlConnectorConfig {
     /// If a legacy `uri` is present it is returned unchanged; otherwise a
     /// `mysql://` URI is built from the individual fields.
     pub fn connection_string(&self) -> String {
-        if let Some(uri) = &self.uri {
-            return uri.clone();
+        if let Some(uri) = self.uri.as_deref().filter(|s| !s.is_empty()) {
+            return uri.to_string();
         }
 
         format!(
@@ -153,8 +153,8 @@ impl MySqlCdcConfig {
     /// If a legacy `uri` is present it is returned unchanged; otherwise a
     /// `mysql://` URI is built from the individual fields.
     pub fn connection_string(&self) -> String {
-        if let Some(uri) = &self.uri {
-            return uri.clone();
+        if let Some(uri) = self.uri.as_deref().filter(|s| !s.is_empty()) {
+            return uri.to_string();
         }
 
         format!(

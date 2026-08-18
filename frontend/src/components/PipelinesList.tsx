@@ -9,13 +9,14 @@ import {
   Workflow,
   AlertCircle,
   Loader2,
+  Play,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { StatusBadge } from '@/components/ui/status-badge'
 import { EmptyState } from '@/components/EmptyState'
 import { RunHistoryPanel } from '@/components/RunHistoryPanel'
 import { useI18n } from '@/lib/i18n'
-import { deletePipeline, getPipelineSpec, type NodeSummary } from '@/lib/api'
+import { deletePipeline, getPipelineSpec, runPipeline, type NodeSummary } from '@/lib/api'
 import { useAuth } from '@/lib/auth-context'
 import { usePipelines } from '@/hooks/usePipelines'
 import type { PipelineSpec } from '@/lib/dag'
@@ -70,6 +71,33 @@ export function PipelinesList({ onEdit }: PipelinesListProps) {
   const [editError, setEditError] = useState<string | null>(null)
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const [historyId, setHistoryId] = useState<string | null>(null)
+  const [runningId, setRunningId] = useState<string | null>(null)
+  const [runError, setRunError] = useState<string | null>(null)
+
+  // Triggers a run straight from the list, without loading the pipeline
+  // onto the Canvas first. `POST /pipelines/{id}/run` uses the persisted
+  // spec whenever one exists for `pipeline_id` (see run_pipeline_handler)
+  // — the body only needs to carry the id, sources/sinks are ignored.
+  const handleRun = async (pipelineId: string) => {
+    if (!token) return
+    setRunningId(pipelineId)
+    setRunError(null)
+    try {
+      // PipelineSpec.validate() (called on the raw request body, before the
+      // handler swaps in the persisted spec — see run_pipeline_handler)
+      // rejects empty sources/sinks unconditionally, so a bare
+      // `{pipeline_id}` placeholder body doesn't work here the way it does
+      // for an already-loaded Canvas run. Fetch the real spec first, same
+      // call `handleEdit` uses.
+      const spec = await getPipelineSpec(token, pipelineId)
+      await runPipeline(token, spec)
+      refresh()
+    } catch (err) {
+      setRunError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setRunningId(null)
+    }
+  }
 
   const handleDelete = async (pipelineId: string) => {
     if (!token) return
@@ -134,6 +162,12 @@ export function PipelinesList({ onEdit }: PipelinesListProps) {
           {editError}
         </div>
       )}
+      {runError && (
+        <div className="mb-4 flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-xs text-red-400">
+          <AlertCircle className="h-4 w-4" />
+          {runError}
+        </div>
+      )}
 
       {!loading && pipelines.length === 0 && (
         <EmptyState
@@ -171,6 +205,21 @@ export function PipelinesList({ onEdit }: PipelinesListProps) {
                 )}
               </div>
               <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={runningId === p.pipeline_id}
+                  onClick={() => handleRun(p.pipeline_id)}
+                  className="gap-1.5"
+                >
+                  {runningId === p.pipeline_id ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Play className="h-3.5 w-3.5" />
+                  )}
+                  {runningId === p.pipeline_id ? t('pipelines.running') : t('pipelines.run')}
+                </Button>
                 <Button
                   type="button"
                   variant="outline"

@@ -12,6 +12,15 @@ export interface TransformSpec {
   sql: string
 }
 
+/** Matches nexus-core::PythonTransformSpec exactly — a cleaning/
+ * transformation stage run as an isolated `python3` subprocess (mirrors
+ * `dbt` in isolation model, not in when it runs — chains after `transform`
+ * like a DAG stage, not as a post-load step). */
+export interface PythonTransformSpec {
+  script: string
+  timeout_seconds?: number
+}
+
 /** Matches nexus-core::DbtCommand exactly. */
 export type DbtCommand = 'run' | 'build' | 'test'
 
@@ -72,6 +81,9 @@ export interface PipelineSpec {
   /** Chunking + embedding stage, applied before the transform (or before
    * the sinks, if there's no transform) — CLAUDE.md §4.3. */
   embedding?: EmbeddingSpec
+  /** Cleaning/transformation stage, chained after `transform` (if present)
+   * and before the sinks — CLAUDE.md §4.4. */
+  python?: PythonTransformSpec
   channel_capacity?: number
   partitions?: number
   dbt?: DbtConfig
@@ -110,6 +122,16 @@ export interface DbtNodeData extends Record<string, unknown> {
   select: string
 }
 
+/** Canvas form of `PythonTransformSpec` — `timeoutSeconds` stays a plain
+ * number (0 means "unset", same convention `toPipelineSpec` uses for
+ * `channelCapacity`/`partitions`), so the inspector's number input has
+ * something controlled to bind to. */
+export interface PythonNodeData extends Record<string, unknown> {
+  kind: 'python'
+  script: string
+  timeoutSeconds: number
+}
+
 export type EmbeddingBackend = 'onnx' | 'api'
 export type ChunkingStrategy = 'fixed_window' | 'recursive_character' | 'semantic'
 
@@ -146,7 +168,12 @@ export interface EmbeddingNodeData extends Record<string, unknown> {
   separators: string
 }
 
-export type DagNodeData = ConnectorNodeData | TransformNodeData | DbtNodeData | EmbeddingNodeData
+export type DagNodeData =
+  | ConnectorNodeData
+  | TransformNodeData
+  | DbtNodeData
+  | EmbeddingNodeData
+  | PythonNodeData
 export type DagNode = Node<DagNodeData>
 
 export function isConnectorNode(node: DagNode): node is Node<ConnectorNodeData> {
@@ -159,6 +186,10 @@ export function isTransformNode(node: DagNode): node is Node<TransformNodeData> 
 
 export function isDbtNode(node: DagNode): node is Node<DbtNodeData> {
   return node.data.kind === 'dbt'
+}
+
+export function isPythonNode(node: DagNode): node is Node<PythonNodeData> {
+  return node.data.kind === 'python'
 }
 
 export function isEmbeddingNode(node: DagNode): node is Node<EmbeddingNodeData> {
@@ -201,6 +232,7 @@ export function toPipelineSpec(
   const transformNodes = nodes.filter(isTransformNode)
   const dbtNodes = nodes.filter(isDbtNode)
   const embeddingNodes = nodes.filter(isEmbeddingNode)
+  const pythonNodes = nodes.filter(isPythonNode)
   if (!allowDraft) {
     if (transformNodes.length > 1) {
       err('atMostOneTransform')
@@ -210,6 +242,9 @@ export function toPipelineSpec(
     }
     if (embeddingNodes.length > 1) {
       err('atMostOneEmbedding')
+    }
+    if (pythonNodes.length > 1) {
+      err('atMostOnePython')
     }
   }
 
@@ -234,12 +269,24 @@ export function toPipelineSpec(
   const transform =
     transformNodes.length === 1 ? { sql: transformNodes[0].data.sql } : undefined
 
+  const python: PythonTransformSpec | undefined =
+    pythonNodes.length === 1 ? { script: pythonNodes[0].data.script } : undefined
+  if (python && pythonNodes[0].data.timeoutSeconds > 0) {
+    python.timeout_seconds = pythonNodes[0].data.timeoutSeconds
+  }
+
   if (!allowDraft) {
-    if (!transform && (sources.length !== 1 || sinks.length !== 1)) {
+    if (!transform && !python && (sources.length !== 1 || sinks.length !== 1)) {
       err('strictLinearWithoutTransform')
+    }
+    if (!transform && python && (sources.length !== 1 || sinks.length !== 1)) {
+      err('pythonRequiresLinearWithoutTransform')
     }
     if (transform && !transform.sql.trim()) {
       err('transformSqlEmpty')
+    }
+    if (python && !python.script.trim()) {
+      err('pythonScriptEmpty')
     }
   }
 
@@ -267,6 +314,7 @@ export function toPipelineSpec(
   }
   if (transform) spec.transform = transform
   if (embedding) spec.embedding = embedding
+  if (python) spec.python = python
   if (dbt) spec.dbt = dbt
   if (meta.channelCapacity !== undefined) spec.channel_capacity = meta.channelCapacity
   if (meta.partitions !== undefined) spec.partitions = meta.partitions
@@ -280,11 +328,15 @@ const EN_DAG_ERRORS = {
   atMostOneTransform: 'at most one transform node is allowed',
   atMostOneDbt: 'at most one dbt node is allowed',
   atMostOneEmbedding: 'at most one embedding node is allowed',
+  atMostOnePython: 'at most one python node is allowed',
   sourcesEmpty: 'sources must not be empty',
   sinksEmpty: 'sinks must not be empty',
   strictLinearWithoutTransform:
     'without a transform, the pipeline must be strictly linear: exactly 1 source and 1 sink',
+  pythonRequiresLinearWithoutTransform:
+    'without a SQL transform, a python node still requires exactly 1 source and 1 sink',
   transformSqlEmpty: 'transform.sql must not be empty',
+  pythonScriptEmpty: 'python node: script must not be empty',
   dbtProjectDirEmpty: 'dbt node: project_dir must not be empty',
   embeddingSourceColumnEmpty: 'embedding node: source_column must not be empty',
   embeddingOutputColumnEmpty: 'embedding node: output_column must not be empty',
@@ -429,7 +481,7 @@ function toNodeSpec(
   return spec
 }
 
-const COLUMN_X = { source: 0, transform: 320, sink: 640 }
+const COLUMN_X = { source: 0, transform: 320, python: 480, sink: 640 }
 const ROW_HEIGHT = 100
 
 let importNodeId = 1
@@ -477,6 +529,12 @@ export function fromPipelineSpec(spec: PipelineSpec): { nodes: DagNode[]; edges:
     return id
   })
 
+  // Chain of "stage node ids currently feeding the sinks" — starts as the
+  // sources themselves, gets replaced by transform's id (if present), then
+  // by python's id (if present), so the final wiring below always connects
+  // whatever the last present stage is straight to every sink.
+  let upstreamIds = sourceIds
+
   if (spec.transform) {
     const transformId = `import-${importNodeId++}`
     nodes.push({
@@ -485,15 +543,35 @@ export function fromPipelineSpec(spec: PipelineSpec): { nodes: DagNode[]; edges:
       position: { x: COLUMN_X.transform, y: ((sourceIds.length + sinkIds.length) / 2) * ROW_HEIGHT / 2 },
       data: { kind: 'transform', sql: spec.transform.sql },
     })
-    sourceIds.forEach((sourceId) => {
-      edges.push({ id: `${sourceId}-${transformId}`, source: sourceId, target: transformId })
+    upstreamIds.forEach((id) => {
+      edges.push({ id: `${id}-${transformId}`, source: id, target: transformId })
     })
-    sinkIds.forEach((sinkId) => {
-      edges.push({ id: `${transformId}-${sinkId}`, source: transformId, target: sinkId })
-    })
-  } else {
-    edges.push({ id: `${sourceIds[0]}-${sinkIds[0]}`, source: sourceIds[0], target: sinkIds[0] })
+    upstreamIds = [transformId]
   }
+
+  if (spec.python) {
+    const pythonId = `import-${importNodeId++}`
+    nodes.push({
+      id: pythonId,
+      type: 'python',
+      position: { x: COLUMN_X.python, y: ((sourceIds.length + sinkIds.length) / 2) * ROW_HEIGHT / 2 },
+      data: {
+        kind: 'python',
+        script: spec.python.script,
+        timeoutSeconds: spec.python.timeout_seconds ?? 0,
+      },
+    })
+    upstreamIds.forEach((id) => {
+      edges.push({ id: `${id}-${pythonId}`, source: id, target: pythonId })
+    })
+    upstreamIds = [pythonId]
+  }
+
+  upstreamIds.forEach((id) => {
+    sinkIds.forEach((sinkId) => {
+      edges.push({ id: `${id}-${sinkId}`, source: id, target: sinkId })
+    })
+  })
 
   if (spec.embedding) {
     const embeddingId = `import-${importNodeId++}`

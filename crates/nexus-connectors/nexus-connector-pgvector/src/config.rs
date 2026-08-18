@@ -92,8 +92,8 @@ impl PgVectorConnectorConfig {
     /// If a legacy `uri` is present it is returned unchanged; otherwise a
     /// `postgresql://` URI is built from the individual fields.
     pub fn connection_string(&self) -> String {
-        if let Some(uri) = &self.uri {
-            return uri.clone();
+        if let Some(uri) = self.uri.as_deref().filter(|s| !s.is_empty()) {
+            return uri.to_string();
         }
 
         let password_part = percent_encode(&self.password);
