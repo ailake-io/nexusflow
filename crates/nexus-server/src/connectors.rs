@@ -51,9 +51,14 @@ use nexus_connector_rest::{RestConnectorConfig, RestSource, WebhookSink, Webhook
 
 /// The only place that knows which connector names exist and how to build
 /// them — `nexus-core`/`PipelineEngine` never hardcode a connector list, see
-/// `ConnectorRegistry` (ARCHITECTURE.md §3). Adding a connector means adding
-/// a match arm here (behind that connector's own Cargo feature — see
-/// nexus-server/Cargo.toml), nowhere else in nexus-server.
+/// `ConnectorRegistry` (ARCHITECTURE.md §3). Adding an OSS connector means
+/// adding a match arm here (behind that connector's own Cargo feature — see
+/// nexus-server/Cargo.toml), nowhere else in nexus-server. A connector that
+/// can't add a match arm here — anything living in a private out-of-tree
+/// repo (`ROADMAP.md` Fase 12, Bloco 3) — registers a
+/// `SourceBuilder`/`SinkBuilder` instead (`nexus-core/registry.rs`); every
+/// `other` arm below falls back to that registry before giving up. Real OSS
+/// connectors are unaffected — the hardcoded match arms always win first.
 ///
 /// The six vector-DB sinks (milvus/qdrant/lancedb/pgvector/pinecone/
 /// chromadb) and kafka/rest have no `Sink`/`Source` counterpart at all —
@@ -170,7 +175,10 @@ pub fn validate_source_config(
         "ailake-cdc" => {
             let _: AilakeCdcConfig = serde_json::from_value(node.config.clone())?;
         }
-        other => anyhow::bail!("unsupported source connector: {other:?}"),
+        other => match ConnectorRegistry::find_source_builder(other) {
+            Some(builder) => (builder.validate)(&node.config)?,
+            None => anyhow::bail!("unsupported source connector: {other:?}"),
+        },
     }
     Ok(())
 }
@@ -271,7 +279,10 @@ pub async fn build_source(
             let cfg: AilakeCdcConfig = serde_json::from_value(node.config.clone())?;
             Box::new(AilakeCdcSource::connect(&cfg).await?)
         }
-        other => anyhow::bail!("unsupported source connector: {other:?}"),
+        other => match ConnectorRegistry::find_source_builder(other) {
+            Some(builder) => (builder.build)(node.config.clone()).await?,
+            None => anyhow::bail!("unsupported source connector: {other:?}"),
+        },
     };
     Ok((name, source))
 }
@@ -350,7 +361,10 @@ pub fn validate_sink_config(
         "csv" => {
             let _: CsvConnectorConfig = serde_json::from_value(node.config.clone())?;
         }
-        other => anyhow::bail!("unsupported sink connector: {other:?}"),
+        other => match ConnectorRegistry::find_sink_builder(other) {
+            Some(builder) => (builder.validate)(&node.config)?,
+            None => anyhow::bail!("unsupported sink connector: {other:?}"),
+        },
     }
     Ok(())
 }
@@ -475,7 +489,10 @@ pub async fn build_sink(
             let cfg: CsvConnectorConfig = serde_json::from_value(node.config.clone())?;
             Box::new(CsvSink::connect(&cfg)?)
         }
-        other => anyhow::bail!("unsupported sink connector: {other:?}"),
+        other => match ConnectorRegistry::find_sink_builder(other) {
+            Some(builder) => (builder.build)(node.config.clone()).await?,
+            None => anyhow::bail!("unsupported sink connector: {other:?}"),
+        },
     };
     Ok((name, sink))
 }
@@ -556,5 +573,148 @@ mod tests {
         // helper every enforcement test above (and any future ones) needs.
         let jwt = sign(&claims(vec!["x"]));
         assert!(!jwt.is_empty());
+    }
+
+    // --- Plugin builder fallback (ROADMAP.md Fase 12 Bloco 3 prerequisite) ---
+    // Stands in for a real enterprise connector (e.g. Excel) living in the
+    // private `nexus-connectors-enterprise` repo, which can't add a match
+    // arm to build_source/build_sink above — it registers a
+    // SourceBuilder/SinkBuilder instead (nexus-core/registry.rs).
+
+    use async_trait::async_trait;
+    use futures::stream::{self, BoxStream};
+
+    struct DummyPluginSource;
+
+    #[async_trait]
+    impl Source for DummyPluginSource {
+        async fn read_batches(
+            &mut self,
+        ) -> Result<BoxStream<'_, Result<arrow_array::RecordBatch, nexus_core::NexusError>>, nexus_core::NexusError>
+        {
+            Ok(Box::pin(stream::empty()))
+        }
+
+        fn schema(&self) -> arrow_schema::SchemaRef {
+            std::sync::Arc::new(arrow_schema::Schema::empty())
+        }
+    }
+
+    struct DummyPluginSink;
+
+    #[async_trait]
+    impl Sink for DummyPluginSink {
+        async fn write_batch(
+            &mut self,
+            _batch: arrow_array::RecordBatch,
+        ) -> Result<(), nexus_core::NexusError> {
+            Ok(())
+        }
+
+        async fn commit_checkpoint(
+            &mut self,
+            _cursor: nexus_core::CheckpointCursor,
+        ) -> Result<(), nexus_core::NexusError> {
+            Ok(())
+        }
+    }
+
+    #[derive(serde::Deserialize, schemars::JsonSchema)]
+    struct TestPluginConnectorConfig {
+        #[allow(dead_code)]
+        value: String,
+    }
+
+    fn validate_test_plugin_connector_config(
+        cfg: &serde_json::Value,
+    ) -> Result<(), nexus_core::NexusError> {
+        serde_json::from_value::<TestPluginConnectorConfig>(cfg.clone())
+            .map(|_| ())
+            .map_err(|e| nexus_core::NexusError::Serialization(e.to_string()))
+    }
+
+    nexus_core::submit_enterprise_connector!(
+        "test-plugin-connector",
+        ConnectorCapability::Bridged,
+        TestPluginConnectorConfig
+    );
+
+    nexus_core::submit_source_builder!(
+        "test-plugin-connector",
+        validate_test_plugin_connector_config,
+        |cfg: serde_json::Value| -> futures::future::BoxFuture<
+            'static,
+            Result<Box<dyn Source>, nexus_core::NexusError>,
+        > {
+            Box::pin(async move {
+                let _parsed: TestPluginConnectorConfig = serde_json::from_value(cfg)
+                    .map_err(|e| nexus_core::NexusError::Serialization(e.to_string()))?;
+                Ok(Box::new(DummyPluginSource) as Box<dyn Source>)
+            })
+        }
+    );
+
+    nexus_core::submit_sink_builder!(
+        "test-plugin-connector",
+        validate_test_plugin_connector_config,
+        |cfg: serde_json::Value| -> futures::future::BoxFuture<
+            'static,
+            Result<Box<dyn Sink>, nexus_core::NexusError>,
+        > {
+            Box::pin(async move {
+                let _parsed: TestPluginConnectorConfig = serde_json::from_value(cfg)
+                    .map_err(|e| nexus_core::NexusError::Serialization(e.to_string()))?;
+                Ok(Box::new(DummyPluginSink) as Box<dyn Sink>)
+            })
+        }
+    );
+
+    #[tokio::test]
+    async fn build_source_falls_back_to_a_registered_plugin_builder() {
+        let node = NodeSpec {
+            name: None,
+            connector: "test-plugin-connector".to_string(),
+            config: serde_json::json!({"value": "x"}),
+        };
+        let license = claims(vec!["test-plugin-connector"]);
+        let (_, source) = build_source(&node, 0, Some(&license))
+            .await
+            .expect("builds via plugin");
+        assert_eq!(source.schema().fields().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn build_source_rejects_a_plugin_connector_without_a_covering_license() {
+        let node = NodeSpec {
+            name: None,
+            connector: "test-plugin-connector".to_string(),
+            config: serde_json::json!({"value": "x"}),
+        };
+        let err = build_source(&node, 0, None).await.unwrap_err();
+        assert!(err.to_string().contains("test-plugin-connector"));
+    }
+
+    #[tokio::test]
+    async fn build_sink_falls_back_to_a_registered_plugin_builder() {
+        let node = NodeSpec {
+            name: None,
+            connector: "test-plugin-connector".to_string(),
+            config: serde_json::json!({"value": "x"}),
+        };
+        let license = claims(vec!["test-plugin-connector"]);
+        build_sink(&node, 0, &[], Some(&license))
+            .await
+            .expect("builds via plugin");
+    }
+
+    #[test]
+    fn unknown_connector_still_gets_the_old_error_when_no_plugin_matches() {
+        let node = NodeSpec {
+            name: None,
+            connector: "totally-made-up".to_string(),
+            config: serde_json::json!({}),
+        };
+        let err = validate_source_config(&node, None).unwrap_err();
+        assert!(err.to_string().contains("unsupported source connector"));
     }
 }
