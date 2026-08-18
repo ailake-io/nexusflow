@@ -590,8 +590,10 @@ mod tests {
     impl Source for DummyPluginSource {
         async fn read_batches(
             &mut self,
-        ) -> Result<BoxStream<'_, Result<arrow_array::RecordBatch, nexus_core::NexusError>>, nexus_core::NexusError>
-        {
+        ) -> Result<
+            BoxStream<'_, Result<arrow_array::RecordBatch, nexus_core::NexusError>>,
+            nexus_core::NexusError,
+        > {
             Ok(Box::pin(stream::empty()))
         }
 

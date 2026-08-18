@@ -233,7 +233,10 @@ mod tests {
 
     #[async_trait]
     impl Sink for DummySink {
-        async fn write_batch(&mut self, _batch: arrow_array::RecordBatch) -> Result<(), NexusError> {
+        async fn write_batch(
+            &mut self,
+            _batch: arrow_array::RecordBatch,
+        ) -> Result<(), NexusError> {
             Ok(())
         }
 
