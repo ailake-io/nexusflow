@@ -1,6 +1,15 @@
 # 🔐 Licenciamento de Conectores Enterprise — Mercado Pago
 
-Detalha a implementação técnica do modelo de licenciamento enterprise descrito em `LICENSING.md §2` e do catálogo em `docs/ENTERPRISE_CONNECTORS.md`, usando **Mercado Pago** como gateway (cartão de crédito, débito e Pix). O gate técnico no `nexus-server` (`POST /license`, `GET /license/status`, validação de license key e `LicenseStore::is_connector_licensed`) já foi implementado; o serviço `nexus-licensing` separado e a integração com Mercado Pago ainda não — este doc continua sendo o design de referência pra essa parte.
+Detalha a implementação técnica do modelo de licenciamento enterprise descrito em `LICENSING.md §2` e do catálogo em `docs/ENTERPRISE_CONNECTORS.md`, usando **Mercado Pago** como gateway (cartão de crédito, débito e Pix).
+
+**Estado atual:**
+- ✅ Catálogo de conectores enterprise e flag `licensed` no registry já existem (`docs/ENTERPRISE_CONNECTORS.md`, `nexus-core/src/catalog.rs`).
+- ✅ `LicenseStore` persiste license keys no metadata store (`crates/nexus-server/src/license_store.rs`).
+- ❌ Gate de runtime (`validate_source_config`/`build_source`/`build_sink`/`preview`) ainda não consome o campo `licensed`.
+- ❌ Endpoints `POST /license` e `GET /license/status` ainda não existem.
+- ❌ Serviço `nexus-licensing` separado e integração com Mercado Pago ainda não implementados.
+
+Este doc continua sendo o design de referência para a parte de pagamento/gate. Ver `docs/PLUGIN_STORE_PLAN.md` para o plano de entrega da store.
 
 ## 1. Visão geral do fluxo
 

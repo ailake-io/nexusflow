@@ -32,7 +32,7 @@ docker run -d --name nexusflow -p 8080:8080 \
 
 Variáveis de ambiente completas: ver [`GETTING_STARTED.md` §3](./GETTING_STARTED.md#3-variáveis-de-ambiente). As duas obrigatórias são `NEXUS_JWT_SECRET` e `NEXUS_ENCRYPTION_KEY` — sem elas o processo não sobe.
 
-**Conectores linkados no binário**: binários pré-buildados (release, `.deb`, AppImage, rpm, imagem Docker `:full`) já vêm com os 24 conectores ligados (`embed-ui,connectors-all`: 18 batch + 6 CDC nativos; a feature `rest` registra `rest` e `webhook` como nomes separados no catálogo). Buildando a partir do source, cada conector é uma feature Cargo opcional (`cargo build --features embed-ui,connectors-all` liga todos de uma vez) — ver [`GETTING_STARTED.md` §2](./GETTING_STARTED.md#2-habilitando-conectores). O catálogo em `GET /connectors` sempre reflete exatamente o que foi compilado; a UI nunca mostra um conector que não está no binário.
+**Conectores linkados no binário**: binários pré-buildados (release, `.deb`, AppImage, rpm) e a imagem Docker publicada no GHCR já vêm com os 24 conectores ligados (`embed-ui,connectors-all`: 18 batch + 6 CDC nativos; a feature `rest` registra `rest` e `webhook` como nomes separados no catálogo). Buildando a partir do source, cada conector é uma feature Cargo opcional (`cargo build --features embed-ui,connectors-all` liga todos de uma vez) — ver [`GETTING_STARTED.md` §2](./GETTING_STARTED.md#2-habilitando-conectores). O catálogo em `GET /connectors` sempre reflete exatamente o que foi compilado; a UI nunca mostra um conector que não está no binário.
 
 ---
 
@@ -232,7 +232,7 @@ Payload de cada mensagem é decodificado como JSON e projetado sobre `fields` �
 
 ### 4.5 Bancos vetoriais / AI Lakehouse (todos **sink apenas**, exceto `lancedb`/`ailake` que também são source — ver §4.6)
 
-Todos compartilham o mesmo formato: `primary_key`, `embedding_column` (coluna `FixedSizeList<Float32>`), `dimension`. A coleção/tabela/índice de destino **deve já existir** com a dimensão correta configurada externamente — o sink só escreve.
+Todos compartilham o mesmo formato: `primary_key`, `embedding_column` (coluna `FixedSizeList<Float32>`), `dimension`. A coleção/tabela/índice de destino **deve já existir** com a dimensão correta configurada externamente — o sink só escreve. **Exceção:** `lancedb` e `ailake` são embarcados e criam o banco/tabela automaticamente no primeiro write se ainda não existirem.
 
 #### `milvus`
 ```json
@@ -380,6 +380,65 @@ Chaves de `storage_options` por provedor:
 
 > `lancedb` não tem config listada acima por brevidade — segue o mesmo padrão vetorial de `pgvector`/`milvus`: `{"uri": "/dados/vectors", "table": "docs", "primary_key": "id", "embedding_column": "embedding", "dimension": 384, "timeout_seconds": 30}`, path local embarcado (sem servidor), criado automaticamente no primeiro write.
 
+### 4.9 CDC nativo (micro-batch)
+
+Os 6 conectores abaixo operam em **micro-batch** (`max_batch_events` default 1000): cada run lê até esse limite de eventos, grava no sink e termina; o scheduler inicia o próximo batch e o conector retoma do cursor/slot/token/binlog position anterior. A retomada ainda depende do cursor estático na config — o NexusFlow não persiste LSN/snapshot/version automaticamente entre runs hoje.
+
+| Conector | Nome no catálogo | Mecanismo | Resume por | Pré-requisitos |
+|---|---|---|---|---|
+| PostgreSQL | `postgres-cdc` | logical replication slot | `slot_name` | `CREATE PUBLICATION <publication_name> FOR TABLE <table>` |
+| MySQL | `mysql-cdc` | binlog (fake replica) | `binlog_filename` + `binlog_position` | Usuário com `REPLICATION SLAVE/CLIENT`; `binlog_row_image=FULL` recomendado |
+| MongoDB | `mongodb-cdc` | Change Streams | `resume_token` | Replica set (mesmo single-node) |
+| Delta Lake | `deltalake-cdc` | Delta change feed | `starting_version` | `delta.enableChangeDataFeed = true` na tabela |
+| Iceberg | `iceberg-cdc` | diff de snapshots | `starting_snapshot_id` | Catálogo SQLite + warehouse local; **insert-only** |
+| AI-Lake | `ailake-cdc` | diff de snapshots | `starting_snapshot_id` | Warehouse local HNSW; emite `I` para upserts também |
+
+Exemplo mínimo (`postgres-cdc` → `mongodb`):
+
+```json
+{
+  "pipeline_id": "cdc-demo",
+  "sources": [{
+    "connector": "postgres-cdc",
+    "config": {
+      "host": "db", "port": 5432, "username": "repl", "password": "...",
+      "database": "production", "table": "orders",
+      "publication_name": "pub_orders", "slot_name": "nexus_orders",
+      "fields": [
+        {"name": "id", "data_type": "int64", "nullable": false},
+        {"name": "amount", "data_type": "float64", "nullable": false}
+      ]
+    }
+  }],
+  "transform": { "sql": "SELECT * FROM source0" },
+  "sinks": [{
+    "connector": "mongodb",
+    "config": {
+      "connection_string": "mongodb://u:p@mongo:27017/analytics",
+      "database": "analytics", "collection": "orders_cdc", "primary_key": "id",
+      "fields": [
+        {"name": "id", "data_type": "int64", "nullable": false},
+        {"name": "amount", "data_type": "float64", "nullable": false}
+      ]
+    }
+  }]
+}
+```
+
+Configuração completa por conector:
+
+**`postgres-cdc`**: `host`, `port` (default 5432), `username`, `password`, `database`, `schema` (opcional), `ssl_mode` (`disable`/`allow`/`prefer`/`require`/`verify-ca`/`verify-full`, default `prefer`), `table`, `publication_name`, `slot_name`, `fields: [{name, data_type: "int64"|"float64"|"boolean"|"utf8", nullable}]`, `timeout_seconds` (default 30), `max_batch_events` (default 1000). Também aceita `uri` legado.
+
+**`mysql-cdc`**: `host`, `port` (default 3306), `username`, `password`, `database`, `table`, `server_id` (default 65535), `fields` (mesmo shape), `binlog_filename` + `binlog_position` (opcionais), `max_batch_events` (default 1000). Também aceita `uri` legado.
+
+**`mongodb-cdc`**: `connection_string` (ou `hosts` + `username` + `password` + `auth_database`), `database`, `collection`, `fields: [{name, data_type: "int64"|"float64"|"boolean"|"utf8", nullable}]`, `resume_token` (opcional), `batch_size` (default 1000), `timeout_seconds` (default 30), `max_batch_events` (default 1000).
+
+**`deltalake-cdc`**: `table_uri` (legado) ou `path` + `table_name`, `storage_options` (S3 opcional), `starting_version` (opcional), `timeout_seconds` (default 30).
+
+**`iceberg-cdc`**: `catalog_uri` (legado) ou `catalog_path`, `warehouse_location` (legado) ou `warehouse_path`, `namespace` (legado) ou `namespace_name`, `table` (legado) ou `table_name`, `storage_options` (S3 opcional), `starting_snapshot_id` (opcional), `timeout_seconds` (default 30). **Insert-only**: delete events são rejeitados no sink.
+
+**`ailake-cdc`**: `warehouse` (legado) ou `warehouse_path`, `namespace` (legado) ou `namespace_name`, `table` (legado) ou `table_name`, `primary_key`, `embedding_column`, `dimension`, `storage_options` (reservado), `starting_snapshot_id` (opcional), `timeout_seconds` (default 30).
+
 ---
 
 ## 5. Transformação SQL (DataFusion)
@@ -420,12 +479,15 @@ Node `embedding` opcional, roda **antes** do transform (ou antes dos sinks, se n
 "model": {
   "backend": "onnx",
   "repo": "sentence-transformers/all-MiniLM-L6-v2",
+  "revision": "main",
   "filename": "model.onnx",
   "tokenizer_filename": "tokenizer.json",
   "max_length": 128
 }
 ```
 Baixa o modelo do Hugging Face Hub em runtime (cache local). CUDA/Metal ainda não validados em hardware real — hoje roda em CPU mesmo com essas features ligadas (fallback silencioso).
+
+> ⚠️ **Segurança de modelo:** o NexusFlow não valida checksum/assinatura do arquivo baixado do Hugging Face Hub. Use `revision` fixado a um commit SHA ou tag imutável (`"revision": "abc123..."`) para evitar que o modelo mude silenciosamente sob você. Verificação de hash do arquivo é débito técnico conhecido — planeje auditoria manual em deploys regulamentados.
 
 **Backend Api** (HTTP externa compatível com OpenAI — feature `embeddings-api`):
 ```json

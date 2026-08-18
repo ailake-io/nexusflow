@@ -10,6 +10,6 @@ pub mod chunking;
 pub mod embedding;
 
 pub use chunking::{
-    chunk_fixed_window, chunk_recursive_character, chunk_semantic, FixedWindowConfig,
-    RecursiveCharacterConfig, SemanticChunkConfig,
+    chunk_fixed_window, chunk_recursive_character, chunk_semantic, split_sentences,
+    FixedWindowConfig, RecursiveCharacterConfig, SemanticChunkConfig,
 };
