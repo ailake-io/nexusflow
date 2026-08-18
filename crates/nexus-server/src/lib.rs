@@ -304,6 +304,13 @@ struct ConnectorCatalogEntry {
     /// license's `connectors` list covers its slug. The canvas uses this to
     /// show a locked/"upgrade" state instead of hiding the node outright.
     licensed: bool,
+    /// `Some(slug)` for an enterprise-gated connector (mirrors
+    /// `ConnectorDescriptor::requires_license`), `None` for OSS. The Store
+    /// page (frontend) uses this to tell "always free" apart from
+    /// "enterprise, and here's whether you own it" — `licensed` alone can't
+    /// distinguish those two cases (both read `true` for OSS).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    requires_license: Option<&'static str>,
 }
 
 async fn list_connectors_handler(
@@ -322,6 +329,7 @@ async fn list_connectors_handler(
                         .as_ref()
                         .is_some_and(|claims| claims.covers(slug)),
                 },
+                requires_license: d.requires_license,
             })
             .collect(),
     )
@@ -533,11 +541,19 @@ async fn execute_pipeline_run(
         ))
         .await;
 
+    // Fetched once per run, not per connector — an expired/uninstalled
+    // license just means `active_license` is `None`, which
+    // `connectors::check_connector_license` treats the same as "not
+    // covered" for any enterprise-gated connector (ROADMAP.md Fase 12,
+    // Bloco 1).
+    let active_license = state.license_store.active().await.unwrap_or(None);
+
     let result = runner::run_pipeline(
         &spec,
         &state.checkpoints,
         Some(progress_tx.clone()),
         Some(&logger),
+        active_license.as_ref(),
     )
     .await;
     state.progress.finish(run_id).await;
@@ -576,6 +592,7 @@ async fn execute_pipeline_run(
                             &state.checkpoints,
                             Some(progress_tx.clone()),
                             Some(&logger),
+                            active_license.as_ref(),
                         )
                         .await
                         {
@@ -642,7 +659,8 @@ async fn create_pipeline_handler(
     if !spec.draft {
         spec.validate_security_with(state.allow_internal_hosts)
             .map_err(|e| ApiError::bad_request(e.to_string()))?;
-        connectors::validate_pipeline_configs(&spec)
+        let active_license = state.license_store.active().await.unwrap_or(None);
+        connectors::validate_pipeline_configs(&spec, active_license.as_ref())
             .map_err(|e| ApiError::bad_request(e.to_string()))?;
     }
     state.pipelines.create(&spec, &state.secrets).await?;
@@ -721,7 +739,8 @@ async fn preview_node_handler(
         ))
     })?;
 
-    let (_, mut source) = crate::connectors::build_source(node, 0)
+    let active_license = state.license_store.active().await.unwrap_or(None);
+    let (_, mut source) = crate::connectors::build_source(node, 0, active_license.as_ref())
         .await
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
 
@@ -799,7 +818,8 @@ async fn update_pipeline_handler(
     if !spec.draft {
         spec.validate_security_with(state.allow_internal_hosts)
             .map_err(|e| ApiError::bad_request(e.to_string()))?;
-        connectors::validate_pipeline_configs(&spec)
+        let active_license = state.license_store.active().await.unwrap_or(None);
+        connectors::validate_pipeline_configs(&spec, active_license.as_ref())
             .map_err(|e| ApiError::bad_request(e.to_string()))?;
     }
     state.pipelines.update(&id, &spec, &state.secrets).await?;

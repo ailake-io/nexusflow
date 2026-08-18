@@ -22,7 +22,7 @@ pub use pipeline::{
     TransformPipeline,
 };
 pub use record_batch_builder::RecordBatchBuilder;
-pub use registry::{ConnectorDescriptor, ConnectorRegistry};
+pub use registry::{ConnectorDescriptor, ConnectorRegistry, SinkBuilder, SourceBuilder};
 pub use schedule::parse_cron_expression;
 pub use sql::{quote_identifier, validate_identifier};
 pub use traits::{ConnectorCapability, Sink, Source, Transform};

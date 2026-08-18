@@ -209,6 +209,12 @@ parquet = { version = "58.4.0", optional = true }
 async-trait = "0.1.91"
 futures = "0.3.33"
 futures-util = "0.3.33"
+# Only for connectors.rs's license-enforcement tests, which register a
+# test-only fixture connector via nexus_core::submit_enterprise_connector! —
+# that macro's derive(JsonSchema) needs the `schemars` crate name resolvable
+# by its own bare name in this crate too, a qualified path through
+# nexus_core's re-export isn't enough for the derive macro's generated code.
+schemars = "1.2.2"
 sqlx = { version = "0.9.0", default-features = false, features = ["postgres", "runtime-tokio", "sqlite"] }
 tempfile = "3.27.0"
 testcontainers = "0.27.3"
