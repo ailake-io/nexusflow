@@ -112,17 +112,52 @@ licenciamento e `docs/ENTERPRISE_CONNECTORS.md` pro catálogo/priorização.
   `submit_enterprise_connector!` (`nexus-core/registry.rs`, marca
   `requires_license: Some(slug)`) já implementados — nenhum crate real ainda
   chama o macro (só o teste unitário do próprio `registry.rs`).
-- [ ] **Bloco 1 — Enforcement real no `nexus-server` OSS**: hoje
-  `validate_source_config`/`validate_sink_config`/`build_source`/
-  `build_sink` (`connectors.rs`) e `run_pipeline` (`runner.rs`) não checam
-  license nenhuma — um conector `requires_license` linkado hoje rodaria de
-  graça. Plano: helper `check_connector_license(name, active_license)` em
-  `connectors.rs`, chamado no topo das 4 funções de validação/build; thread
-  `Option<LicenseClaims>` de `AppState.license_store` (já acessível no único
-  call site de `run_pipeline`, `lib.rs`) até cada `build_source`/`build_sink`.
-  Frontend: ícone de cadeado no `ConnectorPalette.tsx` pra `licensed: false`
-  (deixa configurar, bloqueia só no Salvar/Executar — "experimenta antes de
-  comprar"), mensagem de erro clara. Ver `docs/ENTERPRISE_LICENSING.md §5`.
+- [x] **Bloco 1 — Enforcement real no `nexus-server` OSS**:
+  `check_connector_license(name, active_license)` em `connectors.rs`,
+  chamado no topo de `validate_source_config`/`validate_sink_config`/
+  `build_source`/`build_sink` — `Option<LicenseClaims>` threaded desde
+  `AppState.license_store` até cada call site (save, run, preview).
+  Frontend: ícone de cadeado no `ConnectorPalette.tsx` pra `licensed:
+  false` (hoje deixa configurar/arrastar livremente, bloqueia só no
+  Salvar/Executar), aba **Store** nova (status de license, form de
+  instalação Admin-only, catálogo "em breve"). Ver
+  `docs/ENTERPRISE_LICENSING.md §5`.
+  - [ ] **Follow-up: trial limitado em vez de "configura livre, bloqueia só
+    no fim"** (decisão do usuário, 2026-08-18 — implementar depois de
+    validar o Excel end-to-end). Problema com o comportamento atual: o
+    cadeado no `ConnectorPalette.tsx` é só decorativo — o conector aparece
+    arrastável/configurável sem license nenhuma, e o único bloqueio real
+    (`check_connector_license`) só dispara em Salvar/Executar/Preview. Isso
+    dá pra testar a config sem nunca salvar, o que é aceitável — mas não dá
+    pra confundir "nunca salvou" com "limite de uso", porque não há limite
+    nenhum: um pipeline ad-hoc (`POST /pipelines/run` sem `pipeline_id`
+    salvo — ver `tests::run_ad_hoc_*`) já passa pelo mesmo
+    `check_connector_license` de qualquer run salvo, então hoje isso *já*
+    bloqueia ad-hoc sem license — mas se o usuário mantiver a aba aberta e
+    ficar clicando Executar repetidas vezes sem nunca dar Save, não existe
+    nenhum contador que pare esse loop antes da license real.
+    **Comportamento desejado**: conector sem license cobrindo não aparece
+    no `ConnectorPalette.tsx` por padrão (só na Store). Store mostra dois
+    botões pro conector bloqueado: **Testar** (inicia um trial com limite
+    real, rastreado no servidor) e **Comprar**. Só depois de "Testar" o
+    conector aparece liberado no Canvas, mas com um teto de uso de verdade
+    — não "enquanto não salvar" (que não é limite nenhum).
+    **Esboço de implementação** (decisões a fechar quando for construir):
+    - Um jeito de emitir a license de trial sem depender do Bloco 2/gateway
+      de pagamento — `nexus-server` pode assinar ele mesmo uma
+      `LicenseClaims` de trial localmente (endpoint novo tipo `POST
+      /license/trial`), já que trial é grátis e não precisa de
+      cobrança/nota fiscal.
+    - `LicenseClaims` (ou uma tabela nova em `license_store.rs`) precisa
+      carregar o teto do trial (ex. `trial_max_runs: Option<u32>`) e um
+      contador persistido, incrementado a cada execução real (dentro de
+      `build_source`/`build_sink`, não em `validate_source_config` —
+      validar/salvar não deveria gastar cota de trial). Ao bater o teto,
+      `check_connector_license` passa a rejeitar mesmo com a license de
+      trial ainda "instalada" — mesma mensagem de erro de license ausente,
+      só que apontando pra comprar em vez de instalar.
+    - Store precisa mostrar quanto do trial já foi usado (`GET /license`
+      já devolve as claims decodificadas — só falta o contador).
 - [ ] **Bloco 2 — Infra `nexus-licensing`**: serviço separado (repo privado)
   que emite as license keys — Mercado Pago (Checkout Pro), webhooks v2,
   NFe/NFSe via NFE.io/eNotas. Design completo em `docs/ENTERPRISE_LICENSING.md`.
