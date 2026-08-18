@@ -128,10 +128,27 @@ licenciamento e `docs/ENTERPRISE_CONNECTORS.md` pro catálogo/priorização.
   NFe/NFSe via NFE.io/eNotas. Design completo em `docs/ENTERPRISE_LICENSING.md`.
   Não bloqueia o Bloco 1 (licenses de teste geradas na mão já bastam pra
   validar o enforcement).
-- [ ] **Bloco 3 — Primeiro conector pago**: candidato Snowflake/Databricks
-  avançado (ver `docs/ENTERPRISE_CONNECTORS.md` pra priorização de mercado
-  completa) — cria `nexus-connectors-enterprise`, primeiro crate real
-  chamando `submit_enterprise_connector!`.
+- [x] **Bloco 3a — Ponto de extensão de plugin (pré-requisito)**: até aqui,
+  `build_source`/`build_sink`/`validate_source_config`/
+  `validate_sink_config` (`nexus-server/src/connectors.rs`) eram um `match
+  node.connector.as_str()` fechado — um crate de conector fora do
+  workspace (repo privado) não tinha como adicionar um arm a esse `match`.
+  `nexus-core/registry.rs` ganhou `SourceBuilder`/`SinkBuilder`
+  (`submit_source_builder!`/`submit_sink_builder!`, mesmo padrão
+  `inventory` do `ConnectorDescriptor`); o `other` arm de cada uma das 4
+  funções acima cai nesse registry antes de rejeitar. Ver `ARCHITECTURE.md
+  §3`. Sem isso, nenhum conector enterprise real conseguia rodar via
+  binário compilado separado — não é específico do Excel, destrava
+  qualquer conector futuro do Bloco 3.
+- [ ] **Bloco 3b — Primeiro conector pago: Excel**: `.xlsx` source + sink
+  (leitura/escrita local ou S3/GCS/Azure, mesma UX de campos separados do
+  `csv`, seleção de aba/sheet) — prioridade tier-2 em
+  `docs/ENTERPRISE_CONNECTORS.md` (baixa barreira técnica, alto volume em
+  PME). Cria o repo privado `nexus-connectors-enterprise`
+  (`https://github.com/ailake-io/nexus-connectors-enterprise`, já
+  criado — vazio), primeiro crate real chamando
+  `submit_enterprise_connector!` + `submit_source_builder!`/
+  `submit_sink_builder!` do Bloco 3a.
 - [ ] **Bloco 4 — Storefront mínimo**: página de venda + checkout, mesmo que
   simples (Mercado Pago Checkout Pro cobre a parte de pagamento sem UI
   custom pra dado de cartão).

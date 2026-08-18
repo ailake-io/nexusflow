@@ -1,4 +1,6 @@
-use crate::traits::ConnectorCapability;
+use crate::error::NexusError;
+use crate::traits::{ConnectorCapability, Sink, Source};
+use futures::future::BoxFuture;
 use serde::Serialize;
 
 // Re-exported so downstream connector crates don't need their own direct
@@ -75,6 +77,66 @@ macro_rules! submit_enterprise_connector {
     };
 }
 
+/// Plugin extension point for connectors that live outside this workspace
+/// (`docs/ENTERPRISE_CONNECTORS.md`, `ROADMAP.md` Fase 12 Bloco 3) — an
+/// enterprise crate in a private repo can't add a match arm to
+/// `nexus-server`'s `build_source`/`build_sink` (it doesn't own that code),
+/// so it registers a builder here instead, via `submit_source_builder!`.
+/// `nexus-server` falls back to this registry only when its own hardcoded
+/// match on `node.connector` doesn't recognize the name (see
+/// `connectors.rs`'s doc comment on `build_source`) — every OSS connector
+/// keeps going through its own match arm unchanged, this is additive.
+pub struct SourceBuilder {
+    pub name: &'static str,
+    /// Cheap check that the raw JSON config deserializes into this
+    /// connector's config struct — no I/O, mirrors what
+    /// `validate_source_config` already does per OSS connector today.
+    pub validate: fn(&serde_json::Value) -> Result<(), NexusError>,
+    /// Deserializes the config and connects for real. Boxed future because
+    /// connecting is inherently async and a `fn` pointer can't itself be
+    /// `async fn` — same shape `async_trait` already generates for
+    /// `Source`/`Sink` themselves (`traits.rs`).
+    pub build: fn(serde_json::Value) -> BoxFuture<'static, Result<Box<dyn Source>, NexusError>>,
+}
+
+inventory::collect!(SourceBuilder);
+
+/// Sink counterpart of [`SourceBuilder`] — same rationale, same fallback
+/// contract in `nexus-server`'s `build_sink`.
+pub struct SinkBuilder {
+    pub name: &'static str,
+    pub validate: fn(&serde_json::Value) -> Result<(), NexusError>,
+    pub build: fn(serde_json::Value) -> BoxFuture<'static, Result<Box<dyn Sink>, NexusError>>,
+}
+
+inventory::collect!(SinkBuilder);
+
+#[macro_export]
+macro_rules! submit_source_builder {
+    ($name:expr, $validate:expr, $build:expr) => {
+        $crate::registry::inventory::submit! {
+            $crate::registry::SourceBuilder {
+                name: $name,
+                validate: $validate,
+                build: $build,
+            }
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! submit_sink_builder {
+    ($name:expr, $validate:expr, $build:expr) => {
+        $crate::registry::inventory::submit! {
+            $crate::registry::SinkBuilder {
+                name: $name,
+                validate: $validate,
+                build: $build,
+            }
+        }
+    };
+}
+
 pub struct ConnectorRegistry;
 
 impl ConnectorRegistry {
@@ -84,6 +146,14 @@ impl ConnectorRegistry {
 
     pub fn find(name: &str) -> Option<&'static ConnectorDescriptor> {
         Self::all().find(|d| d.name == name)
+    }
+
+    pub fn find_source_builder(name: &str) -> Option<&'static SourceBuilder> {
+        inventory::iter::<SourceBuilder>().find(|b| b.name == name)
+    }
+
+    pub fn find_sink_builder(name: &str) -> Option<&'static SinkBuilder> {
+        inventory::iter::<SinkBuilder>().find(|b| b.name == name)
     }
 }
 
@@ -132,5 +202,121 @@ mod tests {
     fn oss_connector_requires_no_license() {
         let found = ConnectorRegistry::find("test-connector").expect("registered");
         assert_eq!(found.requires_license, None);
+    }
+
+    // --- SourceBuilder / SinkBuilder plugin extension point ---
+    // Stands in for a connector defined in an out-of-tree private crate
+    // (`nexus-connectors-enterprise`) that can't add a match arm to
+    // nexus-server's build_source/build_sink — see the doc comment above
+    // `SourceBuilder`.
+
+    use async_trait::async_trait;
+    use futures::stream::{self, BoxStream};
+
+    struct DummySource;
+
+    #[async_trait]
+    impl Source for DummySource {
+        async fn read_batches(
+            &mut self,
+        ) -> Result<BoxStream<'_, Result<arrow_array::RecordBatch, NexusError>>, NexusError>
+        {
+            Ok(Box::pin(stream::empty()))
+        }
+
+        fn schema(&self) -> arrow_schema::SchemaRef {
+            std::sync::Arc::new(arrow_schema::Schema::empty())
+        }
+    }
+
+    struct DummySink;
+
+    #[async_trait]
+    impl Sink for DummySink {
+        async fn write_batch(&mut self, _batch: arrow_array::RecordBatch) -> Result<(), NexusError> {
+            Ok(())
+        }
+
+        async fn commit_checkpoint(
+            &mut self,
+            _cursor: crate::CheckpointCursor,
+        ) -> Result<(), NexusError> {
+            Ok(())
+        }
+    }
+
+    #[derive(serde::Deserialize, schemars::JsonSchema)]
+    struct TestPluginConfig {
+        #[allow(dead_code)]
+        value: String,
+    }
+
+    fn validate_test_plugin_config(cfg: &serde_json::Value) -> Result<(), NexusError> {
+        serde_json::from_value::<TestPluginConfig>(cfg.clone())
+            .map(|_| ())
+            .map_err(|e| NexusError::Serialization(e.to_string()))
+    }
+
+    submit_source_builder!(
+        "test-plugin-source",
+        validate_test_plugin_config,
+        |cfg: serde_json::Value| -> BoxFuture<'static, Result<Box<dyn Source>, NexusError>> {
+            Box::pin(async move {
+                let _parsed: TestPluginConfig = serde_json::from_value(cfg)
+                    .map_err(|e| NexusError::Serialization(e.to_string()))?;
+                Ok(Box::new(DummySource) as Box<dyn Source>)
+            })
+        }
+    );
+
+    submit_sink_builder!(
+        "test-plugin-sink",
+        validate_test_plugin_config,
+        |cfg: serde_json::Value| -> BoxFuture<'static, Result<Box<dyn Sink>, NexusError>> {
+            Box::pin(async move {
+                let _parsed: TestPluginConfig = serde_json::from_value(cfg)
+                    .map_err(|e| NexusError::Serialization(e.to_string()))?;
+                Ok(Box::new(DummySink) as Box<dyn Sink>)
+            })
+        }
+    );
+
+    #[test]
+    fn finds_registered_source_builder() {
+        let found =
+            ConnectorRegistry::find_source_builder("test-plugin-source").expect("registered");
+        assert!((found.validate)(&serde_json::json!({"value": "x"})).is_ok());
+        assert!((found.validate)(&serde_json::json!({})).is_err());
+    }
+
+    #[tokio::test]
+    async fn builds_source_via_registered_builder() {
+        let found =
+            ConnectorRegistry::find_source_builder("test-plugin-source").expect("registered");
+        let source = (found.build)(serde_json::json!({"value": "x"}))
+            .await
+            .expect("builds");
+        assert_eq!(source.schema().fields().len(), 0);
+    }
+
+    #[test]
+    fn missing_source_builder_is_none() {
+        assert!(ConnectorRegistry::find_source_builder("does-not-exist").is_none());
+    }
+
+    #[tokio::test]
+    async fn builds_sink_via_registered_builder() {
+        let found = ConnectorRegistry::find_sink_builder("test-plugin-sink").expect("registered");
+        let mut sink = (found.build)(serde_json::json!({"value": "x"}))
+            .await
+            .expect("builds");
+        sink.commit_checkpoint(crate::CheckpointCursor::new("p0"))
+            .await
+            .expect("commits");
+    }
+
+    #[test]
+    fn missing_sink_builder_is_none() {
+        assert!(ConnectorRegistry::find_sink_builder("does-not-exist").is_none());
     }
 }
