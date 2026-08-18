@@ -280,6 +280,21 @@ jobs:
           name: frontend-dist
           path: frontend/dist
 
+      # python_transform's own tests (`crates/nexus-server/src/
+      # python_transform.rs`) shell out to a real `python3` and need
+      # pandas/numpy/pyarrow/polars/python-dateutil on top of it — the
+      # same packages the Dockerfile installs into the shipped image
+      # (CLAUDE.md §4.3). This host's default `python3` (Homebrew,
+      # PEP 668 externally-managed) has none of them, and isn't ours to
+      # `pip install --break-system-packages` into — that's the shared
+      # system Python of this dev desktop doubling as the self-hosted
+      # runner. A venv dedicated to this repo's CI
+      # (`~/.nexusflow-ci-python`, created once on the host, not part of
+      # the checkout) has all five; prepending its bin dir wins the
+      # `python3` PATH lookup for just this job.
+      - name: Prefer the nexusflow-ci venv's python3 (has pandas/pyarrow/etc.)
+        run: echo "/home/thiago/.nexusflow-ci-python/bin" >> "$GITHUB_PATH"
+
       - name: Run tests
         env:
           ADBC_DRIVER_POSTGRESQL_PATH: ${{ github.workspace }}/target/adbc/libadbc_driver_postgresql.so
