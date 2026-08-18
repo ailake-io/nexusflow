@@ -50,7 +50,15 @@ impl DeltaSink {
 
     fn is_missing_table(err: &DeltaTableError) -> bool {
         let msg = err.to_string().to_lowercase();
-        msg.contains("not found") || msg.contains("does not exist") || msg.contains("not a table")
+        // "not a table" was this crate's older wording for an empty/
+        // nonexistent table directory; newer delta_kernel versions phrase
+        // the same case as "Not a Delta table: ... No files in log
+        // segment" — "table" alone no longer matches, so match both.
+        msg.contains("not found")
+            || msg.contains("does not exist")
+            || msg.contains("not a table")
+            || msg.contains("not a delta table")
+            || msg.contains("no files in log segment")
     }
 
     async fn ensure_table(&self, batch: &RecordBatch) -> Result<DeltaTable, NexusError> {
