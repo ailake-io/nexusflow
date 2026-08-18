@@ -1,6 +1,8 @@
 # 🔐 Licenciamento de Conectores Enterprise — Mercado Pago
 
-Detalha a implementação técnica do modelo de licenciamento enterprise descrito em `LICENSING.md §2` e do catálogo em `docs/ENTERPRISE_CONNECTORS.md`, usando **Mercado Pago** como gateway (cartão de crédito, débito e Pix). O gate técnico no `nexus-server` (`POST /license`, `GET /license/status`, validação de license key e `LicenseStore::is_connector_licensed`) já foi implementado; o serviço `nexus-licensing` separado e a integração com Mercado Pago ainda não — este doc continua sendo o design de referência pra essa parte.
+Detalha a implementação técnica do modelo de licenciamento enterprise descrito em `LICENSING.md §2` e do catálogo em `docs/ENTERPRISE_CONNECTORS.md`, usando **Mercado Pago** como gateway (cartão de crédito, débito e Pix).
+
+**Estado real (auditado, não o que a v1 deste doc dizia):** `POST /license` e `GET /license` existem em `nexus-server` (`crates/nexus-server/src/license.rs` + `license_store.rs`) — validam assinatura Ed25519 + `exp` e persistem a JWT no metadata store. Mas isso é só **metade** do gate: `GET /connectors` já calcula um `licensed: bool` por conector (cosmético, catálogo), só que **nada bloqueia de verdade** ainda — `validate_source_config`/`validate_sink_config`/`build_source`/`build_sink` (`connectors.rs`) não checam license nenhuma, e o frontend não consome `licensed` em lugar nenhum. Esse enforcement real é o item em aberto — ver `ROADMAP.md` Fase 12, Bloco 1. O serviço `nexus-licensing` separado e a integração com Mercado Pago também ainda não existem — este doc continua sendo o design de referência pra essa parte.
 
 ## 1. Visão geral do fluxo
 
@@ -60,9 +62,14 @@ JWT assinado com **Ed25519** (mais rápido de verificar que RSA, chave menor):
 
 ## 5. Mudanças no `nexus-server` (OSS)
 
-- Novo endpoint `POST /license` (Admin-only, RBAC) — recebe a license key, valida assinatura (chave pública embutida) + `exp`, salva criptografada (AES-256-GCM, mesmo padrão dos outros secrets) numa tabela `license` no metadata store existente.
-- Novo endpoint `GET /license/status` — retorna quais `connector_slugs` estão liberados e a validade, pro Canvas desenhar o estado de bloqueado/liberado.
-- Registry de conectores (`nexus-core`): antes de registrar um conector cujo crate tem a feature `enterprise`, checa se `connector_slug` está na lista liberada pela license ativa — senão, não registra (conector nem aparece no Canvas, não é só "desabilitado visualmente").
+**Já implementado:**
+- `POST /license` (Admin-only, RBAC) — recebe a license key, valida assinatura (chave pública embutida) + `exp`, salva a JWT em texto puro numa tabela `license` no metadata store existente (a própria assinatura já é à prova de adulteração — não tem segredo adicional a proteger com criptografia em repouso, ao contrário de uma senha/URI de conector).
+- `GET /license` — retorna a license ativa (claims decodificadas: `connectors`, `seats`, `exp`).
+- `GET /connectors` já calcula `licensed: bool` por conector no catálogo — só cosmético hoje, o Canvas não consome ainda.
+
+**Ainda não implementado (Bloco 1, ROADMAP.md Fase 12):**
+- Enforcement real: `validate_source_config`/`validate_sink_config`/`build_source`/`build_sink` (`connectors.rs`) e `run_pipeline` (`runner.rs`) checando a license ativa antes de validar/salvar/rodar um pipeline com conector `requires_license`. Diferente do design original deste doc (não registrar o conector se sem license) — a decisão foi manter o conector sempre listado no catálogo (pra quem não tem license ver que existe e comprar), só bloqueando salvar/rodar.
+- Frontend consumindo `licensed` (ícone de cadeado no `ConnectorPalette.tsx`, mensagem clara de erro ao salvar/rodar).
 
 ## 6. Nota fiscal (NFe/NFSe)
 
@@ -84,6 +91,6 @@ Mercado Pago **não emite nota fiscal pelo vendedor** — é só o gateway de pa
 
 ## Próximos passos
 
-1. Confirmar modelo de preço (por conector avulso vs. bundle vs. tier) — decisão de negócio, não técnica.
-2. Criar `nexus-licensing` como repo privado novo (fora do monorepo OSS, mesma regra dos conectores enterprise).
-3. Implementar o gate técnico no `nexus-server` (item 5) — pode ser feito **antes** de ter o Mercado Pago plugado, usando license keys geradas manualmente pra teste.
+1. Enforcement real no `nexus-server` (§5, "ainda não implementado") — Bloco 1 do ROADMAP.md Fase 12. Não depende de nada abaixo, pode ser feito com license keys geradas manualmente pra teste (par de chaves de teste já existe em `license.rs`).
+2. Confirmar modelo de preço (por conector avulso vs. bundle vs. tier) — decisão de negócio, não técnica.
+3. Criar `nexus-licensing` como repo privado novo (fora do monorepo OSS, mesma regra dos conectores enterprise).

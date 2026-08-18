@@ -6,7 +6,7 @@ Ordem por dependência técnica, não por prioridade de negócio isolada. Cada f
 
 Consolidado dos itens que ficaram faltando/incompletos ao longo das fases abaixo — checar aqui antes de assumir que algo já está pronto.
 
-1. **Fase 12 — Enterprise connectors**: gate técnico no `nexus-server` implementado (`POST /license`, `GET /license/status`, `LicenseStore` com verificação JWT, hooks no registry pra futuro `is_connector_licensed`). Repo privado de conectores enterprise, serviço `nexus-licensing` e integração de pagamento ainda não implementados.
+1. **Fase 12 — Enterprise connectors**: `POST /license`/`GET /license` + `LicenseStore` (verificação JWT Ed25519) implementados, mas isso é só armazenamento — **nada bloqueia de verdade ainda**: `validate_source_config`/`validate_sink_config`/`build_source`/`build_sink` (`connectors.rs`) não checam license nenhuma, `licensed: bool` em `GET /connectors` é só cosmético (frontend não consome). Repo privado de conectores enterprise, serviço `nexus-licensing` e integração de pagamento também ainda não implementados. Ver blocos abaixo.
 2. ~~**Marco 13 do roadmap original — CDC nativo sem Kafka/Debezium**~~ — resolvido: Fase 18 (`postgres-cdc`/`mongodb-cdc`/`mysql-cdc`), sinal de adoção confirmado.
 3. **`nexus-ai`: features `cuda`/`metal` registram o execution provider ONNX Runtime correto (`ort::ep::CUDA`/`ort::ep::CoreML`), mas não validadas em hardware real** (sandbox é Linux sem GPU) — só confirmado que compilam e que o EP é registrado antes do load da sessão; runtime faz fallback silencioso pra CPU se o driver/hardware não estiver presente. `api` (embeddings via HTTP externa, endpoint compatível com OpenAI) implementada e testada (mock via `wiremock`) — sem chamada real contra OpenAI/Azure/etc neste sandbox. O perfil `cuda` do Docker já tem a infra de runtime pronta (base image + `--gpus all`).
 4. **Alertas: Slack, MS Teams, PagerDuty, Email e Webhook genérico — todos os 5 canais de `CLAUDE.md §6` implementados** (ver `nexus-server/src/alerts.rs`).
@@ -94,10 +94,47 @@ Consolidado dos itens que ficaram faltando/incompletos ao longo das fases abaixo
 - [x] Imagem Docker com perfil `cuda` selecionável via `--build-arg RUNTIME_IMAGE` (base image + `--gpus all` prontos; aceleração real pendente da Fase 5's `cuda` feature), publicada no GHCR *e* Docker Hub (`ailake/nexusflow`) a cada push pra `main` — modelo de release contínua, não mais por tag `git` (ver item 8 das Pendências ativas) —, multi-arch (amd64 nativo + arm64 via QEMU) — ver esse mesmo item sobre o trade-off de build sob emulação
 - [x] Script de instalação `curl | sh` (`scripts/install.sh`) + `.github/workflows/release.yml`
 
-## Fase 12 — Enterprise connectors (paralelo, repo separado)
-- [ ] Definir primeiro conector pago (candidato: Snowflake/Databricks avançado)
-- [ ] Mecanismo de license key (JWT) validado em `nexus-server`
-- [ ] Ver [`LICENSING.md`](./LICENSING.md)
+## Fase 12 — Enterprise connectors / store de plugins pagos (paralelo, repo separado)
+
+Mecanismo escolhido: **plugin compilado** (feature flag), não `.so`/dlopen em
+runtime — o gate de license (`requires_license` em `ConnectorDescriptor`, já
+existe em `nexus-core/registry.rs`) só faz sentido com o conector já linkado
+no binário; runtime dylib exigiria ABI estável entre o Rust do server e do
+plugin, que não existe nativamente. Estrutura: 2 repos — `nexusflow` (público,
+sem mudança) + `nexus-connectors-enterprise` (privado, único — contém tanto
+o(s) crate(s) de conector quanto um `main.rs` fino que depende de
+`nexus-server` via git dependency). Ver `LICENSING.md` pro modelo de
+licenciamento e `docs/ENTERPRISE_CONNECTORS.md` pro catálogo/priorização.
+
+- [x] **Bloco 0 — Decisões e infra base**: mecanismo compilado + estrutura de
+  2 repos decididos (acima). `POST /license`/`GET /license` + `LicenseStore`
+  (JWT Ed25519, `crates/nexus-server/src/license.rs`/`license_store.rs`) e
+  `submit_enterprise_connector!` (`nexus-core/registry.rs`, marca
+  `requires_license: Some(slug)`) já implementados — nenhum crate real ainda
+  chama o macro (só o teste unitário do próprio `registry.rs`).
+- [ ] **Bloco 1 — Enforcement real no `nexus-server` OSS**: hoje
+  `validate_source_config`/`validate_sink_config`/`build_source`/
+  `build_sink` (`connectors.rs`) e `run_pipeline` (`runner.rs`) não checam
+  license nenhuma — um conector `requires_license` linkado hoje rodaria de
+  graça. Plano: helper `check_connector_license(name, active_license)` em
+  `connectors.rs`, chamado no topo das 4 funções de validação/build; thread
+  `Option<LicenseClaims>` de `AppState.license_store` (já acessível no único
+  call site de `run_pipeline`, `lib.rs`) até cada `build_source`/`build_sink`.
+  Frontend: ícone de cadeado no `ConnectorPalette.tsx` pra `licensed: false`
+  (deixa configurar, bloqueia só no Salvar/Executar — "experimenta antes de
+  comprar"), mensagem de erro clara. Ver `docs/ENTERPRISE_LICENSING.md §5`.
+- [ ] **Bloco 2 — Infra `nexus-licensing`**: serviço separado (repo privado)
+  que emite as license keys — Mercado Pago (Checkout Pro), webhooks v2,
+  NFe/NFSe via NFE.io/eNotas. Design completo em `docs/ENTERPRISE_LICENSING.md`.
+  Não bloqueia o Bloco 1 (licenses de teste geradas na mão já bastam pra
+  validar o enforcement).
+- [ ] **Bloco 3 — Primeiro conector pago**: candidato Snowflake/Databricks
+  avançado (ver `docs/ENTERPRISE_CONNECTORS.md` pra priorização de mercado
+  completa) — cria `nexus-connectors-enterprise`, primeiro crate real
+  chamando `submit_enterprise_connector!`.
+- [ ] **Bloco 4 — Storefront mínimo**: página de venda + checkout, mesmo que
+  simples (Mercado Pago Checkout Pro cobre a parte de pagamento sem UI
+  custom pra dado de cartão).
 
 ## Fase 13 — Todos os conectores linkados no binário (fora do plano original)
 - [x] Os 14 conectores que só existiam no workspace aninhado `crates/nexus-connectors` agora também são feature opcional em `nexus-server` (`connectors-all`), aparecendo de verdade no catálogo `GET /connectors` — antes só postgres/sqlite estavam linkados no binário servido pra UI.
