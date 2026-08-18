@@ -121,9 +121,7 @@ async fn run_in_temp_dir(
     let output = tokio::time::timeout(Duration::from_secs(timeout_seconds), cmd.output())
         .await
         .map_err(|_| anyhow::anyhow!("python transform timed out after {timeout_seconds}s"))?
-        .map_err(|e| {
-            anyhow::anyhow!("failed to spawn `python3`: {e} (is python3 on PATH?)")
-        })?;
+        .map_err(|e| anyhow::anyhow!("failed to spawn `python3`: {e} (is python3 on PATH?)"))?;
 
     let stdout = truncate_utf8(&output.stdout, MAX_OUTPUT_BYTES);
     let stderr = truncate_utf8(&output.stderr, MAX_OUTPUT_BYTES);
@@ -199,7 +197,9 @@ mod tests {
             timeout_seconds: None,
         };
 
-        let result = apply(schema, vec![batch], &spec).await.expect("script runs");
+        let result = apply(schema, vec![batch], &spec)
+            .await
+            .expect("script runs");
         assert_eq!(result.len(), 1);
         let col = result[0]
             .column(0)
@@ -246,8 +246,7 @@ mod feature_disabled_tests {
 
     #[tokio::test]
     async fn returns_a_clear_error_when_the_feature_is_off() {
-        let schema: arrow_schema::SchemaRef =
-            std::sync::Arc::new(arrow_schema::Schema::empty());
+        let schema: arrow_schema::SchemaRef = std::sync::Arc::new(arrow_schema::Schema::empty());
         let spec = PythonTransformSpec {
             script: "def transform(df):\n    return df\n".to_string(),
             timeout_seconds: None,
@@ -255,6 +254,8 @@ mod feature_disabled_tests {
         let err = apply(schema, vec![], &spec)
             .await
             .expect_err("python-transform feature is off in this build");
-        assert!(err.to_string().contains("without the `python-transform` feature"));
+        assert!(err
+            .to_string()
+            .contains("without the `python-transform` feature"));
     }
 }
