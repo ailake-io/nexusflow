@@ -1,5 +1,6 @@
 use crate::checkpoint_store::CheckpointStore;
 use crate::connectors::{build_sink, build_source};
+use crate::license::LicenseClaims;
 use crate::progress::RunLogger;
 use crate::python_transform;
 use nexus_connector_postgres::{
@@ -111,10 +112,15 @@ pub async fn run_pipeline(
     checkpoints: &CheckpointStore,
     progress: Option<ProgressSender>,
     log: Option<&RunLogger>,
+    active_license: Option<&LicenseClaims>,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     if spec.has_transform() || spec.python.is_some() {
-        run_transform_pipeline(spec, checkpoints, progress, log).await
+        run_transform_pipeline(spec, checkpoints, progress, log, active_license).await
     } else {
+        // Postgres-only path (run_linear_pipeline never builds through
+        // connectors.rs's build_source/build_sink — see that function's
+        // own doc comment), so there's no enterprise connector this path
+        // could ever reach; nothing to license-check.
         run_linear_pipeline(spec, checkpoints, progress, log).await
     }
 }
@@ -272,6 +278,7 @@ async fn run_transform_pipeline(
     checkpoints: &CheckpointStore,
     progress: Option<ProgressSender>,
     log: Option<&RunLogger>,
+    active_license: Option<&LicenseClaims>,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     let done = checkpoints.done_partitions(&spec.pipeline_id).await?;
 
@@ -280,7 +287,7 @@ async fn run_transform_pipeline(
         let source = log_on_err(
             log,
             &format!("source {i} ({}) connect failed", node.connector),
-            build_source(node, i).await,
+            build_source(node, i, active_license).await,
         )
         .await?;
         sources.push(source);
@@ -348,7 +355,7 @@ async fn run_transform_pipeline(
         let (name, sink) = log_on_err(
             log,
             &format!("sink {i} ({}) connect failed", node.connector),
-            build_sink(node, i, &columns).await,
+            build_sink(node, i, &columns, active_license).await,
         )
         .await?;
         if done.contains(&name) {
@@ -421,13 +428,14 @@ pub async fn run_post_dbt_stage(
     checkpoints: &CheckpointStore,
     progress: Option<ProgressSender>,
     log: Option<&RunLogger>,
+    active_license: Option<&LicenseClaims>,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     let done = checkpoints.done_partitions(&spec.pipeline_id).await?;
 
     let source = log_on_err(
         log,
         "post-dbt source connect failed",
-        build_source(output_node, 0).await,
+        build_source(output_node, 0, active_license).await,
     )
     .await?;
     let inputs = PipelineEngine::drain_sources(vec![source]).await?;
@@ -449,7 +457,7 @@ pub async fn run_post_dbt_stage(
         let (raw_name, sink) = log_on_err(
             log,
             &format!("post-dbt sink {i} ({}) connect failed", node.connector),
-            build_sink(node, i, &columns).await,
+            build_sink(node, i, &columns, active_license).await,
         )
         .await?;
         let name = format!("post_dbt_{raw_name}");

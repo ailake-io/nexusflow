@@ -1,5 +1,5 @@
 import type { DragEvent } from 'react'
-import { Database, Loader2, AlertCircle } from 'lucide-react'
+import { Database, Loader2, AlertCircle, Lock } from 'lucide-react'
 import { useI18n } from '@/lib/i18n'
 import type { ConnectorDescriptor } from '@/lib/api'
 import { EmptyState } from '@/components/EmptyState'
@@ -78,6 +78,12 @@ export function ConnectorPalette({ connectors, loading, error }: ConnectorPalett
             >
               <Database className="h-3.5 w-3.5 text-muted-foreground group-hover:text-primary" />
               <span className="font-medium text-foreground">{connector.name}</span>
+              {connector.requires_license && !connector.licensed && (
+                <Lock
+                  className="ml-auto h-3 w-3 shrink-0 text-amber-400"
+                  aria-label={t('canvas.connectorLocked')}
+                />
+              )}
             </div>
           ))}
         </div>
