@@ -86,6 +86,12 @@ macro_rules! submit_enterprise_connector {
 /// match on `node.connector` doesn't recognize the name (see
 /// `connectors.rs`'s doc comment on `build_source`) — every OSS connector
 /// keeps going through its own match arm unchanged, this is additive.
+/// `fn` pointer type of [`SourceBuilder::build`] — factored out because
+/// clippy's `type_complexity` lint (denied via `-D warnings` in CI) flags
+/// the inline form.
+pub type SourceBuildFn =
+    fn(serde_json::Value) -> BoxFuture<'static, Result<Box<dyn Source>, NexusError>>;
+
 pub struct SourceBuilder {
     pub name: &'static str,
     /// Cheap check that the raw JSON config deserializes into this
@@ -96,17 +102,22 @@ pub struct SourceBuilder {
     /// connecting is inherently async and a `fn` pointer can't itself be
     /// `async fn` — same shape `async_trait` already generates for
     /// `Source`/`Sink` themselves (`traits.rs`).
-    pub build: fn(serde_json::Value) -> BoxFuture<'static, Result<Box<dyn Source>, NexusError>>,
+    pub build: SourceBuildFn,
 }
 
 inventory::collect!(SourceBuilder);
+
+/// `fn` pointer type of [`SinkBuilder::build`] — same reason as
+/// [`SourceBuildFn`].
+pub type SinkBuildFn =
+    fn(serde_json::Value) -> BoxFuture<'static, Result<Box<dyn Sink>, NexusError>>;
 
 /// Sink counterpart of [`SourceBuilder`] — same rationale, same fallback
 /// contract in `nexus-server`'s `build_sink`.
 pub struct SinkBuilder {
     pub name: &'static str,
     pub validate: fn(&serde_json::Value) -> Result<(), NexusError>,
-    pub build: fn(serde_json::Value) -> BoxFuture<'static, Result<Box<dyn Sink>, NexusError>>,
+    pub build: SinkBuildFn,
 }
 
 inventory::collect!(SinkBuilder);

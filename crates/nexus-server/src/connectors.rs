@@ -692,7 +692,10 @@ mod tests {
             connector: "test-plugin-connector".to_string(),
             config: serde_json::json!({"value": "x"}),
         };
-        let err = build_source(&node, 0, None).await.unwrap_err();
+        // Not `.unwrap_err()`: that requires the `Ok` side (`Box<dyn
+        // Source>`) to implement `Debug`, which trait objects don't get
+        // for free. `.err()` discards the `Ok` side without needing it.
+        let err = build_source(&node, 0, None).await.err().unwrap();
         assert!(err.to_string().contains("test-plugin-connector"));
     }
 
