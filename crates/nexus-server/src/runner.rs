@@ -125,9 +125,17 @@ pub async fn run_pipeline(
     }
 }
 
-/// Marco 1's path: exactly 1 source, 1 sink, partitioned by PK range,
-/// resumable per partition. Postgres-only for now — see IMPLEMENTATION_PLAN.md
-/// Marco 1.
+/// Marco 1's path: exactly 1 source, 1 sink, no transform node. Two
+/// implementations live behind this one entry point:
+/// - postgres→postgres: partitioned by PK range, resumable per partition
+///   (the rest of this function) — a real optimization that depends on
+///   ADBC + a SQL `WHERE pk >= / <` range predicate + a boundable integer
+///   PK, none of which exists for non-SQL/bridging connectors or CDC.
+/// - anything else: [`run_passthrough_pipeline`] — connector-agnostic,
+///   unpartitioned, just streams batches straight from source to sink.
+///   Added so "just move data from A to B, no transformation" doesn't
+///   force adding a no-op Transform node merely to dodge this function's
+///   old postgres-only restriction — see IMPLEMENTATION_PLAN.md Marco 1.
 #[tracing::instrument(skip_all, fields(pipeline_id = %spec.pipeline_id))]
 async fn run_linear_pipeline(
     spec: &PipelineSpec,
@@ -146,12 +154,7 @@ async fn run_linear_pipeline(
     let sink_node = &spec.sinks[0];
 
     if source_node.connector != "postgres" || sink_node.connector != "postgres" {
-        anyhow::bail!(
-            "unsupported connector: the partitioned (no-transform) path only supports \
-             'postgres' for now (got source={:?}, sink={:?})",
-            source_node.connector,
-            sink_node.connector
-        );
+        return run_passthrough_pipeline(spec, checkpoints, progress, log).await;
     }
 
     let source_cfg: PostgresConnectorConfig = serde_json::from_value(source_node.config.clone())?;
@@ -220,6 +223,114 @@ async fn run_linear_pipeline(
     let engine = PipelineEngine::new(spec.channel_capacity);
     let (progress, progress_handle) = log_progress(log, progress, total_partitions, "partitions");
     let results = engine.run(handles, progress).await;
+    let _ = progress_handle.await;
+
+    let mut stats = Vec::new();
+    let mut errors = Vec::new();
+    for result in results {
+        match result {
+            Ok(stat) => {
+                checkpoints
+                    .commit(
+                        &spec.pipeline_id,
+                        &CheckpointCursor::new(stat.partition_id.clone()),
+                    )
+                    .await?;
+                stats.push(stat);
+            }
+            Err(e) => {
+                log_error(
+                    log,
+                    format!(
+                        "partition failed: {}",
+                        crate::error::sanitize_error(&e.to_string())
+                    ),
+                )
+                .await;
+                errors.push(e);
+            }
+        }
+    }
+
+    if !errors.is_empty() {
+        anyhow::bail!(
+            "{} of {} partition(s) failed",
+            errors.len(),
+            errors.len() + stats.len()
+        );
+    }
+
+    Ok(stats)
+}
+
+/// Fallback for [`run_linear_pipeline`] when the source/sink pair isn't
+/// postgres→postgres: exactly 1 source, 1 sink, no transform, no
+/// partitioning — batches stream straight from `Source::read_batches`
+/// into `Sink::write_batch` via [`PipelineEngine::run`], the same
+/// connector-agnostic I/O driver `run_transform_pipeline` already uses
+/// (minus the SQL step in between; `build_source`/`build_sink` dispatch
+/// through `connectors.rs` exactly like that path does). Any connector
+/// pair works here — csv, mysql, mongodb, or any `*-cdc` source — since
+/// nothing here depends on SQL/ADBC or a boundable primary key range the
+/// way the postgres-partitioned path above does.
+///
+/// Single "p0" partition, same resumability contract as the postgres
+/// path's `NonNumeric` case: if `p0` already committed in a prior run of
+/// this `pipeline_id`, this is a no-op.
+#[tracing::instrument(skip_all, fields(pipeline_id = %spec.pipeline_id))]
+async fn run_passthrough_pipeline(
+    spec: &PipelineSpec,
+    checkpoints: &CheckpointStore,
+    progress: Option<ProgressSender>,
+    log: Option<&RunLogger>,
+) -> anyhow::Result<Vec<PartitionStats>> {
+    if spec.embedding.is_some() {
+        anyhow::bail!(
+            "embedding stage is not supported on the no-transform passthrough path; \
+             add a transform node to use embeddings"
+        );
+    }
+
+    let done = checkpoints.done_partitions(&spec.pipeline_id).await?;
+    if done.contains("p0") {
+        return Ok(Vec::new());
+    }
+
+    let source_node = &spec.sources[0];
+    let sink_node = &spec.sinks[0];
+
+    let (_source_name, source) = log_on_err(
+        log,
+        &format!("source 0 ({}) connect failed", source_node.connector),
+        build_source(source_node, 0).await,
+    )
+    .await?;
+
+    let columns: Vec<String> = source
+        .schema()
+        .fields()
+        .iter()
+        .map(|f| f.name().clone())
+        .collect();
+
+    let (_name, sink) = log_on_err(
+        log,
+        &format!("sink 0 ({}) connect failed", sink_node.connector),
+        build_sink(sink_node, 0, &columns).await,
+    )
+    .await?;
+
+    let handle = PartitionHandle {
+        partition_id: "p0".to_string(),
+        source,
+        sink,
+    };
+
+    log_info(log, "1 partition (passthrough, no transform) to process".to_string()).await;
+
+    let engine = PipelineEngine::new(spec.channel_capacity);
+    let (progress, progress_handle) = log_progress(log, progress, 1, "partitions");
+    let results = engine.run(vec![handle], progress).await;
     let _ = progress_handle.await;
 
     let mut stats = Vec::new();

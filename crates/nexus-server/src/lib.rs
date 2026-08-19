@@ -1928,10 +1928,14 @@ mod tests {
 
         let record = wait_for_terminal_run(&app, &execute_token, "p1").await;
         assert_eq!(record["status"], "failed");
-        assert!(record["error"]
-            .as_str()
-            .unwrap()
-            .contains("unsupported connector"));
+        // Empty `{}` config is invalid for every real connector regardless
+        // of which pair the no-transform path routes it through (postgres
+        // partitioned vs. the generic passthrough fallback — see
+        // runner.rs's `run_passthrough_pipeline`), so this still fails
+        // asynchronously; the exact error text is connector-specific
+        // (a serde deserialization message), not a fixed "unsupported
+        // connector" string anymore.
+        assert!(!record["error"].as_str().unwrap().is_empty());
     }
 
     /// The whole point of persisting logs (not just broadcasting them) is
@@ -2001,10 +2005,12 @@ mod tests {
             .iter()
             .find(|l| l["level"] == "error")
             .expect("an error-level line for the failed run");
-        assert!(failure["message"]
-            .as_str()
-            .unwrap()
-            .contains("unsupported connector"));
+        // Empty `{}` mongodb config fails to connect (via
+        // `run_passthrough_pipeline`'s `build_source` call, logged through
+        // `log_on_err`'s "source 0 (mongodb) connect failed" context) —
+        // not the old "unsupported connector" bail, which no longer exists
+        // for this connector pair.
+        assert!(failure["message"].as_str().unwrap().contains("connect failed"));
     }
 
     #[tokio::test]
@@ -2619,10 +2625,11 @@ mod tests {
 
         let record = wait_for_terminal_run(&app, &execute_token, "p1").await;
         assert_eq!(record["status"], "failed");
-        assert!(record["error"]
-            .as_str()
-            .unwrap()
-            .contains("unsupported connector"));
+        // Same note as run_with_unsupported_connector_is_accepted_then_fails_in_history:
+        // empty `{}` config still fails asynchronously, just with a
+        // connector-specific deserialization error now instead of a fixed
+        // "unsupported connector" string.
+        assert!(!record["error"].as_str().unwrap().is_empty());
     }
 
     #[tokio::test]
