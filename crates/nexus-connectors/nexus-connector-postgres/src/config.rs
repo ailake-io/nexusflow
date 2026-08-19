@@ -219,8 +219,15 @@ pub struct PostgresCdcConfig {
     /// Replication slot name — created automatically on first connect if it
     /// doesn't exist yet. Reconnecting later with the same name resumes
     /// from where this connector last left off: Postgres tracks the
-    /// confirmed position server-side, so there's no separate LSN/offset to
-    /// persist on the nexus-server side for this to work.
+    /// confirmed position server-side (via `update_applied_lsn`, called in
+    /// `cdc.rs` after each event is read), so there's no separate
+    /// LSN/offset to persist on the nexus-server side for this to work.
+    /// One honest caveat: the ack fires right after an event is read, not
+    /// after the sink has confirmed writing it — a crash in that narrow
+    /// window can lose at most one in-flight micro-batch, a real but small
+    /// and bounded gap (see `cdc.rs`'s comment on `update_applied_lsn` for
+    /// why closing it fully would need a feedback path from the sink back
+    /// into this source that doesn't exist yet).
     pub slot_name: String,
     /// Target schema for each change event's row — same 4-primitive-type
     /// ceiling as every other bridging connector (Kafka/MongoDB); Postgres
