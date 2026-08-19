@@ -117,11 +117,15 @@ pub async fn run_pipeline(
     if spec.has_transform() || spec.python.is_some() {
         run_transform_pipeline(spec, checkpoints, progress, log, active_license).await
     } else {
-        // Postgres-only path (run_linear_pipeline never builds through
-        // connectors.rs's build_source/build_sink — see that function's
-        // own doc comment), so there's no enterprise connector this path
-        // could ever reach; nothing to license-check.
-        run_linear_pipeline(spec, checkpoints, progress, log).await
+        // The postgres→postgres branch below never builds through
+        // connectors.rs's build_source/build_sink (uses PostgresSource/
+        // PostgresSink directly) — postgres isn't an enterprise connector,
+        // nothing to check there. The passthrough fallback DOES go
+        // through build_source/build_sink (same as the transform path),
+        // so it needs active_license threaded through too, or any
+        // licensed connector would be usable unlicensed just by omitting
+        // a Transform node.
+        run_linear_pipeline(spec, checkpoints, progress, log, active_license).await
     }
 }
 
@@ -142,6 +146,7 @@ async fn run_linear_pipeline(
     checkpoints: &CheckpointStore,
     progress: Option<ProgressSender>,
     log: Option<&RunLogger>,
+    active_license: Option<&LicenseClaims>,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     if spec.embedding.is_some() {
         anyhow::bail!(
@@ -154,7 +159,7 @@ async fn run_linear_pipeline(
     let sink_node = &spec.sinks[0];
 
     if source_node.connector != "postgres" || sink_node.connector != "postgres" {
-        return run_passthrough_pipeline(spec, checkpoints, progress, log).await;
+        return run_passthrough_pipeline(spec, checkpoints, progress, log, active_license).await;
     }
 
     let source_cfg: PostgresConnectorConfig = serde_json::from_value(source_node.config.clone())?;
@@ -283,6 +288,7 @@ async fn run_passthrough_pipeline(
     checkpoints: &CheckpointStore,
     progress: Option<ProgressSender>,
     log: Option<&RunLogger>,
+    active_license: Option<&LicenseClaims>,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     if spec.embedding.is_some() {
         anyhow::bail!(
@@ -302,7 +308,7 @@ async fn run_passthrough_pipeline(
     let (_source_name, source) = log_on_err(
         log,
         &format!("source 0 ({}) connect failed", source_node.connector),
-        build_source(source_node, 0).await,
+        build_source(source_node, 0, active_license).await,
     )
     .await?;
 
@@ -316,7 +322,7 @@ async fn run_passthrough_pipeline(
     let (_name, sink) = log_on_err(
         log,
         &format!("sink 0 ({}) connect failed", sink_node.connector),
-        build_sink(sink_node, 0, &columns).await,
+        build_sink(sink_node, 0, &columns, active_license).await,
     )
     .await?;
 
