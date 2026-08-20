@@ -1,33 +1,33 @@
 # 🏪 Plano de Implementação — Store de Plugins / Conectores Enterprise
 
 > **Escopo:** catálogo, checkout, pagamento, emissão de license key e entrega/liberação de conectores enterprise no NexusFlow.
-> **Status:** planejamento — nenhum código da store existe ainda; o gate técnico de licenciamento no `nexus-server` já está pronto.
+> **Status (auditado, ver `docs/ENTERPRISE_LICENSING.md` §"Estado real" — fonte de verdade atual):** o gate técnico de licenciamento no `nexus-server`, o enforcement em runtime e a integração frontend (cadeado + aba Store) já estão implementados; o catálogo enterprise real já existe (24 crates / 51 entradas no repo privado). O que falta é só o lado de cobrança — o serviço `nexus-licensing` (catálogo/checkout/webhook) não existe ainda. As seções abaixo (decisões de checkout/pricing/store) continuam válidas como planejamento pra essa parte que falta.
 > **Repos envolvidos:**
 > - `ailake-io/nexusflow` (este repo, OSS) — gate de license no servidor + integrações frontend.
-> - `ailake-io/nexusflow-connectors-enterprise` (repo privado, a criar) — conectores pagos.
+> - `ailake-io/nexus-connectors-enterprise` (repo privado, já existe, 24 conectores) — conectores pagos.
 > - `ailake-io/nexus-licensing` (repo privado, a criar) — catálogo, checkout e emissão de license keys.
 
 ---
 
 ## 1. Estado atual (gate técnico pronto no servidor)
 
-Já existe no repo OSS a infra mínima para validar e armazenar uma license key:
+Já existe no repo OSS a infra completa pra validar, armazenar e **fazer valer** uma license key:
 
 | Componente | Onde | O que faz | Status |
 |---|---|---|---|
 | `LicenseClaims` + `verify()` | `crates/nexus-server/src/license.rs` | Valida JWT EdDSA (Ed25519), checa `exp`. | ✅ pronto |
 | `LicenseStore` | `crates/nexus-server/src/license_store.rs` | Persiste a license ativa em `MetadataPool` (SQLite/Postgres), métodos `install` e `active`. | ✅ pronto |
-| Endpoints `/license` | `crates/nexus-server/src/lib.rs:204-207` | `POST /license` (instala) e `GET /license/status` (status), ambos Admin-only. | ✅ pronto |
-| Catálogo com filtro `licensed` | `crates/nexus-server/src/lib.rs:308-323` | `GET /connectors` já retorna `licensed: bool` por conector, usando a license ativa. | ✅ pronto |
-| Registry enterprise | `crates/nexus-core/src/registry.rs:21-33` | `ConnectorDescriptor` tem `requires_license: Option<&'static str>` e macro `submit_enterprise_connector!`. | ✅ pronto |
+| Endpoints `/license` | `crates/nexus-server/src/lib.rs:206-207` | `POST /license` (instala) e `GET /license` (status), ambos Admin-only — mesmo path, métodos diferentes, não `/license/status`. | ✅ pronto |
+| Catálogo com filtro `licensed` | `crates/nexus-server/src/lib.rs` | `GET /connectors` retorna `licensed: bool` por conector, usando a license ativa. | ✅ pronto |
+| Registry enterprise | `crates/nexus-core/src/registry.rs` | `ConnectorDescriptor` tem `requires_license: Option<&'static str>` e macro `submit_enterprise_connector!`. | ✅ pronto |
+| **Enforcement em runtime** | `crates/nexus-server/src/connectors.rs` (`check_connector_license`) | `validate_source_config`/`validate_sink_config`/`build_source`/`build_sink` checam a license ativa antes de salvar/rodar um pipeline com conector `requires_license`. | ✅ pronto |
+| **Frontend** | `frontend/src/components/ConnectorPalette.tsx`, `Store.tsx` | Cadeado nos conectores sem license cobrindo + aba Store com status de license e form de instalação (Admin-only). | ✅ pronto |
+| **Catálogo enterprise real** | repo privado `nexus-connectors-enterprise` | 24 crates de conector / 51 entradas no catálogo (25 OSS + 26 nomes enterprise). | ✅ pronto |
 
 **O que ainda NÃO existe:**
 
-- Gate em runtime na execução do pipeline (`connectors::validate_source_config`/`build_source`/`build_sink` não consultam a license store).
-- Integração frontend com o campo `licensed` do `GET /connectors`.
-- Serviço `nexus-licensing` (catálogo, checkout, webhook, emissão de license key).
-- Conector enterprise real (repo privado `nexus-connectors-enterprise`).
-- Decisão arquitetural final sobre **como** o conector enterprise é entregue no binário.
+- Serviço `nexus-licensing` (catálogo, checkout, webhook, emissão de license key) — hoje license de teste é assinada na mão (ver `docs/ENTERPRISE_LICENSING.md` "Próximos passos").
+- Trial limitado de verdade — hoje um conector sem license dá pra configurar livremente no Canvas, só bloqueia no Salvar/Executar; não há teto de uso real (ver `ROADMAP.md`, follow-up do Bloco 1).
 
 ---
 

@@ -6,7 +6,7 @@ Ordem por dependência técnica, não por prioridade de negócio isolada. Cada f
 
 Consolidado dos itens que ficaram faltando/incompletos ao longo das fases abaixo — checar aqui antes de assumir que algo já está pronto.
 
-1. **Fase 12 — Enterprise connectors**: `POST /license`/`GET /license` + `LicenseStore` (verificação JWT Ed25519) implementados, mas isso é só armazenamento — **nada bloqueia de verdade ainda**: `validate_source_config`/`validate_sink_config`/`build_source`/`build_sink` (`connectors.rs`) não checam license nenhuma, `licensed: bool` em `GET /connectors` é só cosmético (frontend não consome). Repo privado de conectores enterprise, serviço `nexus-licensing` e integração de pagamento também ainda não implementados. Ver blocos abaixo.
+1. ~~**Fase 12, Bloco 1 — Enforcement de license não bloqueava nada**~~ — resolvido: `check_connector_license(name, active_license)` em `connectors.rs` é chamado por `validate_source_config`/`validate_sink_config`/`build_source`/`build_sink` de verdade (não só teste unitário); `licensed: bool` em `GET /connectors` já é consumido pelo frontend (cadeado em `ConnectorPalette.tsx`, aba `Store.tsx` com status de license + form de instalação Admin-only). Repo privado `nexus-connectors-enterprise` já existe e tem 24 crates/51 entradas de catálogo (ver Bloco 3b abaixo). O que falta de verdade agora é só o Bloco 2 (serviço `nexus-licensing`/cobrança) e o Bloco 4 (storefront/checkout) — ver blocos abaixo. Follow-up registrado: o cadeado hoje é só decorativo até Salvar/Executar (sem limite de uso real pra "testar antes de comprar") — plano de trial limitado documentado no Bloco 1 abaixo.
 2. ~~**Marco 13 do roadmap original — CDC nativo sem Kafka/Debezium**~~ — resolvido: Fase 18 (`postgres-cdc`/`mongodb-cdc`/`mysql-cdc`), sinal de adoção confirmado.
 3. **`nexus-ai`: features `cuda`/`metal` registram o execution provider ONNX Runtime correto (`ort::ep::CUDA`/`ort::ep::CoreML`), mas não validadas em hardware real** (sandbox é Linux sem GPU) — só confirmado que compilam e que o EP é registrado antes do load da sessão; runtime faz fallback silencioso pra CPU se o driver/hardware não estiver presente. `api` (embeddings via HTTP externa, endpoint compatível com OpenAI) implementada e testada (mock via `wiremock`) — sem chamada real contra OpenAI/Azure/etc neste sandbox. O perfil `cuda` do Docker já tem a infra de runtime pronta (base image + `--gpus all`).
 4. **Alertas: Slack, MS Teams, PagerDuty, Email e Webhook genérico — todos os 5 canais de `CLAUDE.md §6` implementados** (ver `nexus-server/src/alerts.rs`).
@@ -175,15 +175,19 @@ licenciamento e `docs/ENTERPRISE_CONNECTORS.md` pro catálogo/priorização.
   §3`. Sem isso, nenhum conector enterprise real conseguia rodar via
   binário compilado separado — não é específico do Excel, destrava
   qualquer conector futuro do Bloco 3.
-- [ ] **Bloco 3b — Primeiro conector pago: Excel**: `.xlsx` source + sink
+- [x] **Bloco 3b — Primeiro conector pago: Excel**: `.xlsx` source + sink
   (leitura/escrita local ou S3/GCS/Azure, mesma UX de campos separados do
   `csv`, seleção de aba/sheet) — prioridade tier-2 em
   `docs/ENTERPRISE_CONNECTORS.md` (baixa barreira técnica, alto volume em
-  PME). Cria o repo privado `nexus-connectors-enterprise`
-  (`https://github.com/ailake-io/nexus-connectors-enterprise`, já
-  criado — vazio), primeiro crate real chamando
-  `submit_enterprise_connector!` + `submit_source_builder!`/
-  `submit_sink_builder!` do Bloco 3a.
+  PME). Repo privado `nexus-connectors-enterprise` criado e ativo — bem
+  além do escopo original de "primeiro conector": já tem **24 crates / 51
+  entradas de catálogo** (Excel + BigQuery, Snowflake, Redshift, Synapse,
+  MSSQL/MSSQL CDC, Oracle/Oracle LogMiner CDC, SAP HANA, Salesforce,
+  Shopify, Stripe, Meta/Google/LinkedIn/TikTok Ads, GA4, YouTube
+  Analytics, Kinesis, Pulsar, Elasticsearch/OpenSearch, Weaviate, Azure AI
+  Search, Vertex AI Vector Search — ver `docs/DOCKER_LOCAL_TESTING.md`
+  desse repo pra lista completa com campos/exemplo de config por
+  conector).
 - [ ] **Bloco 4 — Storefront mínimo**: página de venda + checkout, mesmo que
   simples (Mercado Pago Checkout Pro cobre a parte de pagamento sem UI
   custom pra dado de cartão).
@@ -207,9 +211,10 @@ licenciamento e `docs/ENTERPRISE_CONNECTORS.md` pro catálogo/priorização.
 
 O Marco 13 do roadmap original deixava CDC nativo condicional — só entraria se o overhead de operar Debezium+Kafka virasse bloqueador real de adoção confirmado. Esse sinal chegou (hardware mais simples não aguenta 3 JVMs rodando). Ver `ARCHITECTURE.md §7`.
 
-- [x] `postgres-cdc` (feature `cdc` do `nexus-connector-postgres`, crate `pg_walstream`) — lê direto do protocolo de replicação lógica do Postgres (`pgoutput`). O replication slot é criado automaticamente no primeiro connect; a publicação (`CREATE PUBLICATION ... FOR TABLE ...`) precisa existir de antemão (não criada automaticamente, mesmo pré-requisito operacional que o Debezium já exige). Resume via o próprio slot — Postgres guarda o ponto server-side, sem precisar de checkpoint externo. Testado com Postgres real via testcontainers.
+- [x] `postgres-cdc` (feature `cdc` do `nexus-connector-postgres`, crate `pg_walstream`) — lê direto do protocolo de replicação lógica do Postgres (`pgoutput`). O replication slot é criado automaticamente no primeiro connect; a publicação (`CREATE PUBLICATION ... FOR TABLE ...`) precisa existir de antemão (não criada automaticamente, mesmo pré-requisito operacional que o Debezium já exige). Resume via o próprio slot — Postgres guarda o ponto server-side, sem precisar de checkpoint externo. Correção real feita depois: `event_stream.update_applied_lsn(...)` não era chamado (bug real — o slot nunca avançava `confirmed_flush_lsn`, WAL acumulava sem limite e todo restart reprocessava desde a criação do slot); chamado agora a cada evento. Testado com Postgres real via testcontainers.
 - [x] `mongodb-cdc` (mesmo crate `nexus-connector-mongodb`, sem dependência nova) — Change Streams nativo do driver oficial (`Collection::watch()`). Requer MongoDB como replica set (mesmo single-node serve). Testado com MongoDB real via testcontainers — inclusive um caso real onde `full_document: updateLookup` não retorna o documento atualizado (fallback pra `document_key`, linha não é descartada).
 - [x] `mysql-cdc` (novo crate `nexus-connector-mysql`, dependência `mysql_cdc`) — lê o binlog direto, CDC-only (sem modo batch). Colunas mapeadas **posicionalmente** (protocolo binlog não carrega nome de coluna por padrão), diferente de Postgres/MongoDB que casam por nome. Requer `binlog_format=ROW`/`binlog_row_image=FULL` e um usuário com `REPLICATION SLAVE`/`REPLICATION CLIENT`. Testado com MySQL real via testcontainers.
+- [x] **Resume real de checkpoint pra `mysql-cdc`/`mongodb-cdc`** (fora do plano original — mysql/mongo tinham campo de config pra retomar posição, mas nada capturava/persistia a posição entre runs): `Source::position_handle()` (novo método default-`None` em `nexus-core::traits`, não quebra os outros conectores) devolve um `Arc<Mutex<Option<String>>>` que o source atualiza a cada evento (`"{filename}:{position}"` no MySQL, resume token serializado no Mongo); `CheckpointCursor.resume_state`/`CheckpointStore::get()` persistem e leem essa posição; `runner.rs::run_passthrough_pipeline` injeta o valor de volta na config (`binlog_filename`/`binlog_position` no MySQL, `resume_token` no Mongo) antes de reconectar, e evita marcar a partição CDC como "já feita" (que impediria reexecução). `mssql-cdc`/`oracle-cdc` (repo privado enterprise) ganharam o mesmo mecanismo em seguida — os 5 CDC nativos que existem hoje retomam de verdade.
 - [x] `nexus-connector-kafka` continua existindo — deixa de ser o único caminho de CDC, segue disponível só como fonte genérica de Kafka (sem semântica de CDC).
 - [x] Canvas: os 3 novos conectores aparecem no catálogo dinâmico (`GET /connectors`) automaticamente, e o `NodeInspector` ganhou um toggle Batch/CDC no mesmo node (Postgres/MongoDB) — troca `data.connector` entre `postgres`↔`postgres-cdc`/`mongodb`↔`mongodb-cdc` e limpa o config (campos não são compatíveis entre os dois modos). Só aparece pra `role: source` (nenhum CDC nativo tem `Sink`) e só se os dois nomes existirem no catálogo real (não hardcoded — some se o binário não tiver a feature `cdc` linkada). MySQL não tem toggle: `mysql-cdc` não tem um `mysql` batch pra alternar (CDC-only).
 - [x] **Debezium+Kafka removido** (pós-Fase 18, sem usuário dependendo dele): envelope `Debezium` de `nexus-connector-kafka` (código + testes unitários), teste de integração `cdc_debezium_integration.rs` (3 JVMs via testcontainers) e `docs/cdc-reference/` deletados. `nexus-connector-kafka` mantido só como fonte genérica de Kafka.
@@ -256,7 +261,7 @@ Extensão da Fase 18 pros formatos de data lake que já tinham conector batch. V
 - [x] `deltalake-cdc` — Change Data Feed nativo (`DeltaTable::scan_cdf()`), sem dependência nova. Esforço baixo: a biblioteca já resolve o trabalho difícil (decodificação do log de transação); só precisou ordenar por `_commit_version` antes de processar (DataFusion não garante ordem de commit no resultado).
 - [x] `iceberg-cdc` — sem scan incremental nativo no `iceberg` 0.10.0, construído à mão (manifest list + manifest walk via API pública do crate). **Insert-only**: `IcebergSink` só comita `fast_append` hoje (sem row-delta/equality-delete commitável na API pública ainda), então não existe update/delete pra detectar de dados escritos por este sistema.
 - [x] `ailake-cdc` — mais simples que o Iceberg porque `ailake-catalog`'s `CatalogProvider` já expõe `list_files`/`list_equality_deletes` "as of snapshot", dispensando manifest walk manual. Suporta `I`/`D` reais (`AilakeSink::delete` já comita equality-deletes) — `U` não é inferido de propósito (sem informação de ordem entre insert/delete da mesma chave, o delete sempre vence). Achado à parte: `AilakeSink::upsert` (batch sem `__opcode`) é append cego hoje, não faz delete-antes-do-insert como o `DeltaSink` — duas escritas da mesma chave viram duas linhas físicas.
-- [x] Mesmo padrão de resume dos outros 3 CDC nativos (Fase 18): campo estático no config (`starting_version`/`starting_snapshot_id`), sem auto-avanço via checkpoint entre runs — mesmo precedente do `start_offsets` do Kafka.
+- [x] Resume via campo estático no config (`starting_version`/`starting_snapshot_id`), sem auto-avanço via checkpoint entre runs — mesmo precedente do `start_offsets` do Kafka. **Diferente dos 3 CDC nativos da Fase 18** (que ganharam resume automático de verdade depois, ver Fase 18 acima) — os 3 formatos de lake aqui ainda não têm `position_handle`/checkpoint automático, é trabalho pendente se algum usuário precisar.
 - [x] Nenhuma dependência nova em nenhum dos 3 — tudo via API já pública das dependências existentes de cada conector.
 
 **Critério de pronto:** teste de integração real por conector (escrever insert/update/delete via o sink batch já existente, ler de volta via a fonte CDC nova, validar opcode e valores) — sem testcontainers, os 3 formatos já são embarcados/locais. **Atingido.**

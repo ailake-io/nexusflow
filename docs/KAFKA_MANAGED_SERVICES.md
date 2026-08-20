@@ -10,9 +10,12 @@ Campos relevantes do config do `kafka` (`crates/nexus-connectors/
 nexus-connector-kafka/src/config.rs`):
 - `bootstrap_servers` — string `host:port` (ou lista separada por
   vírgula).
-- `security_protocol` — `PLAINTEXT` | `SASL_PLAINTEXT` | `SSL` |
-  `SASL_SSL`.
-- `sasl_mechanism` — `PLAIN` | `SCRAM-SHA-256` | `SCRAM-SHA-512`.
+- `security_protocol` — `plaintext` | `sasl_plaintext` | `ssl` | `sasl_ssl`
+  (serde `rename_all = "snake_case"` na leitura do JSON — não confundir com
+  os literais `PLAINTEXT`/`SASL_SSL` que `as_str()` manda pro librdkafka
+  internamente, esses não são o que a API aceita como entrada).
+- `sasl_mechanism` — `plain` | `scram_sha256` | `scram_sha512` (mesmo
+  motivo: snake_case, sem hífen).
 - `sasl_username` / `sasl_password`.
 - `topic`, `group_id`, `fields` — obrigatórios, mesmos de sempre.
 
@@ -24,8 +27,8 @@ do painel do cluster). Auth via API Key/Secret do cluster.
 ```json
 {
   "bootstrap_servers": "pkc-xxxxx.us-east-1.aws.confluent.cloud:9092",
-  "security_protocol": "SASL_SSL",
-  "sasl_mechanism": "PLAIN",
+  "security_protocol": "sasl_ssl",
+  "sasl_mechanism": "plain",
   "sasl_username": "<API_KEY>",
   "sasl_password": "<API_SECRET>",
   "topic": "events",
@@ -50,8 +53,8 @@ usuário real).
 ```json
 {
   "bootstrap_servers": "<namespace>.servicebus.windows.net:9093",
-  "security_protocol": "SASL_SSL",
-  "sasl_mechanism": "PLAIN",
+  "security_protocol": "sasl_ssl",
+  "sasl_mechanism": "plain",
   "sasl_username": "$ConnectionString",
   "sasl_password": "Endpoint=sb://<namespace>.servicebus.windows.net/;SharedAccessKeyName=...;SharedAccessKey=...",
   "topic": "<nome do Event Hub>",

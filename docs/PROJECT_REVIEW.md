@@ -139,11 +139,12 @@ Os itens abaixo foram bloqueadores na revisão anterior e foram corrigidos:
 
 ### C02 — CDC nativo (atualizado)
 
-**Status:** mitigado, não totalmente resolvido.
+**Status:** resolvido pros 3 CDC nativos do repo público; ainda parcial pros 3 formatos de lake CDC (Fase 21) e mitigado (não checkpoint automático) pros 2 do repo privado enterprise até serem estendidos com o mesmo mecanismo.
 
-- Conectores CDC nativos agora operam em **micro-batch** (`max_batch_events` default 1000) — não mais streams infinitos no caminho de execução batch.
-- A retomada ainda depende de cursor estático na config (`starting_version`/`starting_snapshot_id`/slot/token/binlog position), não de checkpoint automático de cursor/LSN gerenciado pelo NexusFlow.
-- **Recomendação:** manter documentado como limitação até implementar checkpoint explícito de cursor CDC.
+- Conectores CDC nativos operam em **micro-batch** (`max_batch_events` default 1000) — não mais streams infinitos no caminho de execução batch.
+- **Retomada automática real implementada** pra `postgres-cdc`/`mysql-cdc`/`mongodb-cdc`: `Source::position_handle()` (`nexus-core::traits`) devolve a posição atual do source (LSN/binlog file+offset/resume token); `CheckpointCursor.resume_state` + `CheckpointStore::get()` persistem e leem essa posição entre runs; `runner.rs::run_passthrough_pipeline` injeta a posição de volta na config do conector antes de reconectar, sem depender do usuário digitar a posição manualmente. `postgres-cdc` ganhou também a correção do bug real que fazia o WAL nunca avançar (`update_applied_lsn` não era chamado). `mssql-cdc`/`oracle-cdc` (repo privado `nexus-connectors-enterprise`) ganharam o mesmo mecanismo em seguida — os 5 CDC nativos que existem hoje retomam de verdade.
+- **Ainda com cursor estático** (sem checkpoint automático): os 3 CDC de formato de lake (`deltalake-cdc`/`iceberg-cdc`/`ailake-cdc`, Fase 21) continuam exigindo `starting_version`/`starting_snapshot_id` manual na config — não estendidos com `position_handle` ainda, trabalho pendente se algum usuário precisar.
+- **Recomendação:** manter documentado como limitação só pros 3 formatos de lake acima; para os 5 CDC de banco (público + enterprise) o item está fechado.
 
 ---
 
@@ -235,10 +236,15 @@ Resumo da recomendação:
 - **Primeira fase:** spike técnico no OSS com conector enterprise fake (não depende de Mercado Pago).
 - **Primeiro conector real:** recomenda-se **Excel** (rápido, baixo risco) ou **Salesforce** (ticket enterprise).
 
-Tarefas técnicas pendentes no OSS antes da store:
-- Implementar gate de license em runtime (`validate_source_config`, `build_source`, `build_sink`, `preview`).
-- Consumir campo `licensed` no frontend (`ConnectorPalette`, tela de licença).
-- Corrigir divergências documentais sobre enterprise (`M29`, `B23`).
+Tarefas técnicas que eram pendentes no OSS antes da store, agora resolvidas:
+- [x] Gate de license em runtime (`check_connector_license` em `validate_source_config`/`validate_sink_config`/`build_source`/`build_sink`).
+- [x] Campo `licensed` consumido no frontend (`ConnectorPalette.tsx` — cadeado; aba `Store.tsx` nova — status de license, instalação Admin-only).
+- [x] Divergências documentais sobre enterprise corrigidas (`M29`, `B23`, ambos já marcados resolvidos na seção 2.4 acima).
+
+Pendente de verdade agora: o resto do `ROADMAP.md` Fase 12 (Bloco 2 — serviço
+`nexus-licensing`/cobrança; Bloco 4 — storefront/checkout) e o follow-up de
+trial limitado (cadeado hoje é decorativo até Salvar/Executar, sem teto de
+uso real — ver `ROADMAP.md` Fase 12, Bloco 1).
 
 ### 7.2 Priorização sugerida de backlog técnico
 

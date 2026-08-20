@@ -135,12 +135,13 @@ Parte da arquitetura já revisada em `ARCHITECTURE.md` v2: crate-por-conector, b
 
 ---
 
-## Marco 12 — Primeiro conector enterprise (paralelo, repo separado)
-- Repo privado novo (ex. `ailake-io/nexusflow-connectors-enterprise`), fora do escopo deste repo.
-- Mecanismo de license key (JWT assinado) validado em `nexus-server` antes de expor node enterprise no catálogo (`ARCHITECTURE.md §11`).
-- Primeiro candidato: decidir com dado de mercado, não assumir aqui.
+## Marco 12 — Primeiro conector enterprise (paralelo, repo separado) ✅ bem além do escopo original, ver ROADMAP.md Fase 12
 
-**Critério de pronto:** feature flag `enterprise` compilando um binário que só expõe o conector premium com license key válida.
+- Repo privado `ailake-io/nexus-connectors-enterprise` criado e ativo.
+- Mecanismo de license key (JWT Ed25519) validado em `nexus-server` antes de expor node enterprise no catálogo — `check_connector_license` chamado de verdade em `validate_source_config`/`validate_sink_config`/`build_source`/`build_sink` (`connectors.rs`), não só armazenado.
+- Primeiro candidato foi Excel — repo privado cresceu bem além disso: **24 crates / 51 entradas de catálogo** hoje (ver `ROADMAP.md` Fase 12, Bloco 3b, e `docs/DOCKER_LOCAL_TESTING.md` do repo privado pra lista completa).
+
+**Critério de pronto:** feature flag `enterprise` compilando um binário que só expõe o conector premium com license key válida. **Atingido** — falta só o serviço de cobrança (`nexus-licensing`, Bloco 2) e o storefront/checkout (Bloco 4), que nunca foram pré-requisito técnico deste marco.
 
 ---
 
@@ -148,9 +149,10 @@ Parte da arquitetura já revisada em `ARCHITECTURE.md` v2: crate-por-conector, b
 
 **Deixou de ser condicional**: o overhead operacional de manter Debezium+Kafka+Zookeeper (3 JVMs) como dependência do Marco 4 virou bloqueador real de adoção confirmado em hardware mais simples (ver ARCHITECTURE.md §7).
 
-- Postgres (`postgres-cdc`): lê direto do protocolo de replicação lógica (`pgoutput`, crate `pg_walstream` — nem `postgres-protocol` nem `tokio-postgres` mainline têm isso hoje). Slot criado automaticamente; publicação precisa existir de antemão. Resume via o próprio slot (Postgres guarda o ponto server-side), não por LSN salvo externamente.
+- Postgres (`postgres-cdc`): lê direto do protocolo de replicação lógica (`pgoutput`, crate `pg_walstream` — nem `postgres-protocol` nem `tokio-postgres` mainline têm isso hoje). Slot criado automaticamente; publicação precisa existir de antemão. Resume via o próprio slot (Postgres guarda o ponto server-side), não por LSN salvo externamente — corrigido depois um bug real: `update_applied_lsn` não era chamado, o slot nunca avançava.
 - MongoDB (`mongodb-cdc`): Change Streams nativo do driver oficial, sem dependência nova. `full_document: updateLookup` pode vir `null` (comportamento real do Mongo, não bug) — cai pra `document_key` em vez de descartar a linha.
 - MySQL (`mysql-cdc`): novo crate, lê o binlog direto (`mysql_cdc`), CDC-only. Colunas casadas posicionalmente (protocolo binlog não carrega nome de coluna por padrão), diferente de Postgres/MongoDB.
+- **Resume automático de checkpoint** (fora do escopo original do Marco 13, adicionado depois): `Source::position_handle()` + `CheckpointCursor.resume_state` + `CheckpointStore::get()` fecham o ciclo pra `mysql-cdc`/`mongodb-cdc` (que não tinham nada disso antes — só campo de config pra retomar posição manualmente, nunca preenchido sozinho); `runner.rs` injeta a posição salva de volta na config antes de reconectar. Mesmo mecanismo estendido depois pra `mssql-cdc`/`oracle-cdc` no repo privado enterprise.
 - Os 3 produzem opcode (`I`/`U`/`D`) como coluna extra do `RecordBatch` — mesma convenção do Marco 4 (`ARCHITECTURE.md §5`), sinks não precisam mudar nada (`split_by_opcode` já é agnóstico à origem).
 - Debezium+Kafka foi removido em seguida (código, teste de integração de 3 JVMs, `docs/cdc-reference/`) — nenhum usuário dependia dele; `nexus-connector-kafka` ficou só como fonte genérica de Kafka.
 - Canvas tem toggle Batch/CDC no mesmo node pra Postgres/MongoDB (`NodeInspector`), detectado dinamicamente contra o catálogo real (não hardcoded). MySQL não tem, por ser CDC-only.
