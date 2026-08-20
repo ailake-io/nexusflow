@@ -151,28 +151,55 @@ impl Source for PostgresCdcSource {
                         }
 
                         match tokio::time::timeout(FLUSH_ON_IDLE, event_stream.next_event()).await {
-                            Ok(Ok(event)) => match event.event_type {
-                                EventType::Insert { table: t, data, .. } if *t == *table => {
-                                    buffer.push(row_data_to_json(&data, &fields, "I"));
-                                    events_seen += 1;
+                            Ok(Ok(event)) => {
+                                // Advances the replication slot's
+                                // `confirmed_flush_lsn` on the server —
+                                // without this call (missing until now),
+                                // the slot's WAL never gets released
+                                // (unbounded disk growth on the Postgres
+                                // server) and every reconnect replays from
+                                // the slot's original creation point, not
+                                // from here. Called right after reading
+                                // the event (buffered into `buffer`, not
+                                // yet confirmed written by the sink) —
+                                // `pg_walstream`'s own guidance is to call
+                                // this "after data has been committed to
+                                // the destination database", which would
+                                // need a feedback path from the sink back
+                                // into this source that doesn't exist in
+                                // the current Source/Sink channel
+                                // architecture. Deliberate, bounded
+                                // trade-off: a crash between this ack and
+                                // the sink actually committing can lose at
+                                // most one in-flight batch (`BATCH_SIZE`
+                                // rows) — a real but small and bounded gap,
+                                // compared to today's actual bug (no ack
+                                // at all, unbounded WAL growth, full
+                                // replay from slot creation every time).
+                                event_stream.update_applied_lsn(event.lsn.value());
+                                match event.event_type {
+                                    EventType::Insert { table: t, data, .. } if *t == *table => {
+                                        buffer.push(row_data_to_json(&data, &fields, "I"));
+                                        events_seen += 1;
+                                    }
+                                    EventType::Update {
+                                        table: t, new_data, ..
+                                    } if *t == *table => {
+                                        buffer.push(row_data_to_json(&new_data, &fields, "U"));
+                                        events_seen += 1;
+                                    }
+                                    EventType::Delete {
+                                        table: t, old_data, ..
+                                    } if *t == *table => {
+                                        buffer.push(row_data_to_json(&old_data, &fields, "D"));
+                                        events_seen += 1;
+                                    }
+                                    // Different table in the same publication, or a
+                                    // control message (Begin/Commit/Truncate/...) —
+                                    // no row to emit for this connector.
+                                    _ => {}
                                 }
-                                EventType::Update {
-                                    table: t, new_data, ..
-                                } if *t == *table => {
-                                    buffer.push(row_data_to_json(&new_data, &fields, "U"));
-                                    events_seen += 1;
-                                }
-                                EventType::Delete {
-                                    table: t, old_data, ..
-                                } if *t == *table => {
-                                    buffer.push(row_data_to_json(&old_data, &fields, "D"));
-                                    events_seen += 1;
-                                }
-                                // Different table in the same publication, or a
-                                // control message (Begin/Commit/Truncate/...) —
-                                // no row to emit for this connector.
-                                _ => {}
-                            },
+                            }
                             Ok(Err(e)) => {
                                 finished = true;
                                 return Some((

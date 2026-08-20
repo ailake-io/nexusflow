@@ -111,8 +111,8 @@ impl CsvConnectorConfig {
     ///
     /// Returns an error if a cloud backend is selected without a bucket.
     pub fn uri(&self) -> Result<String, NexusError> {
-        if let Some(uri) = self.uri.clone() {
-            return Ok(uri);
+        if let Some(uri) = self.uri.as_deref().filter(|s| !s.is_empty()) {
+            return Ok(uri.to_string());
         }
 
         match self.storage {

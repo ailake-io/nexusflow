@@ -21,6 +21,7 @@ export default defineConfig({
       '/connectors': 'http://localhost:8080',
       '/pipelines': { target: 'http://localhost:8080', ws: true },
       '/users': 'http://localhost:8080',
+      '/license': 'http://localhost:8080',
       '/health': 'http://localhost:8080',
     },
   },

@@ -1,6 +1,8 @@
 use crate::checkpoint_store::CheckpointStore;
 use crate::connectors::{build_sink, build_source};
+use crate::license::LicenseClaims;
 use crate::progress::RunLogger;
+use crate::python_transform;
 use nexus_connector_postgres::{
     primary_key_bounds, split_into_partitions, table_schema, PkPartitionKind,
     PostgresConnectorConfig, PostgresSink, PostgresSource,
@@ -110,23 +112,41 @@ pub async fn run_pipeline(
     checkpoints: &CheckpointStore,
     progress: Option<ProgressSender>,
     log: Option<&RunLogger>,
+    active_license: Option<&LicenseClaims>,
 ) -> anyhow::Result<Vec<PartitionStats>> {
-    if spec.has_transform() {
-        run_transform_pipeline(spec, checkpoints, progress, log).await
+    if spec.has_transform() || spec.python.is_some() {
+        run_transform_pipeline(spec, checkpoints, progress, log, active_license).await
     } else {
-        run_linear_pipeline(spec, checkpoints, progress, log).await
+        // The postgres→postgres branch below never builds through
+        // connectors.rs's build_source/build_sink (uses PostgresSource/
+        // PostgresSink directly) — postgres isn't an enterprise connector,
+        // nothing to check there. The passthrough fallback DOES go
+        // through build_source/build_sink (same as the transform path),
+        // so it needs active_license threaded through too, or any
+        // licensed connector would be usable unlicensed just by omitting
+        // a Transform node.
+        run_linear_pipeline(spec, checkpoints, progress, log, active_license).await
     }
 }
 
-/// Marco 1's path: exactly 1 source, 1 sink, partitioned by PK range,
-/// resumable per partition. Postgres-only for now — see IMPLEMENTATION_PLAN.md
-/// Marco 1.
+/// Marco 1's path: exactly 1 source, 1 sink, no transform node. Two
+/// implementations live behind this one entry point:
+/// - postgres→postgres: partitioned by PK range, resumable per partition
+///   (the rest of this function) — a real optimization that depends on
+///   ADBC + a SQL `WHERE pk >= / <` range predicate + a boundable integer
+///   PK, none of which exists for non-SQL/bridging connectors or CDC.
+/// - anything else: [`run_passthrough_pipeline`] — connector-agnostic,
+///   unpartitioned, just streams batches straight from source to sink.
+///   Added so "just move data from A to B, no transformation" doesn't
+///   force adding a no-op Transform node merely to dodge this function's
+///   old postgres-only restriction — see IMPLEMENTATION_PLAN.md Marco 1.
 #[tracing::instrument(skip_all, fields(pipeline_id = %spec.pipeline_id))]
 async fn run_linear_pipeline(
     spec: &PipelineSpec,
     checkpoints: &CheckpointStore,
     progress: Option<ProgressSender>,
     log: Option<&RunLogger>,
+    active_license: Option<&LicenseClaims>,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     if spec.embedding.is_some() {
         anyhow::bail!(
@@ -139,12 +159,7 @@ async fn run_linear_pipeline(
     let sink_node = &spec.sinks[0];
 
     if source_node.connector != "postgres" || sink_node.connector != "postgres" {
-        anyhow::bail!(
-            "unsupported connector: the partitioned (no-transform) path only supports \
-             'postgres' for now (got source={:?}, sink={:?})",
-            source_node.connector,
-            sink_node.connector
-        );
+        return run_passthrough_pipeline(spec, checkpoints, progress, log, active_license).await;
     }
 
     let source_cfg: PostgresConnectorConfig = serde_json::from_value(source_node.config.clone())?;
@@ -223,7 +238,189 @@ async fn run_linear_pipeline(
                 checkpoints
                     .commit(
                         &spec.pipeline_id,
-                        &CheckpointCursor::new(stat.partition_id.clone()),
+                        &CheckpointCursor {
+                            resume_state: stat.resume_state.clone(),
+                            ..CheckpointCursor::new(stat.partition_id.clone())
+                        },
+                    )
+                    .await?;
+                stats.push(stat);
+            }
+            Err(e) => {
+                log_error(
+                    log,
+                    format!(
+                        "partition failed: {}",
+                        crate::error::sanitize_error(&e.to_string())
+                    ),
+                )
+                .await;
+                errors.push(e);
+            }
+        }
+    }
+
+    if !errors.is_empty() {
+        anyhow::bail!(
+            "{} of {} partition(s) failed",
+            errors.len(),
+            errors.len() + stats.len()
+        );
+    }
+
+    Ok(stats)
+}
+
+/// Fallback for [`run_linear_pipeline`] when the source/sink pair isn't
+/// postgres→postgres: exactly 1 source, 1 sink, no transform, no
+/// partitioning — batches stream straight from `Source::read_batches`
+/// into `Sink::write_batch` via [`PipelineEngine::run`], the same
+/// connector-agnostic I/O driver `run_transform_pipeline` already uses
+/// (minus the SQL step in between; `build_source`/`build_sink` dispatch
+/// through `connectors.rs` exactly like that path does). Any connector
+/// pair works here — csv, mysql, mongodb, or any `*-cdc` source — since
+/// nothing here depends on SQL/ADBC or a boundable primary key range the
+/// way the postgres-partitioned path above does.
+///
+/// Single "p0" partition, same resumability contract as the postgres
+/// path's `NonNumeric` case: if `p0` already committed in a prior run of
+/// this `pipeline_id`, this is a no-op.
+#[tracing::instrument(skip_all, fields(pipeline_id = %spec.pipeline_id))]
+async fn run_passthrough_pipeline(
+    spec: &PipelineSpec,
+    checkpoints: &CheckpointStore,
+    progress: Option<ProgressSender>,
+    log: Option<&RunLogger>,
+    active_license: Option<&LicenseClaims>,
+) -> anyhow::Result<Vec<PartitionStats>> {
+    if spec.embedding.is_some() {
+        anyhow::bail!(
+            "embedding stage is not supported on the no-transform passthrough path; \
+             add a transform node to use embeddings"
+        );
+    }
+
+    let source_node = &spec.sources[0];
+    let sink_node = &spec.sinks[0];
+
+    // CDC sources (`*-cdc`) are meant to run again every scheduler tick,
+    // not once-and-done — they use `resume_state` for continuity, not the
+    // "already finished" marker every batch connector's single run leaves
+    // behind. Applying the batch done-check to them would mean any `-cdc`
+    // source routed through this path (everything except postgres-cdc,
+    // which stays on the transform/other paths — this passthrough fallback
+    // only fires for the no-transform case) would commit once via
+    // `PipelineEngine::run_partition`'s post-`max_batch_events` checkpoint
+    // and then never run again on any later scheduler tick.
+    let is_cdc = source_node.connector.ends_with("-cdc");
+    if !is_cdc {
+        let done = checkpoints.done_partitions(&spec.pipeline_id).await?;
+        if done.contains("p0") {
+            return Ok(Vec::new());
+        }
+    }
+
+    // Merge a previously-committed resume position back into the source's
+    // config before connecting — the only way a CDC source without its own
+    // server-side resume mechanism (unlike postgres-cdc's replication slot)
+    // can actually continue instead of restarting from scratch. Field names
+    // are the specific config keys each `*-cdc` connector already exposes
+    // for exactly this ("start from here") purpose; `resume_state`'s format
+    // is whatever that connector's own `Source::position_handle` produces.
+    let mut source_node = source_node.clone();
+    if is_cdc {
+        if let Some(cursor) = checkpoints.get(&spec.pipeline_id, "p0").await? {
+            if let Some(resume_state) = cursor.resume_state {
+                match source_node.connector.as_str() {
+                    "mysql-cdc" => {
+                        if let Some((filename, position)) = resume_state.split_once(':') {
+                            if let Ok(position) = position.parse::<u32>() {
+                                source_node.config["binlog_filename"] =
+                                    serde_json::Value::String(filename.to_string());
+                                source_node.config["binlog_position"] =
+                                    serde_json::Value::from(position);
+                            }
+                        }
+                    }
+                    "mongodb-cdc" => {
+                        source_node.config["resume_token"] =
+                            serde_json::Value::String(resume_state);
+                    }
+                    // mssql-cdc's Source::position_handle reports the LSN
+                    // pre-formatted as a hex string (nexus-connector-mssql's
+                    // own lsn_hex_literal helper) - passes straight through.
+                    "mssql-cdc" => {
+                        source_node.config["start_lsn"] = serde_json::Value::String(resume_state);
+                    }
+                    // oracle-cdc reports the SCN as a plain decimal string -
+                    // start_scn is a JSON number, not a string, so this
+                    // parses it back rather than passing the string through.
+                    "oracle-cdc" => {
+                        if let Ok(scn) = resume_state.parse::<i64>() {
+                            source_node.config["start_scn"] = serde_json::Value::from(scn);
+                        }
+                    }
+                    // Any other *-cdc connector either manages its own
+                    // server-side resume (postgres-cdc) or doesn't
+                    // implement `position_handle` yet (no resume_state
+                    // would ever be stored for it in the first place).
+                    _ => {}
+                }
+            }
+        }
+    }
+    let source_node = &source_node;
+
+    let (_source_name, source) = log_on_err(
+        log,
+        &format!("source 0 ({}) connect failed", source_node.connector),
+        build_source(source_node, 0, active_license).await,
+    )
+    .await?;
+
+    let columns: Vec<String> = source
+        .schema()
+        .fields()
+        .iter()
+        .map(|f| f.name().clone())
+        .collect();
+
+    let (_name, sink) = log_on_err(
+        log,
+        &format!("sink 0 ({}) connect failed", sink_node.connector),
+        build_sink(sink_node, 0, &columns, active_license).await,
+    )
+    .await?;
+
+    let handle = PartitionHandle {
+        partition_id: "p0".to_string(),
+        source,
+        sink,
+    };
+
+    log_info(
+        log,
+        "1 partition (passthrough, no transform) to process".to_string(),
+    )
+    .await;
+
+    let engine = PipelineEngine::new(spec.channel_capacity);
+    let (progress, progress_handle) = log_progress(log, progress, 1, "partitions");
+    let results = engine.run(vec![handle], progress).await;
+    let _ = progress_handle.await;
+
+    let mut stats = Vec::new();
+    let mut errors = Vec::new();
+    for result in results {
+        match result {
+            Ok(stat) => {
+                checkpoints
+                    .commit(
+                        &spec.pipeline_id,
+                        &CheckpointCursor {
+                            resume_state: stat.resume_state.clone(),
+                            ..CheckpointCursor::new(stat.partition_id.clone())
+                        },
                     )
                     .await?;
                 stats.push(stat);
@@ -258,18 +455,21 @@ async fn run_linear_pipeline(
 /// Unpartitioned — every source is read in full, see ARCHITECTURE.md §6.
 /// Sinks are only built after the transform runs, since their column list
 /// comes from the transform's *output* schema, not any single source's.
+///
+/// Also the entry point for a python-only pipeline (`spec.python` set,
+/// `spec.transform` absent) — see `run_pipeline`'s dispatch condition and
+/// `dag.rs::validate()` for why that still requires exactly 1 source: with
+/// no SQL stage to fan multiple sources into one table, `python` always
+/// operates on a single upstream table's batches. When both are set, the
+/// order is SQL transform, then python, over its output.
 #[tracing::instrument(skip_all, fields(pipeline_id = %spec.pipeline_id))]
 async fn run_transform_pipeline(
     spec: &PipelineSpec,
     checkpoints: &CheckpointStore,
     progress: Option<ProgressSender>,
     log: Option<&RunLogger>,
+    active_license: Option<&LicenseClaims>,
 ) -> anyhow::Result<Vec<PartitionStats>> {
-    let transform_spec = spec
-        .transform
-        .as_ref()
-        .expect("run_transform_pipeline called on a spec without a transform");
-
     let done = checkpoints.done_partitions(&spec.pipeline_id).await?;
 
     let mut sources = Vec::with_capacity(spec.sources.len());
@@ -277,7 +477,7 @@ async fn run_transform_pipeline(
         let source = log_on_err(
             log,
             &format!("source {i} ({}) connect failed", node.connector),
-            build_source(node, i).await,
+            build_source(node, i, active_license).await,
         )
         .await?;
         sources.push(source);
@@ -296,8 +496,38 @@ async fn run_transform_pipeline(
         );
     }
 
-    let transform = DataFusionTransform::new(&transform_spec.sql);
-    let output = transform.apply(inputs).await?;
+    let output = if let Some(transform_spec) = &spec.transform {
+        let transform = DataFusionTransform::new(&transform_spec.sql);
+        transform.apply(inputs).await?
+    } else {
+        // No SQL transform — a python-only pipeline, validated as exactly
+        // 1 source (dag.rs::validate()), so there's exactly one entry to
+        // unwrap here.
+        inputs
+            .into_iter()
+            .next()
+            .map(|(_, _, batches)| batches)
+            .unwrap_or_default()
+    };
+
+    let output = if let Some(python_spec) = &spec.python {
+        match output.first().map(|b| b.schema()) {
+            Some(schema) => {
+                log_info(log, "running python transform").await;
+                let result = log_on_err(
+                    log,
+                    "python transform failed",
+                    python_transform::apply(schema, output, python_spec).await,
+                )
+                .await?;
+                log_info(log, "python transform finished").await;
+                result
+            }
+            None => output, // nothing to transform
+        }
+    } else {
+        output
+    };
 
     let columns: Vec<String> = output
         .first()
@@ -315,7 +545,7 @@ async fn run_transform_pipeline(
         let (name, sink) = log_on_err(
             log,
             &format!("sink {i} ({}) connect failed", node.connector),
-            build_sink(node, i, &columns).await,
+            build_sink(node, i, &columns, active_license).await,
         )
         .await?;
         if done.contains(&name) {
@@ -339,7 +569,10 @@ async fn run_transform_pipeline(
                 checkpoints
                     .commit(
                         &spec.pipeline_id,
-                        &CheckpointCursor::new(stat.partition_id.clone()),
+                        &CheckpointCursor {
+                            resume_state: stat.resume_state.clone(),
+                            ..CheckpointCursor::new(stat.partition_id.clone())
+                        },
                     )
                     .await?;
                 stats.push(stat);
@@ -388,13 +621,14 @@ pub async fn run_post_dbt_stage(
     checkpoints: &CheckpointStore,
     progress: Option<ProgressSender>,
     log: Option<&RunLogger>,
+    active_license: Option<&LicenseClaims>,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     let done = checkpoints.done_partitions(&spec.pipeline_id).await?;
 
     let source = log_on_err(
         log,
         "post-dbt source connect failed",
-        build_source(output_node, 0).await,
+        build_source(output_node, 0, active_license).await,
     )
     .await?;
     let inputs = PipelineEngine::drain_sources(vec![source]).await?;
@@ -416,7 +650,7 @@ pub async fn run_post_dbt_stage(
         let (raw_name, sink) = log_on_err(
             log,
             &format!("post-dbt sink {i} ({}) connect failed", node.connector),
-            build_sink(node, i, &columns).await,
+            build_sink(node, i, &columns, active_license).await,
         )
         .await?;
         let name = format!("post_dbt_{raw_name}");
@@ -441,7 +675,10 @@ pub async fn run_post_dbt_stage(
                 checkpoints
                     .commit(
                         &spec.pipeline_id,
-                        &CheckpointCursor::new(stat.partition_id.clone()),
+                        &CheckpointCursor {
+                            resume_state: stat.resume_state.clone(),
+                            ..CheckpointCursor::new(stat.partition_id.clone())
+                        },
                     )
                     .await?;
                 stats.push(stat);

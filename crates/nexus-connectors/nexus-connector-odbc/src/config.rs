@@ -89,8 +89,8 @@ impl OdbcConnectorConfig {
     /// otherwise an ODBC connection string is built from the individual
     /// fields.
     pub fn connection_string(&self) -> String {
-        if let Some(cs) = &self.connection_string {
-            return cs.clone();
+        if let Some(cs) = self.connection_string.as_deref().filter(|s| !s.is_empty()) {
+            return cs.to_string();
         }
 
         let mut parts: Vec<String> = Vec::new();

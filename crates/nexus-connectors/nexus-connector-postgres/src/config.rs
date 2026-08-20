@@ -89,8 +89,8 @@ impl PostgresConnectorConfig {
     /// If a legacy `uri` is present it is returned unchanged; otherwise a
     /// `postgresql://` URI is built from the individual fields.
     pub fn connection_string(&self) -> String {
-        if let Some(uri) = &self.uri {
-            return uri.clone();
+        if let Some(uri) = self.uri.as_deref().filter(|s| !s.is_empty()) {
+            return uri.to_string();
         }
 
         let password_part = percent_encode(&self.password);
@@ -219,8 +219,15 @@ pub struct PostgresCdcConfig {
     /// Replication slot name — created automatically on first connect if it
     /// doesn't exist yet. Reconnecting later with the same name resumes
     /// from where this connector last left off: Postgres tracks the
-    /// confirmed position server-side, so there's no separate LSN/offset to
-    /// persist on the nexus-server side for this to work.
+    /// confirmed position server-side (via `update_applied_lsn`, called in
+    /// `cdc.rs` after each event is read), so there's no separate
+    /// LSN/offset to persist on the nexus-server side for this to work.
+    /// One honest caveat: the ack fires right after an event is read, not
+    /// after the sink has confirmed writing it — a crash in that narrow
+    /// window can lose at most one in-flight micro-batch, a real but small
+    /// and bounded gap (see `cdc.rs`'s comment on `update_applied_lsn` for
+    /// why closing it fully would need a feedback path from the sink back
+    /// into this source that doesn't exist yet).
     pub slot_name: String,
     /// Target schema for each change event's row — same 4-primitive-type
     /// ceiling as every other bridging connector (Kafka/MongoDB); Postgres
@@ -247,8 +254,8 @@ impl PostgresCdcConfig {
     /// If a legacy `uri` is present it is returned unchanged; otherwise a
     /// `postgresql://` URI is built from the individual fields.
     pub fn connection_string(&self) -> String {
-        if let Some(uri) = &self.uri {
-            return uri.clone();
+        if let Some(uri) = self.uri.as_deref().filter(|s| !s.is_empty()) {
+            return uri.to_string();
         }
 
         let password_part = percent_encode(&self.password);
@@ -352,6 +359,30 @@ mod tests {
         assert!(cs.starts_with("postgresql://nexus:s3cr%40t@db.example.com:5433/analytics"));
         assert!(cs.contains("options=-csearch_path%3Dstaging"));
         assert!(cs.contains("sslmode=require"));
+    }
+
+    #[test]
+    fn connection_string_falls_back_to_fields_when_uri_is_empty_string() {
+        // The Canvas UI used to always send `uri: Some("")` once the field
+        // had been touched (even if the user meant to leave it blank and
+        // fill host/port/... instead) — this silently broke the connection
+        // instead of falling back, since `Some("")` isn't `None`.
+        let cfg = PostgresConnectorConfig {
+            uri: Some(String::new()),
+            host: "db.example.com".to_string(),
+            port: 5433,
+            username: "nexus".to_string(),
+            password: "s3cr@t".to_string(),
+            database: "analytics".to_string(),
+            schema: None,
+            ssl_mode: PostgresSslMode::Prefer,
+            table: "events".to_string(),
+            primary_key: "id".to_string(),
+            timeout_seconds: 30,
+        };
+        assert!(cfg
+            .connection_string()
+            .starts_with("postgresql://nexus:s3cr%40t@db.example.com:5433/analytics"));
     }
 
     #[test]

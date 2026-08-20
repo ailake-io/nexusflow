@@ -185,6 +185,7 @@ fn default_timeout_seconds() -> u64 {
 /// doesn't do — so both are tagged `I` for now.
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[cfg(feature = "cdc")]
+#[allow(dead_code)] // Gated by the `cdc` feature; methods consumed by the future CDC source implementation.
 pub struct AilakeCdcConfig {
     /// Local filesystem root for the AI-Lake warehouse. This is the legacy
     /// field; `warehouse_path` is preferred for new canvas nodes.
@@ -232,6 +233,7 @@ pub struct AilakeCdcConfig {
 }
 
 #[cfg(feature = "cdc")]
+#[allow(dead_code)] // Methods consumed by the future CDC source implementation.
 impl AilakeCdcConfig {
     /// Resolves the effective warehouse root. The legacy `warehouse` field
     /// takes priority for backwards compatibility.

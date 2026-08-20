@@ -82,7 +82,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 FROM ${RUNTIME_IMAGE} AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      libpq5 libsqlite3-0 ca-certificates curl \
+      libpq5 libsqlite3-0 ca-certificates curl python3 python3-pip \
+    && pip3 install --break-system-packages --no-cache-dir \
+      pandas numpy pyarrow polars python-dateutil \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -r -g 1001 nexusflow \
     && useradd -r -u 1001 -g nexusflow nexusflow

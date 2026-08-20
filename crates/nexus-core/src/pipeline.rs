@@ -20,6 +20,12 @@ pub struct PartitionStats {
     pub partition_id: String,
     pub batches_written: usize,
     pub rows_written: usize,
+    /// Final value of the source's `position_handle` (`Source` trait) after
+    /// its stream ended — `None` for every source that doesn't override
+    /// `position_handle` (unchanged default). Callers persist this via
+    /// `CheckpointCursor.resume_state` so a CDC source can actually resume
+    /// instead of restarting from scratch.
+    pub resume_state: Option<String>,
 }
 
 /// Cumulative progress for one partition/sink, emitted after every batch —
@@ -86,6 +92,15 @@ mod metrics {
 /// (ARCHITECTURE.md §5), so re-running an incomplete partition from scratch
 /// after a crash is always safe. Finer-grained mid-partition resumption would
 /// add complexity without a correctness payoff at this scale.
+///
+/// CDC sources are the one case that rationale doesn't cover — an unbounded,
+/// ordered event stream isn't a "deterministic range" to safely re-run from
+/// scratch. Those still only get one commit per partition-run here (no
+/// mid-stream commits added), but that commit now carries a real resume
+/// position when the source reports one via `Source::position_handle` —
+/// see `CheckpointCursor.resume_state`. A CDC source's `read_batches` stream
+/// does naturally end periodically (a `max_batch_events`-style cutoff), so
+/// this one-commit-per-run still fires regularly in practice.
 pub struct PipelineEngine {
     channel_capacity: usize,
 }
@@ -106,6 +121,11 @@ impl PipelineEngine {
             mut source,
             mut sink,
         } = handle;
+
+        // Must be fetched before `source` moves into the reader task below
+        // — see `Source::position_handle`'s doc comment for why a plain
+        // `&self` call after the stream starts doesn't work.
+        let position_handle = source.position_handle();
 
         let (tx, mut rx) = tokio::sync::mpsc::channel::<RecordBatch>(self.channel_capacity);
 
@@ -148,8 +168,14 @@ impl PipelineEngine {
                 }
             }
 
-            sink.commit_checkpoint(CheckpointCursor::new(writer_partition_id.clone()))
-                .await?;
+            let resume_state = position_handle
+                .as_ref()
+                .and_then(|h| h.lock().expect("position_handle mutex poisoned").clone());
+            sink.commit_checkpoint(CheckpointCursor {
+                resume_state: resume_state.clone(),
+                ..CheckpointCursor::new(writer_partition_id.clone())
+            })
+            .await?;
 
             if let Some(tx) = &progress {
                 let _ = tx.send(ProgressEvent {
@@ -161,7 +187,11 @@ impl PipelineEngine {
                 });
             }
 
-            Ok::<(usize, usize), NexusError>((batches_written, rows_written))
+            Ok::<(usize, usize, Option<String>), NexusError>((
+                batches_written,
+                rows_written,
+                resume_state,
+            ))
         });
 
         let (reader_result, writer_result) = tokio::join!(reader, writer);
@@ -171,7 +201,7 @@ impl PipelineEngine {
         // and reports the secondary "writer side of channel closed early".
         // Unwrapping the reader first would mask the real failure with that
         // misleading message.
-        let (batches_written, rows_written) = writer_result
+        let (batches_written, rows_written, resume_state) = writer_result
             .map_err(|e| NexusError::Connector(format!("writer task panicked: {e}")))??;
         reader_result
             .map_err(|e| NexusError::Connector(format!("reader task panicked: {e}")))??;
@@ -180,6 +210,7 @@ impl PipelineEngine {
             partition_id,
             batches_written,
             rows_written,
+            resume_state,
         })
     }
 
@@ -411,6 +442,10 @@ async fn write_one_sink_stream(
         partition_id: name,
         batches_written,
         rows_written,
+        // No Source involved on this fan-out path — it writes an
+        // already-materialized `output: &[RecordBatch]`, not a live stream,
+        // so there's no position to report.
+        resume_state: None,
     })
 }
 
@@ -514,6 +549,105 @@ mod tests {
             checkpoints.lock().unwrap().len(),
             1,
             "checkpoint committed once per partition, not per batch"
+        );
+    }
+
+    /// Simulates a CDC source: reports its position via `position_handle`,
+    /// updating the shared cell as it "produces" each batch — same pattern
+    /// real connectors (`nexus-connector-mysql`/`mongodb`'s CDC sources)
+    /// use, just without any real network I/O behind it.
+    struct CdcLikeSource {
+        schema: SchemaRef,
+        batches: Vec<(RecordBatch, String)>,
+        position: Arc<Mutex<Option<String>>>,
+    }
+
+    #[async_trait]
+    impl Source for CdcLikeSource {
+        async fn read_batches(
+            &mut self,
+        ) -> Result<BoxStream<'_, Result<RecordBatch, NexusError>>, NexusError> {
+            let position = self.position.clone();
+            let items: Vec<Result<RecordBatch, NexusError>> = self
+                .batches
+                .iter()
+                .map(|(batch, pos)| {
+                    *position.lock().unwrap() = Some(pos.clone());
+                    Ok(batch.clone())
+                })
+                .collect();
+            Ok(Box::pin(stream::iter(items)))
+        }
+
+        fn schema(&self) -> SchemaRef {
+            self.schema.clone()
+        }
+
+        fn position_handle(&self) -> Option<Arc<Mutex<Option<String>>>> {
+            Some(self.position.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn run_partition_reports_final_source_position_in_checkpoint() {
+        let source = CdcLikeSource {
+            schema: test_schema(),
+            batches: vec![
+                (test_batch(vec![1, 2]), "pos-1".to_string()),
+                (test_batch(vec![3]), "pos-2".to_string()),
+            ],
+            position: Arc::new(Mutex::new(None)),
+        };
+        let checkpoints = Arc::new(Mutex::new(Vec::new()));
+        let sink = RecordingSink {
+            received: Arc::new(Mutex::new(Vec::new())),
+            checkpoints: checkpoints.clone(),
+        };
+
+        let engine = PipelineEngine::new(8);
+        let stats = engine
+            .run_partition(
+                PartitionHandle {
+                    partition_id: "p0".to_string(),
+                    source: Box::new(source),
+                    sink: Box::new(sink),
+                },
+                None,
+            )
+            .await
+            .expect("partition runs successfully");
+
+        // The *last* batch's position wins, not the first.
+        assert_eq!(stats.resume_state.as_deref(), Some("pos-2"));
+        let committed = checkpoints.lock().unwrap();
+        assert_eq!(committed.len(), 1);
+        assert_eq!(committed[0].resume_state.as_deref(), Some("pos-2"));
+    }
+
+    #[tokio::test]
+    async fn run_partition_leaves_resume_state_none_for_a_plain_source() {
+        let source = VecSource {
+            schema: test_schema(),
+            batches: vec![test_batch(vec![1])],
+        };
+        let sink = RecordingSink::default();
+
+        let engine = PipelineEngine::new(8);
+        let stats = engine
+            .run_partition(
+                PartitionHandle {
+                    partition_id: "p0".to_string(),
+                    source: Box::new(source),
+                    sink: Box::new(sink),
+                },
+                None,
+            )
+            .await
+            .expect("partition runs successfully");
+
+        assert_eq!(
+            stats.resume_state, None,
+            "VecSource doesn't override position_handle, default must stay None"
         );
     }
 

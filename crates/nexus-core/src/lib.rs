@@ -14,7 +14,7 @@ pub use cdc::{project_column, split_by_opcode, CdcSplit};
 pub use checkpoint::{CheckpointCursor, Opcode, OPCODE_COLUMN};
 pub use dag::{
     ChunkingSpec, DbtCommand, DbtConfig, EmbeddingModelSpec, EmbeddingSpec, NodeSpec, PipelineSpec,
-    TransformSpec,
+    PythonTransformSpec, TransformSpec,
 };
 pub use error::{with_timeout, NexusError};
 pub use pipeline::{
@@ -22,7 +22,7 @@ pub use pipeline::{
     TransformPipeline,
 };
 pub use record_batch_builder::RecordBatchBuilder;
-pub use registry::{ConnectorDescriptor, ConnectorRegistry};
+pub use registry::{ConnectorDescriptor, ConnectorRegistry, SinkBuilder, SourceBuilder};
 pub use schedule::parse_cron_expression;
 pub use sql::{quote_identifier, validate_identifier};
 pub use traits::{ConnectorCapability, Sink, Source, Transform};

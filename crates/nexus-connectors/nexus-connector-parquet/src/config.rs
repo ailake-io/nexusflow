@@ -116,8 +116,8 @@ impl ParquetConnectorConfig {
     /// a cloud URI from `storage` + `bucket` + `path`, or returns `path` for
     /// local storage.
     pub fn uri(&self) -> Result<String, NexusError> {
-        if let Some(uri) = &self.uri {
-            return Ok(uri.clone());
+        if let Some(uri) = self.uri.as_deref().filter(|s| !s.is_empty()) {
+            return Ok(uri.to_string());
         }
 
         match self.storage {

@@ -5,10 +5,11 @@
 //! the **public** key, needed to verify a signature; the private signing
 //! key never appears here.
 //!
-//! No enterprise connector crate exists yet, so nothing calls
-//! [`LicenseClaims::covers`] in anger today — this module is the
-//! verification primitive that a future gate (e.g. in pipeline validation)
-//! builds on, exercised here and in `license_store.rs` against a
+//! No enterprise connector crate exists yet, so [`LicenseClaims::covers`]
+//! never actually returns `true` outside tests today — but the gate itself
+//! is wired: `connectors.rs::check_connector_license` calls it for every
+//! source/sink build and pipeline-config validation (ROADMAP.md Fase 12,
+//! Bloco 1), exercised here and in `license_store.rs` against a
 //! `#[cfg(test)]`-only signing key.
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};

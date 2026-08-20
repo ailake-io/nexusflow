@@ -5,10 +5,12 @@ use opentelemetry_sdk::trace::{
     span_processor_with_async_runtime::BatchSpanProcessor, SdkTracerProvider,
 };
 use opentelemetry_sdk::Resource;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Once};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
+
+static TELEMETRY_INIT: Once = Once::new();
 
 /// Backs `GET /metrics` (task #20) — a process-wide singleton, matching
 /// how Prometheus registries are conventionally used (one per process,
@@ -32,6 +34,14 @@ pub static PROMETHEUS_REGISTRY: LazyLock<prometheus::Registry> =
 /// `GET /metrics` whenever it wants), so there's no "endpoint" to push to
 /// and nothing to gate behind an env var.
 pub fn init() -> anyhow::Result<()> {
+    let mut result = Ok(());
+    TELEMETRY_INIT.call_once(|| {
+        result = init_inner();
+    });
+    result
+}
+
+fn init_inner() -> anyhow::Result<()> {
     let resource = Resource::builder()
         .with_attribute(KeyValue::new("service.name", "nexus-server"))
         .build();

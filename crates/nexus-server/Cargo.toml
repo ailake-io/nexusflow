@@ -13,6 +13,16 @@ default = []
 # (it's just data), but a spec that sets it gets a clear "not compiled in"
 # error instead of silently doing nothing.
 dbt = ["tokio/process"]
+# Python cleaning/transformation stage (mirrors the `dbt` feature above
+# exactly): shells out to `python3` via tokio::process::Command, not a
+# Rust dependency — the runtime image needs python3 + pandas/numpy/
+# pyarrow/polars/python-dateutil pre-installed (see Dockerfile), not
+# anything pulled in by this feature itself, beyond `parquet` (used to
+# round-trip RecordBatches across the process boundary, not a runtime
+# requirement of the script itself). Without it, PipelineSpec.python
+# still deserializes fine (it's just data), but a spec that sets it gets
+# a clear "not compiled in" error instead of silently doing nothing.
+python-transform = ["tokio/process", "dep:parquet"]
 # Embeddings pipeline stage: chunking + ONNX inference via nexus-ai. Off by
 # default because it pulls in ort, hf-hub, tokenizers and ONNX binaries, which
 # significantly increases build time and binary size when not needed.
@@ -191,11 +201,20 @@ arrow-array = "58.4.0"
 arrow-json = "58.4.0"
 arrow-schema = "58.4.0"
 futures-util = "0.3.33"
+# Only used by the `python-transform` feature, to round-trip RecordBatches
+# across the process boundary to/from the python3 subprocess.
+parquet = { version = "58.4.0", optional = true }
 
 [dev-dependencies]
 async-trait = "0.1.91"
 futures = "0.3.33"
 futures-util = "0.3.33"
+# Only for connectors.rs's license-enforcement tests, which register a
+# test-only fixture connector via nexus_core::submit_enterprise_connector! —
+# that macro's derive(JsonSchema) needs the `schemars` crate name resolvable
+# by its own bare name in this crate too, a qualified path through
+# nexus_core's re-export isn't enough for the derive macro's generated code.
+schemars = "1.2.2"
 sqlx = { version = "0.9.0", default-features = false, features = ["postgres", "runtime-tokio", "sqlite"] }
 tempfile = "3.27.0"
 testcontainers = "0.27.3"

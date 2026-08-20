@@ -15,6 +15,7 @@ mod license_store;
 pub mod migrate;
 mod pipeline_store;
 mod progress;
+mod python_transform;
 mod rate_limit;
 mod run_log_store;
 mod runner;
@@ -303,6 +304,13 @@ struct ConnectorCatalogEntry {
     /// license's `connectors` list covers its slug. The canvas uses this to
     /// show a locked/"upgrade" state instead of hiding the node outright.
     licensed: bool,
+    /// `Some(slug)` for an enterprise-gated connector (mirrors
+    /// `ConnectorDescriptor::requires_license`), `None` for OSS. The Store
+    /// page (frontend) uses this to tell "always free" apart from
+    /// "enterprise, and here's whether you own it" — `licensed` alone can't
+    /// distinguish those two cases (both read `true` for OSS).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    requires_license: Option<&'static str>,
 }
 
 async fn list_connectors_handler(
@@ -321,6 +329,7 @@ async fn list_connectors_handler(
                         .as_ref()
                         .is_some_and(|claims| claims.covers(slug)),
                 },
+                requires_license: d.requires_license,
             })
             .collect(),
     )
@@ -339,8 +348,10 @@ struct LoginResponse {
 
 async fn login_handler(
     State(state): State<AppState>,
+    client_ip: Option<Extension<rate_limit::ClientIp>>,
     Json(body): Json<LoginRequest>,
 ) -> Result<Json<LoginResponse>, ApiError> {
+    let client_ip = client_ip.map(|ext| ext.0 .0).unwrap_or_default();
     let result = state
         .auth_store
         .verify(&body.username, &body.password)
@@ -357,11 +368,17 @@ async fn login_handler(
     tracing::info!(
         username = %body.username,
         success = log_outcome.0,
+        client_ip = %client_ip,
         "{}", log_outcome.1
     );
     if let Err(e) = state
         .auth_store
-        .log_security_event(Some(&body.username), "login", log_outcome.0, None)
+        .log_security_event(
+            Some(&body.username),
+            "login",
+            log_outcome.0,
+            Some(&client_ip),
+        )
         .await
     {
         tracing::warn!(error = %e, "failed to write login audit log");
@@ -380,10 +397,9 @@ struct LogoutResponse {
 async fn logout_handler(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
-    req: axum::extract::Request,
+    headers: axum::http::HeaderMap,
 ) -> Result<Json<LogoutResponse>, ApiError> {
-    let header = req
-        .headers()
+    let header = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| ApiError::unauthorized("missing Authorization header"))?;
@@ -525,11 +541,19 @@ async fn execute_pipeline_run(
         ))
         .await;
 
+    // Fetched once per run, not per connector — an expired/uninstalled
+    // license just means `active_license` is `None`, which
+    // `connectors::check_connector_license` treats the same as "not
+    // covered" for any enterprise-gated connector (ROADMAP.md Fase 12,
+    // Bloco 1).
+    let active_license = state.license_store.active().await.unwrap_or(None);
+
     let result = runner::run_pipeline(
         &spec,
         &state.checkpoints,
         Some(progress_tx.clone()),
         Some(&logger),
+        active_license.as_ref(),
     )
     .await;
     state.progress.finish(run_id).await;
@@ -568,6 +592,7 @@ async fn execute_pipeline_run(
                             &state.checkpoints,
                             Some(progress_tx.clone()),
                             Some(&logger),
+                            active_license.as_ref(),
                         )
                         .await
                         {
@@ -634,7 +659,8 @@ async fn create_pipeline_handler(
     if !spec.draft {
         spec.validate_security_with(state.allow_internal_hosts)
             .map_err(|e| ApiError::bad_request(e.to_string()))?;
-        connectors::validate_pipeline_configs(&spec)
+        let active_license = state.license_store.active().await.unwrap_or(None);
+        connectors::validate_pipeline_configs(&spec, active_license.as_ref())
             .map_err(|e| ApiError::bad_request(e.to_string()))?;
     }
     state.pipelines.create(&spec, &state.secrets).await?;
@@ -713,7 +739,8 @@ async fn preview_node_handler(
         ))
     })?;
 
-    let (_, mut source) = crate::connectors::build_source(node, 0)
+    let active_license = state.license_store.active().await.unwrap_or(None);
+    let (_, mut source) = crate::connectors::build_source(node, 0, active_license.as_ref())
         .await
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
 
@@ -791,7 +818,8 @@ async fn update_pipeline_handler(
     if !spec.draft {
         spec.validate_security_with(state.allow_internal_hosts)
             .map_err(|e| ApiError::bad_request(e.to_string()))?;
-        connectors::validate_pipeline_configs(&spec)
+        let active_license = state.license_store.active().await.unwrap_or(None);
+        connectors::validate_pipeline_configs(&spec, active_license.as_ref())
             .map_err(|e| ApiError::bad_request(e.to_string()))?;
     }
     state.pipelines.update(&id, &spec, &state.secrets).await?;
@@ -1900,10 +1928,14 @@ mod tests {
 
         let record = wait_for_terminal_run(&app, &execute_token, "p1").await;
         assert_eq!(record["status"], "failed");
-        assert!(record["error"]
-            .as_str()
-            .unwrap()
-            .contains("unsupported connector"));
+        // Empty `{}` config is invalid for every real connector regardless
+        // of which pair the no-transform path routes it through (postgres
+        // partitioned vs. the generic passthrough fallback — see
+        // runner.rs's `run_passthrough_pipeline`), so this still fails
+        // asynchronously; the exact error text is connector-specific
+        // (a serde deserialization message), not a fixed "unsupported
+        // connector" string anymore.
+        assert!(!record["error"].as_str().unwrap().is_empty());
     }
 
     /// The whole point of persisting logs (not just broadcasting them) is
@@ -1973,10 +2005,15 @@ mod tests {
             .iter()
             .find(|l| l["level"] == "error")
             .expect("an error-level line for the failed run");
+        // Empty `{}` mongodb config fails to connect (via
+        // `run_passthrough_pipeline`'s `build_source` call, logged through
+        // `log_on_err`'s "source 0 (mongodb) connect failed" context) —
+        // not the old "unsupported connector" bail, which no longer exists
+        // for this connector pair.
         assert!(failure["message"]
             .as_str()
             .unwrap()
-            .contains("unsupported connector"));
+            .contains("connect failed"));
     }
 
     #[tokio::test]
@@ -2591,10 +2628,11 @@ mod tests {
 
         let record = wait_for_terminal_run(&app, &execute_token, "p1").await;
         assert_eq!(record["status"], "failed");
-        assert!(record["error"]
-            .as_str()
-            .unwrap()
-            .contains("unsupported connector"));
+        // Same note as run_with_unsupported_connector_is_accepted_then_fails_in_history:
+        // empty `{}` config still fails asynchronously, just with a
+        // connector-specific deserialization error now instead of a fixed
+        // "unsupported connector" string.
+        assert!(!record["error"].as_str().unwrap().is_empty());
     }
 
     #[tokio::test]

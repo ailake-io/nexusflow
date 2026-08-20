@@ -1,4 +1,5 @@
 use crate::db::{rewrite_placeholders, MetadataPool};
+use chrono::DateTime;
 use nexus_core::CheckpointCursor;
 use std::collections::HashSet;
 
@@ -43,6 +44,18 @@ impl CheckpointStore {
                 )
                 .execute(p)
                 .await?;
+                // First schema migration in this codebase — `CREATE TABLE
+                // IF NOT EXISTS` above is a no-op against a `checkpoints`
+                // table that already existed before `resume_state` was
+                // added, so a real `ALTER TABLE` is needed too. No
+                // `IF NOT EXISTS` support for `ADD COLUMN` on older SQLite,
+                // so this just runs it and ignores the error — the only
+                // realistic failure mode right after `CREATE TABLE`
+                // succeeded (proving connectivity) is "column already
+                // exists" on a second/later boot.
+                let _ = sqlx::query("ALTER TABLE checkpoints ADD COLUMN resume_state TEXT")
+                    .execute(p)
+                    .await;
             }
             MetadataPool::Postgres(p) => {
                 // "offset" is a reserved word in Postgres — must be quoted.
@@ -60,6 +73,12 @@ impl CheckpointStore {
                 )
                 .execute(p)
                 .await?;
+                // Postgres does support `ADD COLUMN IF NOT EXISTS` (unlike
+                // SQLite) — real idempotent migration, no error-swallowing
+                // needed here.
+                sqlx::query("ALTER TABLE checkpoints ADD COLUMN IF NOT EXISTS resume_state TEXT")
+                    .execute(p)
+                    .await?;
             }
         }
 
@@ -92,11 +111,12 @@ impl CheckpointStore {
             MetadataPool::Sqlite(p) => {
                 sqlx::query(
                     r#"
-                    INSERT INTO checkpoints (pipeline_id, partition_id, last_updated_at, offset, updated_at)
-                    VALUES (?, ?, ?, ?, datetime('now'))
+                    INSERT INTO checkpoints (pipeline_id, partition_id, last_updated_at, offset, resume_state, updated_at)
+                    VALUES (?, ?, ?, ?, ?, datetime('now'))
                     ON CONFLICT(pipeline_id, partition_id) DO UPDATE SET
                         last_updated_at = excluded.last_updated_at,
                         offset = excluded.offset,
+                        resume_state = excluded.resume_state,
                         updated_at = excluded.updated_at
                     "#,
                 )
@@ -104,17 +124,19 @@ impl CheckpointStore {
                 .bind(&cursor.partition_id)
                 .bind(cursor.last_updated_at.map(|t| t.to_rfc3339()))
                 .bind(cursor.offset)
+                .bind(&cursor.resume_state)
                 .execute(p)
                 .await?;
             }
             MetadataPool::Postgres(p) => {
                 sqlx::query(
                     r#"
-                    INSERT INTO checkpoints (pipeline_id, partition_id, last_updated_at, "offset", updated_at)
-                    VALUES ($1, $2, $3, $4, to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
+                    INSERT INTO checkpoints (pipeline_id, partition_id, last_updated_at, "offset", resume_state, updated_at)
+                    VALUES ($1, $2, $3, $4, $5, to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
                     ON CONFLICT(pipeline_id, partition_id) DO UPDATE SET
                         last_updated_at = excluded.last_updated_at,
                         "offset" = excluded."offset",
+                        resume_state = excluded.resume_state,
                         updated_at = excluded.updated_at
                     "#,
                 )
@@ -122,6 +144,7 @@ impl CheckpointStore {
                 .bind(&cursor.partition_id)
                 .bind(cursor.last_updated_at.map(|t| t.to_rfc3339()))
                 .bind(cursor.offset)
+                .bind(&cursor.resume_state)
                 .execute(p)
                 .await?;
             }
@@ -129,11 +152,110 @@ impl CheckpointStore {
 
         Ok(())
     }
+
+    /// Reads back the last committed cursor for `(pipeline_id,
+    /// partition_id)`, if any — didn't exist before this: `done_partitions`
+    /// only ever answered "was this partition ever finished" (a boolean),
+    /// never "what position did it reach." Callers use this to resume a
+    /// CDC source from where it left off (feeding `resume_state` back into
+    /// that connector's config) instead of restarting from scratch.
+    pub async fn get(
+        &self,
+        pipeline_id: &str,
+        partition_id: &str,
+    ) -> anyhow::Result<Option<CheckpointCursor>> {
+        let sql = self.q(
+            "SELECT last_updated_at, offset, resume_state FROM checkpoints \
+             WHERE pipeline_id = ? AND partition_id = ?",
+        );
+        let row: Option<(Option<String>, Option<i64>, Option<String>)> = match &self.pool {
+            MetadataPool::Sqlite(p) => {
+                sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .bind(pipeline_id)
+                    .bind(partition_id)
+                    .fetch_optional(p)
+                    .await?
+            }
+            MetadataPool::Postgres(p) => {
+                sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .bind(pipeline_id)
+                    .bind(partition_id)
+                    .fetch_optional(p)
+                    .await?
+            }
+        };
+
+        Ok(
+            row.map(|(last_updated_at, offset, resume_state)| CheckpointCursor {
+                partition_id: partition_id.to_string(),
+                last_updated_at: last_updated_at
+                    .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+                    .map(|dt| dt.with_timezone(&chrono::Utc)),
+                offset,
+                opcode: None,
+                resume_state,
+            }),
+        )
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn get_returns_none_before_any_commit() {
+        let store = CheckpointStore::connect("sqlite::memory:").await.unwrap();
+        assert!(store.get("pipe-1", "p0").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn get_round_trips_resume_state() {
+        let store = CheckpointStore::connect("sqlite::memory:").await.unwrap();
+
+        let cursor = CheckpointCursor {
+            resume_state: Some("mysql-bin.000003:15926".to_string()),
+            ..CheckpointCursor::new("p0")
+        };
+        store.commit("pipe-1", &cursor).await.unwrap();
+
+        let fetched = store.get("pipe-1", "p0").await.unwrap().unwrap();
+        assert_eq!(
+            fetched.resume_state.as_deref(),
+            Some("mysql-bin.000003:15926")
+        );
+
+        // Overwriting with a fresher position must replace, not append.
+        let cursor2 = CheckpointCursor {
+            resume_state: Some("mysql-bin.000003:30412".to_string()),
+            ..CheckpointCursor::new("p0")
+        };
+        store.commit("pipe-1", &cursor2).await.unwrap();
+        let fetched2 = store.get("pipe-1", "p0").await.unwrap().unwrap();
+        assert_eq!(
+            fetched2.resume_state.as_deref(),
+            Some("mysql-bin.000003:30412")
+        );
+    }
+
+    #[tokio::test]
+    async fn get_is_scoped_per_pipeline_and_partition() {
+        let store = CheckpointStore::connect("sqlite::memory:").await.unwrap();
+
+        store
+            .commit(
+                "pipe-1",
+                &CheckpointCursor {
+                    resume_state: Some("token-a".to_string()),
+                    ..CheckpointCursor::new("p0")
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(store.get("pipe-2", "p0").await.unwrap().is_none());
+        assert!(store.get("pipe-1", "p1").await.unwrap().is_none());
+    }
 
     #[tokio::test]
     async fn partition_is_done_only_after_commit() {

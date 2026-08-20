@@ -32,6 +32,15 @@ export interface ConnectorDescriptor {
   name: string
   capability: ConnectorCapability
   config_schema: ConnectorConfigSchema
+  /** `true` for every OSS connector; for an enterprise connector (see
+   * `requires_license` below), `true` only if the installed license covers
+   * it. ConnectorPalette shows a lock icon when this is `false`. */
+  licensed: boolean
+  /** Present only for an enterprise-gated connector (its own slug) —
+   * absent for OSS. The Store page uses this to tell "always free" apart
+   * from "enterprise, and here's whether you own it" (both read
+   * `licensed: true` for OSS). */
+  requires_license?: string
 }
 
 export class ApiError extends Error {
@@ -83,6 +92,27 @@ export async function login(username: string, password: string): Promise<string>
 
 export function listConnectors(token: string): Promise<ConnectorDescriptor[]> {
   return request<ConnectorDescriptor[]>('/connectors', {}, token)
+}
+
+/** Matches nexus-server::LicenseStatusResponse, as returned by both
+ * GET /license and POST /license (Admin-only, see `docs/ENTERPRISE_LICENSING.md`). */
+export interface LicenseStatus {
+  active: boolean
+  connectors: string[]
+  seats: number
+  expires_at: number | null
+}
+
+export function getLicenseStatus(token: string): Promise<LicenseStatus> {
+  return request<LicenseStatus>('/license', {}, token)
+}
+
+export function installLicense(token: string, licenseKey: string): Promise<LicenseStatus> {
+  return request<LicenseStatus>(
+    '/license',
+    { method: 'POST', body: JSON.stringify({ license_key: licenseKey }) },
+    token,
+  )
 }
 
 /** Matches nexus-core::ProgressEvent, as sent over the progress WebSocket. */

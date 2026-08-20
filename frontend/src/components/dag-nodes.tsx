@@ -1,7 +1,7 @@
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import type { DagNode } from '@/lib/dag'
 import { useI18n } from '@/lib/i18n'
-import { Database, Code2, Layers, Sparkles } from 'lucide-react'
+import { Database, Code2, Layers, Sparkles, Terminal } from 'lucide-react'
 
 /** Custom renderers for canvas nodes — read connector/role/sql straight off
  * node.data instead of a separate display-only `label` field, so there's
@@ -13,7 +13,7 @@ export function ConnectorNodeView({ data, selected }: NodeProps<DagNode>) {
   const isSource = data.role === 'source'
   return (
     <div
-      className={`group min-w-[9rem] rounded-lg border bg-card px-3 py-2 shadow-sm transition-all ${
+      className={`group min-w-[8rem] rounded-lg border bg-card px-2.5 py-1.5 shadow-sm transition-all ${
         selected
           ? 'border-primary shadow-[0_0_0_2px_hsl(var(--color-primary)/0.3)]'
           : 'border-white/10 hover:border-primary/40'
@@ -51,7 +51,7 @@ export function TransformNodeView({ selected }: NodeProps<DagNode>) {
   const { t } = useI18n()
   return (
     <div
-      className={`min-w-[8rem] rounded-lg border bg-card px-3 py-2 shadow-sm transition-all ${
+      className={`min-w-[7rem] rounded-lg border bg-card px-2.5 py-1.5 shadow-sm transition-all ${
         selected
           ? 'border-accent shadow-[0_0_0_2px_hsl(var(--color-accent)/0.3)]'
           : 'border-white/10 hover:border-accent/40'
@@ -87,7 +87,7 @@ export function DbtNodeView({ data, selected }: NodeProps<DagNode>) {
   if (data.kind !== 'dbt') return null
   return (
     <div
-      className={`min-w-[8rem] rounded-lg border bg-card px-3 py-2 shadow-sm transition-all ${
+      className={`min-w-[7rem] rounded-lg border bg-card px-2.5 py-1.5 shadow-sm transition-all ${
         selected
           ? 'border-emerald-400 shadow-[0_0_0_2px_rgba(52,211,153,0.25)]'
           : 'border-white/10 hover:border-emerald-400/40'
@@ -116,12 +116,45 @@ export function DbtNodeView({ data, selected }: NodeProps<DagNode>) {
   )
 }
 
+export function PythonNodeView({ data, selected }: NodeProps<DagNode>) {
+  const { t } = useI18n()
+  if (data.kind !== 'python') return null
+  const firstLine = data.script.trim().split('\n')[0]
+  return (
+    <div
+      className={`min-w-[7rem] rounded-lg border bg-card px-2.5 py-1.5 shadow-sm transition-all ${
+        selected
+          ? 'border-sky-400 shadow-[0_0_0_2px_rgba(56,189,248,0.25)]'
+          : 'border-white/10 hover:border-sky-400/40'
+      }`}
+    >
+      <Handle
+        type="target"
+        position={Position.Left}
+        className="!h-2.5 !w-2.5 !border-2 !bg-background !border-sky-400"
+      />
+      <div className="flex items-center gap-2">
+        <Terminal className="h-3.5 w-3.5 text-sky-400" />
+        <div className="text-sm font-semibold text-foreground">{t('canvas.python')}</div>
+      </div>
+      <div className="mt-0.5 truncate text-xs text-muted-foreground">
+        {firstLine || t('canvas.noScriptSet')}
+      </div>
+      <Handle
+        type="source"
+        position={Position.Right}
+        className="!h-2.5 !w-2.5 !border-2 !bg-background !border-sky-400"
+      />
+    </div>
+  )
+}
+
 export function EmbeddingNodeView({ data, selected }: NodeProps<DagNode>) {
   const { t } = useI18n()
   if (data.kind !== 'embedding') return null
   return (
     <div
-      className={`min-w-[8rem] rounded-lg border bg-card px-3 py-2 shadow-sm transition-all ${
+      className={`min-w-[7rem] rounded-lg border bg-card px-2.5 py-1.5 shadow-sm transition-all ${
         selected
           ? 'border-fuchsia-400 shadow-[0_0_0_2px_rgba(232,121,249,0.25)]'
           : 'border-white/10 hover:border-fuchsia-400/40'

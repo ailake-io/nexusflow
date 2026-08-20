@@ -70,6 +70,16 @@ export function PipelineIoPanel({
 
   const handleImport = () => {
     try {
+      const parsed = JSON.parse(text)
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        throw new Error(t('ioPanel.importNotObject'))
+      }
+      if (typeof parsed.pipeline_id !== 'string' || !parsed.pipeline_id.trim()) {
+        throw new Error(t('ioPanel.importMissingPipelineId'))
+      }
+      if (!Array.isArray(parsed.sources) || !Array.isArray(parsed.sinks)) {
+        throw new Error(t('ioPanel.importMissingSourcesSinks'))
+      }
       onImport(text)
       setError(null)
     } catch (err) {

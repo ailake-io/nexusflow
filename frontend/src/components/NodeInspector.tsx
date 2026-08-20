@@ -1,3 +1,4 @@
+import { useRef } from 'react'
 import type {
   ChunkingStrategy,
   ConnectorNodeData,
@@ -7,6 +8,7 @@ import type {
   DbtNodeData,
   EmbeddingBackend,
   EmbeddingNodeData,
+  PythonNodeData,
   TransformNodeData,
 } from '@/lib/dag'
 import type { ConnectorDescriptor } from '@/lib/api'
@@ -14,7 +16,7 @@ import { useI18n } from '@/lib/i18n'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { SchemaForm } from '@/components/SchemaForm'
-import { Database, Code2, Layers, Sparkles } from 'lucide-react'
+import { Database, Code2, Layers, Sparkles, Terminal, Upload } from 'lucide-react'
 
 interface NodeInspectorProps {
   node: DagNode
@@ -25,7 +27,8 @@ interface NodeInspectorProps {
       | Partial<ConnectorNodeData>
       | Partial<TransformNodeData>
       | Partial<DbtNodeData>
-      | Partial<EmbeddingNodeData>,
+      | Partial<EmbeddingNodeData>
+      | Partial<PythonNodeData>,
   ) => void
 }
 
@@ -55,6 +58,9 @@ function batchNameOf(connector: string): string {
 export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps) {
   const { t } = useI18n()
   const data = node.data
+  // Only used by the 'python' branch below, but hooks can't be called
+  // conditionally — must sit above every early return in this component.
+  const pythonFileInputRef = useRef<HTMLInputElement>(null)
   if (data.kind === 'connector') {
     const descriptor = connectors.find((c) => c.name === data.connector)
     const schema = descriptor?.config_schema
@@ -267,6 +273,84 @@ export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps
     )
   }
 
+  if (data.kind === 'python') {
+    return (
+      <aside className="flex w-80 shrink-0 flex-col border-l bg-card">
+        <div className="border-b border-white/10 px-4 py-3">
+          <div className="flex items-center gap-2">
+            <Terminal className="h-4 w-4 text-sky-400" />
+            <h2 className="text-sm font-semibold text-foreground">{t('canvas.python')}</h2>
+          </div>
+          <p className="mt-0.5 text-[10px] text-muted-foreground">{t('canvas.pythonDesc')}</p>
+        </div>
+        <div className="flex-1 overflow-auto p-4">
+          <div className="flex flex-col gap-4">
+            <div>
+              <div className="flex items-center justify-between">
+                <Label htmlFor="python-script" className="text-xs font-medium">
+                  {t('canvas.pythonScript')}
+                </Label>
+                <button
+                  type="button"
+                  onClick={() => pythonFileInputRef.current?.click()}
+                  className="flex items-center gap-1 rounded-md border border-input px-2 py-1 text-[10px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+                >
+                  <Upload className="h-3 w-3" />
+                  {t('canvas.pythonUpload')}
+                </button>
+                <input
+                  ref={pythonFileInputRef}
+                  type="file"
+                  accept=".py,text/x-python"
+                  className="hidden"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0]
+                    // Always reset, even on failure — otherwise re-selecting
+                    // the exact same filename after an error wouldn't fire
+                    // this handler a second time (React sees no change).
+                    e.target.value = ''
+                    if (!file) return
+                    try {
+                      onChange(node.id, { script: await file.text() })
+                    } catch {
+                      window.alert(t('canvas.pythonUploadError'))
+                    }
+                  }}
+                />
+              </div>
+              <textarea
+                id="python-script"
+                value={data.script}
+                onChange={(e) => onChange(node.id, { script: e.target.value })}
+                rows={16}
+                spellCheck={false}
+                placeholder={t('canvas.pythonScriptPlaceholder')}
+                className="mt-1.5 w-full rounded-lg border border-input bg-transparent p-3 font-mono text-xs text-foreground outline-none focus:ring-2 focus:ring-ring"
+              />
+            </div>
+            <div>
+              <Label htmlFor="python-timeout" className="text-xs font-medium">
+                {t('canvas.pythonTimeout')}{' '}
+                <span className="text-muted-foreground">({t('common.optional')})</span>
+              </Label>
+              <Input
+                id="python-timeout"
+                type="number"
+                min={1}
+                value={data.timeoutSeconds || ''}
+                placeholder="60"
+                onChange={(e) =>
+                  onChange(node.id, { timeoutSeconds: Number(e.target.value) || 0 })
+                }
+                className="mt-1.5"
+              />
+            </div>
+          </div>
+        </div>
+      </aside>
+    )
+  }
+
   return (
     <aside className="flex w-80 shrink-0 flex-col border-l bg-card">
       <div className="border-b border-white/10 px-4 py-3">
@@ -345,6 +429,18 @@ export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps
                   value={data.repo}
                   placeholder="sentence-transformers/all-MiniLM-L6-v2"
                   onChange={(e) => onChange(node.id, { repo: e.target.value })}
+                  className="mt-1.5"
+                />
+              </div>
+              <div>
+                <Label htmlFor="embedding-revision" className="text-xs font-medium">
+                  {t('canvas.embeddingRevision')}
+                </Label>
+                <Input
+                  id="embedding-revision"
+                  value={data.revision}
+                  placeholder="main"
+                  onChange={(e) => onChange(node.id, { revision: e.target.value })}
                   className="mt-1.5"
                 />
               </div>
@@ -443,38 +539,63 @@ export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps
             >
               <option value="fixed_window">{t('canvas.embeddingStrategyFixed')}</option>
               <option value="recursive_character">{t('canvas.embeddingStrategyRecursive')}</option>
+              <option value="semantic">{t('canvas.embeddingStrategySemantic')}</option>
             </select>
           </div>
-          <div className="flex gap-3">
-            <div className="flex-1">
-              <Label htmlFor="embedding-chunk-size" className="text-xs font-medium">
-                {t('canvas.embeddingChunkSize')}
+          {data.strategy === 'semantic' ? (
+            <div>
+              <Label htmlFor="embedding-similarity-threshold" className="text-xs font-medium">
+                {t('canvas.embeddingSimilarityThreshold')}
               </Label>
               <Input
-                id="embedding-chunk-size"
-                type="number"
-                min={1}
-                value={data.chunkSize || ''}
-                placeholder="256"
-                onChange={(e) => onChange(node.id, { chunkSize: Number(e.target.value) || 0 })}
-                className="mt-1.5"
-              />
-            </div>
-            <div className="flex-1">
-              <Label htmlFor="embedding-overlap" className="text-xs font-medium">
-                {t('canvas.embeddingOverlap')}
-              </Label>
-              <Input
-                id="embedding-overlap"
+                id="embedding-similarity-threshold"
                 type="number"
                 min={0}
-                value={data.overlap}
-                placeholder="0"
-                onChange={(e) => onChange(node.id, { overlap: Number(e.target.value) || 0 })}
+                max={1}
+                step={0.05}
+                value={data.similarityThreshold}
+                placeholder="0.8"
+                onChange={(e) =>
+                  onChange(node.id, { similarityThreshold: Number(e.target.value) || 0 })
+                }
                 className="mt-1.5"
               />
+              <p className="mt-1 text-[10px] text-muted-foreground">
+                {t('canvas.embeddingSimilarityThresholdHint')}
+              </p>
             </div>
-          </div>
+          ) : (
+            <div className="flex gap-3">
+              <div className="flex-1">
+                <Label htmlFor="embedding-chunk-size" className="text-xs font-medium">
+                  {t('canvas.embeddingChunkSize')}
+                </Label>
+                <Input
+                  id="embedding-chunk-size"
+                  type="number"
+                  min={1}
+                  value={data.chunkSize || ''}
+                  placeholder="256"
+                  onChange={(e) => onChange(node.id, { chunkSize: Number(e.target.value) || 0 })}
+                  className="mt-1.5"
+                />
+              </div>
+              <div className="flex-1">
+                <Label htmlFor="embedding-overlap" className="text-xs font-medium">
+                  {t('canvas.embeddingOverlap')}
+                </Label>
+                <Input
+                  id="embedding-overlap"
+                  type="number"
+                  min={0}
+                  value={data.overlap}
+                  placeholder="0"
+                  onChange={(e) => onChange(node.id, { overlap: Number(e.target.value) || 0 })}
+                  className="mt-1.5"
+                />
+              </div>
+            </div>
+          )}
           {data.strategy === 'recursive_character' && (
             <div>
               <Label htmlFor="embedding-separators" className="text-xs font-medium">

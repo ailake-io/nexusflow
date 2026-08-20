@@ -146,6 +146,24 @@ impl PipelineStore {
                 )
                 .execute(p)
                 .await?;
+
+                sqlx::query(
+                    r#"
+                    CREATE INDEX IF NOT EXISTS idx_pipeline_runs_pipeline_id
+                    ON pipeline_runs(pipeline_id)
+                    "#,
+                )
+                .execute(p)
+                .await?;
+
+                sqlx::query(
+                    r#"
+                    CREATE INDEX IF NOT EXISTS idx_pipeline_runs_status
+                    ON pipeline_runs(status)
+                    "#,
+                )
+                .execute(p)
+                .await?;
             }
             MetadataPool::Postgres(p) => {
                 sqlx::query(
@@ -177,6 +195,24 @@ impl PipelineStore {
                 )
                 .execute(p)
                 .await?;
+
+                sqlx::query(
+                    r#"
+                    CREATE INDEX IF NOT EXISTS idx_pipeline_runs_pipeline_id
+                    ON pipeline_runs(pipeline_id)
+                    "#,
+                )
+                .execute(p)
+                .await?;
+
+                sqlx::query(
+                    r#"
+                    CREATE INDEX IF NOT EXISTS idx_pipeline_runs_status
+                    ON pipeline_runs(status)
+                    "#,
+                )
+                .execute(p)
+                .await?;
             }
         }
 
@@ -188,44 +224,40 @@ impl PipelineStore {
         spec: &PipelineSpec,
         cipher: &SecretCipher,
     ) -> Result<(), PipelineStoreError> {
-        let sql = self.q("SELECT id FROM pipelines WHERE id = ?");
-        let existing: Option<(String,)> = match &self.pool {
-            MetadataPool::Sqlite(p) => {
-                sqlx::query_as(sqlx::AssertSqlSafe(sql))
-                    .bind(&spec.pipeline_id)
-                    .fetch_optional(p)
-                    .await?
-            }
-            MetadataPool::Postgres(p) => {
-                sqlx::query_as(sqlx::AssertSqlSafe(sql))
-                    .bind(&spec.pipeline_id)
-                    .fetch_optional(p)
-                    .await?
-            }
-        };
-        if existing.is_some() {
-            return Err(PipelineStoreError::AlreadyExists(spec.pipeline_id.clone()));
-        }
-
         let ciphertext = encode_spec(spec, cipher);
         let sql = self.q("INSERT INTO pipelines (id, spec_ciphertext) VALUES (?, ?)");
-        match &self.pool {
-            MetadataPool::Sqlite(p) => {
-                sqlx::query(sqlx::AssertSqlSafe(sql))
-                    .bind(&spec.pipeline_id)
-                    .bind(&ciphertext)
-                    .execute(p)
-                    .await?;
+        let result: Result<(), sqlx::Error> = match &self.pool {
+            MetadataPool::Sqlite(p) => sqlx::query(sqlx::AssertSqlSafe(sql))
+                .bind(&spec.pipeline_id)
+                .bind(&ciphertext)
+                .execute(p)
+                .await
+                .map(|_| ()),
+            MetadataPool::Postgres(p) => sqlx::query(sqlx::AssertSqlSafe(sql))
+                .bind(&spec.pipeline_id)
+                .bind(&ciphertext)
+                .execute(p)
+                .await
+                .map(|_| ()),
+        };
+        match result {
+            Ok(()) => Ok(()),
+            Err(e) if Self::is_unique_violation(&e) => {
+                Err(PipelineStoreError::AlreadyExists(spec.pipeline_id.clone()))
             }
-            MetadataPool::Postgres(p) => {
-                sqlx::query(sqlx::AssertSqlSafe(sql))
-                    .bind(&spec.pipeline_id)
-                    .bind(&ciphertext)
-                    .execute(p)
-                    .await?;
-            }
+            Err(e) => Err(e.into()),
         }
-        Ok(())
+    }
+
+    fn is_unique_violation(e: &sqlx::Error) -> bool {
+        match e {
+            sqlx::Error::Database(db) => {
+                let code = db.code().map(|c| c.to_string());
+                matches!(code.as_deref(), Some("2067" | "23505"))
+                    || db.message().to_lowercase().contains("unique constraint")
+            }
+            _ => false,
+        }
     }
 
     pub async fn update(
@@ -688,6 +720,7 @@ mod tests {
                 config: serde_json::json!({"path": "/tmp/out.db"}),
             }],
             embedding: None,
+            python: None,
             channel_capacity: 100,
             partitions: 1,
             dbt: None,
@@ -819,6 +852,7 @@ mod tests {
             partition_id: "p0".to_string(),
             batches_written: 3,
             rows_written: 100,
+            resume_state: None,
         }];
         store
             .finish_run_success(run_id, &stats, None)
@@ -962,6 +996,7 @@ mod tests {
             partition_id: "p0".to_string(),
             batches_written: 1,
             rows_written: 42,
+            resume_state: None,
         }];
         store
             .finish_run_success(run_id_1, &stats, None)

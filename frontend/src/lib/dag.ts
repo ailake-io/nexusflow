@@ -12,6 +12,15 @@ export interface TransformSpec {
   sql: string
 }
 
+/** Matches nexus-core::PythonTransformSpec exactly — a cleaning/
+ * transformation stage run as an isolated `python3` subprocess (mirrors
+ * `dbt` in isolation model, not in when it runs — chains after `transform`
+ * like a DAG stage, not as a post-load step). */
+export interface PythonTransformSpec {
+  script: string
+  timeout_seconds?: number
+}
+
 /** Matches nexus-core::DbtCommand exactly. */
 export type DbtCommand = 'run' | 'build' | 'test'
 
@@ -31,13 +40,22 @@ export interface DbtConfig {
  * `backend` (`#[serde(tag = "backend")]`), so the JSON carries the
  * discriminator inline rather than as a wrapper key. */
 export type EmbeddingModelSpec =
-  | { backend: 'onnx'; repo: string; filename: string; tokenizer_filename: string; max_length: number }
+  | {
+      backend: 'onnx'
+      repo: string
+      /** Git revision (branch, tag or commit) inside the HF repo. */
+      revision: string
+      filename: string
+      tokenizer_filename: string
+      max_length: number
+    }
   | { backend: 'api'; base_url: string; model: string; api_key_env?: string }
 
 /** Matches nexus-core::ChunkingSpec exactly — tagged on `strategy`. */
 export type ChunkingSpec =
   | { strategy: 'fixed_window'; chunk_size: number; overlap?: number }
   | { strategy: 'recursive_character'; chunk_size: number; overlap?: number; separators?: string[] }
+  | { strategy: 'semantic'; similarity_threshold: number }
 
 /** Matches nexus-core::EmbeddingSpec exactly. */
 export interface EmbeddingSpec {
@@ -63,6 +81,9 @@ export interface PipelineSpec {
   /** Chunking + embedding stage, applied before the transform (or before
    * the sinks, if there's no transform) — CLAUDE.md §4.3. */
   embedding?: EmbeddingSpec
+  /** Cleaning/transformation stage, chained after `transform` (if present)
+   * and before the sinks — CLAUDE.md §4.4. */
+  python?: PythonTransformSpec
   channel_capacity?: number
   partitions?: number
   dbt?: DbtConfig
@@ -101,8 +122,18 @@ export interface DbtNodeData extends Record<string, unknown> {
   select: string
 }
 
+/** Canvas form of `PythonTransformSpec` — `timeoutSeconds` stays a plain
+ * number (0 means "unset", same convention `toPipelineSpec` uses for
+ * `channelCapacity`/`partitions`), so the inspector's number input has
+ * something controlled to bind to. */
+export interface PythonNodeData extends Record<string, unknown> {
+  kind: 'python'
+  script: string
+  timeoutSeconds: number
+}
+
 export type EmbeddingBackend = 'onnx' | 'api'
-export type ChunkingStrategy = 'fixed_window' | 'recursive_character'
+export type ChunkingStrategy = 'fixed_window' | 'recursive_character' | 'semantic'
 
 /**
  * Canvas form of `EmbeddingSpec` — like `DbtNodeData`, every field is a
@@ -120,6 +151,7 @@ export interface EmbeddingNodeData extends Record<string, unknown> {
   backend: EmbeddingBackend
   // backend: 'onnx'
   repo: string
+  revision: string
   filename: string
   tokenizerFilename: string
   maxLength: number
@@ -131,11 +163,17 @@ export interface EmbeddingNodeData extends Record<string, unknown> {
   strategy: ChunkingStrategy
   chunkSize: number
   overlap: number
+  similarityThreshold: number
   // strategy: 'recursive_character' only — one separator per line
   separators: string
 }
 
-export type DagNodeData = ConnectorNodeData | TransformNodeData | DbtNodeData | EmbeddingNodeData
+export type DagNodeData =
+  | ConnectorNodeData
+  | TransformNodeData
+  | DbtNodeData
+  | EmbeddingNodeData
+  | PythonNodeData
 export type DagNode = Node<DagNodeData>
 
 export function isConnectorNode(node: DagNode): node is Node<ConnectorNodeData> {
@@ -150,11 +188,18 @@ export function isDbtNode(node: DagNode): node is Node<DbtNodeData> {
   return node.data.kind === 'dbt'
 }
 
+export function isPythonNode(node: DagNode): node is Node<PythonNodeData> {
+  return node.data.kind === 'python'
+}
+
 export function isEmbeddingNode(node: DagNode): node is Node<EmbeddingNodeData> {
   return node.data.kind === 'embedding'
 }
 
 export class DagSerializationError extends Error {}
+
+/** Minimal translation function injected from the React i18n layer. */
+export type DagTranslator = (key: string, vars?: Record<string, string | number>) => string
 
 export interface PipelineMeta {
   pipelineId: string
@@ -173,56 +218,75 @@ export function toPipelineSpec(
   nodes: DagNode[],
   meta: PipelineMeta,
   allowDraft = false,
+  t: DagTranslator = defaultT,
 ): PipelineSpec {
+  const err = (key: keyof typeof EN_DAG_ERRORS, vars?: Record<string, string | number>) => {
+    throw new DagSerializationError(t(`dag.errors.${key}`, vars))
+  }
+
   if (!meta.pipelineId.trim()) {
-    throw new DagSerializationError('pipeline_id must not be empty')
+    err('pipelineIdEmpty')
   }
 
   const connectorNodes = nodes.filter(isConnectorNode)
   const transformNodes = nodes.filter(isTransformNode)
   const dbtNodes = nodes.filter(isDbtNode)
   const embeddingNodes = nodes.filter(isEmbeddingNode)
+  const pythonNodes = nodes.filter(isPythonNode)
   if (!allowDraft) {
     if (transformNodes.length > 1) {
-      throw new DagSerializationError('at most one transform node is allowed')
+      err('atMostOneTransform')
     }
     if (dbtNodes.length > 1) {
-      throw new DagSerializationError('at most one dbt node is allowed')
+      err('atMostOneDbt')
     }
     if (embeddingNodes.length > 1) {
-      throw new DagSerializationError('at most one embedding node is allowed')
+      err('atMostOneEmbedding')
+    }
+    if (pythonNodes.length > 1) {
+      err('atMostOnePython')
     }
   }
 
   const sources = connectorNodes
     .filter((n) => n.data.role === 'source')
-    .map((n) => toNodeSpec(n, allowDraft))
+    .map((n) => toNodeSpec(n, allowDraft, t))
     .filter((s): s is NodeSpec => s !== undefined)
   const sinks = connectorNodes
     .filter((n) => n.data.role === 'sink')
-    .map((n) => toNodeSpec(n, allowDraft))
+    .map((n) => toNodeSpec(n, allowDraft, t))
     .filter((s): s is NodeSpec => s !== undefined)
 
   if (!allowDraft) {
     if (sources.length === 0) {
-      throw new DagSerializationError('sources must not be empty')
+      err('sourcesEmpty')
     }
     if (sinks.length === 0) {
-      throw new DagSerializationError('sinks must not be empty')
+      err('sinksEmpty')
     }
   }
 
   const transform =
     transformNodes.length === 1 ? { sql: transformNodes[0].data.sql } : undefined
 
+  const python: PythonTransformSpec | undefined =
+    pythonNodes.length === 1 ? { script: pythonNodes[0].data.script } : undefined
+  if (python && pythonNodes[0].data.timeoutSeconds > 0) {
+    python.timeout_seconds = pythonNodes[0].data.timeoutSeconds
+  }
+
   if (!allowDraft) {
-    if (!transform && (sources.length !== 1 || sinks.length !== 1)) {
-      throw new DagSerializationError(
-        'without a transform, the pipeline must be strictly linear: exactly 1 source and 1 sink',
-      )
+    if (!transform && !python && (sources.length !== 1 || sinks.length !== 1)) {
+      err('strictLinearWithoutTransform')
+    }
+    if (!transform && python && (sources.length !== 1 || sinks.length !== 1)) {
+      err('pythonRequiresLinearWithoutTransform')
     }
     if (transform && !transform.sql.trim()) {
-      throw new DagSerializationError('transform.sql must not be empty')
+      err('transformSqlEmpty')
+    }
+    if (python && !python.script.trim()) {
+      err('pythonScriptEmpty')
     }
   }
 
@@ -230,7 +294,7 @@ export function toPipelineSpec(
   if (dbtNodes.length === 1) {
     const data = dbtNodes[0].data
     if (!allowDraft && !data.projectDir.trim()) {
-      throw new DagSerializationError('dbt node: project_dir must not be empty')
+      err('dbtProjectDirEmpty')
     }
     if (data.projectDir.trim()) {
       dbt = { project_dir: data.projectDir.trim(), command: data.command }
@@ -239,7 +303,9 @@ export function toPipelineSpec(
   }
 
   const embedding =
-    embeddingNodes.length === 1 ? toEmbeddingSpec(embeddingNodes[0].data, allowDraft) : undefined
+    embeddingNodes.length === 1
+      ? toEmbeddingSpec(embeddingNodes[0].data, allowDraft, t)
+      : undefined
 
   const spec: PipelineSpec = {
     pipeline_id: meta.pipelineId,
@@ -248,6 +314,7 @@ export function toPipelineSpec(
   }
   if (transform) spec.transform = transform
   if (embedding) spec.embedding = embedding
+  if (python) spec.python = python
   if (dbt) spec.dbt = dbt
   if (meta.channelCapacity !== undefined) spec.channel_capacity = meta.channelCapacity
   if (meta.partitions !== undefined) spec.partitions = meta.partitions
@@ -256,16 +323,62 @@ export function toPipelineSpec(
   return spec
 }
 
-function toEmbeddingSpec(data: EmbeddingNodeData, allowDraft = false): EmbeddingSpec | undefined {
+const EN_DAG_ERRORS = {
+  pipelineIdEmpty: 'pipeline_id must not be empty',
+  atMostOneTransform: 'at most one transform node is allowed',
+  atMostOneDbt: 'at most one dbt node is allowed',
+  atMostOneEmbedding: 'at most one embedding node is allowed',
+  atMostOnePython: 'at most one python node is allowed',
+  sourcesEmpty: 'sources must not be empty',
+  sinksEmpty: 'sinks must not be empty',
+  strictLinearWithoutTransform:
+    'without a transform, the pipeline must be strictly linear: exactly 1 source and 1 sink',
+  pythonRequiresLinearWithoutTransform:
+    'without a SQL transform, a python node still requires exactly 1 source and 1 sink',
+  transformSqlEmpty: 'transform.sql must not be empty',
+  pythonScriptEmpty: 'python node: script must not be empty',
+  dbtProjectDirEmpty: 'dbt node: project_dir must not be empty',
+  embeddingSourceColumnEmpty: 'embedding node: source_column must not be empty',
+  embeddingOutputColumnEmpty: 'embedding node: output_column must not be empty',
+  embeddingDimensionInvalid: 'embedding node: dimension must be > 0',
+  embeddingOnnxFieldsRequired:
+    'embedding node: repo, filename and tokenizer_filename are required for the onnx backend',
+  embeddingOnnxMaxLengthInvalid: 'embedding node: max_length must be > 0',
+  embeddingApiFieldsRequired:
+    'embedding node: base_url and model are required for the api backend',
+  embeddingChunkSizeInvalid: 'embedding node: chunk_size must be > 0',
+  embeddingSemanticThresholdInvalid:
+    'embedding node: similarity_threshold must be between 0.0 and 1.0',
+  configNotValidJson: 'node "{name}": config is not valid JSON',
+  connectorNameEmpty: 'every connector node needs a connector name',
+}
+
+function defaultT(key: string, vars?: Record<string, string | number>): string {
+  const map: Record<string, string> = EN_DAG_ERRORS
+  const short = key.replace('dag.errors.', '')
+  let value = map[short] ?? key
+  if (!vars) return value
+  return value.replace(/\{(\w+)\}/g, (_, name) => String(vars[name] ?? `{${name}}`))
+}
+
+function toEmbeddingSpec(
+  data: EmbeddingNodeData,
+  allowDraft = false,
+  t: DagTranslator = defaultT,
+): EmbeddingSpec | undefined {
+  const err = (key: keyof typeof EN_DAG_ERRORS, vars?: Record<string, string | number>) => {
+    throw new DagSerializationError(t(`dag.errors.${key}`, vars))
+  }
+
   if (!allowDraft) {
     if (!data.sourceColumn.trim()) {
-      throw new DagSerializationError('embedding node: source_column must not be empty')
+      err('embeddingSourceColumnEmpty')
     }
     if (!data.outputColumn.trim()) {
-      throw new DagSerializationError('embedding node: output_column must not be empty')
+      err('embeddingOutputColumnEmpty')
     }
     if (!(data.dimension > 0)) {
-      throw new DagSerializationError('embedding node: dimension must be > 0')
+      err('embeddingDimensionInvalid')
     }
   }
 
@@ -273,15 +386,16 @@ function toEmbeddingSpec(data: EmbeddingNodeData, allowDraft = false): Embedding
   if (data.backend === 'onnx') {
     const hasOnnxFields = data.repo.trim() && data.filename.trim() && data.tokenizerFilename.trim()
     if (!allowDraft && !hasOnnxFields) {
-      throw new DagSerializationError('embedding node: repo, filename and tokenizer_filename are required for the onnx backend')
+      err('embeddingOnnxFieldsRequired')
     }
     if (!allowDraft && !(data.maxLength > 0)) {
-      throw new DagSerializationError('embedding node: max_length must be > 0')
+      err('embeddingOnnxMaxLengthInvalid')
     }
     if (hasOnnxFields) {
       model = {
         backend: 'onnx',
         repo: data.repo.trim(),
+        revision: data.revision.trim() || 'main',
         filename: data.filename.trim(),
         tokenizer_filename: data.tokenizerFilename.trim(),
         max_length: data.maxLength,
@@ -290,7 +404,7 @@ function toEmbeddingSpec(data: EmbeddingNodeData, allowDraft = false): Embedding
   } else {
     const hasApiFields = data.baseUrl.trim() && data.model.trim()
     if (!allowDraft && !hasApiFields) {
-      throw new DagSerializationError('embedding node: base_url and model are required for the api backend')
+      err('embeddingApiFieldsRequired')
     }
     if (hasApiFields) {
       model = { backend: 'api', base_url: data.baseUrl.trim(), model: data.model.trim() }
@@ -298,8 +412,15 @@ function toEmbeddingSpec(data: EmbeddingNodeData, allowDraft = false): Embedding
     }
   }
 
-  if (!allowDraft && !(data.chunkSize > 0)) {
-    throw new DagSerializationError('embedding node: chunk_size must be > 0')
+  if (!allowDraft && data.strategy !== 'semantic' && !(data.chunkSize > 0)) {
+    err('embeddingChunkSizeInvalid')
+  }
+  if (
+    !allowDraft &&
+    data.strategy === 'semantic' &&
+    !(data.similarityThreshold >= 0 && data.similarityThreshold <= 1)
+  ) {
+    err('embeddingSemanticThresholdInvalid')
   }
 
   if (!model) return undefined
@@ -307,6 +428,11 @@ function toEmbeddingSpec(data: EmbeddingNodeData, allowDraft = false): Embedding
   let chunking: ChunkingSpec
   if (data.strategy === 'fixed_window') {
     chunking = { strategy: 'fixed_window', chunk_size: data.chunkSize, overlap: data.overlap }
+  } else if (data.strategy === 'semantic') {
+    chunking = {
+      strategy: 'semantic',
+      similarity_threshold: data.similarityThreshold,
+    }
   } else {
     const separators = data.separators
       .split('\n')
@@ -329,7 +455,11 @@ function toEmbeddingSpec(data: EmbeddingNodeData, allowDraft = false): Embedding
   }
 }
 
-function toNodeSpec(node: Node<ConnectorNodeData>, allowDraft = false): NodeSpec | undefined {
+function toNodeSpec(
+  node: Node<ConnectorNodeData>,
+  allowDraft = false,
+  t: DagTranslator = defaultT,
+): NodeSpec | undefined {
   let config: unknown
   try {
     config = node.data.config.trim() === '' ? {} : JSON.parse(node.data.config)
@@ -338,20 +468,20 @@ function toNodeSpec(node: Node<ConnectorNodeData>, allowDraft = false): NodeSpec
       config = {}
     } else {
       throw new DagSerializationError(
-        `node "${node.data.name || node.data.connector}": config is not valid JSON`,
+        t('dag.errors.configNotValidJson', { name: node.data.name || node.data.connector }),
       )
     }
   }
   if (!node.data.connector.trim()) {
     if (allowDraft) return undefined
-    throw new DagSerializationError('every connector node needs a connector name')
+    throw new DagSerializationError(t('dag.errors.connectorNameEmpty'))
   }
   const spec: NodeSpec = { connector: node.data.connector, config }
   if (node.data.name.trim()) spec.name = node.data.name.trim()
   return spec
 }
 
-const COLUMN_X = { source: 0, transform: 320, sink: 640 }
+const COLUMN_X = { source: 0, transform: 320, python: 480, sink: 640 }
 const ROW_HEIGHT = 100
 
 let importNodeId = 1
@@ -399,6 +529,12 @@ export function fromPipelineSpec(spec: PipelineSpec): { nodes: DagNode[]; edges:
     return id
   })
 
+  // Chain of "stage node ids currently feeding the sinks" — starts as the
+  // sources themselves, gets replaced by transform's id (if present), then
+  // by python's id (if present), so the final wiring below always connects
+  // whatever the last present stage is straight to every sink.
+  let upstreamIds = sourceIds
+
   if (spec.transform) {
     const transformId = `import-${importNodeId++}`
     nodes.push({
@@ -407,15 +543,35 @@ export function fromPipelineSpec(spec: PipelineSpec): { nodes: DagNode[]; edges:
       position: { x: COLUMN_X.transform, y: ((sourceIds.length + sinkIds.length) / 2) * ROW_HEIGHT / 2 },
       data: { kind: 'transform', sql: spec.transform.sql },
     })
-    sourceIds.forEach((sourceId) => {
-      edges.push({ id: `${sourceId}-${transformId}`, source: sourceId, target: transformId })
+    upstreamIds.forEach((id) => {
+      edges.push({ id: `${id}-${transformId}`, source: id, target: transformId })
     })
-    sinkIds.forEach((sinkId) => {
-      edges.push({ id: `${transformId}-${sinkId}`, source: transformId, target: sinkId })
-    })
-  } else {
-    edges.push({ id: `${sourceIds[0]}-${sinkIds[0]}`, source: sourceIds[0], target: sinkIds[0] })
+    upstreamIds = [transformId]
   }
+
+  if (spec.python) {
+    const pythonId = `import-${importNodeId++}`
+    nodes.push({
+      id: pythonId,
+      type: 'python',
+      position: { x: COLUMN_X.python, y: ((sourceIds.length + sinkIds.length) / 2) * ROW_HEIGHT / 2 },
+      data: {
+        kind: 'python',
+        script: spec.python.script,
+        timeoutSeconds: spec.python.timeout_seconds ?? 0,
+      },
+    })
+    upstreamIds.forEach((id) => {
+      edges.push({ id: `${id}-${pythonId}`, source: id, target: pythonId })
+    })
+    upstreamIds = [pythonId]
+  }
+
+  upstreamIds.forEach((id) => {
+    sinkIds.forEach((sinkId) => {
+      edges.push({ id: `${id}-${sinkId}`, source: id, target: sinkId })
+    })
+  })
 
   if (spec.embedding) {
     const embeddingId = `import-${importNodeId++}`
@@ -455,6 +611,7 @@ const DEFAULT_EMBEDDING_DATA: EmbeddingNodeData = {
   dimension: 384,
   backend: 'onnx',
   repo: '',
+  revision: 'main',
   filename: '',
   tokenizerFilename: '',
   maxLength: 128,
@@ -464,6 +621,7 @@ const DEFAULT_EMBEDDING_DATA: EmbeddingNodeData = {
   strategy: 'fixed_window',
   chunkSize: 256,
   overlap: 0,
+  similarityThreshold: 0.8,
   separators: '',
 }
 
@@ -475,11 +633,15 @@ function fromEmbeddingSpec(spec: EmbeddingSpec): EmbeddingNodeData {
     dimension: spec.dimension,
     backend: spec.model.backend,
     strategy: spec.chunking.strategy,
-    chunkSize: spec.chunking.chunk_size,
-    overlap: spec.chunking.overlap ?? 0,
+    chunkSize: 'chunk_size' in spec.chunking ? spec.chunking.chunk_size : 0,
+    overlap: 'overlap' in spec.chunking ? (spec.chunking.overlap ?? 0) : 0,
+  }
+  if (spec.chunking.strategy === 'semantic') {
+    data.similarityThreshold = spec.chunking.similarity_threshold
   }
   if (spec.model.backend === 'onnx') {
     data.repo = spec.model.repo
+    data.revision = spec.model.revision
     data.filename = spec.model.filename
     data.tokenizerFilename = spec.model.tokenizer_filename
     data.maxLength = spec.model.max_length

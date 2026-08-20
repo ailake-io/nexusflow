@@ -1,19 +1,18 @@
 #!/bin/sh
-# Installs nexusflow (Linux x86_64/arm64, macOS x86_64/arm64) without a
-# package manager — same pattern as rustup/dbt-fusion's installers.
+# Installs nexusflow (Linux x86_64 only) without a package manager — same
+# pattern as rustup/dbt-fusion's installers.
 #
 #   curl -fsSL https://raw.githubusercontent.com/ailake-io/nexusflow/develop/scripts/install.sh | sh
 #
 # Downloads a release tarball built by .github/workflows/release.yml
-# (nexusflow-<os>-<arch>.tar.gz: the release binary built with
+# (nexusflow-linux-x86_64.tar.gz: the release binary built with
 # --features embed-ui,connectors-all, plus the two ADBC driver libraries
 # nexus-connector-postgres/-sqlite dlopen at runtime — see
 # nexus-connector-postgres/src/driver.rs, ARCHITECTURE.md §3), then writes a
 # thin wrapper at $NEXUSFLOW_BIN_DIR/nexusflow that points
 # ADBC_DRIVER_POSTGRESQL_PATH/ADBC_DRIVER_SQLITE_PATH at the two libraries
-# it just installed — same wiring as packaging/linux/nexusflow-wrapper.sh
-# and packaging/macos/nexusflow-wrapper.sh, just resolved to this install
-# location instead of a fixed /usr/lib path.
+# it just installed — same wiring as packaging/linux/nexusflow-wrapper.sh,
+# just resolved to this install location instead of a fixed /usr/lib path.
 #
 # Env overrides:
 #   NEXUSFLOW_VERSION   git tag to install (default: latest release)
@@ -29,16 +28,11 @@ BIN_DIR="${NEXUSFLOW_BIN_DIR:-$HOME/.local/bin}"
 os="$(uname -s)"
 arch="$(uname -m)"
 
-case "$os" in
-  Linux) platform="linux" ;;
-  Darwin) platform="macos" ;;
-  *) echo "error: unsupported OS: $os (only Linux and macOS have prebuilt binaries)" >&2; exit 1 ;;
-esac
+[ "$os" = "Linux" ] || { echo "error: unsupported OS: $os (only Linux has prebuilt binaries)" >&2; exit 1; }
 
 case "$arch" in
   x86_64|amd64) arch="x86_64" ;;
-  arm64|aarch64) arch="arm64" ;;
-  *) echo "error: unsupported architecture: $arch" >&2; exit 1 ;;
+  *) echo "error: unsupported architecture: $arch (only x86_64 has prebuilt binaries)" >&2; exit 1 ;;
 esac
 
 if [ -n "${NEXUSFLOW_VERSION:-}" ]; then
@@ -90,7 +84,6 @@ mkdir -p "$INSTALL_DIR" "$BIN_DIR"
 install -m 755 "$work_dir/nexusflow-bin" "$INSTALL_DIR/nexusflow-bin"
 
 lib_ext="so"
-[ "$platform" = "macos" ] && lib_ext="dylib"
 install -m 755 "$work_dir/libadbc_driver_postgresql.$lib_ext" "$INSTALL_DIR/"
 install -m 755 "$work_dir/libadbc_driver_sqlite.$lib_ext" "$INSTALL_DIR/"
 
@@ -104,7 +97,7 @@ chmod 755 "$BIN_DIR/nexusflow"
 
 echo "==> installed to $BIN_DIR/nexusflow"
 echo "==> note: the odbc/kafka connectors need unixODBC + libsasl2 on this machine"
-echo "    (Debian/Ubuntu: sudo apt-get install unixodbc libsasl2-2 | macOS: brew install unixodbc)"
+echo "    (Debian/Ubuntu: sudo apt-get install unixodbc libsasl2-2)"
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *) echo "==> $BIN_DIR is not on your PATH — add it, e.g.: export PATH=\"$BIN_DIR:\$PATH\"" ;;

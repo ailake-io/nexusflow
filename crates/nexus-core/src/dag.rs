@@ -39,6 +39,24 @@ pub struct TransformSpec {
     pub sql: String,
 }
 
+/// A Python cleaning/transformation stage — `crates/nexus-server/src/
+/// python_transform.rs` runs `script` as an isolated subprocess (same
+/// isolation model as the dbt stage below: no sandboxing beyond process
+/// boundary + timeout, gated behind the same `Role::Write` bar as any
+/// other pipeline edit). The script must define `def transform(df): ...`
+/// operating on a pandas DataFrame; nexus-server handles the Arrow<->
+/// parquet<->pandas plumbing, the user never sees it. Chains after the
+/// SQL transform (if present) — see `PipelineSpec.python` doc comment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PythonTransformSpec {
+    pub script: String,
+    /// Defaults to 60s (see `python_transform::DEFAULT_TIMEOUT_SECONDS`)
+    /// when unset — `0` is rejected by `validate()`, same as a blank
+    /// `script`.
+    #[serde(default)]
+    pub timeout_seconds: Option<u64>,
+}
+
 /// Which dbt command to invoke after the raw load succeeds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -101,6 +119,11 @@ pub enum EmbeddingModelSpec {
     Onnx {
         /// Hugging Face repo id, e.g. "sentence-transformers/all-MiniLM-L6-v2".
         repo: String,
+        /// Git revision (branch, tag or commit) inside the HF repo. Pinned by
+        /// default to "main" for backwards compatibility, but production specs
+        /// should set a commit hash or tag for reproducibility.
+        #[serde(default = "default_onnx_revision")]
+        revision: String,
         /// ONNX model file name inside the repo/revision.
         filename: String,
         /// Tokenizer file name inside the repo/revision.
@@ -122,6 +145,10 @@ pub enum EmbeddingModelSpec {
     },
 }
 
+fn default_onnx_revision() -> String {
+    "main".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "strategy")]
 pub enum ChunkingSpec {
@@ -136,6 +163,14 @@ pub enum ChunkingSpec {
         overlap: usize,
         separators: Option<Vec<String>>,
     },
+    Semantic {
+        #[serde(default = "default_similarity_threshold")]
+        similarity_threshold: f32,
+    },
+}
+
+fn default_similarity_threshold() -> f32 {
+    0.8
 }
 
 /// Two shapes, both valid DAGs (ARCHITECTURE.md §4):
@@ -154,6 +189,15 @@ pub struct PipelineSpec {
     /// before the SQL transform (if present) or before the sinks.
     #[serde(default)]
     pub embedding: Option<EmbeddingSpec>,
+    /// Optional Python cleaning/transformation stage, chained after the SQL
+    /// `transform` (if present) and before the sinks — order is `sources ->
+    /// embedding -> transform -> python -> sinks`. When `transform` is
+    /// `None`, `python` still requires exactly 1 source/1 sink (same
+    /// constraint as the transform-less linear path — see `validate()`),
+    /// since there's no SQL stage to fan multiple sources into one table
+    /// first.
+    #[serde(default)]
+    pub python: Option<PythonTransformSpec>,
     #[serde(default = "default_channel_capacity")]
     pub channel_capacity: usize,
     #[serde(default = "default_partitions")]
@@ -259,7 +303,7 @@ impl PipelineSpec {
         }
 
         match &self.transform {
-            None => {
+            None if self.python.is_none() => {
                 if self.sources.len() != 1 || self.sinks.len() != 1 {
                     return Err(NexusError::Schema(
                         "without a transform, the pipeline must be strictly linear: \
@@ -268,10 +312,34 @@ impl PipelineSpec {
                     ));
                 }
             }
+            // A python-only pipeline (no SQL transform) still can't fan-in:
+            // there's no SQL stage to merge multiple sources into the one
+            // table `python` expects. Chain a SQL transform first to join
+            // sources, then `python` runs over its single output instead.
+            None => {
+                if self.sources.len() != 1 || self.sinks.len() != 1 {
+                    return Err(NexusError::Schema(
+                        "without a SQL transform, a python stage still requires exactly 1 \
+                         source and 1 sink (add a transform first to fan-in multiple sources)"
+                            .into(),
+                    ));
+                }
+            }
             Some(t) => {
                 if t.sql.trim().is_empty() {
                     return Err(NexusError::Schema("transform.sql must not be empty".into()));
                 }
+            }
+        }
+
+        if let Some(python) = &self.python {
+            if python.script.trim().is_empty() {
+                return Err(NexusError::Schema("python.script must not be empty".into()));
+            }
+            if python.timeout_seconds == Some(0) {
+                return Err(NexusError::Schema(
+                    "python.timeout_seconds must be > 0".into(),
+                ));
             }
         }
 
@@ -292,6 +360,7 @@ impl PipelineSpec {
             match &embedding.model {
                 EmbeddingModelSpec::Onnx {
                     repo,
+                    revision,
                     filename,
                     tokenizer_filename,
                     max_length,
@@ -299,6 +368,11 @@ impl PipelineSpec {
                     if repo.trim().is_empty() {
                         return Err(NexusError::Schema(
                             "embedding.model.repo must not be empty".into(),
+                        ));
+                    }
+                    if revision.trim().is_empty() {
+                        return Err(NexusError::Schema(
+                            "embedding.model.revision must not be empty".into(),
                         ));
                     }
                     if filename.trim().is_empty() {
@@ -338,6 +412,16 @@ impl PipelineSpec {
                     if *chunk_size == 0 {
                         return Err(NexusError::Schema(
                             "embedding.chunking.chunk_size must be > 0".into(),
+                        ));
+                    }
+                }
+                ChunkingSpec::Semantic {
+                    similarity_threshold,
+                } => {
+                    if !(0.0..=1.0).contains(similarity_threshold) {
+                        return Err(NexusError::Schema(
+                            "embedding.chunking.similarity_threshold must be between 0.0 and 1.0"
+                                .into(),
                         ));
                     }
                 }
@@ -539,7 +623,7 @@ fn validate_node_security(
 fn is_local_path_connector(connector: &str) -> bool {
     matches!(
         connector,
-        "sqlite" | "lancedb" | "ailake" | "iceberg" | "deltalake" | "csv"
+        "sqlite" | "lancedb" | "ailake" | "iceberg" | "deltalake" | "csv" | "parquet"
     )
 }
 
@@ -843,7 +927,14 @@ mod tests {
         assert_eq!(embedding.source_column, "body");
         assert_eq!(embedding.dimension, 384);
         match &embedding.model {
-            EmbeddingModelSpec::Onnx { max_length, .. } => assert_eq!(*max_length, 128),
+            EmbeddingModelSpec::Onnx {
+                revision,
+                max_length,
+                ..
+            } => {
+                assert_eq!(revision, "main"); // default when omitted
+                assert_eq!(*max_length, 128);
+            }
             EmbeddingModelSpec::Api { .. } => panic!("expected onnx variant"),
         }
     }
@@ -905,6 +996,47 @@ mod tests {
         }"#;
         let err = PipelineSpec::parse(json).expect_err("empty source column must fail");
         assert!(matches!(err, NexusError::Schema(_)));
+    }
+
+    #[test]
+    fn parses_onnx_revision_and_rejects_empty_revision() {
+        let ok = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "postgres", "config": {}}],
+            "transform": {"sql": "SELECT 1"},
+            "sinks": [{"connector": "lancedb", "config": {}}],
+            "embedding": {
+                "source_column": "body",
+                "output_column": "embedding",
+                "dimension": 384,
+                "model": {"backend": "onnx", "repo": "r", "revision": "abc123", "filename": "m.onnx", "tokenizer_filename": "t.json", "max_length": 128},
+                "chunking": {"strategy": "fixed_window", "chunk_size": 256}
+            }
+        }"#;
+        let spec = PipelineSpec::parse(ok).expect("explicit revision parses");
+        match spec.embedding.unwrap().model {
+            EmbeddingModelSpec::Onnx { revision, .. } => assert_eq!(revision, "abc123"),
+            _ => panic!("expected onnx"),
+        }
+
+        let bad = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "postgres", "config": {}}],
+            "transform": {"sql": "SELECT 1"},
+            "sinks": [{"connector": "lancedb", "config": {}}],
+            "embedding": {
+                "source_column": "body",
+                "output_column": "embedding",
+                "dimension": 384,
+                "model": {"backend": "onnx", "repo": "r", "revision": "", "filename": "m.onnx", "tokenizer_filename": "t.json", "max_length": 128},
+                "chunking": {"strategy": "fixed_window", "chunk_size": 256}
+            }
+        }"#;
+        let err = PipelineSpec::parse(bad).expect_err("empty revision must fail");
+        assert!(
+            err.to_string().contains("revision"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

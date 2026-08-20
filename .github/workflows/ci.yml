@@ -66,10 +66,19 @@ jobs:
       #     milvus-sdk-rust's tonic 0.8.3) — nexus-connector-milvus's only
       #     SDK option; no newer milvus-sdk-rust release exists with a newer
       #     tonic to move to.
+      #   RUSTSEC-2026-0258 (h2 unbounded empty DATA frames) — same
+      #     milvus-sdk-rust tonic 0.8.3 chain (tonic -> hyper 0.14 -> h2
+      #     0.3.27, no fix in the 0.3.x line, only ">=0.4.16"). The *other*
+      #     h2 instance in the tree (via the modern hyper/reqwest stack)
+      #     already got `cargo update`d past the fix. This one's also low
+      #     risk here specifically: nexus-connector-milvus only ever dials
+      #     *out* to a Milvus server as an HTTP/2 client — the DoS is a
+      #     server-side resource-exhaustion vector, and we never terminate
+      #     inbound HTTP/2 through this dependency chain.
       - name: Audit root workspace
-        run: cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195 --ignore RUSTSEC-2025-0009 --ignore RUSTSEC-2024-0336
+        run: cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195 --ignore RUSTSEC-2025-0009 --ignore RUSTSEC-2024-0336 --ignore RUSTSEC-2026-0258
       - name: Audit crates/nexus-connectors workspace
-        run: cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195 --ignore RUSTSEC-2025-0009 --ignore RUSTSEC-2024-0336
+        run: cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195 --ignore RUSTSEC-2025-0009 --ignore RUSTSEC-2024-0336 --ignore RUSTSEC-2026-0258
         working-directory: crates/nexus-connectors
 
   # Self-hosted, first in the chain (no `needs:`) — see the workflow-level
@@ -270,6 +279,21 @@ jobs:
         with:
           name: frontend-dist
           path: frontend/dist
+
+      # python_transform's own tests (`crates/nexus-server/src/
+      # python_transform.rs`) shell out to a real `python3` and need
+      # pandas/numpy/pyarrow/polars/python-dateutil on top of it — the
+      # same packages the Dockerfile installs into the shipped image
+      # (CLAUDE.md §4.3). This host's default `python3` (Homebrew,
+      # PEP 668 externally-managed) has none of them, and isn't ours to
+      # `pip install --break-system-packages` into — that's the shared
+      # system Python of this dev desktop doubling as the self-hosted
+      # runner. A venv dedicated to this repo's CI
+      # (`~/.nexusflow-ci-python`, created once on the host, not part of
+      # the checkout) has all five; prepending its bin dir wins the
+      # `python3` PATH lookup for just this job.
+      - name: Prefer the nexusflow-ci venv's python3 (has pandas/pyarrow/etc.)
+        run: echo "/home/thiago/.nexusflow-ci-python/bin" >> "$GITHUB_PATH"
 
       - name: Run tests
         env:
