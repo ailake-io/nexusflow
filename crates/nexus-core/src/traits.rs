@@ -5,6 +5,7 @@ use arrow_schema::SchemaRef;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use serde::Serialize;
+use std::sync::{Arc, Mutex};
 
 /// How a connector reaches its backend. Decided at node-configuration time,
 /// never chosen dynamically at runtime — see ARCHITECTURE.md §3.
@@ -23,6 +24,32 @@ pub trait Source: Send {
     ) -> Result<BoxStream<'_, Result<RecordBatch, NexusError>>, NexusError>;
 
     fn schema(&self) -> SchemaRef;
+
+    /// A shared handle a source can update internally (from inside its own
+    /// `read_batches` stream) with its opaque, connector-specific resume
+    /// position (e.g. a MySQL `"{binlog_file}:{position}"` pair, a MongoDB
+    /// change-stream resume token) as it produces batches.
+    /// `PipelineEngine::run_partition` reads the final value back out
+    /// after the source's stream ends, to persist via
+    /// `CheckpointCursor.resume_state`.
+    ///
+    /// Shape is `Arc<Mutex<...>>`, not a plain `&self` getter, because of a
+    /// real borrow-checker constraint: `read_batches(&mut self)` returns a
+    /// stream borrowing `self` for the stream's entire lifetime, so nothing
+    /// else can call back into `self` while that stream is still alive (and
+    /// it has to stay alive until the source's task finishes). Fetching
+    /// this handle *before* calling `read_batches` sidesteps that — the
+    /// source updates the shared cell itself, no re-borrow needed.
+    ///
+    /// `None` by default, so this doesn't break any of the ~20 existing
+    /// `Source` implementations that have nothing meaningful to report here
+    /// (batch sources that naturally terminate don't need it; Postgres CDC
+    /// tracks its own position server-side via the replication slot, see
+    /// `nexus-connector-postgres/src/cdc.rs`'s `update_applied_lsn` call —
+    /// no client-side state needed for that one).
+    fn position_handle(&self) -> Option<Arc<Mutex<Option<String>>>> {
+        None
+    }
 }
 
 #[async_trait]

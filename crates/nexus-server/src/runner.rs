@@ -238,7 +238,10 @@ async fn run_linear_pipeline(
                 checkpoints
                     .commit(
                         &spec.pipeline_id,
-                        &CheckpointCursor::new(stat.partition_id.clone()),
+                        &CheckpointCursor {
+                            resume_state: stat.resume_state.clone(),
+                            ..CheckpointCursor::new(stat.partition_id.clone())
+                        },
                     )
                     .await?;
                 stats.push(stat);
@@ -297,13 +300,61 @@ async fn run_passthrough_pipeline(
         );
     }
 
-    let done = checkpoints.done_partitions(&spec.pipeline_id).await?;
-    if done.contains("p0") {
-        return Ok(Vec::new());
-    }
-
     let source_node = &spec.sources[0];
     let sink_node = &spec.sinks[0];
+
+    // CDC sources (`*-cdc`) are meant to run again every scheduler tick,
+    // not once-and-done — they use `resume_state` for continuity, not the
+    // "already finished" marker every batch connector's single run leaves
+    // behind. Applying the batch done-check to them would mean any `-cdc`
+    // source routed through this path (everything except postgres-cdc,
+    // which stays on the transform/other paths — this passthrough fallback
+    // only fires for the no-transform case) would commit once via
+    // `PipelineEngine::run_partition`'s post-`max_batch_events` checkpoint
+    // and then never run again on any later scheduler tick.
+    let is_cdc = source_node.connector.ends_with("-cdc");
+    if !is_cdc {
+        let done = checkpoints.done_partitions(&spec.pipeline_id).await?;
+        if done.contains("p0") {
+            return Ok(Vec::new());
+        }
+    }
+
+    // Merge a previously-committed resume position back into the source's
+    // config before connecting — the only way a CDC source without its own
+    // server-side resume mechanism (unlike postgres-cdc's replication slot)
+    // can actually continue instead of restarting from scratch. Field names
+    // are the specific config keys each `*-cdc` connector already exposes
+    // for exactly this ("start from here") purpose; `resume_state`'s format
+    // is whatever that connector's own `Source::position_handle` produces.
+    let mut source_node = source_node.clone();
+    if is_cdc {
+        if let Some(cursor) = checkpoints.get(&spec.pipeline_id, "p0").await? {
+            if let Some(resume_state) = cursor.resume_state {
+                match source_node.connector.as_str() {
+                    "mysql-cdc" => {
+                        if let Some((filename, position)) = resume_state.split_once(':') {
+                            if let Ok(position) = position.parse::<u32>() {
+                                source_node.config["binlog_filename"] =
+                                    serde_json::Value::String(filename.to_string());
+                                source_node.config["binlog_position"] =
+                                    serde_json::Value::from(position);
+                            }
+                        }
+                    }
+                    "mongodb-cdc" => {
+                        source_node.config["resume_token"] = serde_json::Value::String(resume_state);
+                    }
+                    // Any other *-cdc connector either manages its own
+                    // server-side resume (postgres-cdc) or doesn't
+                    // implement `position_handle` yet (no resume_state
+                    // would ever be stored for it in the first place).
+                    _ => {}
+                }
+            }
+        }
+    }
+    let source_node = &source_node;
 
     let (_source_name, source) = log_on_err(
         log,
@@ -347,7 +398,10 @@ async fn run_passthrough_pipeline(
                 checkpoints
                     .commit(
                         &spec.pipeline_id,
-                        &CheckpointCursor::new(stat.partition_id.clone()),
+                        &CheckpointCursor {
+                            resume_state: stat.resume_state.clone(),
+                            ..CheckpointCursor::new(stat.partition_id.clone())
+                        },
                     )
                     .await?;
                 stats.push(stat);
@@ -496,7 +550,10 @@ async fn run_transform_pipeline(
                 checkpoints
                     .commit(
                         &spec.pipeline_id,
-                        &CheckpointCursor::new(stat.partition_id.clone()),
+                        &CheckpointCursor {
+                            resume_state: stat.resume_state.clone(),
+                            ..CheckpointCursor::new(stat.partition_id.clone())
+                        },
                     )
                     .await?;
                 stats.push(stat);
@@ -599,7 +656,10 @@ pub async fn run_post_dbt_stage(
                 checkpoints
                     .commit(
                         &spec.pipeline_id,
-                        &CheckpointCursor::new(stat.partition_id.clone()),
+                        &CheckpointCursor {
+                            resume_state: stat.resume_state.clone(),
+                            ..CheckpointCursor::new(stat.partition_id.clone())
+                        },
                     )
                     .await?;
                 stats.push(stat);

@@ -23,6 +23,13 @@ pub struct CheckpointCursor {
     pub last_updated_at: Option<DateTime<Utc>>,
     pub offset: Option<i64>,
     pub opcode: Option<Opcode>,
+    /// Opaque connector-specific resume position (`Source::current_position`)
+    /// — e.g. MySQL's `"{binlog_file}:{position}"`, a MongoDB change-stream
+    /// resume token. Separate from `offset` (a plain `i64`) because these
+    /// positions aren't single integers: MySQL's is a composite string,
+    /// Mongo's is an opaque token, and forcing either into `offset` would
+    /// mean inventing a numeric encoding that only fits the simple case.
+    pub resume_state: Option<String>,
 }
 
 impl CheckpointCursor {
@@ -32,6 +39,7 @@ impl CheckpointCursor {
             last_updated_at: None,
             offset: None,
             opcode: None,
+            resume_state: None,
         }
     }
 }

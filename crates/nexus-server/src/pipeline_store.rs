@@ -852,6 +852,7 @@ mod tests {
             partition_id: "p0".to_string(),
             batches_written: 3,
             rows_written: 100,
+            resume_state: None,
         }];
         store
             .finish_run_success(run_id, &stats, None)
@@ -995,6 +996,7 @@ mod tests {
             partition_id: "p0".to_string(),
             batches_written: 1,
             rows_written: 42,
+            resume_state: None,
         }];
         store
             .finish_run_success(run_id_1, &stats, None)
