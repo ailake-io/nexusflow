@@ -1,3 +1,4 @@
+import { useRef } from 'react'
 import type {
   ChunkingStrategy,
   ConnectorNodeData,
@@ -15,7 +16,7 @@ import { useI18n } from '@/lib/i18n'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { SchemaForm } from '@/components/SchemaForm'
-import { Database, Code2, Layers, Sparkles, Terminal } from 'lucide-react'
+import { Database, Code2, Layers, Sparkles, Terminal, Upload } from 'lucide-react'
 
 interface NodeInspectorProps {
   node: DagNode
@@ -57,6 +58,9 @@ function batchNameOf(connector: string): string {
 export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps) {
   const { t } = useI18n()
   const data = node.data
+  // Only used by the 'python' branch below, but hooks can't be called
+  // conditionally — must sit above every early return in this component.
+  const pythonFileInputRef = useRef<HTMLInputElement>(null)
   if (data.kind === 'connector') {
     const descriptor = connectors.find((c) => c.name === data.connector)
     const schema = descriptor?.config_schema
@@ -282,9 +286,38 @@ export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps
         <div className="flex-1 overflow-auto p-4">
           <div className="flex flex-col gap-4">
             <div>
-              <Label htmlFor="python-script" className="text-xs font-medium">
-                {t('canvas.pythonScript')}
-              </Label>
+              <div className="flex items-center justify-between">
+                <Label htmlFor="python-script" className="text-xs font-medium">
+                  {t('canvas.pythonScript')}
+                </Label>
+                <button
+                  type="button"
+                  onClick={() => pythonFileInputRef.current?.click()}
+                  className="flex items-center gap-1 rounded-md border border-input px-2 py-1 text-[10px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+                >
+                  <Upload className="h-3 w-3" />
+                  {t('canvas.pythonUpload')}
+                </button>
+                <input
+                  ref={pythonFileInputRef}
+                  type="file"
+                  accept=".py,text/x-python"
+                  className="hidden"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0]
+                    // Always reset, even on failure — otherwise re-selecting
+                    // the exact same filename after an error wouldn't fire
+                    // this handler a second time (React sees no change).
+                    e.target.value = ''
+                    if (!file) return
+                    try {
+                      onChange(node.id, { script: await file.text() })
+                    } catch {
+                      window.alert(t('canvas.pythonUploadError'))
+                    }
+                  }}
+                />
+              </div>
               <textarea
                 id="python-script"
                 value={data.script}
