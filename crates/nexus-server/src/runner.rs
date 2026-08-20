@@ -346,6 +346,20 @@ async fn run_passthrough_pipeline(
                         source_node.config["resume_token"] =
                             serde_json::Value::String(resume_state);
                     }
+                    // mssql-cdc's Source::position_handle reports the LSN
+                    // pre-formatted as a hex string (nexus-connector-mssql's
+                    // own lsn_hex_literal helper) - passes straight through.
+                    "mssql-cdc" => {
+                        source_node.config["start_lsn"] = serde_json::Value::String(resume_state);
+                    }
+                    // oracle-cdc reports the SCN as a plain decimal string -
+                    // start_scn is a JSON number, not a string, so this
+                    // parses it back rather than passing the string through.
+                    "oracle-cdc" => {
+                        if let Ok(scn) = resume_state.parse::<i64>() {
+                            source_node.config["start_scn"] = serde_json::Value::from(scn);
+                        }
+                    }
                     // Any other *-cdc connector either manages its own
                     // server-side resume (postgres-cdc) or doesn't
                     // implement `position_handle` yet (no resume_state
