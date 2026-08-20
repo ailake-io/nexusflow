@@ -12,7 +12,7 @@ use nexus_core::{with_timeout, NexusError, RecordBatchBuilder, Source, OPCODE_CO
 use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::time::Sleep;
@@ -29,6 +29,11 @@ pub struct MongoCdcSource {
     batch_size: usize,
     timeout_seconds: u64,
     max_batch_events: u64,
+    /// Updated by `MongoCdcStream::poll_next` with each event's own resume
+    /// token (JSON-serialized) — `Source::position_handle`'s backing
+    /// storage. See that trait method's doc comment for why this is an
+    /// `Arc<Mutex<..>>` handle instead of a plain getter.
+    position: Arc<Mutex<Option<String>>>,
 }
 
 impl MongoCdcSource {
@@ -50,6 +55,7 @@ impl MongoCdcSource {
             batch_size: config.batch_size,
             timeout_seconds: config.timeout_seconds,
             max_batch_events: config.max_batch_events,
+            position: Arc::new(Mutex::new(None)),
         })
     }
 }
@@ -86,6 +92,7 @@ struct MongoCdcStream {
     deadline: Pin<Box<Sleep>>,
     max_batch_events: u64,
     events_seen: u64,
+    position: Arc<Mutex<Option<String>>>,
 }
 
 impl MongoCdcStream {
@@ -155,6 +162,13 @@ impl Stream for MongoCdcStream {
                 Poll::Ready(Some(Ok(event))) => {
                     let deadline = tokio::time::Instant::now() + self.idle_timeout;
                     self.deadline.as_mut().reset(deadline);
+                    // Captured before `event_to_row` consumes `event` — the
+                    // resume token advances for every event seen, not just
+                    // ones that produce a row (schema changes, drops, etc.
+                    // still move the stream's position forward).
+                    if let Ok(token_json) = serde_json::to_string(&event.id) {
+                        *self.position.lock().expect("position mutex poisoned") = Some(token_json);
+                    }
                     if let Some(row) = Self::event_to_row(event) {
                         self.buffer.push(row);
                         self.events_seen += 1;
@@ -229,10 +243,15 @@ impl Source for MongoCdcSource {
             deadline: Box::pin(tokio::time::sleep(idle_timeout)),
             max_batch_events: self.max_batch_events,
             events_seen: 0,
+            position: self.position.clone(),
         }))
     }
 
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
+    }
+
+    fn position_handle(&self) -> Option<Arc<Mutex<Option<String>>>> {
+        Some(self.position.clone())
     }
 }

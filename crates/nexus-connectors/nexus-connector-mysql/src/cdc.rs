@@ -12,7 +12,7 @@ use mysql_cdc::replica_options::ReplicaOptions;
 use nexus_core::{NexusError, RecordBatchBuilder, Source, OPCODE_COLUMN};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -28,6 +28,12 @@ const CHANNEL_CAPACITY: usize = 1000;
 pub struct MySqlCdcSource {
     config: MySqlCdcConfig,
     schema: SchemaRef,
+    /// Updated from the replication thread (`run_replication_loop`) as
+    /// `"{binlog_filename}:{next_event_position}"` after each event —
+    /// `Source::position_handle`'s backing storage. See that trait method's
+    /// doc comment for why this is an `Arc<Mutex<..>>` handle instead of a
+    /// plain getter.
+    position: Arc<Mutex<Option<String>>>,
 }
 
 impl MySqlCdcSource {
@@ -35,6 +41,7 @@ impl MySqlCdcSource {
         Ok(Self {
             config: config.clone(),
             schema: build_schema(&config.fields),
+            position: Arc::new(Mutex::new(None)),
         })
     }
 }
@@ -107,6 +114,7 @@ fn run_replication_loop(
     config: MySqlCdcConfig,
     tx: mpsc::Sender<Result<Value, NexusError>>,
     ready_tx: tokio::sync::oneshot::Sender<Result<(), NexusError>>,
+    position: Arc<Mutex<Option<String>>>,
 ) {
     let binlog = match (&config.binlog_filename, config.binlog_position) {
         (Some(filename), Some(position)) => {
@@ -158,6 +166,13 @@ fn run_replication_loop(
     // row events only carry the numeric id, this is how we know which ones
     // are for `config.table`.
     let mut tables: HashMap<u64, (String, String)> = HashMap::new();
+    // Current binlog file, tracked from RotateEvent — the wire protocol
+    // doesn't repeat the filename on every event (only `next_event_position`,
+    // an offset *within* whatever file is current), and a real "fake"
+    // RotateEvent is guaranteed to arrive right at the start of replication
+    // (see mysql_cdc's own docs on RotateEvent), so this seeds itself
+    // correctly even when `config.binlog_filename` wasn't set (fresh start).
+    let mut current_filename = config.binlog_filename.clone();
 
     for result in events {
         let (header, event) = match result {
@@ -178,6 +193,9 @@ fn run_replication_loop(
 
         let mut rows: Vec<Value> = Vec::new();
         match &event {
+            BinlogEvent::RotateEvent(r) => {
+                current_filename = Some(r.binlog_filename.clone());
+            }
             BinlogEvent::TableMapEvent(tm) => {
                 tables.insert(
                     tm.table_id,
@@ -215,6 +233,11 @@ fn run_replication_loop(
             }
         }
 
+        if let Some(filename) = &current_filename {
+            *position.lock().expect("position mutex poisoned") =
+                Some(format!("{filename}:{}", header.next_event_position));
+        }
+
         client.commit(&header, &event);
     }
 }
@@ -227,7 +250,8 @@ impl Source for MySqlCdcSource {
         let (tx, rx) = mpsc::channel::<Result<Value, NexusError>>(CHANNEL_CAPACITY);
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         let config = self.config.clone();
-        std::thread::spawn(move || run_replication_loop(config, tx, ready_tx));
+        let position = self.position.clone();
+        std::thread::spawn(move || run_replication_loop(config, tx, ready_tx, position));
         ready_rx.await.map_err(|_| {
             NexusError::Connector("mysql-cdc replication thread died before starting".into())
         })??;
@@ -284,5 +308,9 @@ impl Source for MySqlCdcSource {
 
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
+    }
+
+    fn position_handle(&self) -> Option<Arc<Mutex<Option<String>>>> {
+        Some(self.position.clone())
     }
 }
