@@ -3,6 +3,7 @@ use crate::connectors::{build_sink, build_source};
 use crate::license::LicenseClaims;
 use crate::progress::RunLogger;
 use crate::python_transform;
+use futures_util::StreamExt;
 use nexus_connector_postgres::{
     primary_key_bounds, split_into_partitions, table_schema, PkPartitionKind,
     PostgresConnectorConfig, PostgresSink, PostgresSource,
@@ -114,7 +115,30 @@ pub async fn run_pipeline(
     log: Option<&RunLogger>,
     active_license: Option<&LicenseClaims>,
 ) -> anyhow::Result<Vec<PartitionStats>> {
-    if spec.has_transform() || spec.python.is_some() {
+    // A `*-cdc` source with a plain SQL transform (the only documented CDC
+    // shape — `SELECT * FROM source0`, required to preserve `__opcode` for
+    // the sink's insert/update/delete routing) gets its own streaming path.
+    // `run_transform_pipeline` below fully materializes every source via
+    // `PipelineEngine::drain_sources` *before* running the transform — for
+    // a CDC source, "materialized" means "the source's `read_batches`
+    // stream ended", which only happens at `max_batch_events` (default
+    // 1000) or an error. Reproduced directly: a CDC pipeline at the
+    // default cutoff stayed `running` forever and never wrote a handful of
+    // real changes to its sink. Embedding/python/dbt stages aren't
+    // supported on this fast path (falls through to the regular
+    // materializing path below, same restriction it already has for those
+    // combinations) — none of them are part of the documented CDC-mirror
+    // pattern, and streaming them per micro-batch isn't a well-defined
+    // upgrade the way a plain projection/filter transform is.
+    if spec.sources.len() == 1
+        && spec.sources[0].connector.ends_with("-cdc")
+        && spec.transform.is_some()
+        && spec.embedding.is_none()
+        && spec.python.is_none()
+        && spec.dbt.is_none()
+    {
+        run_streaming_cdc_pipeline(spec, checkpoints, progress, log, active_license).await
+    } else if spec.has_transform() || spec.python.is_some() {
         run_transform_pipeline(spec, checkpoints, progress, log, active_license).await
     } else {
         // The postgres→postgres branch below never builds through
@@ -271,6 +295,252 @@ async fn run_linear_pipeline(
     Ok(stats)
 }
 
+/// Merges a previously-committed resume position back into a `*-cdc`
+/// source's config before connecting — the only way a CDC source without
+/// its own server-side resume mechanism (unlike postgres-cdc's replication
+/// slot) can actually continue instead of restarting from scratch. Field
+/// names are the specific config keys each `*-cdc` connector already
+/// exposes for exactly this ("start from here") purpose; `resume_state`'s
+/// format is whatever that connector's own `Source::position_handle`
+/// produces. A no-op for a non-CDC source or when there's no prior
+/// checkpoint for `partition_id` yet.
+async fn inject_cdc_resume_state(
+    node: &NodeSpec,
+    checkpoints: &CheckpointStore,
+    pipeline_id: &str,
+    partition_id: &str,
+) -> anyhow::Result<NodeSpec> {
+    let mut node = node.clone();
+    if !node.connector.ends_with("-cdc") {
+        return Ok(node);
+    }
+    if let Some(cursor) = checkpoints.get(pipeline_id, partition_id).await? {
+        if let Some(resume_state) = cursor.resume_state {
+            match node.connector.as_str() {
+                "mysql-cdc" => {
+                    if let Some((filename, position)) = resume_state.split_once(':') {
+                        if let Ok(position) = position.parse::<u32>() {
+                            node.config["binlog_filename"] =
+                                serde_json::Value::String(filename.to_string());
+                            node.config["binlog_position"] = serde_json::Value::from(position);
+                        }
+                    }
+                }
+                "mongodb-cdc" => {
+                    node.config["resume_token"] = serde_json::Value::String(resume_state);
+                }
+                // mssql-cdc's Source::position_handle reports the LSN
+                // pre-formatted as a hex string (nexus-connector-mssql's
+                // own lsn_hex_literal helper) - passes straight through.
+                "mssql-cdc" => {
+                    node.config["start_lsn"] = serde_json::Value::String(resume_state);
+                }
+                // oracle-cdc reports the SCN as a plain decimal string -
+                // start_scn is a JSON number, not a string, so this
+                // parses it back rather than passing the string through.
+                "oracle-cdc" => {
+                    if let Ok(scn) = resume_state.parse::<i64>() {
+                        node.config["start_scn"] = serde_json::Value::from(scn);
+                    }
+                }
+                // Any other *-cdc connector either manages its own
+                // server-side resume (postgres-cdc) or doesn't implement
+                // `position_handle` yet (no resume_state would ever be
+                // stored for it in the first place).
+                _ => {}
+            }
+        }
+    }
+    Ok(node)
+}
+
+/// Streaming counterpart to `run_transform_pipeline`, for the one
+/// documented CDC-mirror shape: exactly 1 `*-cdc` source, a plain SQL
+/// transform, N sinks (see `run_pipeline`'s dispatch comment for why —
+/// `run_transform_pipeline` fully materializes its source first, which
+/// for a CDC source means waiting for its stream to end, and that only
+/// happens at `max_batch_events` or an error).
+///
+/// Applies the transform to each micro-batch as it streams off the source
+/// and writes the transformed batch straight to every sink immediately —
+/// same reader-then-writer shape `PipelineEngine::run_partition` already
+/// uses for the no-transform passthrough path, just with a transform step
+/// spliced in and support for more than one sink. Real semantic
+/// consequence, not hidden: the transform SQL runs once *per micro-batch*,
+/// not once over the whole (unbounded) stream — a plain projection/filter
+/// like the documented `SELECT * FROM source0` behaves identically either
+/// way, but an aggregate (`SELECT count(*) FROM source0`) would produce a
+/// per-micro-batch count, not a running total. No aggregate-over-a-live-
+/// CDC-stream pattern is documented anywhere in this codebase; this isn't
+/// a regression from a previously-correct behavior, since the old
+/// materializing path never actually produced any output for a realistic
+/// (sub-`max_batch_events`) CDC pipeline in the first place.
+#[tracing::instrument(skip_all, fields(pipeline_id = %spec.pipeline_id))]
+async fn run_streaming_cdc_pipeline(
+    spec: &PipelineSpec,
+    checkpoints: &CheckpointStore,
+    progress: Option<ProgressSender>,
+    log: Option<&RunLogger>,
+    active_license: Option<&LicenseClaims>,
+) -> anyhow::Result<Vec<PartitionStats>> {
+    // Resume-state lookup is anchored on the first sink's resolved name
+    // ("sink0" when unnamed) — every sink commits the same source position
+    // at the end of a run, so any of them would do; this just picks one
+    // consistently. Every documented/tested CDC-mirror pipeline has
+    // exactly 1 sink anyway.
+    let anchor_partition = spec
+        .sinks
+        .first()
+        .map(|n| n.resolved_name(0, "sink"))
+        .transpose()?
+        .unwrap_or_else(|| "sink0".to_string());
+    let source_node = inject_cdc_resume_state(
+        &spec.sources[0],
+        checkpoints,
+        &spec.pipeline_id,
+        &anchor_partition,
+    )
+    .await?;
+
+    let (source_name, mut source) = log_on_err(
+        log,
+        &format!("source 0 ({}) connect failed", source_node.connector),
+        build_source(&source_node, 0, active_license).await,
+    )
+    .await?;
+    let source_schema = source.schema();
+
+    let transform_spec = spec
+        .transform
+        .as_ref()
+        .expect("run_pipeline's dispatch guarantees spec.transform is Some here");
+    let transform = DataFusionTransform::new(&transform_spec.sql);
+
+    let output_schema = log_on_err(
+        log,
+        "transform schema resolution failed",
+        transform
+            .output_schema(vec![(source_name.clone(), source_schema.clone())])
+            .await,
+    )
+    .await?;
+    let columns: Vec<String> = output_schema
+        .fields()
+        .iter()
+        .map(|f| f.name().clone())
+        .filter(|name| name != OPCODE_COLUMN)
+        .collect();
+
+    let done = checkpoints.done_partitions(&spec.pipeline_id).await?;
+    let mut sinks = Vec::with_capacity(spec.sinks.len());
+    for (i, node) in spec.sinks.iter().enumerate() {
+        let (name, sink) = log_on_err(
+            log,
+            &format!("sink {i} ({}) connect failed", node.connector),
+            build_sink(node, i, &columns, active_license).await,
+        )
+        .await?;
+        if done.contains(&name) {
+            continue; // already committed in a prior run of this pipeline_id
+        }
+        sinks.push((name, sink));
+    }
+    log_info(
+        log,
+        format!("{} sink(s) connected (streaming CDC)", sinks.len()),
+    )
+    .await;
+
+    if sinks.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Must be fetched before `source` moves into `read_batches` below — see
+    // `Source::position_handle`'s doc comment for why a plain `&self` call
+    // after the stream starts doesn't work.
+    let position_handle = source.position_handle();
+    let mut stream = log_on_err(
+        log,
+        "source 0 read_batches failed",
+        source.read_batches().await,
+    )
+    .await?;
+
+    let mut batches_written = 0usize;
+    let mut rows_written = 0usize;
+    let mut bytes_written = 0usize;
+
+    while let Some(item) = stream.next().await {
+        let batch = log_on_err(log, "source 0 read failed", item).await?;
+        let transformed = log_on_err(
+            log,
+            "transform failed",
+            transform
+                .apply(vec![(
+                    source_name.clone(),
+                    source_schema.clone(),
+                    vec![batch],
+                )])
+                .await,
+        )
+        .await?;
+        for out_batch in transformed {
+            batches_written += 1;
+            rows_written += out_batch.num_rows();
+            bytes_written += out_batch.get_array_memory_size();
+            for (name, sink) in sinks.iter_mut() {
+                log_on_err(
+                    log,
+                    &format!("sink ({name}) write failed"),
+                    sink.write_batch(out_batch.clone()).await,
+                )
+                .await?;
+            }
+            if let Some(tx) = &progress {
+                for (name, _) in sinks.iter() {
+                    let _ = tx.send(ProgressEvent {
+                        partition_id: name.clone(),
+                        batches_written,
+                        rows_written,
+                        bytes_written,
+                        done: false,
+                    });
+                }
+            }
+        }
+    }
+    drop(stream);
+
+    let resume_state = position_handle
+        .as_ref()
+        .and_then(|h| h.lock().expect("position_handle mutex poisoned").clone());
+
+    let mut stats = Vec::with_capacity(sinks.len());
+    for (name, sink) in sinks.iter_mut() {
+        sink.commit_checkpoint(CheckpointCursor {
+            resume_state: resume_state.clone(),
+            ..CheckpointCursor::new(name.clone())
+        })
+        .await?;
+        if let Some(tx) = &progress {
+            let _ = tx.send(ProgressEvent {
+                partition_id: name.clone(),
+                batches_written,
+                rows_written,
+                bytes_written,
+                done: true,
+            });
+        }
+        stats.push(PartitionStats {
+            partition_id: name.clone(),
+            batches_written,
+            rows_written,
+            resume_state: resume_state.clone(),
+        });
+    }
+    Ok(stats)
+}
+
 /// Fallback for [`run_linear_pipeline`] when the source/sink pair isn't
 /// postgres→postgres: exactly 1 source, 1 sink, no transform, no
 /// partitioning — batches stream straight from `Source::read_batches`
@@ -323,52 +593,8 @@ async fn run_passthrough_pipeline(
     // Merge a previously-committed resume position back into the source's
     // config before connecting — the only way a CDC source without its own
     // server-side resume mechanism (unlike postgres-cdc's replication slot)
-    // can actually continue instead of restarting from scratch. Field names
-    // are the specific config keys each `*-cdc` connector already exposes
-    // for exactly this ("start from here") purpose; `resume_state`'s format
-    // is whatever that connector's own `Source::position_handle` produces.
-    let mut source_node = source_node.clone();
-    if is_cdc {
-        if let Some(cursor) = checkpoints.get(&spec.pipeline_id, "p0").await? {
-            if let Some(resume_state) = cursor.resume_state {
-                match source_node.connector.as_str() {
-                    "mysql-cdc" => {
-                        if let Some((filename, position)) = resume_state.split_once(':') {
-                            if let Ok(position) = position.parse::<u32>() {
-                                source_node.config["binlog_filename"] =
-                                    serde_json::Value::String(filename.to_string());
-                                source_node.config["binlog_position"] =
-                                    serde_json::Value::from(position);
-                            }
-                        }
-                    }
-                    "mongodb-cdc" => {
-                        source_node.config["resume_token"] =
-                            serde_json::Value::String(resume_state);
-                    }
-                    // mssql-cdc's Source::position_handle reports the LSN
-                    // pre-formatted as a hex string (nexus-connector-mssql's
-                    // own lsn_hex_literal helper) - passes straight through.
-                    "mssql-cdc" => {
-                        source_node.config["start_lsn"] = serde_json::Value::String(resume_state);
-                    }
-                    // oracle-cdc reports the SCN as a plain decimal string -
-                    // start_scn is a JSON number, not a string, so this
-                    // parses it back rather than passing the string through.
-                    "oracle-cdc" => {
-                        if let Ok(scn) = resume_state.parse::<i64>() {
-                            source_node.config["start_scn"] = serde_json::Value::from(scn);
-                        }
-                    }
-                    // Any other *-cdc connector either manages its own
-                    // server-side resume (postgres-cdc) or doesn't
-                    // implement `position_handle` yet (no resume_state
-                    // would ever be stored for it in the first place).
-                    _ => {}
-                }
-            }
-        }
-    }
+    // can actually continue instead of restarting from scratch.
+    let source_node = inject_cdc_resume_state(source_node, checkpoints, &spec.pipeline_id, "p0").await?;
     let source_node = &source_node;
 
     let (_source_name, source) = log_on_err(
