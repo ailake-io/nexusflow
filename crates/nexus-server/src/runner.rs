@@ -9,7 +9,7 @@ use nexus_connector_postgres::{
 };
 use nexus_core::{
     CheckpointCursor, DataFusionTransform, NodeSpec, PartitionHandle, PartitionStats,
-    PipelineEngine, PipelineSpec, ProgressEvent, ProgressSender, Transform,
+    PipelineEngine, PipelineSpec, ProgressEvent, ProgressSender, Transform, OPCODE_COLUMN,
 };
 
 #[cfg(any(feature = "embeddings", feature = "embeddings-api"))]
@@ -378,11 +378,15 @@ async fn run_passthrough_pipeline(
     )
     .await?;
 
+    // Same `__opcode` exclusion as `run_transform_pipeline` below — a CDC
+    // source's own declared schema includes it (see e.g. postgres-cdc's
+    // `build_schema`), and it's never a real destination column.
     let columns: Vec<String> = source
         .schema()
         .fields()
         .iter()
         .map(|f| f.name().clone())
+        .filter(|name| name != OPCODE_COLUMN)
         .collect();
 
     let (_name, sink) = log_on_err(
@@ -529,6 +533,19 @@ async fn run_transform_pipeline(
         output
     };
 
+    // `__opcode` (CDC metadata, added by the source, carried through
+    // untouched by `SELECT * FROM source0`) is never a real destination
+    // column — `Sink::write_batch` strips it from the row data itself via
+    // `split_by_opcode`, but the column list handed to `build_sink` also
+    // needs it excluded, or a sink that builds its SQL text from this list
+    // (e.g. `PostgresSink::connect`'s `build_upsert_sql`) ends up
+    // referencing a column that doesn't exist on the real table. Bug found
+    // testing postgres-cdc -> postgres end to end this session: every CDC
+    // pipeline with `SELECT * FROM source0` (the pattern the docs require,
+    // to preserve `__opcode` for the sink's own insert/delete routing)
+    // failed every single write with "column \"__opcode\" of relation ...
+    // does not exist" — the SQL text and the bound values disagreed on the
+    // column count.
     let columns: Vec<String> = output
         .first()
         .map(|b| {
@@ -536,6 +553,7 @@ async fn run_transform_pipeline(
                 .fields()
                 .iter()
                 .map(|f| f.name().clone())
+                .filter(|name| name != OPCODE_COLUMN)
                 .collect()
         })
         .unwrap_or_default();
