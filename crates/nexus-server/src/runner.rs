@@ -343,7 +343,8 @@ async fn run_passthrough_pipeline(
                         }
                     }
                     "mongodb-cdc" => {
-                        source_node.config["resume_token"] = serde_json::Value::String(resume_state);
+                        source_node.config["resume_token"] =
+                            serde_json::Value::String(resume_state);
                     }
                     // Any other *-cdc connector either manages its own
                     // server-side resume (postgres-cdc) or doesn't
@@ -383,7 +384,11 @@ async fn run_passthrough_pipeline(
         sink,
     };
 
-    log_info(log, "1 partition (passthrough, no transform) to process".to_string()).await;
+    log_info(
+        log,
+        "1 partition (passthrough, no transform) to process".to_string(),
+    )
+    .await;
 
     let engine = PipelineEngine::new(spec.channel_capacity);
     let (progress, progress_handle) = log_progress(log, progress, 1, "partitions");

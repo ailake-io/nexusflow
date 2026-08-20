@@ -185,15 +185,17 @@ impl CheckpointStore {
             }
         };
 
-        Ok(row.map(|(last_updated_at, offset, resume_state)| CheckpointCursor {
-            partition_id: partition_id.to_string(),
-            last_updated_at: last_updated_at
-                .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
-                .map(|dt| dt.with_timezone(&chrono::Utc)),
-            offset,
-            opcode: None,
-            resume_state,
-        }))
+        Ok(
+            row.map(|(last_updated_at, offset, resume_state)| CheckpointCursor {
+                partition_id: partition_id.to_string(),
+                last_updated_at: last_updated_at
+                    .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+                    .map(|dt| dt.with_timezone(&chrono::Utc)),
+                offset,
+                opcode: None,
+                resume_state,
+            }),
+        )
     }
 }
 
@@ -218,7 +220,10 @@ mod tests {
         store.commit("pipe-1", &cursor).await.unwrap();
 
         let fetched = store.get("pipe-1", "p0").await.unwrap().unwrap();
-        assert_eq!(fetched.resume_state.as_deref(), Some("mysql-bin.000003:15926"));
+        assert_eq!(
+            fetched.resume_state.as_deref(),
+            Some("mysql-bin.000003:15926")
+        );
 
         // Overwriting with a fresher position must replace, not append.
         let cursor2 = CheckpointCursor {
@@ -227,7 +232,10 @@ mod tests {
         };
         store.commit("pipe-1", &cursor2).await.unwrap();
         let fetched2 = store.get("pipe-1", "p0").await.unwrap().unwrap();
-        assert_eq!(fetched2.resume_state.as_deref(), Some("mysql-bin.000003:30412"));
+        assert_eq!(
+            fetched2.resume_state.as_deref(),
+            Some("mysql-bin.000003:30412")
+        );
     }
 
     #[tokio::test]

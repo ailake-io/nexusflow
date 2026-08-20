@@ -2010,7 +2010,10 @@ mod tests {
         // `log_on_err`'s "source 0 (mongodb) connect failed" context) —
         // not the old "unsupported connector" bail, which no longer exists
         // for this connector pair.
-        assert!(failure["message"].as_str().unwrap().contains("connect failed"));
+        assert!(failure["message"]
+            .as_str()
+            .unwrap()
+            .contains("connect failed"));
     }
 
     #[tokio::test]
