@@ -474,7 +474,27 @@ async fn run_transform_pipeline(
     log: Option<&RunLogger>,
     active_license: Option<&LicenseClaims>,
 ) -> anyhow::Result<Vec<PartitionStats>> {
-    let done = checkpoints.done_partitions(&spec.pipeline_id).await?;
+    // Same reasoning as `run_passthrough_pipeline`'s `is_cdc` check: a `-cdc`
+    // source is meant to run again every scheduler tick, using
+    // `resume_state` for continuity, not the "already finished" marker a
+    // batch connector's single run leaves behind. Real bug found testing
+    // postgres-cdc/mysql-cdc/mongodb-cdc end to end this session — every
+    // documented CDC-to-relational-sink pipeline goes through *this*
+    // function (it requires `SELECT * FROM source0` to preserve `__opcode`,
+    // see ARCHITECTURE.md §5/§7), and without this check its sink commits a
+    // checkpoint after its first successful run, then gets silently skipped
+    // (`done.contains(&name)` below) on every later run forever — the
+    // pipeline reports `success` each time but stops mirroring anything
+    // after the very first change.
+    let is_cdc = spec
+        .sources
+        .iter()
+        .any(|s| s.connector.ends_with("-cdc"));
+    let done = if is_cdc {
+        std::collections::HashSet::new()
+    } else {
+        checkpoints.done_partitions(&spec.pipeline_id).await?
+    };
 
     let mut sources = Vec::with_capacity(spec.sources.len());
     for (i, node) in spec.sources.iter().enumerate() {

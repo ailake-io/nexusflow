@@ -75,6 +75,15 @@ fn mysql_value_to_json(cell: Option<&MySqlValue>, target: MySqlCdcDataType) -> V
         (MySqlCdcDataType::Int64, MySqlValue::BigInt(n)) => Value::from(*n as i64),
         (MySqlCdcDataType::Float64, MySqlValue::Float(f)) => Value::from(*f as f64),
         (MySqlCdcDataType::Float64, MySqlValue::Double(f)) => Value::from(*f),
+        // A DECIMAL/NUMERIC column (e.g. money amounts) decodes off the
+        // binlog as `MySqlValue::Decimal(String)`, not `Float`/`Double` —
+        // real bug found testing mysql-cdc end to end this session: mapping
+        // such a column to `float64` (the natural choice, and the only
+        // numeric option besides `int64`) silently produced `null` for
+        // every row, falling through to the catch-all below with no error.
+        (MySqlCdcDataType::Float64, MySqlValue::Decimal(s)) => {
+            s.parse::<f64>().map(Value::from).unwrap_or(Value::Null)
+        }
         (MySqlCdcDataType::Boolean, MySqlValue::TinyInt(n)) => Value::from(*n != 0),
         (MySqlCdcDataType::Utf8, MySqlValue::String(s)) => Value::String(s.clone()),
         (MySqlCdcDataType::Utf8, MySqlValue::Decimal(s)) => Value::String(s.clone()),
