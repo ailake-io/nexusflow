@@ -58,8 +58,9 @@ function batchNameOf(connector: string): string {
 export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps) {
   const { t } = useI18n()
   const data = node.data
-  // Only used by the 'python' branch below, but hooks can't be called
-  // conditionally — must sit above every early return in this component.
+  // Only used by the 'transform'/'python' branches below, but hooks can't
+  // be called conditionally — must sit above every early return here.
+  const transformFileInputRef = useRef<HTMLInputElement>(null)
   const pythonFileInputRef = useRef<HTMLInputElement>(null)
   if (data.kind === 'connector') {
     const descriptor = connectors.find((c) => c.name === data.connector)
@@ -199,9 +200,38 @@ export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps
           <p className="mt-0.5 text-[10px] text-muted-foreground">{t('canvas.transformDesc')}</p>
         </div>
         <div className="flex-1 overflow-auto p-4">
-          <Label htmlFor="transform-sql" className="text-xs font-medium">
-            {t('canvas.sql')}
-          </Label>
+          <div className="flex items-center justify-between">
+            <Label htmlFor="transform-sql" className="text-xs font-medium">
+              {t('canvas.sql')}
+            </Label>
+            <button
+              type="button"
+              onClick={() => transformFileInputRef.current?.click()}
+              className="flex items-center gap-1 rounded-md border border-input px-2 py-1 text-[10px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+            >
+              <Upload className="h-3 w-3" />
+              {t('canvas.transformUpload')}
+            </button>
+            <input
+              ref={transformFileInputRef}
+              type="file"
+              accept=".sql,text/x-sql,text/plain"
+              className="hidden"
+              onChange={async (e) => {
+                const file = e.target.files?.[0]
+                // Always reset, even on failure — otherwise re-selecting the
+                // exact same filename after an error wouldn't fire this
+                // handler a second time (React sees no change).
+                e.target.value = ''
+                if (!file) return
+                try {
+                  onChange(node.id, { sql: await file.text() })
+                } catch {
+                  window.alert(t('canvas.transformUploadError'))
+                }
+              }}
+            />
+          </div>
           <textarea
             id="transform-sql"
             value={data.sql}

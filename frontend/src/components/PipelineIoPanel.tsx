@@ -1,8 +1,10 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
+import { parse as parseYaml } from 'yaml'
 import {
   Save,
   Download,
   Upload,
+  FileUp,
   Play,
   Loader2,
   CheckCircle2,
@@ -58,6 +60,7 @@ export function PipelineIoPanel({
   const [text, setText] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleExport = () => {
     try {
@@ -68,22 +71,46 @@ export function PipelineIoPanel({
     }
   }
 
+  // Shared by both the pasted-JSON textarea and the file upload below —
+  // `parsed` already went through JSON.parse or YAML's parser (a superset
+  // of JSON, so both paths land here the same way).
+  const validateAndImport = (parsed: unknown, raw: string) => {
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      throw new Error(t('ioPanel.importNotObject'))
+    }
+    const obj = parsed as Record<string, unknown>
+    if (typeof obj.pipeline_id !== 'string' || !obj.pipeline_id.trim()) {
+      throw new Error(t('ioPanel.importMissingPipelineId'))
+    }
+    if (!Array.isArray(obj.sources) || !Array.isArray(obj.sinks)) {
+      throw new Error(t('ioPanel.importMissingSourcesSinks'))
+    }
+    onImport(raw)
+  }
+
   const handleImport = () => {
     try {
-      const parsed = JSON.parse(text)
-      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-        throw new Error(t('ioPanel.importNotObject'))
-      }
-      if (typeof parsed.pipeline_id !== 'string' || !parsed.pipeline_id.trim()) {
-        throw new Error(t('ioPanel.importMissingPipelineId'))
-      }
-      if (!Array.isArray(parsed.sources) || !Array.isArray(parsed.sinks)) {
-        throw new Error(t('ioPanel.importMissingSourcesSinks'))
-      }
-      onImport(text)
+      validateAndImport(JSON.parse(text), text)
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    // Always reset, even on failure — otherwise re-selecting the exact same
+    // filename after an error wouldn't fire this handler a second time.
+    e.target.value = ''
+    if (!file) return
+    try {
+      const raw = await file.text()
+      const parsed: unknown = parseYaml(raw)
+      setText(JSON.stringify(parsed, null, 2))
+      validateAndImport(parsed, JSON.stringify(parsed))
+      setError(null)
+    } catch (err) {
+      setError(t('ioPanel.loadFileError', { msg: err instanceof Error ? err.message : String(err) }))
     }
   }
 
@@ -200,6 +227,22 @@ export function PipelineIoPanel({
             <Upload className="h-3.5 w-3.5" />
             {t('ioPanel.loadJson')}
           </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => fileInputRef.current?.click()}
+            className="gap-1.5"
+          >
+            <FileUp className="h-3.5 w-3.5" />
+            {t('ioPanel.loadFile')}
+          </Button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json,.yaml,.yml,application/json,text/yaml"
+            className="hidden"
+            onChange={handleFileUpload}
+          />
           <Button
             type="button"
             variant="secondary"
