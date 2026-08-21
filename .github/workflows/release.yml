@@ -105,7 +105,84 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Runs first, alone, before any packaging — real bug fixed here: this
+  # used to live inside `github-release`, which only runs *after*
+  # `build` (packaging reads the version straight out of Cargo.toml at
+  # checkout time, baking it into every .deb/.rpm/.AppImage filename).
+  # A `workflow_dispatch` bump (e.g. 0.1.1 -> 0.1.2) landed too late to
+  # affect that run's own packages — they got built and named 0.1.1,
+  # then uploaded onto the freshly-created v0.1.2 release anyway
+  # (`gh release upload --clobber` only overwrites a same-named asset,
+  # it doesn't remove a differently-named stale one), leaving a mix of
+  # 0.1.1- and 0.1.2-named files on the v0.1.2 release. Determining
+  # (and, if needed, bumping+pushing) the version *before* `build` even
+  # starts means every later job checks out the exact same
+  # already-correct commit via `outputs.sha`, not a moving `main`/
+  # `github.sha` that might be stale or (per the "non-fast-forward"
+  # failure this replaces) already behind another push.
+  determine-version:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: [self-hosted, Linux]
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      sha: ${{ steps.version.outputs.sha }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # workflow_run's default ref/sha is the repo's default branch, not
+          # the commit connectors-heavy just validated on main — pin
+          # explicitly. github.sha already resolves correctly for
+          # workflow_dispatch, so this is a no-op there.
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine version
+        id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISPATCH_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          current_version="$(grep -A3 '^\[workspace.package\]' Cargo.toml | grep '^version' | head -1 | cut -d '"' -f2)"
+
+          # workflow_dispatch: the version is whatever was typed in, full
+          # stop — never auto-derived. The automatic CI -> connectors-heavy
+          # -> Release chain has no way to take input (workflow_run doesn't
+          # carry one), so it always publishes/completes whatever version is
+          # currently committed to Cargo.toml — no auto-bump. Concretely:
+          # merging a change that doesn't touch Cargo.toml's version just
+          # re-completes that same tag's release (upsert via `--clobber`
+          # below) instead of minting a new one every single merge.
+          if [ -n "${DISPATCH_VERSION:-}" ]; then
+            version="$DISPATCH_VERSION"
+          else
+            version="$current_version"
+          fi
+
+          if [ "$version" != "$current_version" ]; then
+            sed -i "s/^version = \"[^\"]*\"/version = \"$version\"/" Cargo.toml
+            git add Cargo.toml
+            git commit -m "chore(release): set version to v$version [skip ci]"
+            # actions/checkout leaves a detached HEAD, not a local `main`
+            # branch — `git push origin main` has nothing to push and fails
+            # with "src refspec main does not match any". Push the commit
+            # directly by ref instead; the working directory already has the
+            # updated Cargo.toml (from the sed+commit above), no re-checkout
+            # needed for subsequent steps to read it.
+            git push origin HEAD:main
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: determine-version
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     strategy:
       matrix:
@@ -136,11 +213,11 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          # workflow_run's default ref/sha is the repo's default branch, not
-          # the commit connectors-heavy just validated on main — pin
-          # explicitly. github.sha already resolves correctly for
-          # workflow_dispatch, so this is a no-op there.
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          # Pinned to determine-version's exact output commit (post-bump if
+          # it bumped) — not github.sha/workflow_run.head_sha, which would
+          # be the pre-bump commit and re-introduce the version-mismatch
+          # bug this job ordering exists to fix.
+          ref: ${{ needs.determine-version.outputs.sha }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
         with:
@@ -239,7 +316,7 @@ jobs:
 
   smoke-test:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
-    needs: build
+    needs: [determine-version, build]
     runs-on: [self-hosted, Linux]
     timeout-minutes: 10
     steps:
@@ -255,7 +332,7 @@ jobs:
 
   github-release:
     if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') || github.event_name == 'workflow_dispatch'
-    needs: [build, smoke-test]
+    needs: [determine-version, build, smoke-test]
     runs-on: [self-hosted, Linux]
     # Self-hosted Linux (same machine as everything else here) — hosted
     # ubuntu-latest is blocked account-wide by the billing issue described in
@@ -265,59 +342,11 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
-    outputs:
-      version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          # workflow_run's default ref/sha is the repo's default branch, not
-          # the commit connectors-heavy just validated on main — pin
-          # explicitly. github.sha already resolves correctly for
-          # workflow_dispatch, so this is a no-op there.
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Determine version
-        id: version
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DISPATCH_VERSION: ${{ github.event.inputs.version }}
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          current_version="$(grep -A3 '^\[workspace.package\]' Cargo.toml | grep '^version' | head -1 | cut -d '"' -f2)"
-
-          # workflow_dispatch: the version is whatever was typed in, full
-          # stop — never auto-derived. The automatic CI -> connectors-heavy
-          # -> Release chain has no way to take input (workflow_run doesn't
-          # carry one), so it always publishes/completes whatever version is
-          # currently committed to Cargo.toml — no auto-bump. Concretely:
-          # merging a change that doesn't touch Cargo.toml's version just
-          # re-completes that same tag's release (upsert via `--clobber`
-          # below) instead of minting a new one every single merge.
-          if [ -n "${DISPATCH_VERSION:-}" ]; then
-            version="$DISPATCH_VERSION"
-          else
-            version="$current_version"
-          fi
-
-          if [ "$version" != "$current_version" ]; then
-            sed -i "s/^version = \"[^\"]*\"/version = \"$version\"/" Cargo.toml
-            git add Cargo.toml
-            git commit -m "chore(release): set version to v$version [skip ci]"
-            # actions/checkout leaves a detached HEAD, not a local `main`
-            # branch — `git push origin main` has nothing to push and fails
-            # with "src refspec main does not match any". Push the commit
-            # directly by ref instead; the working directory already has the
-            # updated Cargo.toml (from the sed+commit above), no re-checkout
-            # needed for subsequent steps to read it.
-            git push origin HEAD:main
-          fi
-
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
+      # No checkout here — version comes from `determine-version`'s output
+      # now (that job already did the only thing this one used to need a
+      # working tree for), and everything else below just downloads
+      # artifacts and shells out to `gh`.
       - uses: actions/download-artifact@65a9edc5881444af0b9093a5e628f2fe47ea3b2e # v4.1.7
         with:
           path: dist
@@ -329,9 +358,14 @@ jobs:
       - name: Create release and upload assets one at a time
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # No `actions/checkout` in this job anymore (see the step above) —
+          # `gh` normally infers the repo from the current directory's git
+          # remote, which no longer exists here, so every call below is
+          # explicit about `--repo` instead.
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          tag="v${{ steps.version.outputs.version }}"
+          tag="v${{ needs.determine-version.outputs.version }}"
 
           # softprops/action-gh-release uploads every asset concurrently in
           # one call, which repeatedly failed on this runner's connection to
@@ -345,7 +379,8 @@ jobs:
           # there yet, and `--clobber` lets upload replace whatever partial
           # assets exist from that attempt.
           if ! gh release view "$tag" >/dev/null 2>&1; then
-            gh release create "$tag" --title "$tag" --generate-notes
+            gh release create "$tag" --title "$tag" --generate-notes \
+              --target "${{ needs.determine-version.outputs.sha }}"
           fi
 
           for f in dist/*.tar.gz dist/*.deb dist/*.rpm dist/*.AppImage dist/SHA256SUMS; do
@@ -354,7 +389,7 @@ jobs:
 
   docker-publish:
     if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') || github.event_name == 'workflow_dispatch'
-    needs: github-release
+    needs: [determine-version, github-release]
     runs-on: [self-hosted, Linux]
     timeout-minutes: 180
     permissions:
@@ -366,7 +401,10 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          # Same pinned-to-the-bumped-commit reasoning as `build`'s checkout
+          # above — the image must be built from the same commit whose
+          # Cargo.toml says this version, not a possibly-earlier one.
+          ref: ${{ needs.determine-version.outputs.sha }}
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
@@ -381,7 +419,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=v${{ needs.github-release.outputs.version }}
+            type=raw,value=v${{ needs.determine-version.outputs.version }}
             type=raw,value=latest
 
       - name: Build and push Docker image (full)
