@@ -148,6 +148,35 @@ macro_rules! submit_sink_builder {
     };
 }
 
+/// Marks a connector's config as local-filesystem-based by design — its
+/// `path`/`uri`/`table_uri` field (whatever it's called) is documented as a
+/// plain local path, not a URL a remote caller could redirect, so `dag.rs`'s
+/// absolute-path SSRF-style guard should let it through. Separate from
+/// `ConnectorDescriptor` (rather than a field added there) specifically so
+/// opting in never requires touching every existing `submit_connector!`/
+/// `submit_enterprise_connector!` call site — a connector just adds one more
+/// registration line.
+///
+/// An enterprise connector living in a private repo opts in the same way an
+/// OSS one does: call `nexus_core::submit_local_path_connector!("its-name")`
+/// from its own crate. The public repo's `is_local_path_connector` (dag.rs)
+/// never needs to know that connector's name — `LICENSING.md §3`'s "no
+/// enterprise connector name in the public repo" rule stays intact.
+pub struct LocalPathConnector {
+    pub name: &'static str,
+}
+
+inventory::collect!(LocalPathConnector);
+
+#[macro_export]
+macro_rules! submit_local_path_connector {
+    ($name:expr) => {
+        $crate::registry::inventory::submit! {
+            $crate::registry::LocalPathConnector { name: $name }
+        }
+    };
+}
+
 pub struct ConnectorRegistry;
 
 impl ConnectorRegistry {
@@ -165,6 +194,11 @@ impl ConnectorRegistry {
 
     pub fn find_sink_builder(name: &str) -> Option<&'static SinkBuilder> {
         inventory::iter::<SinkBuilder>().find(|b| b.name == name)
+    }
+
+    /// True if `name` registered itself via `submit_local_path_connector!`.
+    pub fn is_local_path_connector(name: &str) -> bool {
+        inventory::iter::<LocalPathConnector>().any(|c| c.name == name)
     }
 }
 

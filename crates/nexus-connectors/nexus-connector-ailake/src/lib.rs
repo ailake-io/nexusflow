@@ -24,6 +24,7 @@ nexus_core::submit_connector!(
     nexus_core::ConnectorCapability::Bridged,
     AilakeConnectorConfig
 );
+nexus_core::submit_local_path_connector!("ailake");
 
 #[cfg(feature = "cdc")]
 nexus_core::submit_connector!(
@@ -31,3 +32,5 @@ nexus_core::submit_connector!(
     nexus_core::ConnectorCapability::Bridged,
     AilakeCdcConfig
 );
+#[cfg(feature = "cdc")]
+nexus_core::submit_local_path_connector!("ailake-cdc");

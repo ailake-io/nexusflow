@@ -21,6 +21,7 @@ nexus_core::submit_connector!(
     nexus_core::ConnectorCapability::Bridged,
     DeltaConnectorConfig
 );
+nexus_core::submit_local_path_connector!("deltalake");
 
 #[cfg(feature = "cdc")]
 nexus_core::submit_connector!(
@@ -28,3 +29,5 @@ nexus_core::submit_connector!(
     nexus_core::ConnectorCapability::Bridged,
     DeltaCdcConfig
 );
+#[cfg(feature = "cdc")]
+nexus_core::submit_local_path_connector!("deltalake-cdc");
