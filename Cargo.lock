@@ -7116,7 +7116,7 @@ checksum = "27b02d87554356db9e9a873add8782d4ea6e3e58ea071a9adb9a2e8ddb884a8b"
 
 [[package]]
 name = "nexus-ai"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-schema 58.4.0",
@@ -7136,7 +7136,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-connector-ailake"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "ailake-catalog",
  "ailake-core",
@@ -7162,7 +7162,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-connector-chromadb"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-schema 58.4.0",
@@ -7179,7 +7179,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-connector-csv"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-csv",
@@ -7198,7 +7198,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-connector-deltalake"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-cast 58.4.0",
@@ -7216,7 +7216,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-connector-iceberg"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-schema 58.4.0",
@@ -7236,7 +7236,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-connector-kafka"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-schema 58.4.0",
@@ -7256,7 +7256,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-connector-lancedb"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-schema 58.4.0",
@@ -7274,7 +7274,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-connector-milvus"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-schema 58.4.0",
@@ -7291,7 +7291,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-connector-mongodb"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-schema 58.4.0",
@@ -7309,7 +7309,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-connector-mysql"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-schema 58.4.0",
@@ -7328,7 +7328,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-connector-odbc"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-schema 58.4.0",
@@ -7345,7 +7345,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-connector-parquet"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-schema 58.4.0",
@@ -7365,7 +7365,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-connector-pgvector"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-schema 58.4.0",
@@ -7384,7 +7384,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-connector-pinecone"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-schema 58.4.0",
@@ -7400,7 +7400,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-connector-postgres"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "adbc_core",
  "adbc_driver_manager",
@@ -7420,7 +7420,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-connector-qdrant"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-schema 58.4.0",
@@ -7437,7 +7437,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-connector-rest"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-schema 58.4.0",
@@ -7456,7 +7456,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-connector-sqlite"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "adbc_core",
  "adbc_driver_manager",
@@ -7472,7 +7472,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-schema 58.4.0",
@@ -7495,7 +7495,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-server"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -7562,7 +7562,7 @@ dependencies = [
 
 [[package]]
 name = "nexusflow"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "nexus-server",
