@@ -594,7 +594,8 @@ async fn run_passthrough_pipeline(
     // config before connecting — the only way a CDC source without its own
     // server-side resume mechanism (unlike postgres-cdc's replication slot)
     // can actually continue instead of restarting from scratch.
-    let source_node = inject_cdc_resume_state(source_node, checkpoints, &spec.pipeline_id, "p0").await?;
+    let source_node =
+        inject_cdc_resume_state(source_node, checkpoints, &spec.pipeline_id, "p0").await?;
     let source_node = &source_node;
 
     let (_source_name, source) = log_on_err(
@@ -712,10 +713,7 @@ async fn run_transform_pipeline(
     // (`done.contains(&name)` below) on every later run forever — the
     // pipeline reports `success` each time but stops mirroring anything
     // after the very first change.
-    let is_cdc = spec
-        .sources
-        .iter()
-        .any(|s| s.connector.ends_with("-cdc"));
+    let is_cdc = spec.sources.iter().any(|s| s.connector.ends_with("-cdc"));
     let done = if is_cdc {
         std::collections::HashSet::new()
     } else {
