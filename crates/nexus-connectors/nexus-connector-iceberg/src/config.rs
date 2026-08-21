@@ -455,7 +455,7 @@ mod tests {
             primary_key: None,
             timeout_seconds: 30,
         };
-        assert_eq!(cfg.catalog_uri(), "/new/catalog.db");
+        assert_eq!(cfg.catalog_uri(), "sqlite:///new/catalog.db?mode=rwc");
         assert_eq!(cfg.warehouse_location(), "file:///new/warehouse");
         assert_eq!(cfg.namespace(), "new_ns");
         assert_eq!(cfg.table_name(), "new_table");
