@@ -99,10 +99,10 @@ Cada `NodeSpec` (fonte, destino ou saída do dbt) tem o formato:
 
 **Duas formas de DAG válidas:**
 
-- **Sem `transform`**: estritamente linear, exatamente **1 source e 1 sink**, execução particionada por chave primária (retomável por partição). Hoje só `postgres → postgres` é suportado nesse caminho.
-- **Com `transform`**: `N sources → 1 transform SQL → M sinks` (fan-in/fan-out), qualquer combinação de conectores, execução não particionada (lê tudo, aplica SQL, escreve em todos os sinks). **Use transform sempre que o source e o sink forem de tipos diferentes.**
+- **Sem `transform`**: estritamente linear, exatamente **1 source e 1 sink**, qualquer combinação de conectores. `postgres → postgres` tem um caminho otimizado (particionado por range de chave primária, retomável por partição — o MVP original, ver `IMPLEMENTATION_PLAN.md` Marco 1); qualquer outra combinação (incluindo cross-connector, ex. `postgres → sqlite`) cai num caminho genérico "passthrough" — sem particionamento, mas também sem exigir um nó transform artificial só pra mover dado sem transformação nenhuma.
+- **Com `transform`**: `N sources → 1 transform SQL → M sinks` (fan-in/fan-out), qualquer combinação de conectores, execução não particionada (lê tudo, aplica SQL, escreve em todos os sinks). Use transform quando precisar de fan-in/fan-out real ou de SQL de verdade — não é mais obrigatório só pra cruzar conectores diferentes.
 
-Exemplo cross-connector mínimo (postgres → sqlite, exige transform mesmo sendo um "passthrough"):
+Exemplo cross-connector mínimo (postgres → sqlite) — funciona hoje **sem** `transform` (caminho passthrough genérico); o exemplo abaixo mostra a forma com `transform`, útil se você já sabe que vai precisar de SQL real (filtro, cast, join) mais adiante:
 
 ```json
 {
@@ -453,9 +453,9 @@ Configuração completa por conector:
 
 **`postgres-cdc`**: `host`, `port` (default 5432), `username`, `password`, `database`, `schema` (opcional), `ssl_mode` (`disable`/`allow`/`prefer`/`require`/`verify-ca`/`verify-full`, default `prefer`), `table`, `publication_name`, `slot_name`, `fields: [{name, data_type: "int64"|"float64"|"boolean"|"utf8", nullable}]`, `timeout_seconds` (default 30), `max_batch_events` (default 1000). Também aceita `uri` legado.
 
-**`mysql-cdc`**: `host`, `port` (default 3306), `username`, `password`, `database`, `table`, `server_id` (default 65535), `fields` (mesmo shape), `binlog_filename` + `binlog_position` (opcionais), `max_batch_events` (default 1000). Também aceita `uri` legado.
+**`mysql-cdc`**: `host`, `port` (default 3306), `username`, `password`, `database`, `table`, `server_id` (default 65535), `fields` (mesmo shape), `binlog_filename` + `binlog_position` (opcionais — só pra forçar um ponto de partida manual; em runs seguintes o NexusFlow já reinjeta o último valor persistido automaticamente), `max_batch_events` (default 1000). Também aceita `uri` legado.
 
-**`mongodb-cdc`**: `connection_string` (ou `hosts` + `username` + `password` + `auth_database`), `database`, `collection`, `fields: [{name, data_type: "int64"|"float64"|"boolean"|"utf8", nullable}]`, `resume_token` (opcional), `batch_size` (default 1000), `timeout_seconds` (default 30), `max_batch_events` (default 1000).
+**`mongodb-cdc`**: `connection_string` (ou `hosts` + `username` + `password` + `auth_database`), `database`, `collection`, `fields: [{name, data_type: "int64"|"float64"|"boolean"|"utf8", nullable}]`, `resume_token` (opcional — mesma ressalva do MySQL acima, auto-persistido depois do primeiro run), `batch_size` (default 1000), `timeout_seconds` (default 30), `max_batch_events` (default 1000).
 
 **`deltalake-cdc`**: `table_uri` (legado) ou `path` + `table_name`, `storage_options` (S3 opcional), `starting_version` (opcional), `timeout_seconds` (default 30).
 

@@ -87,6 +87,14 @@ Documento único de backlog técnico. Consolida:
 | **B33** | `telemetry.rs` `try_init()` não é idempotente. | `crates/nexus-server/src/telemetry.rs:34` | Tornar idempotente. |
 | **B34** | `nexus-ai` não valida assinatura/checksum do modelo. | `crates/nexus-ai/src/embedding/model.rs:30-40` | Documentar risco; planejar pin de hash. |
 
+### 2.4a Achados e correções desta auditoria (2026-08-22)
+
+Segunda auditoria de documentação, feita em paralelo a `fe402c9` (auditoria anterior, 2026-08-20 — já cobriu `mysql` batch em `docs/USER_GUIDE.md`, a correção do Windows `.msi`/CI no `README.md`, e o mecanismo de resume automático de CDC). Ao reconciliar as duas, boa parte dos achados desta rodada já tinha sido corrigida por `fe402c9` de forma independente — mantido só o que era genuinamente novo:
+
+- **`docs/USER_GUIDE.md`/`docs/GETTING_STARTED.md` afirmavam que, sem node transform, só `postgres → postgres` é suportado** — desatualizado desde que `run_passthrough_pipeline` foi adicionado (`runner.rs`): hoje qualquer par de conectores funciona sem transform (1 source + 1 sink), `postgres → postgres` só ganha um caminho extra particionado/otimizado. Corrigido nos dois arquivos (esse aqui `fe402c9` não tinha pego).
+- **Limitação nova, achada ao verificar o mecanismo de resume de CDC**: um source `*-cdc` combinado com um node de transform SQL ainda passa por `PipelineEngine::drain_sources` (materializa tudo antes de aplicar o SQL) — o resume automático e o streaming per-micro-batch só cobrem o caminho passthrough. Documentado em `ARCHITECTURE.md §7`, `ROADMAP.md` (Débitos conhecidos) e na seção C02 abaixo.
+- Contagem de conectores 24→25 propagada pra `CLAUDE.md`/`README.md`/`ROADMAP.md`/`GETTING_STARTED.md` — `docs/USER_GUIDE.md` já estava certo desde `fe402c9`, os outros ainda não tinham sido atualizados.
+
 ### 2.4 Itens resolvidos nesta branch
 
 > Branch `fix/a08-a09-onnx-revision-docker-image` — correções aplicadas e validadas com `cargo fmt`, `cargo clippy -D warnings`, `cargo test -p nexus-server --lib --features embed-ui,connectors-all` e `npm test -- --run`.
@@ -137,14 +145,15 @@ Os itens abaixo foram bloqueadores na revisão anterior e foram corrigidos:
 | **C03** | `LicenseStore` era SQLite-only. | `crates/nexus-server/src/license_store.rs:14-66` — usa `MetadataPool` (SQLite/Postgres). |
 | **C04** | Step de AppImage falhava. | `scripts/package-appimage.sh:18-21` — separa binário e flags. |
 
-### C02 — CDC nativo (atualizado)
+### C02 — CDC nativo (atualizado de novo — resolvido pros 5 CDC de banco, lakehouse ainda pendente)
 
-**Status:** resolvido pros 3 CDC nativos do repo público; ainda parcial pros 3 formatos de lake CDC (Fase 21) e mitigado (não checkpoint automático) pros 2 do repo privado enterprise até serem estendidos com o mesmo mecanismo.
+**Status:** resolvido pros 5 CDC nativos de banco (público + enterprise); ainda parcial pros 3 formatos de lake CDC (Fase 21). Achado novo nesta rodada: uma lacuna separada, CDC + transform, ver abaixo.
 
 - Conectores CDC nativos operam em **micro-batch** (`max_batch_events` default 1000) — não mais streams infinitos no caminho de execução batch.
 - **Retomada automática real implementada** pra `postgres-cdc`/`mysql-cdc`/`mongodb-cdc`: `Source::position_handle()` (`nexus-core::traits`) devolve a posição atual do source (LSN/binlog file+offset/resume token); `CheckpointCursor.resume_state` + `CheckpointStore::get()` persistem e leem essa posição entre runs; `runner.rs::run_passthrough_pipeline` injeta a posição de volta na config do conector antes de reconectar, sem depender do usuário digitar a posição manualmente. `postgres-cdc` ganhou também a correção do bug real que fazia o WAL nunca avançar (`update_applied_lsn` não era chamado). `mssql-cdc`/`oracle-cdc` (repo privado `nexus-connectors-enterprise`) ganharam o mesmo mecanismo em seguida — os 5 CDC nativos que existem hoje retomam de verdade.
 - **Ainda com cursor estático** (sem checkpoint automático): os 3 CDC de formato de lake (`deltalake-cdc`/`iceberg-cdc`/`ailake-cdc`, Fase 21) continuam exigindo `starting_version`/`starting_snapshot_id` manual na config — não estendidos com `position_handle` ainda, trabalho pendente se algum usuário precisar.
-- **Recomendação:** manter documentado como limitação só pros 3 formatos de lake acima; para os 5 CDC de banco (público + enterprise) o item está fechado.
+- **Limitação nova, descoberta ao verificar isso**: o mecanismo de resume automático (e o streaming per-micro-batch que o acompanha) só cobre o caminho passthrough (source CDC sem node transform, exatamente 1 sink). Um source `*-cdc` combinado com um node de transform SQL ainda passa por `PipelineEngine::drain_sources` — materializa tudo em memória antes de aplicar o SQL, o que nunca termina pra um source CDC em volume realista. Não é uma regressão (nunca funcionou), mas não estava documentado antes. Ver `ARCHITECTURE.md §7`.
+- **Recomendação:** manter documentado como limitação só pros 3 formatos de lake e pra CDC+transform; para os 5 CDC de banco no caminho passthrough (público + enterprise) o item original está fechado.
 
 ---
 
@@ -185,7 +194,7 @@ Os itens abaixo foram bloqueadores na revisão anterior e foram corrigidos:
 | **M21** | Labels sem associação acessível. | `UsersPanel.tsx`, `PipelineIoPanel.tsx` — `htmlFor`/`id`. |
 | **M22/M23** | Dependências do frontend. | `package.json` — radix individual, shadcn em `devDependencies`. |
 | **M24** | Zero testes de comportamento. | `dag.test.ts`, `api.test.ts`, `I18nProvider.test.tsx`. |
-| **M25** | "18 conectores" desatualizado. | `GETTING_STARTED.md:42,80` — 24 conectores. |
+| **M25** | Contagem de conectores em 24 (`fe402c9` já tinha corrigido `docs/USER_GUIDE.md` pra 25, contando `mysql` batch; `CLAUDE.md`/`README.md`/`ROADMAP.md` ainda estavam desatualizados). | Corrigido pra 25 (19 batch + 6 CDC) em todos os arquivos restantes. |
 | **M32** | Drivers ADBC sem pin. | `scripts/build-adbc-*.sh` — `ADBC_REF` pinado; cache key com ref. |
 | **M33** | `install.sh` sem verificação de checksum. | `install.sh:64-85` — falha fechado + `.asc`. |
 | **M34** | `appimagetool` sem verificação. | SHA-256 pinado no release. |

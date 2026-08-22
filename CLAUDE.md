@@ -45,7 +45,7 @@ nexusflow/
 │   ├── nexus-core/                # Traits base (Source/Sink/Transform), modelos Arrow, DAG parser, registry de conectores
 │   ├── nexus-connectors/          # Workspace de sub-crates, um crate por conector (NÃO monolítico):
 │   │   ├── nexus-connector-postgres/
-│   │   ├── nexus-connector-mysql/     # CDC-only (mysql-cdc); batch via mysql ADBC ainda não implementado
+│   │   ├── nexus-connector-mysql/     # mysql (batch, bridging via RecordBatchBuilder — sem ADBC, nenhum driver existe upstream) + mysql-cdc (binlog nativo)
 │   │   ├── nexus-connector-mongodb/
 │   │   ├── nexus-connector-rest/      # Bridging genérico REST/SaaS
 │   │   └── ...                        # 1 crate novo por conector, feature-flag controla o que entra no binário final
@@ -80,11 +80,11 @@ nexusflow/
 [ FAST-PATH (ADBC) ]            [ FAST-PATH (ARROW FLIGHT) ]        [ HÍBRIDO (BRIDGING) ]
 - Postgres ✅                   - (nenhum implementado)             - REST / SaaS ✅ (reqwest)
 - SQLite ✅                                                         - MongoDB ✅
-- MySQL (batch) ❌ não impl.                                        - Kafka ✅ (genérico, sem CDC)
-- DuckDB ❌ não impl.                                               - ODBC ✅
-- Snowflake ❌ não impl.                                            - CSV ✅
-- BigQuery ❌ não impl.                                             - Webhook ✅ (sink)
-- ClickHouse ADBC ❌ não impl.
+- MySQL (batch, ADBC) ❌ não impl.                                  - MySQL (batch, bridging) ✅
+- DuckDB ❌ não impl.                                               - Kafka ✅ (genérico, sem CDC)
+- Snowflake ❌ não impl.                                            - ODBC ✅
+- BigQuery ❌ não impl.                                             - CSV ✅
+- ClickHouse ADBC ❌ não impl.                                      - Webhook ✅ (sink)
 
 [ CDC NATIVO — sem Debezium/Kafka ]
 - Postgres WAL (`postgres-cdc`) ✅
@@ -101,7 +101,7 @@ nexusflow/
 ### 4.2. Engine de Streaming, Backpressure e Checkpointing
 O núcleo opera via canais assíncronos (`mpsc::channel`).
 * **Backpressure:** Limitando o canal `mpsc(100)`, evita-se estouro de memória RAM (OOM) se a leitura for mais rápida que a escrita.
-* **Gestão de Estado (Checkpoints):** Para cargas incrementais e CDC, o Worker de Destino, a cada *commit* bem-sucedido no banco alvo, emite uma mensagem de estado (ex: `last_updated_at` = '2023-10-01') que o `nexus-server` persiste no SQLite/Postgres. Se o pipeline falhar, ele retoma exatamente do último cursor validado.
+* **Gestão de Estado (Checkpoints):** Para cargas incrementais e CDC, o Worker de Destino, a cada *commit* bem-sucedido no banco alvo, emite uma mensagem de estado (ex: `last_updated_at` = '2023-10-01') que o `nexus-server` persiste no SQLite/Postgres. Se o pipeline falhar, ele retoma exatamente do último cursor validado. Pra CDC especificamente: `mysql-cdc`/`mongodb-cdc` persistem a posição (`binlog_filename`+`binlog_position` / `resume_token`) automaticamente em `CheckpointCursor.resume_state` a cada run e reinjetam na config do próximo — sem isso, cada disparo do scheduler reiniciaria do zero. `postgres-cdc` não precisa disso (resume é server-side, via o próprio replication slot). `deltalake-cdc`/`iceberg-cdc`/`ailake-cdc` ainda dependem de cursor estático na config (`starting_version`/`starting_snapshot_id`) — não auto-persistido ainda.
 
 ### 4.3. Pipeline de Embeddings e AI Lakehouse (Node AI)
 Módulo intermediário que converte colunas de texto em vetores float32 e anexa a coluna `embedding` ao `RecordBatch` Arrow.
@@ -160,7 +160,7 @@ O NexusFlow é cross-platform com compilação estática sempre que possível:
 * **Linux:** AppImage, `.deb`, `.rpm` — todos validados de ponta a ponta e, desde a Fase de release CI (`.github/workflows/release.yml`), buildados automaticamente a cada push/PR pra `main` (x86_64 apenas — os 3 scripts em `scripts/package-*.sh` hardcodam essa arch). Build x86_64 roda no self-hosted `[self-hosted, Linux]` (mesma máquina do `ci.yml`) desde que os runners hospedados do GitHub (inclusive `ubuntu-latest` puro, não só macOS/Windows) ficaram bloqueados por billing da org (`Settings > Billing and plans`); arm64 (`ubuntu-24.04-arm`, sem equivalente self-hosted) continua bloqueado até isso ser resolvido. Hardware: CPU; CUDA runtime pronto via imagem Docker `nvidia/cuda`, mas aceleração real depende da feature `cuda` ainda não validada em GPU real.
 * **Windows:** `.msi` real via `cargo-wix` + `packaging/windows/main.wxs`, mas o job `build-windows` foi **removido do CI de release por ora** — chegou a rodar no self-hosted `windows-connectors-heavy` (mesma máquina do `connectors-heavy.yml`), mas `cargo build --features connectors-all` falhou de verdade: `nexus-connector-mysql`'s `mysql_cdc` só suporta OpenSSL nativo (sem rustls), e essa máquina não tem OpenSSL/vcpkg instalado. Precisa de setup manual único na máquina (`vcpkg install openssl:x64-windows-static-md` + `vcpkg integrate install` + `VCPKG_ROOT`) antes de religar. `winget` ainda não configurado; build dos drivers ADBC (Postgres/SQLite) pra `.dll` também não existe (MSVC+vcpkg separado do OpenSSL acima).
 * **macOS:** `Homebrew` e `.dmg` — specs em `packaging/macos/`, **não validados em máquina real e removidos do CI de release** por ora — sem runner self-hosted de macOS (diferente do Windows acima) e os runners hospedados `macos-13`/`macos-14` do GitHub estão bloqueados por billing da org (`Settings > Billing and plans`); a falha deles também cancelava os builds Linux via fail-fast do matrix. Faltam scripts de build dos drivers ADBC pra `.dylib`.
-* **Docker / K8s:** Imagem Docker publicada no **GHCR** (`ghcr.io/ailake-io/nexusflow`, usa `GITHUB_TOKEN`) a cada push pra `main`, com tag `v{X.Y.Z}` e `latest`. Build com `FEATURES=embed-ui,connectors-all`, então a imagem já lista os 24 conectores sem precisar de build local. Container roda como usuário não-root (`nexusflow`, uid 1001) com `HEALTHCHECK` em `/health`. Suporte a GPU via `--build-arg RUNTIME_IMAGE=nvidia/cuda:...` + `--gpus all`, mas aceleração real ainda não validada. Docker Hub (`ailake/nexusflow`) está fora do CI atual até `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN` serem configurados.
+* **Docker / K8s:** Imagem Docker publicada no **GHCR** (`ghcr.io/ailake-io/nexusflow`, usa `GITHUB_TOKEN`) a cada push pra `main`, com tag `v{X.Y.Z}` e `latest`. Build com `FEATURES=embed-ui,connectors-all`, então a imagem já lista os 25 conectores sem precisar de build local. Container roda como usuário não-root (`nexusflow`, uid 1001) com `HEALTHCHECK` em `/health`. Suporte a GPU via `--build-arg RUNTIME_IMAGE=nvidia/cuda:...` + `--gpus all`, mas aceleração real ainda não validada. Docker Hub (`ailake/nexusflow`) está fora do CI atual até `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN` serem configurados.
 * *Single Binary Deployment:* A interface React compilada é embutida no binário Rust via `rust-embed`. Executar o binário inicia o backend e serve a UI web em `http://localhost:8080`.
 
 ---

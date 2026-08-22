@@ -198,10 +198,10 @@ ponto de partida validado offline.
 
 1. Abra `http://localhost:8080` — a UI é servida pelo próprio binário (`embed-ui`).
 2. Login com o usuário Admin bootstrapado (`NEXUS_ADMIN_USERNAME`/`NEXUS_ADMIN_PASSWORD`).
-3. No canvas, arraste um node de source e um de sink da lista de conectores (vem de `GET /connectors`, dinâmica).
+3. No canvas, arraste um node de source e um de sink da lista de conectores (vem de `GET /connectors`, dinâmica) — a lista tem um campo de busca no topo pra filtrar por nome quando o catálogo estiver grande.
 4. Preencha a config de cada node no painel lateral — campos de formulário reais (texto, número, enum, listas), gerados a partir do schema que cada conector expõe, não um JSON pra escrever à mão. Nunca fica em plain text depois de salvo — criptografado com `NEXUS_ENCRYPTION_KEY`.
-5. Opcional: adicione um node de transform (SQL via DataFusion) entre source e sink, ou um node `dbt` depois do(s) sink(s) pra rodar ELT pós-carga. **Sem transform, o runner só suporta `postgres → postgres`; cross-connector ou outros conectores exigem um nó transform.**
-6. Clique **Save** pra persistir o pipeline (cria na primeira vez, atualiza nas seguintes) — sem isso ele só existe nessa aba do navegador e o scheduler (próximo item) não tem o que agendar. Opcional: preencha o campo **schedule** (cron) pra rodar automaticamente, sem precisar clicar Run de novo.
+5. Opcional: adicione um node de transform (SQL via DataFusion) entre source e sink, ou um node `dbt` depois do(s) sink(s) pra rodar ELT pós-carga. **Sem transform, o pipeline precisa ser 1 source + 1 sink** — qualquer combinação de conectores funciona (não só `postgres → postgres`; esse par só ganha um caminho extra otimizado, particionado por chave primária). Adicione um transform quando precisar de SQL de verdade ou de fan-in/fan-out (N sources → M sinks). O node de transform (e o node Python) tem um botão pra enviar um arquivo `.sql`/`.py` em vez de digitar o script direto no textarea.
+6. Clique **Save** pra persistir o pipeline (cria na primeira vez, atualiza nas seguintes) — sem isso ele só existe nessa aba do navegador e o scheduler (próximo item) não tem o que agendar. Opcional: preencha o campo **schedule** (cron) pra rodar automaticamente, sem precisar clicar Run de novo. Em vez de montar o pipeline node por node, dá pra importar um `PipelineSpec` inteiro de uma vez: cole o JSON no campo de texto e clique **Carregar JSON**, ou clique **Enviar arquivo** e escolha um arquivo `.json`/`.yaml`/`.yml` local — os dois caminhos alimentam o mesmo parser (`fromPipelineSpec`), então o canvas fica idêntico ao montado manualmente.
 7. Rode manualmente e acompanhe linhas/s, MB/s e logs em tempo real no painel de execução (WebSocket), ou deixe o schedule disparar sozinho.
 8. Na aba **Pipelines**: veja tudo que já foi salvo, clique **Edit** pra recarregar um pipeline de volta no canvas (inclusive configs de conector), **Histórico** pra ver todas as execuções (não só a última) com duração calculada, linhas gravadas, erro completo em caso de falha e um botão **Logs** por execução (funciona pra qualquer run, inclusive um disparado pelo scheduler que ninguém acompanhou ao vivo), ou **Delete** pra remover. Na aba **Status**: visão rápida de todos os pipelines com um flag por linha — verde (sucesso), amarelo (em execução), vermelho (falha), cinza (nunca rodou).
 
@@ -217,8 +217,9 @@ TOKEN=$(curl -s -X POST http://localhost:8080/auth/login \
 curl -s http://localhost:8080/connectors -H "authorization: Bearer $TOKEN"
 
 # criar um pipeline (schedule é opcional — sem ele só roda via /run manual)
-# NOTA: sem nó transform, apenas postgres → postgres é suportado.
-# Cross-connector ou outros conectores exigem um nó transform (exemplo abaixo).
+# NOTA: sem nó transform, precisa ser exatamente 1 source + 1 sink — qualquer
+# combinação de conectores funciona; postgres->postgres só ganha um caminho
+# extra otimizado (particionado por chave primária, retomável por partição).
 curl -s -X POST http://localhost:8080/pipelines \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{
@@ -228,7 +229,8 @@ curl -s -X POST http://localhost:8080/pipelines \
     "schedule": "0 */6 * * *"
   }'
 
-# exemplo cross-connector (postgres → sqlite) — exige um nó transform
+# exemplo cross-connector (postgres → sqlite) — funciona sem transform (passthrough
+# genérico); o transform abaixo é opcional, útil se já for filtrar/transformar via SQL
 curl -s -X POST http://localhost:8080/pipelines \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{

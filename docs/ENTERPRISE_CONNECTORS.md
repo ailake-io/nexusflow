@@ -87,7 +87,7 @@ Ponto de partida do usuário: Excel, Oracle, Snowflake, ClickHouse, BigQuery, Re
 Ordenado por (demanda de mercado × disposição a pagar), não por dificuldade técnica:
 
 1. **Snowflake, BigQuery, Redshift, Databricks** — tríade+um obrigatória em qualquer RFP enterprise de ELT.
-2. **Salesforce, Excel** — os dois conectores mais pedidos em ferramentas comerciais concorrentes, públicos-alvo diferentes (enterprise CRM vs. PME sem stack de dados).
+2. **Salesforce, Excel** — os dois conectores mais pedidos em ferramentas comerciais concorrentes, públicos-alvo diferentes (enterprise CRM vs. PME sem stack de dados). Excel já implementado (ver nota no topo); Salesforce continua candidato.
 3. **Oracle, SAP (HANA e/ou BAPI/IDoc)** — legado enterprise, ticket alto, cliente já paga caro por licença então tolera pagar pelo conector.
 4. **ClickHouse (avançado), SQL Server/Synapse** — meio-termo, complementam o que já existe OSS.
 5. **Marketing/Ads** (GA4, Google Ads, Meta Ads, Stripe, Shopify) — alto volume, ticket médio menor, bom motor de PLG (product-led growth).
