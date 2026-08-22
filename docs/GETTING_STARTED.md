@@ -8,14 +8,24 @@ Escolha uma das opções abaixo. Todas sobem o mesmo binário: um único process
 
 ### Docker (mais simples)
 
-Imagem publicada no GHCR (já com todos os 24 conectores):
+Imagem publicada no GHCR (já com todos os 25 conectores):
 
 ```bash
+# volume nomeado nasce root-owned; o container roda como uid 1001 (não-root) —
+# sem isso o boot falha com "unable to open database file" (WORKDIR padrão
+# não é gravável por esse usuário)
+docker volume create nexusflow_data
+docker run --rm -v nexusflow_data:/data alpine chown -R 1001:1001 /data
+
 docker run -d --name nexusflow -p 8080:8080 \
   -e NEXUS_JWT_SECRET="$(openssl rand -hex 32)" \
   -e NEXUS_ENCRYPTION_KEY="$(openssl rand -hex 32)" \
   -e NEXUS_ADMIN_USERNAME=admin \
   -e NEXUS_ADMIN_PASSWORD="troque-isto" \
+  -e NEXUS_CHECKPOINT_DB="sqlite:///data/nexusflow.db" \
+  -e NEXUS_AUTH_DB="sqlite:///data/nexusflow-auth.db" \
+  -e NEXUS_PIPELINES_DB="sqlite:///data/nexusflow-pipelines.db" \
+  -v nexusflow_data:/data \
   ghcr.io/ailake-io/nexusflow:latest
 ```
 
@@ -37,7 +47,14 @@ Perfil com base CUDA (`--gpus all`) — usa a mesma imagem numa base `nvidia/cud
 
 ```bash
 docker build --build-arg RUNTIME_IMAGE=nvidia/cuda:12.4.1-runtime-ubuntu22.04 -t nexusflow:cuda .
-docker run --gpus all -d -p 8080:8080 -e NEXUS_JWT_SECRET=... -e NEXUS_ENCRYPTION_KEY=... nexusflow:cuda
+docker run --gpus all -d -p 8080:8080 \
+  -e NEXUS_JWT_SECRET=... -e NEXUS_ENCRYPTION_KEY=... \
+  -e NEXUS_CHECKPOINT_DB="sqlite:///data/nexusflow.db" \
+  -e NEXUS_AUTH_DB="sqlite:///data/nexusflow-auth.db" \
+  -e NEXUS_PIPELINES_DB="sqlite:///data/nexusflow-pipelines.db" \
+  -v nexusflow_data:/data \
+  nexusflow:cuda
+# mesmo volume/chown do comando acima — precisa existir antes (uid 1001 não-root)
 ```
 
 ### Script de instalação (Linux/macOS)
@@ -46,7 +63,7 @@ docker run --gpus all -d -p 8080:8080 -e NEXUS_JWT_SECRET=... -e NEXUS_ENCRYPTIO
 curl -fsSL https://raw.githubusercontent.com/ailake-io/nexusflow/develop/scripts/install.sh | sh
 ```
 
-Baixa o binário + drivers ADBC pra `~/.local/share/nexusflow` e cria `~/.local/bin/nexusflow`. Precisa de um [release](https://github.com/ailake-io/nexusflow/releases) publicado — ver `.github/workflows/release.yml`. O binário do release já vem com **todos** os 24 conectores linkados (`embed-ui,connectors-all`, não só postgres/sqlite — ver seção 2 abaixo); pra `odbc`/`kafka` funcionarem, precisa de `unixodbc`/`libsasl2` no sistema (o instalador avisa no final se faltar).
+Baixa o binário + drivers ADBC pra `~/.local/share/nexusflow` e cria `~/.local/bin/nexusflow`. Precisa de um [release](https://github.com/ailake-io/nexusflow/releases) publicado — ver `.github/workflows/release.yml`. O binário do release já vem com **todos** os 25 conectores linkados (`embed-ui,connectors-all`, não só postgres/sqlite — ver seção 2 abaixo); pra `odbc`/`kafka` funcionarem, precisa de `unixodbc`/`libsasl2` no sistema (o instalador avisa no final se faltar).
 
 ### Pacotes nativos (Linux)
 
@@ -84,7 +101,7 @@ export NEXUS_ADMIN_PASSWORD="troque-isto"
 
 Isso só se aplica a quem builda a partir do source (seção 1, "Build a partir do source") — os binários pré-buildados (script de instalação, `.deb`/AppImage/rpm) e a imagem Docker publicada no GHCR já vêm com `connectors-all` ligado, ver seção 1.
 
-Por padrão um `cargo build` sem flags só liga `postgres` e `sqlite`. A feature `connectors-all` habilita as outras **22 entradas de conector** no catálogo (24 nomes no total, pois a feature `rest` registra tanto `rest` quanto `webhook`): mongodb, kafka, rest, webhook, odbc, milvus, qdrant, lancedb, pgvector, pinecone, chromadb, deltalake, iceberg, parquet, ailake, csv e os 6 CDCs nativos (postgres-cdc, mongodb-cdc, mysql-cdc, deltalake-cdc, iceberg-cdc, ailake-cdc). Cada um só entra no binário se sua feature for pedida:
+Por padrão um `cargo build` sem flags só liga `postgres` e `sqlite`. A feature `connectors-all` habilita as outras **23 entradas de conector** no catálogo (25 nomes no total, pois a feature `rest` registra tanto `rest` quanto `webhook`): mongodb, mysql (batch, via `mysql_async`), kafka, rest, webhook, odbc, milvus, qdrant, lancedb, pgvector, pinecone, chromadb, deltalake, iceberg, parquet, ailake, csv e os 6 CDCs nativos (postgres-cdc, mongodb-cdc, mysql-cdc, deltalake-cdc, iceberg-cdc, ailake-cdc). Cada um só entra no binário se sua feature for pedida:
 
 ```bash
 # um conector específico
@@ -283,7 +300,7 @@ Se `dbt.output` estiver setado no spec (aponta pro model/tabela que o dbt acabou
 
 | Arquivo | Conteúdo |
 |---|---|
-| [`USER_GUIDE.md`](./USER_GUIDE.md) | Referência completa: config exata de cada um dos 24 conectores, transform SQL, embeddings, dbt ELT/ETL, preview, agendamento |
+| [`USER_GUIDE.md`](./USER_GUIDE.md) | Referência completa: config exata de cada um dos 25 conectores, transform SQL, embeddings, dbt ELT/ETL, preview, agendamento |
 | [`ARCHITECTURE.md`](../ARCHITECTURE.md) | Roteador de conectores, streaming/backpressure, checkpointing |
 | [`ROADMAP.md`](../ROADMAP.md) | Fases e critério de "pronto" |
 | [`CONTRIBUTING.md`](../CONTRIBUTING.md) | Como contribuir |

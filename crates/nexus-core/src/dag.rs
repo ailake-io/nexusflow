@@ -620,11 +620,16 @@ fn validate_node_security(
 /// path guard below exists to stop a URL-shaped field (REST/embedding
 /// `base_url`, say) from secretly being a local path instead; it isn't
 /// meant to block these connectors' own, expected, use of one.
+///
+/// Backed by the `LocalPathConnector` registry (`registry.rs`), not a
+/// hardcoded list, so an enterprise connector (private repo) can opt in via
+/// `submit_local_path_connector!` without this file ever naming it —
+/// `LICENSING.md §3` forbids an enterprise connector's name appearing here.
+/// Real bug this replaced: `excel` (private repo) documents its own `path`
+/// field exactly like `csv`'s, but had no way to join this list, so every
+/// absolute local path it was given was rejected outright.
 fn is_local_path_connector(connector: &str) -> bool {
-    matches!(
-        connector,
-        "sqlite" | "lancedb" | "ailake" | "iceberg" | "deltalake" | "csv" | "parquet"
-    )
+    crate::registry::ConnectorRegistry::is_local_path_connector(connector)
 }
 
 fn validate_string_security(
@@ -1070,21 +1075,40 @@ mod tests {
         assert!(err.to_string().contains("absolute path"));
     }
 
+    // Registered here (not via real connector crates — this test lives in
+    // nexus-core, which every connector crate depends ON, so it can never
+    // observe *their* `submit_local_path_connector!` calls; the dependency
+    // graph only flows the other way). Exercises the same mechanism real
+    // connectors (csv/sqlite/lancedb/ailake/iceberg/deltalake, and any
+    // enterprise connector like `excel` that opts in from a private repo)
+    // use, just under a name this test owns.
+    crate::submit_local_path_connector!("test-local-path-connector");
+
     #[test]
     fn validate_security_allows_absolute_path_for_local_path_connectors() {
-        for connector in ["sqlite", "lancedb", "ailake", "iceberg", "deltalake", "csv"] {
-            let json = format!(
-                r#"{{
-                    "pipeline_id": "p",
-                    "sources": [{{"connector": "{connector}", "config": {{"uri": "/data/db.sqlite"}}}}],
-                    "sinks": [{{"connector": "postgres", "config": {{}}}}]
-                }}"#
-            );
-            let spec = PipelineSpec::parse(&json).unwrap();
-            spec.validate_security().unwrap_or_else(|e| {
-                panic!("{connector}'s own local path must not be rejected: {e}")
-            });
-        }
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "test-local-path-connector", "config": {"uri": "/data/db.sqlite"}}],
+            "sinks": [{"connector": "postgres", "config": {}}]
+        }"#;
+        let spec = PipelineSpec::parse(json).unwrap();
+        spec.validate_security().unwrap_or_else(|e| {
+            panic!("a registered local-path connector's own local path must not be rejected: {e}")
+        });
+    }
+
+    #[test]
+    fn validate_security_rejects_absolute_path_for_an_unregistered_connector() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "not-a-local-path-connector", "config": {"uri": "/data/db.sqlite"}}],
+            "sinks": [{"connector": "postgres", "config": {}}]
+        }"#;
+        let spec = PipelineSpec::parse(json).unwrap();
+        let err = spec
+            .validate_security()
+            .expect_err("an unregistered connector's absolute path must still be rejected");
+        assert!(err.to_string().contains("absolute path"));
     }
 
     #[test]

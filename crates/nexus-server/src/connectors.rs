@@ -447,7 +447,22 @@ pub async fn build_sink(
         #[cfg(feature = "pgvector")]
         "pgvector" => {
             let cfg: PgVectorConnectorConfig = serde_json::from_value(node.config.clone())?;
-            Box::new(PgVectorSink::connect(&cfg, columns).await?)
+            // `PgVectorSink::connect`'s `columns` are documented as "the
+            // non-embedding data columns" — it binds the embedding
+            // separately via `rows::extract_embeddings` (a `vector(N)`
+            // column has no generic Arrow-to-SQL mapping the way
+            // int64/float64/boolean/utf8 do). Passing the raw column list
+            // straight through left `embedding_column` in it, so every
+            // write hit `row_params`'s catch-all "unsupported data type"
+            // error for the `FixedSizeList<Float32>` array — a real bug
+            // found testing this connector end to end this session, not
+            // just a stale config.
+            let non_embedding_columns: Vec<String> = columns
+                .iter()
+                .filter(|c| *c != &cfg.embedding_column)
+                .cloned()
+                .collect();
+            Box::new(PgVectorSink::connect(&cfg, &non_embedding_columns).await?)
         }
         #[cfg(feature = "pinecone")]
         "pinecone" => {

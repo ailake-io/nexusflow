@@ -1,7 +1,7 @@
 use crate::error::NexusError;
 use crate::traits::Transform;
 use arrow_array::RecordBatch;
-use arrow_schema::SchemaRef;
+use arrow_schema::{Schema, SchemaRef};
 use async_trait::async_trait;
 use datafusion::datasource::MemTable;
 use datafusion::prelude::SessionContext;
@@ -18,6 +18,40 @@ pub struct DataFusionTransform {
 impl DataFusionTransform {
     pub fn new(sql: impl Into<String>) -> Self {
         Self { sql: sql.into() }
+    }
+
+    /// Resolves what schema `apply` would produce for these named inputs,
+    /// without any actual row data — registers each as an empty table (0
+    /// partitions, real schema) and reads the query plan's resulting
+    /// schema, no execution/`collect()` involved. Used by a CDC pipeline
+    /// streaming batches through this transform one at a time
+    /// (`nexus-server::runner::run_streaming_cdc_pipeline`): sinks need to
+    /// know their column list before the first real batch arrives, and
+    /// `apply`'s own `collect()` isn't guaranteed to return a batch at all
+    /// for a 0-row probe (DataFusion may just return an empty `Vec`).
+    pub async fn output_schema(
+        &self,
+        input_schemas: Vec<(String, SchemaRef)>,
+    ) -> Result<SchemaRef, NexusError> {
+        let ctx = SessionContext::new();
+
+        for (name, schema) in input_schemas {
+            // `MemTable::try_new` requires at least one partition — an
+            // empty `Vec` errors with "No partitions provided", even
+            // though the partition itself is allowed to hold zero batches.
+            let table = MemTable::try_new(schema, vec![vec![]])
+                .map_err(|e| NexusError::Schema(format!("table {name:?}: {e}")))?;
+            ctx.register_table(&name, Arc::new(table))
+                .map_err(|e| NexusError::Connector(format!("registering table {name:?}: {e}")))?;
+        }
+
+        let df = ctx
+            .sql(&self.sql)
+            .await
+            .map_err(|e| NexusError::Connector(format!("transform SQL: {e}")))?;
+
+        let schema: Schema = df.schema().as_arrow().clone();
+        Ok(Arc::new(schema))
     }
 }
 

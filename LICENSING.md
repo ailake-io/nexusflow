@@ -25,7 +25,7 @@ Candidatos a conector pago (decidir caso a caso conforme demanda de mercado):
 - Vector DBs enterprise (Pinecone managed, Milvus cluster mode)
 - CDC avançado (Oracle GoldenGate-style, SQL Server CDC enterprise)
 
-Distribuição: binário compilado com feature flag `enterprise`, carregado via `nexus-server` mediante **license key** validada em runtime (JWT assinado pela NexusFlow, checagem de expiração/seat count).
+Distribuição: **binário próprio**, compilado a partir do repo privado (`nexus-connectors-enterprise/bin`), que depende de `nexus-core`/`nexus-server` como git dependency pinada por rev — não é uma feature flag ligada no binário OSS nem um plugin carregado dinamicamente em runtime. O binário enterprise sempre lista todo o catálogo (OSS + enterprise) no `GET /connectors`; o que trava por conector é a **license key** validada em runtime (JWT assinado, checagem de expiração/seat count via `check_connector_license`) — sem license cobrindo, o conector aparece mas não salva/roda (ver `docs/ENTERPRISE_LICENSING.md`).
 
 ## 3. Regra prática pro assistente (Claude)
 

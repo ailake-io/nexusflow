@@ -1,6 +1,8 @@
 # 💰 Conectores Enterprise (candidatos) — NexusFlow
 
-Este doc detalha os candidatos a conector pago citados em `LICENSING.md §2`. Vivem em repo/crate privado separado (`nexus-connectors-enterprise`), carregados via plugin em runtime com license key — nunca entram em `crates/nexus-connectors/` (OSS). Ver `ARCHITECTURE.md` e `ROADMAP.md` (Fase 12, ainda não implementada).
+Este doc detalha os candidatos a conector pago citados em `LICENSING.md §2`. Vivem em repo privado separado (`nexus-connectors-enterprise`, binário próprio — ver `LICENSING.md §2`), atrás de license key — nunca entram em `crates/nexus-connectors/` (OSS). Ver `ARCHITECTURE.md` e `ROADMAP.md` (Fase 12).
+
+**Status real (auditado):** 24 dos candidatos abaixo já foram construídos (marcados **✅ implementado**) — repo privado tem hoje 24 crates de conector / 51 entradas no catálogo (25 OSS + 26 nomes enterprise; `opensearch`/`synapse` são modos alternativos dos crates `elasticsearch`/`mssql`, não crates próprios). O resto segue como candidato/roadmap, não construído por falta de demanda confirmada — este doc continua servindo de inventário de candidatos, agora com o que já saiu do papel marcado.
 
 Ponto de partida do usuário: Excel, Oracle, Snowflake, ClickHouse, BigQuery, Redshift. Abaixo, esses mais outros candidatos organizados por categoria, com a lógica de mercado por trás de cada um (o mesmo racional que Fivetran/Airbyte/Matillion usam pra decidir o que cobra).
 
@@ -8,14 +10,14 @@ Ponto de partida do usuário: Excel, Oracle, Snowflake, ClickHouse, BigQuery, Re
 
 | Conector | Por quê é pago |
 |---|---|
-| **Snowflake** | Maior demanda de mercado em ferramentas ELT — praticamente todo concorrente cobra por esse conector |
-| **BigQuery** | Mesma categoria do Snowflake, par indissociável em RFPs enterprise |
-| **Redshift** | Terceiro da tríade "cloud DW" — quem pede um, geralmente pede os três |
+| **Snowflake** ✅ implementado | Maior demanda de mercado em ferramentas ELT — praticamente todo concorrente cobra por esse conector |
+| **BigQuery** ✅ implementado | Mesma categoria do Snowflake, par indissociável em RFPs enterprise |
+| **Redshift** ✅ implementado | Terceiro da tríade "cloud DW" — quem pede um, geralmente pede os três |
 | **Databricks** (SQL Warehouse / Unity Catalog via Flight SQL) | Ligado ao lakehouse — encaixa direto na proposta "AI Lakehouse Builder" do NexusFlow |
 | **ClickHouse** (features enterprise / ClickHouse Cloud) | ADBC básico pode ficar OSS; recursos avançados (cluster, RBAC) ficam pagos |
-| **Oracle** | Legado enterprise, ticket médio alto, cliente já paga licença Oracle cara — tolerância a pagar por conector é maior |
-| **SAP HANA** | Mesma lógica do Oracle — instalado em empresas grandes com orçamento de integração |
-| **Microsoft SQL Server / Azure Synapse** | Meio-termo — SQL Server básico poderia ser OSS, Synapse/CDC avançado fica enterprise |
+| **Oracle** ✅ implementado (batch + `oracle-cdc` via LogMiner) | Legado enterprise, ticket médio alto, cliente já paga licença Oracle cara — tolerância a pagar por conector é maior |
+| **SAP HANA** ✅ implementado (SQL via ODBC; BAPI/IDoc/RFC fora de escopo, ver README do repo privado) | Mesma lógica do Oracle — instalado em empresas grandes com orçamento de integração |
+| **Microsoft SQL Server / Azure Synapse** ✅ implementado (batch + `mssql-cdc`, `synapse` como modo do mesmo crate) | Meio-termo — SQL Server básico poderia ser OSS, Synapse/CDC avançado fica enterprise |
 | **Teradata** | Nicho legado, ticket alto, baixo volume |
 | **IBM Db2** | Mesma categoria de legado corporativo |
 | **Vertica** | Nicho analítico, baixo volume mas clientes dispostos a pagar |
@@ -24,7 +26,7 @@ Ponto de partida do usuário: Excel, Oracle, Snowflake, ClickHouse, BigQuery, Re
 
 | Conector | Por quê é pago |
 |---|---|
-| **Salesforce** | O conector mais pedido em qualquer ferramenta de integração de dados — prioridade alta |
+| **Salesforce** ✅ implementado | O conector mais pedido em qualquer ferramenta de integração de dados — prioridade alta |
 | **SAP** (BAPI/IDoc/S/4HANA) | ERP mais comum em grandes empresas, integração cara e complexa — alto ticket |
 | **HubSpot** | CRM popular em empresas médias, bom volume |
 | **Workday** | RH/financeiro enterprise, ticket alto |
@@ -37,18 +39,20 @@ Ponto de partida do usuário: Excel, Oracle, Snowflake, ClickHouse, BigQuery, Re
 
 | Conector | Por quê é pago |
 |---|---|
-| **Google Analytics (GA4)** | Conector mais usado em stacks de marketing analytics |
-| **Google Ads** | Par natural do GA4 |
-| **Meta Ads** (Facebook/Instagram) | Mesma categoria, alto volume de contas pequenas/médias |
-| **LinkedIn Ads** | Nicho B2B, ticket médio |
-| **Stripe** | Dados financeiros/billing, alta demanda em SaaS |
-| **Shopify** | E-commerce, alto volume |
+| **Google Analytics (GA4)** ✅ implementado | Conector mais usado em stacks de marketing analytics |
+| **Google Ads** ✅ implementado | Par natural do GA4 |
+| **Meta Ads** (Facebook/Instagram) ✅ implementado | Mesma categoria, alto volume de contas pequenas/médias |
+| **LinkedIn Ads** ✅ implementado | Nicho B2B, ticket médio |
+| **Stripe** ✅ implementado (read-only por design — nunca ganha sink, transação financeira real fica fora de escopo) | Dados financeiros/billing, alta demanda em SaaS |
+| **Shopify** ✅ implementado | E-commerce, alto volume |
+| **TikTok Ads** ✅ implementado (não estava na lista original, construído por analogia ao Meta Ads/GA4) | Mesma categoria de marketing analytics, alto volume |
+| **YouTube Analytics** ✅ implementado (idem, não estava na lista original) | Mesma categoria, complementa GA4/Google Ads no ecossistema Google |
 
 ## 4. Arquivos de escritório / produtividade
 
 | Conector | Por quê é pago |
 |---|---|
-| **Excel** (`.xlsx`, via `calamine`) | Fonte de dados mais comum em PMEs sem stack de dados madura — baixa barreira, alto volume |
+| **Excel** (`.xlsx`, via `calamine`) ✅ implementado | Fonte de dados mais comum em PMEs sem stack de dados madura — baixa barreira, alto volume |
 | **Google Sheets** | Mesma lógica do Excel, mas cloud-native |
 | **SharePoint / OneDrive** | Fonte de arquivo genérica em ambiente corporativo Microsoft |
 
@@ -56,26 +60,26 @@ Ponto de partida do usuário: Excel, Oracle, Snowflake, ClickHouse, BigQuery, Re
 
 | Conector | Por quê é pago |
 |---|---|
-| **Elasticsearch / OpenSearch** | Busca híbrida (full-text + vetor), presente em boa parte das empresas |
-| **Weaviate** | Vector DB com adoção enterprise crescente |
-| **Vertex AI Vector Search / Azure AI Search** | Ligado a cloud specific — cliente já paga a nuvem, dispõe a pagar o conector |
-| **Pinecone managed / Milvus cluster mode** | Já citados em `LICENSING.md §2` — modo gerenciado/cluster é o que diferencia do que já é OSS |
+| **Elasticsearch / OpenSearch** ✅ implementado (`opensearch` como modo do mesmo crate `elasticsearch`) | Busca híbrida (full-text + vetor), presente em boa parte das empresas |
+| **Weaviate** ✅ implementado | Vector DB com adoção enterprise crescente |
+| **Vertex AI Vector Search / Azure AI Search** ✅ implementado (ambos) | Ligado a cloud specific — cliente já paga a nuvem, dispõe a pagar o conector |
+| **Pinecone managed / Milvus cluster mode** | `pinecone`/`milvus` básicos já são OSS (`LICENSING.md §1`); modo gerenciado/cluster como SKU enterprise separado não foi construído — mesmo conector serve os dois hoje |
 
 ## 6. Streaming enterprise
 
 | Conector | Por quê é pago |
 |---|---|
-| **Confluent Cloud** | Kafka gerenciado com Schema Registry + RBAC — o Kafka OSS genérico (`nexus-connector-kafka`) já existe, isso é a camada enterprise |
-| **Amazon Kinesis** | Streaming nativo AWS |
-| **Azure Event Hubs** | Streaming nativo Azure |
-| **Apache Pulsar** | Alternativa enterprise ao Kafka em alguns setores (telco/financeiro) |
+| **Confluent Cloud** | Kafka gerenciado com Schema Registry + RBAC — não virou conector separado; `docs/KAFKA_MANAGED_SERVICES.md` documenta como conectar o `kafka` OSS existente a Confluent Cloud/Azure Event Hubs via config (SASL/TLS), sem crate novo |
+| **Amazon Kinesis** ✅ implementado | Streaming nativo AWS |
+| **Azure Event Hubs** | Sem crate próprio — protocolo compatível com Kafka, coberto pelo `kafka` OSS + `docs/KAFKA_MANAGED_SERVICES.md`, mesmo caso do Confluent Cloud acima |
+| **Apache Pulsar** ✅ implementado | Alternativa enterprise ao Kafka em alguns setores (telco/financeiro) |
 
 ## 7. CDC avançado (já citado em `LICENSING.md §2`)
 
 | Conector | Por quê é pago |
 |---|---|
-| **Oracle GoldenGate-style** | CDC nativo Oracle sem depender de Debezium |
-| **SQL Server CDC enterprise** | CDC nativo via CT/CDC do SQL Server |
+| **Oracle CDC** ✅ implementado (`oracle-cdc`, via LogMiner — não GoldenGate especificamente, mesmo objetivo de CDC nativo sem Debezium) | CDC nativo Oracle sem depender de Debezium |
+| **SQL Server CDC enterprise** ✅ implementado (`mssql-cdc`, via `sys.fn_cdc_get_all_changes_*`) | CDC nativo via CT/CDC do SQL Server |
 | **Db2 CDC** | Mesma lógica pro legado IBM |
 
 ## Priorização sugerida
@@ -90,3 +94,5 @@ Ordenado por (demanda de mercado × disposição a pagar), não por dificuldade 
 6. **Vector/search enterprise + CDC avançado + streaming enterprise** — nicho, ticket alto, baixo volume — fazer sob demanda de cliente específico, não especulativamente.
 
 Decisão de "o que construir primeiro" na Fase 12 deve seguir demanda real confirmada (mesmo racional já usado pro CDC nativo condicional em `ROADMAP.md`), não essa lista sozinha — ela é o inventário de candidatos, não um compromisso de roadmap.
+
+**Status real desta priorização:** blocos 1, 2, 3 (parcial — Oracle e HANA feitos, BAPI/IDoc não), 5 e a maior parte do 6 (vector/search + CDC avançado) já foram construídos. Restam sem crate: Databricks, ClickHouse (avançado), Db2 (CDC e batch), SAP BAPI/IDoc, HubSpot, Workday, NetSuite, Dynamics 365, ServiceNow, Zendesk, Google Sheets, SharePoint/OneDrive, Teradata, Vertica.

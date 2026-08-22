@@ -1,6 +1,6 @@
 # Guia de uso do NexusFlow — instalação a conector por conector
 
-Referência completa e prática: da instalação até a configuração exata de cada um dos 24 conectores, transformações (SQL, embeddings, dbt) e recursos de execução (preview, agendamento). Para o passo a passo mínimo de "primeiro pipeline", ver [`GETTING_STARTED.md`](./GETTING_STARTED.md); para arquitetura interna, [`ARCHITECTURE.md`](../ARCHITECTURE.md).
+Referência completa e prática: da instalação até a configuração exata de cada um dos 25 conectores, transformações (SQL, embeddings, dbt) e recursos de execução (preview, agendamento). Para o passo a passo mínimo de "primeiro pipeline", ver [`GETTING_STARTED.md`](./GETTING_STARTED.md); para arquitetura interna, [`ARCHITECTURE.md`](../ARCHITECTURE.md).
 
 ## Índice
 
@@ -22,17 +22,24 @@ Referência completa e prática: da instalação até a configuração exata de 
 Ver [`GETTING_STARTED.md` §1](./GETTING_STARTED.md#1-instalação) para as opções completas (Docker, script `curl | sh`, pacotes `.deb`/AppImage/rpm, build from source). Resumo rápido — todas sobem o mesmo binário, um único processo servindo API REST + WebSocket + UI web em `http://localhost:8080`:
 
 ```bash
+docker volume create nexusflow_data
+docker run --rm -v nexusflow_data:/data alpine chown -R 1001:1001 /data
+
 docker run -d --name nexusflow -p 8080:8080 \
   -e NEXUS_JWT_SECRET="$(openssl rand -hex 32)" \
   -e NEXUS_ENCRYPTION_KEY="$(openssl rand -hex 32)" \
   -e NEXUS_ADMIN_USERNAME=admin \
   -e NEXUS_ADMIN_PASSWORD="troque-isto" \
+  -e NEXUS_CHECKPOINT_DB="sqlite:///data/nexusflow.db" \
+  -e NEXUS_AUTH_DB="sqlite:///data/nexusflow-auth.db" \
+  -e NEXUS_PIPELINES_DB="sqlite:///data/nexusflow-pipelines.db" \
+  -v nexusflow_data:/data \
   nexusflow
 ```
 
 Variáveis de ambiente completas: ver [`GETTING_STARTED.md` §3](./GETTING_STARTED.md#3-variáveis-de-ambiente). As duas obrigatórias são `NEXUS_JWT_SECRET` e `NEXUS_ENCRYPTION_KEY` — sem elas o processo não sobe.
 
-**Conectores linkados no binário**: binários pré-buildados (release, `.deb`, AppImage, rpm) e a imagem Docker publicada no GHCR já vêm com os 24 conectores ligados (`embed-ui,connectors-all`: 18 batch + 6 CDC nativos; a feature `rest` registra `rest` e `webhook` como nomes separados no catálogo). Buildando a partir do source, cada conector é uma feature Cargo opcional (`cargo build --features embed-ui,connectors-all` liga todos de uma vez) — ver [`GETTING_STARTED.md` §2](./GETTING_STARTED.md#2-habilitando-conectores). O catálogo em `GET /connectors` sempre reflete exatamente o que foi compilado; a UI nunca mostra um conector que não está no binário.
+**Conectores linkados no binário**: binários pré-buildados (release, `.deb`, AppImage, rpm) e a imagem Docker publicada no GHCR já vêm com os 25 conectores ligados (`embed-ui,connectors-all`: 19 batch + 6 CDC nativos; a feature `rest` registra `rest` e `webhook` como nomes separados no catálogo). Buildando a partir do source, cada conector é uma feature Cargo opcional (`cargo build --features embed-ui,connectors-all` liga todos de uma vez) — ver [`GETTING_STARTED.md` §2](./GETTING_STARTED.md#2-habilitando-conectores). O catálogo em `GET /connectors` sempre reflete exatamente o que foi compilado; a UI nunca mostra um conector que não está no binário.
 
 ---
 
@@ -145,7 +152,21 @@ Requer `ADBC_DRIVER_POSTGRESQL_PATH` apontando pro `.so` (build com `scripts/bui
 ```
 Requer `ADBC_DRIVER_SQLITE_PATH`. `uri` aceita `:memory:`. Tabela criada automaticamente no sink se não existir.
 
-### 4.2 NoSQL e filas (bridging — convertidos para Arrow via schema explícito)
+### 4.2 SQL sem driver ADBC, NoSQL e filas (bridging — convertidos para Arrow via schema explícito)
+
+#### `mysql` — source + sink (batch — para CDC via binlog, ver `mysql-cdc` em §4.9)
+```json
+{"connector": "mysql", "config": {
+  "host": "localhost", "port": 3306,
+  "username": "user", "password": "pass",
+  "database": "meudb", "table": "events",
+  "primary_key": "id",
+  "fields": [{"name": "id", "data_type": "int64"}, {"name": "amount", "data_type": "float64", "nullable": true}],
+  "batch_size": 1000,
+  "timeout_seconds": 30
+}}
+```
+Sem driver ADBC oficial pro MySQL — bridging via `mysql_async` (mesmo padrão do `mongodb`). Diferente do `mysql-cdc`, o matching de `fields` aqui é **por nome** (não posicional), porque um `SELECT`/`INSERT` nomeia as colunas explicitamente. Também aceita `uri` legado (`mysql://user:pass@host:port/db`, ignora os campos individuais quando presente).
 
 #### `mongodb` — source + sink
 ```json
@@ -361,6 +382,7 @@ Chaves de `storage_options` por provedor:
 |---|:---:|:---:|---|
 | `postgres` | ✅ | ✅ | ADBC nativo |
 | `sqlite` | ✅ | ✅ | ADBC nativo |
+| `mysql` | ✅ | ✅ | bridging (`mysql_async`), schema por nome |
 | `mongodb` | ✅ | ✅ | schema explícito |
 | `kafka` | ✅ | — | só leitura, genérico (sem CDC) |
 | `rest` | ✅ | — | genérico, paginação offset/cursor |
@@ -382,16 +404,18 @@ Chaves de `storage_options` por provedor:
 
 ### 4.9 CDC nativo (micro-batch)
 
-Os 6 conectores abaixo operam em **micro-batch** (`max_batch_events` default 1000): cada run lê até esse limite de eventos, grava no sink e termina; o scheduler inicia o próximo batch e o conector retoma do cursor/slot/token/binlog position anterior. A retomada ainda depende do cursor estático na config — o NexusFlow não persiste LSN/snapshot/version automaticamente entre runs hoje.
+Os 6 conectores abaixo operam em **micro-batch** (`max_batch_events` default 1000): cada run lê até esse limite de eventos, grava no sink e termina; o scheduler inicia o próximo batch.
+
+**Resume automático real** (`postgres-cdc`/`mysql-cdc`/`mongodb-cdc`, ver `ARCHITECTURE.md §4.2`): `postgres-cdc` agora confirma cada LSN processado ao servidor (`update_applied_lsn`) — o próprio slot de replicação rastreia a posição, restart não reprocessa desde a criação do slot. `mysql-cdc` e `mongodb-cdc` persistem a posição final de cada micro-batch (`binlog_filename`+`binlog_position` / `resume_token`) num checkpoint e o `nexus-server` reinjeta automaticamente na config do próximo run — não precisa mais digitar essas posições manualmente, os campos abaixo continuam existindo só como override manual (replay a partir de um ponto específico). `deltalake-cdc`/`iceberg-cdc`/`ailake-cdc` ainda dependem do cursor estático na config (`starting_version`/`starting_snapshot_id`) — sem resume automático.
 
 | Conector | Nome no catálogo | Mecanismo | Resume por | Pré-requisitos |
 |---|---|---|---|---|
-| PostgreSQL | `postgres-cdc` | logical replication slot | `slot_name` | `CREATE PUBLICATION <publication_name> FOR TABLE <table>` |
-| MySQL | `mysql-cdc` | binlog (fake replica) | `binlog_filename` + `binlog_position` | Usuário com `REPLICATION SLAVE/CLIENT`; `binlog_row_image=FULL` recomendado |
-| MongoDB | `mongodb-cdc` | Change Streams | `resume_token` | Replica set (mesmo single-node) |
-| Delta Lake | `deltalake-cdc` | Delta change feed | `starting_version` | `delta.enableChangeDataFeed = true` na tabela |
-| Iceberg | `iceberg-cdc` | diff de snapshots | `starting_snapshot_id` | Catálogo SQLite + warehouse local; **insert-only** |
-| AI-Lake | `ailake-cdc` | diff de snapshots | `starting_snapshot_id` | Warehouse local HNSW; emite `I` para upserts também |
+| PostgreSQL | `postgres-cdc` | logical replication slot | automático (slot no servidor) | `CREATE PUBLICATION <publication_name> FOR TABLE <table>` |
+| MySQL | `mysql-cdc` | binlog (fake replica) | automático (checkpoint) — `binlog_filename`+`binlog_position` só pra override manual | Usuário com `REPLICATION SLAVE/CLIENT`; `binlog_row_image=FULL` recomendado |
+| MongoDB | `mongodb-cdc` | Change Streams | automático (checkpoint) — `resume_token` só pra override manual | Replica set (mesmo single-node) |
+| Delta Lake | `deltalake-cdc` | Delta change feed | manual — `starting_version` | `delta.enableChangeDataFeed = true` na tabela |
+| Iceberg | `iceberg-cdc` | diff de snapshots | manual — `starting_snapshot_id` | Catálogo SQLite + warehouse local; **insert-only** |
+| AI-Lake | `ailake-cdc` | diff de snapshots | manual — `starting_snapshot_id` | Warehouse local HNSW; emite `I` para upserts também |
 
 Exemplo mínimo (`postgres-cdc` → `mongodb`):
 
@@ -556,7 +580,7 @@ curl -s "http://localhost:8080/pipelines/meu-pipeline/preview?node=source0&limit
   -H "authorization: Bearer $TOKEN"
 ```
 
-`node` é o nome resolvido (`name` explícito do `NodeSpec`, ou `source{N}`/`sink{N}` default). `limit` é opcional (default 50, teto 500). Exige papel `Execute` (abre conexão real contra o conector, igual rodar o pipeline). Conectores sink-only (os 6 vetoriais + `webhook`) retornam erro 400 claro, já que não têm implementação de leitura.
+`node` é o nome resolvido (`name` explícito do `NodeSpec`, ou `source{N}`/`sink{N}` default). `limit` é opcional (default 50, teto 500). Exige papel `Execute` (abre conexão real contra o conector, igual rodar o pipeline). Conectores sink-only (5 dos 7 vetoriais — `milvus`, `qdrant`, `pgvector`, `pinecone`, `chromadb`; `lancedb`/`ailake` são exceção e também são source, §4.5 — mais `webhook`) retornam erro 400 claro, já que não têm implementação de leitura.
 
 ---
 

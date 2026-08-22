@@ -1,5 +1,5 @@
-import type { DragEvent } from 'react'
-import { Database, Loader2, AlertCircle, Lock } from 'lucide-react'
+import { useState, type DragEvent } from 'react'
+import { Database, Loader2, AlertCircle, Lock, Search } from 'lucide-react'
 import { useI18n } from '@/lib/i18n'
 import type { ConnectorDescriptor } from '@/lib/api'
 import { EmptyState } from '@/components/EmptyState'
@@ -22,6 +22,11 @@ function onDragStart(event: DragEvent<HTMLDivElement>, connectorName: string) {
  */
 export function ConnectorPalette({ connectors, loading, error }: ConnectorPaletteProps) {
   const { t } = useI18n()
+  const [query, setQuery] = useState('')
+
+  const filteredConnectors = query.trim()
+    ? connectors.filter((c) => c.name.toLowerCase().includes(query.trim().toLowerCase()))
+    : connectors
 
   return (
     <aside className="flex w-60 shrink-0 flex-col border-r bg-card">
@@ -30,6 +35,17 @@ export function ConnectorPalette({ connectors, loading, error }: ConnectorPalett
           {t('canvas.connectors')}
         </h2>
         <p className="mt-0.5 text-[10px] text-muted-foreground/70">{t('canvas.dragToCanvas')}</p>
+        <div className="relative mt-2">
+          <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={t('canvas.searchConnectors')}
+            aria-label={t('canvas.searchConnectors')}
+            className="h-7 w-full rounded-md border border-input bg-transparent pl-7 pr-2 text-xs text-foreground outline-none focus:ring-2 focus:ring-ring"
+          />
+        </div>
       </div>
 
       <div className="flex-1 overflow-auto p-3">
@@ -53,8 +69,13 @@ export function ConnectorPalette({ connectors, loading, error }: ConnectorPalett
             className="p-3"
           />
         )}
+        {!loading && connectors.length > 0 && filteredConnectors.length === 0 && (
+          <p className="px-1 py-4 text-center text-xs text-muted-foreground">
+            {t('canvas.noConnectorsMatch', { query: query.trim() })}
+          </p>
+        )}
         <div className="flex flex-col gap-1.5">
-          {connectors.map((connector) => (
+          {filteredConnectors.map((connector) => (
             <div
               key={connector.name}
               draggable

@@ -22,3 +22,4 @@ nexus_core::submit_connector!(
     nexus_core::ConnectorCapability::AdbcNative,
     SqliteConnectorConfig
 );
+nexus_core::submit_local_path_connector!("sqlite");

@@ -166,7 +166,8 @@ impl IcebergConnectorConfig {
     /// Returns the effective catalog URI, preferring the legacy `catalog_uri`
     /// field. If that is empty or missing, falls back to `catalog_path`.
     pub fn catalog_uri(&self) -> String {
-        self.catalog_uri
+        let raw = self
+            .catalog_uri
             .as_ref()
             .filter(|s| !s.is_empty())
             .cloned()
@@ -176,7 +177,19 @@ impl IcebergConnectorConfig {
                     .filter(|s| !s.is_empty())
                     .cloned()
             })
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // Real bug found testing this connector end to end this session:
+        // this normalization was missing entirely — `catalog_path` (the
+        // field this doc/struct's own comments say to prefer for new
+        // pipelines) was returned completely unchanged, a bare filesystem
+        // path with no URI scheme, which sqlx's connect rejects outright
+        // ("relative URL without a base"). Mirrors `warehouse_location`'s
+        // already-correct `file://` normalization just below.
+        if raw.is_empty() || raw.contains("://") {
+            raw
+        } else {
+            format!("sqlite://{raw}?mode=rwc")
+        }
     }
 
     /// Returns the effective warehouse location as a URI, preferring the
@@ -315,7 +328,8 @@ impl IcebergCdcConfig {
     /// Returns the effective catalog URI, preferring the legacy `catalog_uri`
     /// field, then `catalog_path`.
     pub fn catalog_uri(&self) -> String {
-        self.catalog_uri
+        let raw = self
+            .catalog_uri
             .as_ref()
             .filter(|s| !s.is_empty())
             .cloned()
@@ -325,7 +339,19 @@ impl IcebergCdcConfig {
                     .filter(|s| !s.is_empty())
                     .cloned()
             })
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // Real bug found testing this connector end to end this session:
+        // this normalization was missing entirely — `catalog_path` (the
+        // field this doc/struct's own comments say to prefer for new
+        // pipelines) was returned completely unchanged, a bare filesystem
+        // path with no URI scheme, which sqlx's connect rejects outright
+        // ("relative URL without a base"). Mirrors `warehouse_location`'s
+        // already-correct `file://` normalization just below.
+        if raw.is_empty() || raw.contains("://") {
+            raw
+        } else {
+            format!("sqlite://{raw}?mode=rwc")
+        }
     }
 
     /// Returns the effective warehouse location as a URI, preferring the
@@ -429,7 +455,7 @@ mod tests {
             primary_key: None,
             timeout_seconds: 30,
         };
-        assert_eq!(cfg.catalog_uri(), "/new/catalog.db");
+        assert_eq!(cfg.catalog_uri(), "sqlite:///new/catalog.db?mode=rwc");
         assert_eq!(cfg.warehouse_location(), "file:///new/warehouse");
         assert_eq!(cfg.namespace(), "new_ns");
         assert_eq!(cfg.table_name(), "new_table");
