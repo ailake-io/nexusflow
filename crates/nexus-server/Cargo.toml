@@ -59,7 +59,7 @@ embed-ui = ["dep:rust-embed"]
 # is itself `#[cfg]`-gated behind that inner feature, so it'd silently
 # never show up in the catalog (see each crate's own src/lib.rs).
 connectors-all = [
-    "mongodb", "mysql", "kafka", "rest", "odbc", "milvus", "qdrant", "lancedb",
+    "mongodb", "mysql", "kafka", "mqtt", "rest", "odbc", "milvus", "qdrant", "lancedb",
     "pgvector", "pinecone", "chromadb", "deltalake", "iceberg", "parquet",
     "ailake", "csv", "embeddings", "embeddings-api",
     "postgres-cdc", "mysql-cdc", "deltalake-cdc", "iceberg-cdc", "ailake-cdc",
@@ -79,6 +79,7 @@ mysql = ["dep:nexus-connector-mysql"]
 # dependency (same split as postgres-cdc above).
 mysql-cdc = ["dep:nexus-connector-mysql", "nexus-connector-mysql/cdc"]
 kafka = ["dep:nexus-connector-kafka", "nexus-connector-kafka/consumer"]
+mqtt = ["dep:nexus-connector-mqtt", "nexus-connector-mqtt/client"]
 rest = ["dep:nexus-connector-rest"]
 odbc = ["dep:nexus-connector-odbc", "nexus-connector-odbc/legacy"]
 milvus = ["dep:nexus-connector-milvus"]
@@ -125,6 +126,7 @@ nexus-connector-sqlite = { version = "0.1.0", path = "../nexus-connectors/nexus-
 nexus-connector-mongodb = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-mongodb", optional = true }
 nexus-connector-mysql = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-mysql", optional = true }
 nexus-connector-kafka = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-kafka", optional = true }
+nexus-connector-mqtt = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-mqtt", optional = true }
 nexus-connector-rest = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-rest", optional = true }
 nexus-connector-odbc = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-odbc", optional = true }
 nexus-connector-milvus = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-milvus", optional = true }

@@ -82,6 +82,14 @@ Ponto de partida do usuário: Excel, Oracle, Snowflake, ClickHouse, BigQuery, Re
 | **SQL Server CDC enterprise** ✅ implementado (`mssql-cdc`, via `sys.fn_cdc_get_all_changes_*`) | CDC nativo via CT/CDC do SQL Server |
 | **Db2 CDC** | Mesma lógica pro legado IBM |
 
+## 8. Protocolos industriais
+
+Categoria nova — não existia até a pesquisa de conector MQTT (OSS, `crates/nexus-connectors/nexus-connector-mqtt`) trazer à tona o contraste: MQTT é protocolo aberto sem lock-in (mesmo critério que já mantém `kafka` como OSS), OPC-UA é o inverso — comprador claro (chão de fábrica/manufatura, mesmo perfil de Oracle/SAP), protocolo bem mais complexo (modelo de informação tipado, não é só pub/sub).
+
+| Conector | Por quê é pago |
+|---|---|
+| **OPC-UA** | Padrão industrial/SCADA (chão de fábrica, automação predial) — driver Rust real confirmado (`opcua`/`opcua-rs`, MPL-2.0, mantido), não implementado ainda. Diferente de MQTT: cliente disposto a pagar por conectividade industrial certificada, mesmo padrão de Oracle/SAP já enterprise. |
+
 ## Priorização sugerida
 
 Ordenado por (demanda de mercado × disposição a pagar), não por dificuldade técnica:

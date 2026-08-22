@@ -32,6 +32,8 @@ use nexus_connector_milvus::{MilvusConnectorConfig, MilvusSink};
 use nexus_connector_mongodb::{
     MongoCdcConfig, MongoCdcSource, MongoConnectorConfig, MongoSink, MongoSource,
 };
+#[cfg(feature = "mqtt")]
+use nexus_connector_mqtt::{MqttConnectorConfig, MqttSource};
 #[cfg(feature = "mysql-cdc")]
 use nexus_connector_mysql::{MySqlCdcConfig, MySqlCdcSource};
 #[cfg(feature = "mysql")]
@@ -123,6 +125,10 @@ pub fn validate_source_config(
         "kafka" => {
             let _: KafkaConnectorConfig = serde_json::from_value(node.config.clone())?;
         }
+        #[cfg(feature = "mqtt")]
+        "mqtt" => {
+            let _: MqttConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
         #[cfg(feature = "rest")]
         "rest" => {
             let _: RestConnectorConfig = serde_json::from_value(node.config.clone())?;
@@ -213,6 +219,11 @@ pub async fn build_source(
         "kafka" => {
             let cfg: KafkaConnectorConfig = serde_json::from_value(node.config.clone())?;
             Box::new(KafkaSource::connect(&cfg)?)
+        }
+        #[cfg(feature = "mqtt")]
+        "mqtt" => {
+            let cfg: MqttConnectorConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(MqttSource::connect(&cfg).await?)
         }
         #[cfg(feature = "rest")]
         "rest" => {

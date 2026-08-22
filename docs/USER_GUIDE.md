@@ -1,6 +1,6 @@
 # Guia de uso do NexusFlow — instalação a conector por conector
 
-Referência completa e prática: da instalação até a configuração exata de cada um dos 25 conectores, transformações (SQL, embeddings, dbt) e recursos de execução (preview, agendamento). Para o passo a passo mínimo de "primeiro pipeline", ver [`GETTING_STARTED.md`](./GETTING_STARTED.md); para arquitetura interna, [`ARCHITECTURE.md`](../ARCHITECTURE.md).
+Referência completa e prática: da instalação até a configuração exata de cada um dos 26 conectores, transformações (SQL, embeddings, dbt) e recursos de execução (preview, agendamento). Para o passo a passo mínimo de "primeiro pipeline", ver [`GETTING_STARTED.md`](./GETTING_STARTED.md); para arquitetura interna, [`ARCHITECTURE.md`](../ARCHITECTURE.md).
 
 ## Índice
 
@@ -39,7 +39,7 @@ docker run -d --name nexusflow -p 8080:8080 \
 
 Variáveis de ambiente completas: ver [`GETTING_STARTED.md` §3](./GETTING_STARTED.md#3-variáveis-de-ambiente). As duas obrigatórias são `NEXUS_JWT_SECRET` e `NEXUS_ENCRYPTION_KEY` — sem elas o processo não sobe.
 
-**Conectores linkados no binário**: binários pré-buildados (release, `.deb`, AppImage, rpm) e a imagem Docker publicada no GHCR já vêm com os 25 conectores ligados (`embed-ui,connectors-all`: 19 batch + 6 CDC nativos; a feature `rest` registra `rest` e `webhook` como nomes separados no catálogo). Buildando a partir do source, cada conector é uma feature Cargo opcional (`cargo build --features embed-ui,connectors-all` liga todos de uma vez) — ver [`GETTING_STARTED.md` §2](./GETTING_STARTED.md#2-habilitando-conectores). O catálogo em `GET /connectors` sempre reflete exatamente o que foi compilado; a UI nunca mostra um conector que não está no binário.
+**Conectores linkados no binário**: binários pré-buildados (release, `.deb`, AppImage, rpm) e a imagem Docker publicada no GHCR já vêm com os 26 conectores ligados (`embed-ui,connectors-all`: 20 batch + 6 CDC nativos; a feature `rest` registra `rest` e `webhook` como nomes separados no catálogo). Buildando a partir do source, cada conector é uma feature Cargo opcional (`cargo build --features embed-ui,connectors-all` liga todos de uma vez) — ver [`GETTING_STARTED.md` §2](./GETTING_STARTED.md#2-habilitando-conectores). O catálogo em `GET /connectors` sempre reflete exatamente o que foi compilado; a UI nunca mostra um conector que não está no binário.
 
 ---
 
@@ -200,6 +200,23 @@ Sem driver ADBC oficial pro MySQL — bridging via `mysql_async` (mesmo padrão 
 }}
 ```
 Payload de cada mensagem é decodificado como JSON e projetado sobre `fields` — fonte genérica de Kafka, sem semântica de CDC (CDC é nativo por banco: `postgres-cdc`/`mongodb-cdc`/`mysql-cdc`, ver `ARCHITECTURE.md §7`). Offsets são commitados manualmente ao final de cada leitura, alinhado com o checkpoint do pipeline (`enable.auto.commit` desligado).
+
+#### `mqtt` — **source apenas** (feature `mqtt` + `nexus-connector-mqtt/client`, protocolo padrão de telemetria IoT/sensor)
+```json
+{"connector": "mqtt", "config": {
+  "broker_url": "mqtts://broker.example.com:8883",
+  "client_id": "nexusflow-sensores",
+  "topic_filter": "sensores/+/temperatura",
+  "qos": "at_least_once",
+  "username": "device",
+  "password": "...",
+  "fields": [{"name": "valor", "data_type": "float64"}],
+  "batch_size": 500,
+  "poll_timeout_ms": 2000,
+  "max_messages": 100000
+}}
+```
+`topic_filter` aceita wildcard MQTT (`+` um nível, `#` os níveis restantes) — uma subscription pode misturar vários sensores lógicos numa leitura só, então toda linha de saída ganha a coluna extra `__mqtt_topic` com o tópico exato de onde veio (mesmo precedente do `__opcode` em CDC). Payload de cada mensagem decodificado como JSON e projetado sobre `fields`, igual ao `kafka`. `client_id` **não é opcional** — reutilizar o mesmo id entre runs, junto com sessão persistente (`clean_session: false`, sempre ligado), é o que faz o broker guardar mensagens QoS 1/2 publicadas enquanto o NexusFlow tava offline e reentregar na reconexão: resume é 100% server-side, sem checkpoint nenhum do lado do NexusFlow (mesmo padrão do `postgres-cdc`). TLS com CA privada/certificado de cliente (mTLS, exigido por ex. pelo AWS IoT Core): campos opcionais `ca_cert_path`/`client_cert_path`/`client_key_path` (caminhos pra arquivo PEM). Payload binário/CBOR fora de escopo — só JSON.
 
 ### 4.3 APIs REST/SaaS (bridging genérico)
 
@@ -385,6 +402,7 @@ Chaves de `storage_options` por provedor:
 | `mysql` | ✅ | ✅ | bridging (`mysql_async`), schema por nome |
 | `mongodb` | ✅ | ✅ | schema explícito |
 | `kafka` | ✅ | — | só leitura, genérico (sem CDC) |
+| `mqtt` | ✅ | — | telemetria IoT/sensor, resume via sessão persistente |
 | `rest` | ✅ | — | genérico, paginação offset/cursor |
 | `webhook` | — | ✅ | mesmo crate do `rest` |
 | `odbc` | ✅ | ✅ | legado, driver nativo |

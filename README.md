@@ -2,7 +2,7 @@
 
 **Universal Rust Data & Vector Framework** — movimentação, transformação, vetorização e orquestração de dados (ETL/ELT/Streaming) de altíssima performance.
 
-> Status: ✅ MVP completo e além — 18 crates de conector (25 nomes no catálogo com as variantes CDC: Postgres/SQLite fast-path, MySQL/MongoDB/Kafka/REST/ODBC/CSV bridging, sinks vetoriais, data lake formats, AI Lake e webhook) linkáveis via feature flag, API + UI + observabilidade + distribuição Linux funcionando end-to-end. Windows tem build de release removido do CI (gap real de dependência, ver nota abaixo); macOS tem specs mas ainda não foi validado em máquina real.
+> Status: ✅ MVP completo e além — 19 crates de conector (26 nomes no catálogo com as variantes CDC: Postgres/SQLite fast-path, MySQL/MongoDB/Kafka/MQTT/REST/ODBC/CSV bridging, sinks vetoriais, data lake formats, AI Lake e webhook) linkáveis via feature flag, API + UI + observabilidade + distribuição Linux funcionando end-to-end. Windows tem build de release removido do CI (gap real de dependência, ver nota abaixo); macOS tem specs mas ainda não foi validado em máquina real.
 
 ## O que é
 
