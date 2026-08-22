@@ -33,8 +33,8 @@ impl MqttSource {
             .host_port_tls()
             .map_err(|e| NexusError::Connector(format!("mqtt broker_url invalid: {e}")))?;
 
-        let mut options = MqttOptions::new(config.client_id.clone(), host, port);
-        options.set_keep_alive(Duration::from_secs(30));
+        let mut options = MqttOptions::new(config.client_id.clone(), (host, port));
+        options.set_keep_alive(30);
         // Persistent session: see the struct doc comment above for why this
         // is never `true`.
         options.set_clean_session(false);
@@ -47,7 +47,10 @@ impl MqttSource {
             options.set_transport(build_transport(config)?);
         }
 
-        let (client, eventloop) = AsyncClient::new(options, 100);
+        let (client, mut eventloop) = AsyncClient::builder(options)
+            .capacity(100)
+            .try_build()
+            .map_err(|e| NexusError::Connector(format!("mqtt client build failed: {e}")))?;
         let qos = match config.qos {
             MqttQos::AtMostOnce => QoS::AtMostOnce,
             MqttQos::AtLeastOnce => QoS::AtLeastOnce,
@@ -57,6 +60,32 @@ impl MqttSource {
             .subscribe(config.topic_filter.clone(), qos)
             .await
             .map_err(|e| NexusError::Connector(format!("mqtt subscribe failed: {e}")))?;
+
+        // `subscribe().await` only queues the SUBSCRIBE packet — nothing
+        // drives the connection or sends it until `eventloop.poll()` runs,
+        // which otherwise only happens inside `read_batches`. Without this,
+        // any message published between `connect` returning and the first
+        // `read_batches` call races the broker's SUBACK and is silently
+        // dropped (the broker doesn't know about the subscription yet).
+        // Block here until the SUBACK actually comes back.
+        let poll_timeout = Duration::from_millis(config.poll_timeout_ms);
+        loop {
+            let next = tokio::time::timeout(poll_timeout, eventloop.poll()).await;
+            match next {
+                Ok(Ok(Event::Incoming(Packet::SubAck(_)))) => break,
+                Ok(Ok(_)) => continue,
+                Ok(Err(e)) => {
+                    return Err(NexusError::Connector(format!(
+                        "mqtt connection failed while awaiting subscribe ack: {e}"
+                    )))
+                }
+                Err(_) => {
+                    return Err(NexusError::Connector(
+                        "mqtt broker did not ack subscribe within poll_timeout_ms".into(),
+                    ))
+                }
+            }
+        }
 
         Ok(Self {
             client,
@@ -151,9 +180,13 @@ impl Source for MqttSource {
 
             let mut row = parse_payload(&publish.payload)?;
             if let Some(obj) = row.as_object_mut() {
+                // `Publish::topic` is `Bytes`, not `String`, in this crate
+                // (unlike the classic `rumqttc` this replaced) — MQTT topics
+                // are UTF-8 by protocol spec, so lossy conversion only ever
+                // kicks in for a broker sending malformed data.
                 obj.insert(
                     MQTT_TOPIC_COLUMN.to_string(),
-                    serde_json::Value::String(publish.topic.clone()),
+                    serde_json::Value::String(String::from_utf8_lossy(&publish.topic).into_owned()),
                 );
             }
             buffer.push(row);

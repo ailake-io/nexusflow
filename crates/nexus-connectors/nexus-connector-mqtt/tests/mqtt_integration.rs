@@ -4,8 +4,7 @@ use arrow_array::Array;
 use futures::StreamExt;
 use nexus_connector_mqtt::{MqttConnectorConfig, MqttDataType, MqttFieldSpec, MqttQos, MqttSource};
 use nexus_core::Source;
-use rumqttc::{AsyncClient, MqttOptions, QoS};
-use std::time::Duration;
+use rumqttc::{AsyncClient, MqttOptions, PublishOptions, QoS};
 use testcontainers_modules::mosquitto::Mosquitto;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 
@@ -17,9 +16,12 @@ async fn consumes_json_messages_as_record_batches_with_topic_column() {
         .expect("mosquitto starts");
     let port = node.get_host_port_ipv4(1883).await.expect("container port");
 
-    let mut publisher_options = MqttOptions::new("nexus-test-publisher", "127.0.0.1", port);
-    publisher_options.set_keep_alive(Duration::from_secs(5));
-    let (publisher, mut publisher_eventloop) = AsyncClient::new(publisher_options, 10);
+    let mut publisher_options = MqttOptions::new("nexus-test-publisher", ("127.0.0.1", port));
+    publisher_options.set_keep_alive(5);
+    let (publisher, mut publisher_eventloop) = AsyncClient::builder(publisher_options)
+        .capacity(10)
+        .try_build()
+        .expect("publisher client builds");
     tokio::spawn(async move {
         loop {
             if publisher_eventloop.poll().await.is_err() {
@@ -55,9 +57,8 @@ async fn consumes_json_messages_as_record_batches_with_topic_column() {
         publisher
             .publish(
                 format!("sensors/{station}/temperatura"),
-                QoS::AtLeastOnce,
-                false,
                 payload,
+                PublishOptions::new(QoS::AtLeastOnce),
             )
             .await
             .expect("message published");
