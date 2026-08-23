@@ -9,13 +9,16 @@ import { EmptyState } from '@/components/EmptyState'
 import {
   LineagePipelineNodeView,
   LineageResourceNodeView,
+  LineageDbtNodeView,
   type LineagePipelineNodeData,
   type LineageResourceNodeData,
+  type LineageDbtNodeData,
 } from '@/components/lineage-nodes'
 
 const lineageNodeTypes = {
   pipeline: LineagePipelineNodeView,
   resource: LineageResourceNodeView,
+  dbt_node: LineageDbtNodeView,
 }
 
 const RANK_GAP = 260
@@ -81,11 +84,46 @@ function computeLayout(
     byRank.get(r)!.push(id)
   }
 
+  const incoming = new Map<string, string[]>()
+  for (const e of edges) {
+    if (!incoming.has(e.to)) incoming.set(e.to, [])
+    incoming.get(e.to)!.push(e.from)
+  }
+
+  // Two passes per rank: a node with exactly one parent in the previous
+  // rank inherits that parent's row (keeps a straight chain like
+  // pipeline -> model A -> model B visually level instead of every rank
+  // restarting its row count at 0, which put an unrelated node from an
+  // earlier rank in the same row as a later, taller chain — a real
+  // collision found reviewing this in a real browser, not theoretical).
+  // Anything left over (multiple parents, no parent, or its parent's row
+  // is already taken) gets the next free row in this rank.
   const positions: Record<string, { x: number; y: number }> = {}
-  for (const [r, ids] of byRank.entries()) {
-    ids.forEach((id, i) => {
-      positions[id] = { x: r * RANK_GAP, y: i * ROW_GAP }
-    })
+  const ranksAscending = Array.from(byRank.keys()).sort((a, b) => a - b)
+  for (const r of ranksAscending) {
+    const ids = byRank.get(r)!
+    const usedRows = new Set<number>()
+    const pending: string[] = []
+
+    for (const id of ids) {
+      const parents = (incoming.get(id) ?? []).filter((p) => rank.get(p) === r - 1)
+      const parentPosition = parents.length === 1 ? positions[parents[0]] : undefined
+      const parentRow = parentPosition ? parentPosition.y / ROW_GAP : null
+      if (parentRow !== null && !usedRows.has(parentRow)) {
+        positions[id] = { x: r * RANK_GAP, y: parentRow * ROW_GAP }
+        usedRows.add(parentRow)
+      } else {
+        pending.push(id)
+      }
+    }
+
+    let cursor = 0
+    for (const id of pending) {
+      while (usedRows.has(cursor)) cursor += 1
+      positions[id] = { x: r * RANK_GAP, y: cursor * ROW_GAP }
+      usedRows.add(cursor)
+      cursor += 1
+    }
   }
   return positions
 }
@@ -102,13 +140,21 @@ function toFlowElements(graph: LineageGraph): { nodes: Node[]; edges: Edge[] } {
       }
       return { id: n.id, type: 'pipeline', position, data }
     }
-    const data: LineageResourceNodeData = {
-      kind: 'resource',
-      label: n.label,
-      connector: n.connector,
-      resourceKind: n.resource_kind,
+    if (n.kind === 'resource') {
+      const data: LineageResourceNodeData = {
+        kind: 'resource',
+        label: n.label,
+        connector: n.connector,
+        resourceKind: n.resource_kind,
+      }
+      return { id: n.id, type: 'resource', position, data }
     }
-    return { id: n.id, type: 'resource', position, data }
+    const data: LineageDbtNodeData = {
+      kind: 'dbt_node',
+      label: n.label,
+      resourceType: n.resource_type,
+    }
+    return { id: n.id, type: 'dbt_node', position, data }
   })
   const edges: Edge[] = graph.edges.map((e) => ({
     id: `${e.from}->${e.to}`,

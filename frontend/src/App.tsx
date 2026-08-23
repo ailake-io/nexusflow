@@ -8,6 +8,7 @@ import {
   ShieldCheck,
   Store as StoreIcon,
   Waypoints,
+  BadgeCheck,
 } from 'lucide-react'
 import { useAuth } from '@/lib/auth-context'
 import { useI18n } from '@/lib/i18n'
@@ -23,8 +24,9 @@ const PipelineStatusBoard = lazy(() => import('@/components/PipelineStatusBoard'
 const UsersPanel = lazy(() => import('@/components/UsersPanel'))
 const Store = lazy(() => import('@/components/Store'))
 const LineagePanel = lazy(() => import('@/components/LineagePanel'))
+const QualityPanel = lazy(() => import('@/components/QualityPanel'))
 
-type View = 'canvas' | 'pipelines' | 'status' | 'store' | 'lineage' | 'admin'
+type View = 'canvas' | 'pipelines' | 'status' | 'store' | 'lineage' | 'quality' | 'admin'
 
 function ViewFallback() {
   const { t } = useI18n()
@@ -67,6 +69,7 @@ function App() {
     { id: 'status', label: t('nav.status'), icon: Activity },
     { id: 'store', label: t('nav.store'), icon: StoreIcon },
     { id: 'lineage', label: t('nav.lineage'), icon: Waypoints },
+    { id: 'quality', label: t('nav.quality'), icon: BadgeCheck },
     // Client-side gating only decides visibility of the nav item — the
     // /users routes are Admin-enforced server-side regardless (auth.rs).
     ...(role === 'admin'
@@ -154,6 +157,7 @@ function App() {
             {view === 'status' && <PipelineStatusBoard />}
             {view === 'store' && <Store />}
             {view === 'lineage' && <LineagePanel />}
+            {view === 'quality' && <QualityPanel />}
             {view === 'admin' && <UsersPanel />}
           </Suspense>
         </div>

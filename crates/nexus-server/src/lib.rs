@@ -6,6 +6,8 @@ mod connectors;
 mod crypto;
 mod db;
 mod dbt;
+mod dbt_lineage_store;
+mod dbt_test_result_store;
 #[cfg(feature = "embed-ui")]
 mod embedded_ui;
 mod error;
@@ -83,6 +85,12 @@ struct AppState {
     pipelines: PipelineStore,
     run_logs: RunLogStore,
     license_store: LicenseStore,
+    dbt_lineage: dbt_lineage_store::DbtLineageStore,
+    // Only read from `execute_pipeline_run`'s `#[cfg(feature = "dbt")]`
+    // block — kept on `AppState` unconditionally so build_state/test_state
+    // don't need their own feature-gated construction path.
+    #[allow(dead_code)]
+    dbt_test_results: dbt_test_result_store::DbtTestResultStore,
     progress: ProgressHub,
     alerts: AlertNotifier,
     login_rate_limiter: std::sync::Arc<rate_limit::LoginRateLimiter>,
@@ -185,6 +193,10 @@ fn router(state: AppState) -> Router {
         .route(
             "/pipelines/{id}/runs/{run_id}/logs",
             get(list_run_logs_handler),
+        )
+        .route(
+            "/pipelines/{id}/dbt-tests",
+            get(list_dbt_test_results_handler),
         )
         // Whole-catalog graph, not a per-pipeline secret — the handler
         // below only ever hands back connector names + allowlisted
@@ -577,6 +589,48 @@ async fn execute_pipeline_run(
                     Ok(outcome) => {
                         outcome.log_summary();
                         logger.info("dbt finished").await;
+                        // Persist what dbt already computes (parent_map,
+                        // per-test detail) instead of letting it vanish
+                        // once `outcome` goes out of scope below — feeds
+                        // the Lineage tab's dbt sub-graph and (later) the
+                        // Quality tab's test history. A failure here logs
+                        // and moves on: observability must never fail an
+                        // otherwise-successful run (same posture as
+                        // `resource_stats`'s background sampler).
+                        #[cfg(feature = "dbt")]
+                        {
+                            if let Some(lineage) = &outcome.lineage {
+                                if let Err(e) = state
+                                    .dbt_lineage
+                                    .record(&spec.pipeline_id, &lineage.parent_map)
+                                    .await
+                                {
+                                    tracing::warn!(error = %e, "failed to persist dbt lineage");
+                                }
+                            }
+                            if let Some(rr) = &outcome.run_results {
+                                let test_results: Vec<dbt_test_result_store::DbtTestOutcome> = rr
+                                    .results
+                                    .iter()
+                                    .filter(|r| r.unique_id.split('.').next() == Some("test"))
+                                    .map(|r| dbt_test_result_store::DbtTestOutcome {
+                                        unique_id: r.unique_id.clone(),
+                                        status: r.status.clone(),
+                                        message: r.message.clone(),
+                                        execution_time: r.execution_time,
+                                    })
+                                    .collect();
+                                if !test_results.is_empty() {
+                                    if let Err(e) = state
+                                        .dbt_test_results
+                                        .record_all(&spec.pipeline_id, run_id, &test_results)
+                                        .await
+                                    {
+                                        tracing::warn!(error = %e, "failed to persist dbt test results");
+                                    }
+                                }
+                            }
+                        }
                         dbt_summary = outcome.summary_json();
                     }
                     Err(e) => {
@@ -850,6 +904,24 @@ async fn list_runs_handler(
     Ok(Json(state.pipelines.list_runs(&id, limit, offset).await?))
 }
 
+/// Every recorded dbt test result for this pipeline, grouped by test —
+/// what the Quality tab renders as a per-test pass/fail history. The
+/// aggregate counts (`tests_total`/`tests_passed`) already ride along on
+/// each `RunRecord.dbt_summary` from `GET /pipelines/{id}/runs`; this is
+/// the detail behind them (`dbt_test_result_store.rs`).
+async fn list_dbt_test_results_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<dbt_test_result_store::DbtTestOutcome>>, ApiError> {
+    Ok(Json(
+        state
+            .dbt_test_results
+            .list_for_pipeline(&id)
+            .await
+            .map_err(ApiError::internal)?,
+    ))
+}
+
 /// Historical/replayable view of a run's execution log — works for a run
 /// still in progress, one that already finished, and (the whole point) one
 /// nobody had the live WebSocket open for, e.g. a scheduler-triggered run
@@ -888,7 +960,12 @@ async fn lineage_handler(
         // garbage, so they'd pollute the graph rather than inform it.
         .filter(|spec| !spec.draft)
         .collect();
-    Ok(Json(lineage::build_graph(&specs)))
+    let dbt_lineages = state
+        .dbt_lineage
+        .get_all()
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(lineage::build_graph(&specs, &dbt_lineages)))
 }
 
 #[derive(Deserialize)]
@@ -1251,6 +1328,12 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
     // operate — a license is a single-row table, not worth its own
     // connection pool/URL to configure.
     let license_store = LicenseStore::connect(&config.auth_database_url).await?;
+    // Same database as pipelines/run_logs — dbt lineage/test results are
+    // intrinsically tied to a pipeline's own runs, not worth a 6th env var.
+    let dbt_lineage =
+        dbt_lineage_store::DbtLineageStore::connect(&config.pipelines_database_url).await?;
+    let dbt_test_results =
+        dbt_test_result_store::DbtTestResultStore::connect(&config.pipelines_database_url).await?;
     if let Some((username, password)) = &config.bootstrap_admin {
         auth_store.seed_admin_if_empty(username, password).await?;
     }
@@ -1270,6 +1353,8 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         pipelines,
         run_logs,
         license_store,
+        dbt_lineage,
+        dbt_test_results,
         progress: ProgressHub::default(),
         alerts: AlertNotifier::new(AlertConfig {
             slack_webhook_url: config.slack_webhook_url.clone(),
@@ -1515,6 +1600,12 @@ mod tests {
             pipelines: PipelineStore::connect("sqlite::memory:").await.unwrap(),
             run_logs: RunLogStore::connect("sqlite::memory:").await.unwrap(),
             license_store: LicenseStore::connect("sqlite::memory:").await.unwrap(),
+            dbt_lineage: dbt_lineage_store::DbtLineageStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
+            dbt_test_results: dbt_test_result_store::DbtTestResultStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
             progress: ProgressHub::default(),
             alerts: AlertNotifier::new(AlertConfig::default()),
             login_rate_limiter: std::sync::Arc::new(rate_limit::LoginRateLimiter::new(
@@ -2041,6 +2132,69 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("connect failed"));
+    }
+
+    #[tokio::test]
+    async fn dbt_test_results_endpoint_returns_what_was_recorded() {
+        let state = test_state().await;
+        let read_token = bearer(&state, Role::Read);
+        // Seeded directly (not via a real dbt run) — this endpoint's own
+        // job is just serving back what `DbtTestResultStore` already has,
+        // same scope as `dbt_lineage_store.rs`'s own store-level tests.
+        state
+            .dbt_test_results
+            .record_all(
+                "p1",
+                1,
+                &[dbt_test_result_store::DbtTestOutcome {
+                    unique_id: "test.proj.not_null_orders_id".to_string(),
+                    status: "fail".to_string(),
+                    message: Some("3 rows failed".to_string()),
+                    execution_time: 0.01,
+                }],
+            )
+            .await
+            .unwrap();
+        let app = router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/pipelines/p1/dbt-tests")
+                    .header("authorization", &read_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let results = body_json(response).await;
+        let results = results.as_array().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["unique_id"], "test.proj.not_null_orders_id");
+        assert_eq!(results[0]["status"], "fail");
+        assert_eq!(results[0]["message"], "3 rows failed");
+    }
+
+    #[tokio::test]
+    async fn dbt_test_results_endpoint_is_empty_for_a_pipeline_that_never_ran_dbt() {
+        let state = test_state().await;
+        let read_token = bearer(&state, Role::Read);
+        let app = router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/pipelines/no-such-pipeline/dbt-tests")
+                    .header("authorization", &read_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_json(response).await.as_array().unwrap().len(), 0);
     }
 
     #[tokio::test]
@@ -2832,6 +2986,12 @@ mod tests {
             pipelines: PipelineStore::connect("sqlite::memory:").await.unwrap(),
             run_logs: RunLogStore::connect("sqlite::memory:").await.unwrap(),
             license_store: LicenseStore::connect("sqlite::memory:").await.unwrap(),
+            dbt_lineage: dbt_lineage_store::DbtLineageStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
+            dbt_test_results: dbt_test_result_store::DbtTestResultStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
             progress: ProgressHub::default(),
             alerts: AlertNotifier::new(AlertConfig::default()),
             login_rate_limiter: limiter,

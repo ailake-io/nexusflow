@@ -218,7 +218,15 @@ jobs:
       # without an upstream release; high/critical is the bar worth
       # blocking a merge over.
       - run: npm audit --audit-level=high
+      # continue-on-error: this artifact is a debug convenience only (1-day
+      # retention, nothing downstream reads it) — it must never be the
+      # reason this job (and everything gated on it) reports red. Hit in
+      # practice: the org's Actions artifact storage quota filled up
+      # ("Artifact storage quota has been hit... recalculated every 6-12
+      # hours"), which failed this step on an otherwise fully green build/
+      # test/lint/audit run.
       - uses: actions/upload-artifact@834a144ee995460fba8ed112a2fc961b36a5ec5a # v4.3.6
+        continue-on-error: true
         with:
           name: frontend-dist
           path: frontend/dist

@@ -1,5 +1,16 @@
 import { Handle, Position, type NodeProps } from '@xyflow/react'
-import { Workflow, Table2, Boxes, Radio, FileText, CalendarClock } from 'lucide-react'
+import {
+  Workflow,
+  Table2,
+  Boxes,
+  Radio,
+  FileText,
+  CalendarClock,
+  Layers,
+  Database,
+  Sprout,
+  Camera,
+} from 'lucide-react'
 import type { LineageResourceKind } from '@/lib/api'
 
 /** Read-only node renderers for the Lineage tab — visually related to
@@ -20,11 +31,24 @@ export type LineageResourceNodeData = {
   resourceKind: LineageResourceKind
 }
 
+export type LineageDbtNodeData = {
+  kind: 'dbt_node'
+  label: string
+  resourceType: string
+}
+
 const resourceIcon: Record<LineageResourceKind, typeof Table2> = {
   table: Table2,
   collection: Boxes,
   topic: Radio,
   file: FileText,
+}
+
+const dbtIcon: Record<string, typeof Layers> = {
+  model: Layers,
+  source: Database,
+  seed: Sprout,
+  snapshot: Camera,
 }
 
 export function LineagePipelineNodeView({
@@ -63,6 +87,23 @@ export function LineageResourceNodeView({
         {data.connector}
       </div>
       <Handle type="source" position={Position.Right} className="!h-2.5 !w-2.5 !border-2 !bg-background !border-white/30" />
+    </div>
+  )
+}
+
+export function LineageDbtNodeView({ data }: NodeProps & { data: LineageDbtNodeData }) {
+  const Icon = dbtIcon[data.resourceType] ?? Layers
+  return (
+    <div className="min-w-[9rem] rounded-lg border border-emerald-400/40 bg-card px-3 py-2 shadow-sm">
+      <Handle type="target" position={Position.Left} className="!h-2.5 !w-2.5 !border-2 !bg-background !border-emerald-400" />
+      <div className="flex items-center gap-2">
+        <Icon className="h-3.5 w-3.5 text-emerald-400" />
+        <div className="truncate text-sm font-semibold text-foreground">{data.label}</div>
+      </div>
+      <div className="mt-0.5 truncate text-[10px] uppercase tracking-wide text-muted-foreground">
+        dbt {data.resourceType}
+      </div>
+      <Handle type="source" position={Position.Right} className="!h-2.5 !w-2.5 !border-2 !bg-background !border-emerald-400" />
     </div>
   )
 }

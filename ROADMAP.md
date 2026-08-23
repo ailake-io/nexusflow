@@ -285,6 +285,85 @@ Protocolo padrão de telemetria IoT (AWS IoT Core, Azure IoT Hub, HiveMQ, Mosqui
 
 ---
 
+## Fase 24 — Aba Infra: Canvas visual pra Terraform (AWS) — planejado, não implementado
+
+Usuário pediu uma aba nova: desenhar infraestrutura AWS num Canvas
+visual (caixinha por recurso, clicar traz a config necessária) e
+gerar Terraform. Pesquisado e planejado nesta sessão, execução fica
+pra um próximo passo — registrado aqui pra não perder o levantamento.
+
+**Achado que muda a estimativa de esforço pra baixo**: o mecanismo
+inteiro já existe, só nunca foi usado fora do domínio "conector de
+dado". `nexus_core::registry::submit_connector!` (macro `inventory` +
+`schemars::schema_for!`) já gera schema JSON automático de qualquer
+struct Rust com `Deserialize + JsonSchema` e expõe via catálogo — é
+exatamente "clicar na caixinha, trazer a config necessária", só que
+hoje só serve conector. `frontend/src/components/SchemaForm.tsx` já é
+100% genérico (renderiza formulário de qualquer JSON Schema desse
+formato, zero acoplamento a "conector"). `ConnectorPalette.tsx`/
+`DagCanvas.tsx` já têm o padrão de paleta arrastável + Canvas editável
++ salvar/carregar spec. Não precisa reinventar nenhum dos três — só
+aplicar o mesmo padrão a um domínio novo.
+
+**Decisão de escopo/segurança, já validada com o usuário**:
+- **Só desenho + `terraform plan`** — mostra o que mudaria, nunca
+  aplica. `apply`/`destroy` fica de fora, sem nenhum code path pra
+  isso (fronteira de código, não de UI — não é botão escondido, é
+  capacidade que não existe).
+- `terraform plan` precisa de credencial AWS real (chama a API pra
+  saber o estado atual e computar o diff), mas uma credencial
+  só-leitura (`Describe*`/`List*`/`Get*`) não cria nem destrói nada —
+  o `plan` em si é seguro mesmo com credencial real, desde que a
+  credencial tenha esse escopo.
+- Credencial AWS nunca passa pela API do NexusFlow nem é persistida
+  em spec — vem de env var do processo do `nexus-server`
+  (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_PROFILE`, o jeito
+  que o próprio Terraform já lê por padrão), mesmo princípio que
+  `DBT_PROFILES_DIR` já usa hoje pra dbt.
+- **Recursos**: as 3 categorias pedidas (dados/streaming, banco de
+  dados, VMs/compute). Fazer os ~10+ recursos AWS de uma vez é grande
+  demais pra um PR — proposto começar com 6 representativos que
+  cobrem as 3 categorias E provam os dois casos reais que existem:
+  recurso standalone (`aws_s3_bucket`, `aws_dynamodb_table`) e
+  recurso com referência cruzada (`aws_db_instance`/`aws_instance`
+  dependendo de `aws_vpc`/`aws_subnet`/`aws_security_group`).
+  Kinesis/Glue/MSK/Redshift ficam como expansão incremental depois,
+  mesmo mecanismo, baixo risco (mesmo padrão que a allowlist de
+  recurso da aba Linhagem desta sessão já estabeleceu).
+
+**Desenho técnico levantado** (detalhe completo ficou só no plano
+efêmero da sessão, resumo aqui):
+- Novo crate `crates/nexus-infra/` — um struct por recurso
+  (`Deserialize + Serialize + JsonSchema`), campo que referencia outro
+  nó do Canvas usa sufixo `_ref` (convenção pro frontend desenhar
+  select-de-nó em vez de texto livre, e pro backend resolver pro
+  endereço Terraform certo `aws_subnet.<node_name>.id`). `to_hcl()`
+  por recurso — função pura, testável sem terraform instalado, mesmo
+  padrão dos SQL builders de conector. Registro paralelo ao de
+  conector: `InfraResourceDescriptor` + `submit_infra_resource!`,
+  mesmíssimo mecanismo `inventory`/`schemars` de `registry.rs`.
+- `InfraSpec` — grafo genérico nó+aresta (mesma forma de
+  `lineage::LineageGraph`), não o par fixo source/sink do
+  `PipelineSpec`, porque dependência de infra não tem forma fixa.
+- Backend: `InfraStore` (mesmo padrão dual-dialeto de
+  `pipeline_store.rs`), `GET /infra/resources` (catálogo),
+  CRUD `/infra`, `POST /infra/{id}/plan` (monta HCL, roda
+  `terraform init -backend=false` + `terraform plan -no-color` como
+  subprocess — mesmíssimo padrão de `dbt::run()`).
+- Frontend: `InfraCanvas.tsx` (mesma estrutura de `DagCanvas.tsx`,
+  mas com `onConnect` de verdade — usuário desenha a aresta de
+  dependência arrastando, diferente da Linhagem read-only),
+  `ConnectorPalette`/`NodeInspector`/`SchemaForm` reaproveitados quase
+  sem alteração.
+- Terraform confirmado instalado no ambiente de dev (`v1.15.9`) —
+  verificação de ponta a ponta consegue chegar até `terraform init`/
+  `terraform validate` (não precisa de credencial AWS), só não chega
+  em `terraform plan` de verdade sem conta AWS real pra testar contra
+  — mesma ressalva de "sem conta real pra validar" que outros
+  conectores desta sessão já carregam.
+
+---
+
 **Critério de "MVP pronto"**: Fases 0–3 + 7 (parcial: auth básica) + 8 (canvas mínimo) funcionando end-to-end — mover dados de Postgres pra Postgres via canvas visual, com checkpoint por partição, retry e escrita idempotente. **Atingido e superado** — Fases 0–11 e 13–17 completas, só falta Fase 12 (enterprise, repo separado) e os itens condicionais/parciais marcados acima.
 
 ## Débitos conhecidos (aceitos pro MVP, resolver antes de vender enterprise)
