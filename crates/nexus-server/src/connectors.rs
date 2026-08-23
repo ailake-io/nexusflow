@@ -12,6 +12,8 @@ use nexus_connector_ailake::{AilakeCdcConfig, AilakeCdcSource};
 use nexus_connector_ailake::{AilakeConnectorConfig, AilakeSink, AilakeSource};
 #[cfg(feature = "chromadb")]
 use nexus_connector_chromadb::{ChromaConnectorConfig, ChromaSink};
+#[cfg(feature = "clickhouse")]
+use nexus_connector_clickhouse::{ClickHouseConnectorConfig, ClickHouseSink, ClickHouseSource};
 #[cfg(feature = "csv")]
 use nexus_connector_csv::{CsvConnectorConfig, CsvSink, CsvSource};
 #[cfg(feature = "deltalake-cdc")]
@@ -157,6 +159,10 @@ pub fn validate_source_config(
         "csv" => {
             let _: CsvConnectorConfig = serde_json::from_value(node.config.clone())?;
         }
+        #[cfg(feature = "clickhouse")]
+        "clickhouse" => {
+            let _: ClickHouseConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
         #[cfg(feature = "postgres-cdc")]
         "postgres-cdc" => {
             let _: PostgresCdcConfig = serde_json::from_value(node.config.clone())?;
@@ -259,6 +265,11 @@ pub async fn build_source(
         "csv" => {
             let cfg: CsvConnectorConfig = serde_json::from_value(node.config.clone())?;
             Box::new(CsvSource::connect(&cfg)?)
+        }
+        #[cfg(feature = "clickhouse")]
+        "clickhouse" => {
+            let cfg: ClickHouseConnectorConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(ClickHouseSource::connect(&cfg, None).await?)
         }
         #[cfg(feature = "postgres-cdc")]
         "postgres-cdc" => {
@@ -371,6 +382,10 @@ pub fn validate_sink_config(
         #[cfg(feature = "csv")]
         "csv" => {
             let _: CsvConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "clickhouse")]
+        "clickhouse" => {
+            let _: ClickHouseConnectorConfig = serde_json::from_value(node.config.clone())?;
         }
         other => match ConnectorRegistry::find_sink_builder(other) {
             Some(builder) => (builder.validate)(&node.config)?,
@@ -514,6 +529,11 @@ pub async fn build_sink(
         "csv" => {
             let cfg: CsvConnectorConfig = serde_json::from_value(node.config.clone())?;
             Box::new(CsvSink::connect(&cfg)?)
+        }
+        #[cfg(feature = "clickhouse")]
+        "clickhouse" => {
+            let cfg: ClickHouseConnectorConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(ClickHouseSink::connect(&cfg, columns).await?)
         }
         other => match ConnectorRegistry::find_sink_builder(other) {
             Some(builder) => (builder.build)(node.config.clone()).await?,
