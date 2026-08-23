@@ -1,6 +1,6 @@
 # Guia de uso do NexusFlow — instalação a conector por conector
 
-Referência completa e prática: da instalação até a configuração exata de cada um dos 26 conectores, transformações (SQL, embeddings, dbt) e recursos de execução (preview, agendamento). Para o passo a passo mínimo de "primeiro pipeline", ver [`GETTING_STARTED.md`](./GETTING_STARTED.md); para arquitetura interna, [`ARCHITECTURE.md`](../ARCHITECTURE.md).
+Referência completa e prática: da instalação até a configuração exata de cada um dos 27 conectores, transformações (SQL, embeddings, dbt) e recursos de execução (preview, agendamento). Para o passo a passo mínimo de "primeiro pipeline", ver [`GETTING_STARTED.md`](./GETTING_STARTED.md); para arquitetura interna, [`ARCHITECTURE.md`](../ARCHITECTURE.md).
 
 ## Índice
 
@@ -39,7 +39,7 @@ docker run -d --name nexusflow -p 8080:8080 \
 
 Variáveis de ambiente completas: ver [`GETTING_STARTED.md` §3](./GETTING_STARTED.md#3-variáveis-de-ambiente). As duas obrigatórias são `NEXUS_JWT_SECRET` e `NEXUS_ENCRYPTION_KEY` — sem elas o processo não sobe.
 
-**Conectores linkados no binário**: binários pré-buildados (release, `.deb`, AppImage, rpm) e a imagem Docker publicada no GHCR já vêm com os 26 conectores ligados (`embed-ui,connectors-all`: 20 batch + 6 CDC nativos; a feature `rest` registra `rest` e `webhook` como nomes separados no catálogo). Buildando a partir do source, cada conector é uma feature Cargo opcional (`cargo build --features embed-ui,connectors-all` liga todos de uma vez) — ver [`GETTING_STARTED.md` §2](./GETTING_STARTED.md#2-habilitando-conectores). O catálogo em `GET /connectors` sempre reflete exatamente o que foi compilado; a UI nunca mostra um conector que não está no binário.
+**Conectores linkados no binário**: binários pré-buildados (release, `.deb`, AppImage, rpm) e a imagem Docker publicada no GHCR já vêm com os 27 conectores ligados (`embed-ui,connectors-all`: 21 batch + 6 CDC nativos; a feature `rest` registra `rest` e `webhook` como nomes separados no catálogo). Buildando a partir do source, cada conector é uma feature Cargo opcional (`cargo build --features embed-ui,connectors-all` liga todos de uma vez) — ver [`GETTING_STARTED.md` §2](./GETTING_STARTED.md#2-habilitando-conectores). O catálogo em `GET /connectors` sempre reflete exatamente o que foi compilado; a UI nunca mostra um conector que não está no binário.
 
 ---
 
@@ -151,6 +151,36 @@ Requer `ADBC_DRIVER_POSTGRESQL_PATH` apontando pro `.so` (build com `scripts/bui
 }}
 ```
 Requer `ADBC_DRIVER_SQLITE_PATH`. `uri` aceita `:memory:`. Tabela criada automaticamente no sink se não existir.
+
+#### `clickhouse` — source + sink (sink append-only)
+```json
+{"connector": "clickhouse", "config": {
+  "host": "localhost", "port": 8123, "database": "default",
+  "username": "default", "password": "",
+  "table": "events", "partition_column": "id",
+  "timeout_seconds": 30
+}}
+```
+Driver **oficial** (ClickHouse, Inc.), instalação de um comando só —
+`dbc install clickhouse` (ADBC Driver Foundry), aponte
+`ADBC_DRIVER_CLICKHOUSE_PATH` pro binário instalado. Diferente de
+Postgres/SQLite, não precisa compilar nada na mão. Aceita `uri`
+completo (`http://user:pass@host:8123/db`) como alternativa aos campos
+individuais — a interface HTTP do ClickHouse fala esse formato
+nativamente.
+
+`partition_column` é opcional e usado só pra dividir a leitura em
+partições paralelas — qualquer coluna orderável, não precisa ser
+única (ClickHouse não impõe PK como o Postgres). `None` lê a tabela
+inteira sem `WHERE`.
+
+**Sink é append-only**: ClickHouse não tem `ON CONFLICT`/upsert leve —
+`ALTER TABLE ... UPDATE/DELETE` são mutations assíncronas pesadas, não
+servem pra escrita por batch. Um batch de CDC com `__opcode` de delete
+é **rejeitado com erro explícito**, nunca descartado silenciosamente.
+Se precisar de dedup, use `ReplacingMergeTree`/`CollapsingMergeTree`
+no próprio ClickHouse — mecanismo idiomático da ferramenta, não
+responsabilidade deste conector.
 
 ### 4.2 SQL sem driver ADBC, NoSQL e filas (bridging — convertidos para Arrow via schema explícito)
 
@@ -399,6 +429,7 @@ Chaves de `storage_options` por provedor:
 |---|:---:|:---:|---|
 | `postgres` | ✅ | ✅ | ADBC nativo |
 | `sqlite` | ✅ | ✅ | ADBC nativo |
+| `clickhouse` | ✅ | ✅ | ADBC nativo, sink append-only (sem upsert) |
 | `mysql` | ✅ | ✅ | bridging (`mysql_async`), schema por nome |
 | `mongodb` | ✅ | ✅ | schema explícito |
 | `kafka` | ✅ | — | só leitura, genérico (sem CDC) |

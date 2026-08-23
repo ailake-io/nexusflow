@@ -20,6 +20,7 @@ members = [
     "nexus-connector-deltalake",
     "nexus-connector-iceberg",
     "nexus-connector-csv",
+    "nexus-connector-clickhouse",
 ]
 
 [workspace.package]
