@@ -206,13 +206,16 @@ export function listRuns(token: string, pipelineId: string): Promise<RunRecord[]
 /** Matches nexus-server::lineage::ResourceKind. */
 export type LineageResourceKind = 'table' | 'collection' | 'topic' | 'file'
 
-/** Matches nexus-server::lineage::LineageNode — a saved pipeline, or a
+/** Matches nexus-server::lineage::LineageNode — a saved pipeline, a
  *  resource one or more pipelines touch (identified by a connector-specific
  *  allowlisted field only, e.g. `table`/`collection`/`topic`; never a raw
- *  connection string). Discriminated by `kind`. */
+ *  connection string), or a node from a pipeline's dbt project
+ *  (`resource_type` is dbt's own vocabulary — `model`/`source`/`seed`/
+ *  `snapshot`). Discriminated by `kind`. */
 export type LineageNode =
   | { kind: 'pipeline'; id: string; label: string; has_schedule: boolean }
   | { kind: 'resource'; id: string; label: string; connector: string; resource_kind: LineageResourceKind }
+  | { kind: 'dbt_node'; id: string; label: string; resource_type: string }
 
 /** Matches nexus-server::lineage::LineageEdge. */
 export interface LineageEdge {

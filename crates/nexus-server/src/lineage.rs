@@ -33,6 +33,16 @@ pub enum LineageNode {
         connector: String,
         resource_kind: ResourceKind,
     },
+    /// One node from a pipeline's dbt project (`model`/`source`/`seed`/
+    /// `snapshot` — see `dbt_resource_type_and_label`). `id` is prefixed by
+    /// the owning pipeline (`dbt::{pipeline_id}::{unique_id}`) so two
+    /// different dbt projects reusing a model name never collide into one
+    /// node — same caution as `Resource` never merging across connectors.
+    DbtNode {
+        id: String,
+        label: String,
+        resource_type: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -114,13 +124,106 @@ fn add_resource_node(nodes: &mut BTreeMap<String, LineageNode>, node: &NodeSpec)
     Some(id)
 }
 
-/// Builds the whole-catalog lineage graph from every saved `PipelineSpec` —
-/// pure and DB-free (specs are passed in already decrypted/decoded), same
-/// testability rationale as the SQL builders in the connector crates (e.g.
-/// `nexus-connector-postgres`'s `build_select_query`). Transform/dbt/python/
-/// embedding stages stay implicit inside the pipeline node — this is
-/// pipeline-level lineage, not column-level (see `docs/` proposal, Fase 5).
-pub fn build_graph(specs: &[PipelineSpec]) -> LineageGraph {
+/// Splits a dbt `unique_id` (`"<resource_type>.<package>.<name...>"`) into
+/// its resource type and a display label (everything after the package
+/// name — `"model.proj.stg_orders"` → `("model", "stg_orders")`,
+/// `"source.proj.raw.orders"` → `("source", "raw.orders")`). Same parsing
+/// dbt itself uses internally; duplicated here (not imported from `dbt.rs`)
+/// because that module's types are feature-gated and this one isn't.
+fn dbt_resource_type_and_label(unique_id: &str) -> (&str, &str) {
+    let resource_type = unique_id.split('.').next().unwrap_or(unique_id);
+    let label = unique_id
+        .split_once('.')
+        .and_then(|(_, rest)| rest.split_once('.'))
+        .map(|(_, name)| name)
+        .unwrap_or(unique_id);
+    (resource_type, label)
+}
+
+fn dbt_node_id(pipeline_spec_id: &str, unique_id: &str) -> String {
+    format!("dbt::{pipeline_spec_id}::{unique_id}")
+}
+
+/// Merges one pipeline's dbt `parent_map` (`unique_id` -> its upstream
+/// `unique_id`s, dbt's own direction) into the graph, anchored on the
+/// pipeline node via every dbt node with no parent *within this map* (its
+/// entry points — normally `source.*` nodes reading the table the pipeline
+/// itself just loaded). Test nodes are excluded: they're validations, not
+/// part of the data-transformation flow this tab is showing (Fase 3's
+/// Quality tab is where test results belong).
+fn merge_dbt_lineage(
+    nodes: &mut BTreeMap<String, LineageNode>,
+    edges: &mut Vec<LineageEdge>,
+    pipeline_node_id: &str,
+    pipeline_spec_id: &str,
+    parent_map: &std::collections::HashMap<String, Vec<String>>,
+) {
+    let is_test = |id: &str| dbt_resource_type_and_label(id).0 == "test";
+
+    // Every real (non-test) node that appears anywhere in the map — as a
+    // key, or only inside some other node's parent list (dbt doesn't
+    // always give a leaf source its own key with an empty value).
+    let mut all_ids: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for (child, parents) in parent_map {
+        if !is_test(child) {
+            all_ids.insert(child.as_str());
+        }
+        all_ids.extend(parents.iter().map(String::as_str).filter(|p| !is_test(p)));
+    }
+
+    for unique_id in all_ids {
+        let node_id = dbt_node_id(pipeline_spec_id, unique_id);
+        nodes.entry(node_id.clone()).or_insert_with(|| {
+            let (resource_type, label) = dbt_resource_type_and_label(unique_id);
+            LineageNode::DbtNode {
+                id: node_id.clone(),
+                label: label.to_string(),
+                resource_type: resource_type.to_string(),
+            }
+        });
+
+        let real_parents: Vec<&str> = parent_map
+            .get(unique_id)
+            .into_iter()
+            .flatten()
+            .map(String::as_str)
+            .filter(|p| !is_test(p))
+            .collect();
+
+        if real_parents.is_empty() {
+            // No upstream dependency within this pipeline's dbt project —
+            // an entry point, anchored on the pipeline that ran it.
+            edges.push(LineageEdge {
+                from: pipeline_node_id.to_string(),
+                to: node_id.clone(),
+            });
+        } else {
+            for parent in real_parents {
+                edges.push(LineageEdge {
+                    from: dbt_node_id(pipeline_spec_id, parent),
+                    to: node_id.clone(),
+                });
+            }
+        }
+    }
+}
+
+/// Builds the whole-catalog lineage graph from every saved `PipelineSpec`,
+/// optionally deepened with each pipeline's latest dbt model graph
+/// (`dbt_lineages`, keyed by `pipeline_id` — from `DbtLineageStore::
+/// get_all`, empty map if no pipeline has run dbt yet). Pure and DB-free
+/// otherwise (specs/lineages passed in already loaded), same testability
+/// rationale as the SQL builders in the connector crates (e.g.
+/// `nexus-connector-postgres`'s `build_select_query`). Transform/python/
+/// embedding stages stay implicit inside the pipeline node — dbt is the one
+/// stage that gets its own sub-graph because dbt already computes one.
+pub fn build_graph(
+    specs: &[PipelineSpec],
+    dbt_lineages: &std::collections::HashMap<
+        String,
+        std::collections::HashMap<String, Vec<String>>,
+    >,
+) -> LineageGraph {
     let mut nodes: BTreeMap<String, LineageNode> = BTreeMap::new();
     let mut edges = Vec::new();
 
@@ -153,6 +256,16 @@ pub fn build_graph(specs: &[PipelineSpec]) -> LineageGraph {
                     to: resource_id,
                 });
             }
+        }
+
+        if let Some(parent_map) = dbt_lineages.get(&spec.pipeline_id) {
+            merge_dbt_lineage(
+                &mut nodes,
+                &mut edges,
+                &pipeline_id,
+                &spec.pipeline_id,
+                parent_map,
+            );
         }
     }
 
@@ -294,7 +407,7 @@ mod tests {
             ),
         ];
 
-        let graph = build_graph(&specs);
+        let graph = build_graph(&specs, &Default::default());
 
         // 2 pipeline nodes + 3 resource nodes (raw.csv, analytics.events, out.csv).
         assert_eq!(graph.nodes.len(), 5);
@@ -320,7 +433,7 @@ mod tests {
             vec![node("csv", serde_json::json!({"path": "/data/b.csv"}))],
         )];
 
-        let graph = build_graph(&specs);
+        let graph = build_graph(&specs, &Default::default());
         assert_eq!(graph.nodes.len(), 3);
         assert_eq!(graph.edges.len(), 2);
     }
@@ -339,7 +452,7 @@ mod tests {
             )],
         )];
 
-        let graph = build_graph(&specs);
+        let graph = build_graph(&specs, &Default::default());
         // Only the pipeline node — neither `rest` nor `webhook` is in the
         // allowlist, so no resource nodes or edges are produced.
         assert_eq!(graph.nodes.len(), 1);
@@ -355,12 +468,111 @@ mod tests {
         );
         s.post_dbt_sinks = vec![node("postgres", serde_json::json!({"table": "final"}))];
 
-        let graph = build_graph(&[s]);
+        let graph = build_graph(&[s], &Default::default());
         let pipeline_id = "pipeline::elt";
         let writes_to_final = graph
             .edges
             .iter()
             .any(|e| e.from == pipeline_id && e.to == "resource::postgres::final");
         assert!(writes_to_final);
+    }
+
+    #[test]
+    fn dbt_resource_type_and_label_parses_model_and_source_ids() {
+        assert_eq!(
+            dbt_resource_type_and_label("model.proj.stg_orders"),
+            ("model", "stg_orders")
+        );
+        assert_eq!(
+            dbt_resource_type_and_label("source.proj.raw.orders"),
+            ("source", "raw.orders")
+        );
+    }
+
+    fn parent_map(pairs: &[(&str, &[&str])]) -> std::collections::HashMap<String, Vec<String>> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.iter().map(|s| s.to_string()).collect()))
+            .collect()
+    }
+
+    #[test]
+    fn build_graph_merges_dbt_chain_anchored_on_the_pipeline() {
+        let s = spec(
+            "elt",
+            vec![node("csv", serde_json::json!({"path": "/data/raw.csv"}))],
+            vec![node("postgres", serde_json::json!({"table": "staging"}))],
+        );
+        let mut lineages = std::collections::HashMap::new();
+        lineages.insert(
+            "elt".to_string(),
+            parent_map(&[
+                ("model.proj.stg_orders", &["source.proj.raw.orders"]),
+                ("model.proj.final_orders", &["model.proj.stg_orders"]),
+            ]),
+        );
+
+        let graph = build_graph(&[s], &lineages);
+
+        let entry = "dbt::elt::source.proj.raw.orders";
+        let mid = "dbt::elt::model.proj.stg_orders";
+        let end = "dbt::elt::model.proj.final_orders";
+        assert!(graph
+            .edges
+            .iter()
+            .any(|e| e.from == "pipeline::elt" && e.to == entry));
+        assert!(graph.edges.iter().any(|e| e.from == entry && e.to == mid));
+        assert!(graph.edges.iter().any(|e| e.from == mid && e.to == end));
+    }
+
+    #[test]
+    fn build_graph_excludes_dbt_test_nodes_from_the_lineage_flow() {
+        let s = spec("elt", vec![], vec![]);
+        let mut lineages = std::collections::HashMap::new();
+        lineages.insert(
+            "elt".to_string(),
+            parent_map(&[("test.proj.not_null_orders_id", &["model.proj.stg_orders"])]),
+        );
+
+        let graph = build_graph(&[s], &lineages);
+
+        assert!(!graph
+            .nodes
+            .iter()
+            .any(|n| matches!(n, LineageNode::DbtNode { id, .. } if id.contains("test."))));
+        // The model itself is still a real dbt node, and since its only
+        // "child" was a test (excluded), it has no non-test dependents —
+        // it must still show up as an entry point off the pipeline.
+        assert!(graph
+            .edges
+            .iter()
+            .any(|e| e.from == "pipeline::elt" && e.to == "dbt::elt::model.proj.stg_orders"));
+    }
+
+    #[test]
+    fn build_graph_scopes_dbt_nodes_per_pipeline_even_with_the_same_model_name() {
+        let s1 = spec("elt-a", vec![], vec![]);
+        let s2 = spec("elt-b", vec![], vec![]);
+        let mut lineages = std::collections::HashMap::new();
+        lineages.insert(
+            "elt-a".to_string(),
+            parent_map(&[("model.proj.orders", &[])]),
+        );
+        lineages.insert(
+            "elt-b".to_string(),
+            parent_map(&[("model.proj.orders", &[])]),
+        );
+
+        let graph = build_graph(&[s1, s2], &lineages);
+
+        let dbt_node_count = graph
+            .nodes
+            .iter()
+            .filter(|n| matches!(n, LineageNode::DbtNode { .. }))
+            .count();
+        assert_eq!(
+            dbt_node_count, 2,
+            "same model name in two pipelines must not collide"
+        );
     }
 }
