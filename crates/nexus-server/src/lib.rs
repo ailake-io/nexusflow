@@ -17,6 +17,7 @@ mod pipeline_store;
 mod progress;
 mod python_transform;
 mod rate_limit;
+mod resource_stats;
 mod run_log_store;
 mod runner;
 mod scheduler;
@@ -82,6 +83,7 @@ struct AppState {
     pipelines: PipelineStore,
     run_logs: RunLogStore,
     license_store: LicenseStore,
+    resource_stats: resource_stats::ResourceStatsStore,
     progress: ProgressHub,
     alerts: AlertNotifier,
     login_rate_limiter: std::sync::Arc<rate_limit::LoginRateLimiter>,
@@ -185,6 +187,9 @@ fn router(state: AppState) -> Router {
             "/pipelines/{id}/runs/{run_id}/logs",
             get(list_run_logs_handler),
         )
+        // Observability data, not an action — same tier as /connectors and
+        // /pipelines above (see resource_stats.rs).
+        .route("/system/resource-stats", get(resource_stats_handler))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_role::<AppState>,
@@ -865,6 +870,37 @@ async fn list_run_logs_handler(
 }
 
 #[derive(Deserialize)]
+struct ResourceStatsQuery {
+    /// `<number><unit>` (`5m`/`45m`/`3h`/`12d`, ...) — free-form, not just
+    /// the 5 preset shortcuts the frontend also offers. Defaults to `5m`,
+    /// same default the frontend applies when the tab first opens.
+    range: Option<String>,
+}
+
+/// Historical CPU/memory/disk usage for the "resources" tab, bucketed to
+/// ~120 points regardless of range (see `resource_stats::bucket_samples`).
+/// Sampling itself runs continuously in the background
+/// (`resource_stats::spawn`), independent of any pipeline run — unlike the
+/// per-run `hardware_stats` frame on the progress WebSocket.
+async fn resource_stats_handler(
+    State(state): State<AppState>,
+    Query(query): Query<ResourceStatsQuery>,
+) -> Result<Json<Vec<resource_stats::ResourceStatsBucket>>, ApiError> {
+    let range_str = query.range.as_deref().unwrap_or("5m");
+    let lookback = resource_stats::parse_range(range_str)
+        .map_err(|e| ApiError::bad_request(format!("invalid range {range_str:?}: {e}")))?;
+    let cutoff =
+        chrono::Utc::now() - chrono::Duration::from_std(lookback).expect("bounded by parse_range");
+    let samples = state
+        .resource_stats
+        .range(cutoff)
+        .await
+        .map_err(ApiError::internal)?;
+    let bucket_width = resource_stats::bucket_width_for(lookback);
+    Ok(Json(resource_stats::bucket_samples(&samples, bucket_width)))
+}
+
+#[derive(Deserialize)]
 struct CreateUserRequest {
     username: String,
     password: String,
@@ -1224,6 +1260,11 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
     // operate — a license is a single-row table, not worth its own
     // connection pool/URL to configure.
     let license_store = LicenseStore::connect(&config.auth_database_url).await?;
+    // Same database as checkpoints, not a 5th env var — same reasoning as
+    // `run_logs`/`license_store` above, one small table doesn't need its
+    // own connection pool/URL.
+    let resource_stats =
+        resource_stats::ResourceStatsStore::connect(&config.checkpoint_database_url).await?;
     if let Some((username, password)) = &config.bootstrap_admin {
         auth_store.seed_admin_if_empty(username, password).await?;
     }
@@ -1243,6 +1284,7 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         pipelines,
         run_logs,
         license_store,
+        resource_stats,
         progress: ProgressHub::default(),
         alerts: AlertNotifier::new(AlertConfig {
             slack_webhook_url: config.slack_webhook_url.clone(),
@@ -1417,6 +1459,11 @@ pub async fn run() -> anyhow::Result<()> {
     // it racing their own assertions).
     scheduler::spawn(state.clone());
 
+    // CPU/memory/disk sampler for the "resources" tab (see
+    // resource_stats.rs) — same "only the real boot path" rule as the
+    // scheduler above.
+    resource_stats::spawn(state.clone());
+
     let app = router(state);
 
     let port: u16 = std::env::var("NEXUS_PORT")
@@ -1488,6 +1535,9 @@ mod tests {
             pipelines: PipelineStore::connect("sqlite::memory:").await.unwrap(),
             run_logs: RunLogStore::connect("sqlite::memory:").await.unwrap(),
             license_store: LicenseStore::connect("sqlite::memory:").await.unwrap(),
+            resource_stats: resource_stats::ResourceStatsStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
             progress: ProgressHub::default(),
             alerts: AlertNotifier::new(AlertConfig::default()),
             login_rate_limiter: std::sync::Arc::new(rate_limit::LoginRateLimiter::new(
@@ -2805,6 +2855,9 @@ mod tests {
             pipelines: PipelineStore::connect("sqlite::memory:").await.unwrap(),
             run_logs: RunLogStore::connect("sqlite::memory:").await.unwrap(),
             license_store: LicenseStore::connect("sqlite::memory:").await.unwrap(),
+            resource_stats: resource_stats::ResourceStatsStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
             progress: ProgressHub::default(),
             alerts: AlertNotifier::new(AlertConfig::default()),
             login_rate_limiter: limiter,
