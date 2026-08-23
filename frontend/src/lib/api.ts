@@ -332,6 +332,36 @@ export function getPipelineSpec(token: string, pipelineId: string): Promise<Pipe
   return request<PipelineSpec>(`/pipelines/${encodeURIComponent(pipelineId)}/spec`, {}, token)
 }
 
+/** A resolved source/sink node's own name — `sink0`/`source0` for an
+ *  unnamed node, or its explicit `name` — same string
+ *  `NodeSpec::resolved_name` produces server-side and what `GET
+ *  /pipelines/{id}/preview`'s `node` query param expects. */
+export function resolvedNodeName(node: NodeSummary, index: number, prefix: 'source' | 'sink'): string {
+  return node.name ?? `${prefix}${index}`
+}
+
+/** GET /pipelines/{id}/preview — first `limit` rows (default 50, capped at
+ *  500 server-side) of one saved source/sink node, read live via the same
+ *  `build_source` path a real run uses. Only works for a connector that can
+ *  act as a `Source` — a sink-only connector (milvus/qdrant/lancedb/
+ *  pgvector/pinecone/chromadb/webhook) rejects with a 400 `ApiError`. Each
+ *  row is a plain JSON object keyed by column name; there is no separate
+ *  schema — infer types from the values themselves. */
+export function previewNode(
+  token: string,
+  pipelineId: string,
+  node: string,
+  limit?: number,
+): Promise<{ rows: Record<string, unknown>[] }> {
+  const params = new URLSearchParams({ node })
+  if (limit) params.set('limit', String(limit))
+  return request<{ rows: Record<string, unknown>[] }>(
+    `/pipelines/${encodeURIComponent(pipelineId)}/preview?${params.toString()}`,
+    {},
+    token,
+  )
+}
+
 export function deletePipeline(token: string, pipelineId: string): Promise<void> {
   return request<void>(
     `/pipelines/${encodeURIComponent(pipelineId)}`,
