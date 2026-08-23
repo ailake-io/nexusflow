@@ -291,6 +291,39 @@ export function getLineage(token: string): Promise<LineageGraph> {
   return request<LineageGraph>('/lineage', {}, token)
 }
 
+/** Matches nexus-server::pipeline_schema_store::ColumnInfo. */
+export interface LineageColumnInfo {
+  name: string
+  data_type: string
+}
+
+/** Matches nexus-server::pipeline_schema_store::ColumnLineageInfo —
+ *  `source_columns: null` means the backend's `LogicalPlan` walk couldn't
+ *  determine provenance for this output column (an unsupported query shape,
+ *  e.g. a `UNION`), not that it has none. */
+export interface LineageColumnLineageInfo {
+  output_column: string
+  source_columns: string[] | null
+}
+
+/** Matches nexus-server::pipeline_schema_store::PipelineSchema, returned by
+ *  `GET /lineage/{id}/schema`. `column_lineage` is only present when the
+ *  pipeline has a SQL transform stage. */
+export interface PipelineSchema {
+  pipeline_id: string
+  source_columns: LineageColumnInfo[]
+  output_columns: LineageColumnInfo[]
+  column_lineage: LineageColumnLineageInfo[] | null
+  captured_at: string
+}
+
+/** Fetched on demand — clicking a pipeline node in the Lineage tab, not
+ *  bundled into `GET /lineage`. Throws `ApiError` with `status: 404` when
+ *  the pipeline has never run (nothing captured yet). */
+export function getPipelineSchema(token: string, pipelineId: string): Promise<PipelineSchema> {
+  return request<PipelineSchema>(`/lineage/${encodeURIComponent(pipelineId)}/schema`, {}, token)
+}
+
 /**
  * Replays a run's execution log after the fact — works whether the run is
  * still going, already finished, or (the reason this exists) was triggered
