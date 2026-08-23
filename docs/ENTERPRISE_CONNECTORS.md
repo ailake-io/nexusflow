@@ -14,10 +14,10 @@ Ponto de partida do usuário: Excel, Oracle, Snowflake, ClickHouse, BigQuery, Re
 | **BigQuery** ✅ implementado | Mesma categoria do Snowflake, par indissociável em RFPs enterprise |
 | **Redshift** ✅ implementado | Terceiro da tríade "cloud DW" — quem pede um, geralmente pede os três |
 | **Databricks** (SQL Warehouse / Unity Catalog via Flight SQL) | Ligado ao lakehouse — encaixa direto na proposta "AI Lakehouse Builder" do NexusFlow |
-| **ClickHouse** (features enterprise / ClickHouse Cloud) | ADBC básico pode ficar OSS; recursos avançados (cluster, RBAC) ficam pagos |
 | **Oracle** ✅ implementado (batch + `oracle-cdc` via LogMiner) | Legado enterprise, ticket médio alto, cliente já paga licença Oracle cara — tolerância a pagar por conector é maior |
 | **SAP HANA** ✅ implementado (SQL via ODBC; BAPI/IDoc/RFC fora de escopo, ver README do repo privado) | Mesma lógica do Oracle — instalado em empresas grandes com orçamento de integração |
 | **Microsoft SQL Server / Azure Synapse** ✅ implementado (batch + `mssql-cdc`, `synapse` como modo do mesmo crate) | Meio-termo — SQL Server básico poderia ser OSS, Synapse/CDC avançado fica enterprise |
+| ~~ClickHouse~~ | **Foi pro repo público** (`crates/nexus-connectors/nexus-connector-clickhouse`) — investigado numa sessão anterior: RBAC e cluster mode (`Distributed`/`Replicated`, ClickHouse Keeper) são recursos OSS do próprio ClickHouse self-hosted, não existe feature "avançada" genuína pra reservar como paga (diferente de Snowflake/Oracle/SAP, que têm licenciamento pago real por trás). Driver ADBC oficial também é grátis (`dbc install clickhouse`). Não cabe nesta lista. |
 | **Teradata** | Nicho legado, ticket alto, baixo volume |
 | **IBM Db2** | Mesma categoria de legado corporativo |
 | **Vertica** | Nicho analítico, baixo volume mas clientes dispostos a pagar |
@@ -97,10 +97,10 @@ Ordenado por (demanda de mercado × disposição a pagar), não por dificuldade 
 1. **Snowflake, BigQuery, Redshift, Databricks** — tríade+um obrigatória em qualquer RFP enterprise de ELT.
 2. **Salesforce, Excel** — os dois conectores mais pedidos em ferramentas comerciais concorrentes, públicos-alvo diferentes (enterprise CRM vs. PME sem stack de dados). Excel já implementado (ver nota no topo); Salesforce continua candidato.
 3. **Oracle, SAP (HANA e/ou BAPI/IDoc)** — legado enterprise, ticket alto, cliente já paga caro por licença então tolera pagar pelo conector.
-4. **ClickHouse (avançado), SQL Server/Synapse** — meio-termo, complementam o que já existe OSS.
+4. **SQL Server/Synapse** — meio-termo, complementa o que já existe OSS (ClickHouse saiu desta lista, foi pro repo público — ver seção 1).
 5. **Marketing/Ads** (GA4, Google Ads, Meta Ads, Stripe, Shopify) — alto volume, ticket médio menor, bom motor de PLG (product-led growth).
 6. **Vector/search enterprise + CDC avançado + streaming enterprise** — nicho, ticket alto, baixo volume — fazer sob demanda de cliente específico, não especulativamente.
 
 Decisão de "o que construir primeiro" na Fase 12 deve seguir demanda real confirmada (mesmo racional já usado pro CDC nativo condicional em `ROADMAP.md`), não essa lista sozinha — ela é o inventário de candidatos, não um compromisso de roadmap.
 
-**Status real desta priorização:** blocos 1, 2, 3 (parcial — Oracle e HANA feitos, BAPI/IDoc não), 5 e a maior parte do 6 (vector/search + CDC avançado) já foram construídos. Restam sem crate: Databricks, ClickHouse (avançado), Db2 (CDC e batch), SAP BAPI/IDoc, HubSpot, Workday, NetSuite, Dynamics 365, ServiceNow, Zendesk, Google Sheets, SharePoint/OneDrive, Teradata, Vertica.
+**Status real desta priorização:** blocos 1, 2, 3 (parcial — Oracle e HANA feitos, BAPI/IDoc não), 5 e a maior parte do 6 (vector/search + CDC avançado) já foram construídos. Restam sem crate: Db2 (CDC e batch), SAP BAPI/IDoc, HubSpot, Workday, NetSuite, Dynamics 365, ServiceNow, Zendesk, Google Sheets, SharePoint/OneDrive, Teradata, Vertica. (Databricks foi implementado no repo privado; ClickHouse saiu desta lista — foi pro repo público, ver seção 1.)

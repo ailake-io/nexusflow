@@ -53,6 +53,7 @@ iceberg = ["nexus-server/iceberg"]
 parquet = ["nexus-server/parquet"]
 ailake = ["nexus-server/ailake"]
 csv = ["nexus-server/csv"]
+clickhouse = ["nexus-server/clickhouse"]
 # Native CDC features (logical/binlog/change-data-feed) — forward to the
 # server crate's matching feature (ARCHITECTURE.md §7).
 postgres-cdc = ["nexus-server/postgres-cdc"]

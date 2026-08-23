@@ -364,6 +364,20 @@ efêmero da sessão, resumo aqui):
 
 ---
 
+## Fase 23 — Conector ClickHouse (ADBC nativo, repo público)
+
+Estava registrado como candidato enterprise em `docs/ENTERPRISE_CONNECTORS.md` sob a premissa "ADBC básico OSS, avançado pago" — investigação numa sessão anterior derrubou essa premissa: RBAC e cluster mode (`Distributed`/`Replicated`, ClickHouse Keeper) são recursos OSS do próprio ClickHouse self-hosted, não existe feature "avançada" genuína pra reservar como paga (diferente de Snowflake/Oracle/SAP, que têm licenciamento pago real). Driver ADBC também é oficial (ClickHouse, Inc.) e grátis. Decisão: vai pro repo público, mesma categoria de Postgres/SQLite.
+
+- [x] `nexus-connector-clickhouse` (feature `clickhouse`) — mesmo esqueleto ADBC do `nexus-connector-postgres` (`driver.rs`/`config.rs`/`source.rs`/`sink.rs`), única option key `uri` confirmada contra a doc real do driver (adbc-drivers.org/drivers/clickhouse/), não múltiplas chaves como Snowflake.
+- [x] Instalação de um comando só (`dbc install clickhouse`, ADBC Driver Foundry) — diferente de Postgres/SQLite, que exigem compilar `libadbc_driver_*.so` na mão.
+- [x] **Sink append-only, achado real**: ClickHouse não tem `ON CONFLICT`/upsert leve (`ALTER TABLE ... UPDATE/DELETE` são mutations assíncronas pesadas). `write_batch` rejeita explicitamente batches de CDC com `__opcode` de delete em vez de descartar silenciosamente — dedup fica a cargo do usuário via `ReplacingMergeTree`/`CollapsingMergeTree`, mecanismo idiomático do próprio ClickHouse.
+- [x] `partition_column` em vez de `primary_key` (nome do Postgres, implica unicidade que o ClickHouse não impõe) — qualquer coluna orderável usada só pra particionar leitura em paralelo.
+- [ ] Sem teste de integração real (mesma ressalva de todo conector ADBC do repo — nem `postgres` tem, `ADBC_DRIVER_POSTGRESQL_PATH` também não é setado em CI). Só unit tests dos SQL builders.
+
+**Critério de pronto:** `cargo test -p nexus-connector-clickhouse` cobrindo os SQL builders (incluindo rejeição de SQL injection), `cargo build --features connectors-all` linkando o conector, `GET /connectors` listando `clickhouse`. **Atingido** (sem validação contra instância ClickHouse real — mesma ressalva que Snowflake/BigQuery/Databricks já carregam).
+
+---
+
 **Critério de "MVP pronto"**: Fases 0–3 + 7 (parcial: auth básica) + 8 (canvas mínimo) funcionando end-to-end — mover dados de Postgres pra Postgres via canvas visual, com checkpoint por partição, retry e escrita idempotente. **Atingido e superado** — Fases 0–11 e 13–17 completas, só falta Fase 12 (enterprise, repo separado) e os itens condicionais/parciais marcados acima.
 
 ## Débitos conhecidos (aceitos pro MVP, resolver antes de vender enterprise)

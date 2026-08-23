@@ -16,6 +16,7 @@ mod license;
 mod license_store;
 mod lineage;
 pub mod migrate;
+mod pipeline_schema_store;
 mod pipeline_store;
 mod progress;
 mod python_transform;
@@ -88,6 +89,7 @@ struct AppState {
     license_store: LicenseStore,
     resource_stats: resource_stats::ResourceStatsStore,
     dbt_lineage: dbt_lineage_store::DbtLineageStore,
+    pipeline_schemas: pipeline_schema_store::PipelineSchemaStore,
     // Only read from `execute_pipeline_run`'s `#[cfg(feature = "dbt")]`
     // block — kept on `AppState` unconditionally so build_state/test_state
     // don't need their own feature-gated construction path.
@@ -207,6 +209,7 @@ fn router(state: AppState) -> Router {
         // below only ever hands back connector names + allowlisted
         // resource identifiers, never raw config (see lineage.rs).
         .route("/lineage", get(lineage_handler))
+        .route("/lineage/{id}/schema", get(pipeline_schema_handler))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_role::<AppState>,
@@ -576,6 +579,7 @@ async fn execute_pipeline_run(
         Some(progress_tx.clone()),
         Some(&logger),
         active_license.as_ref(),
+        &state.pipeline_schemas,
     )
     .await;
     state.progress.finish(run_id).await;
@@ -971,6 +975,26 @@ async fn lineage_handler(
         .await
         .map_err(ApiError::internal)?;
     Ok(Json(lineage::build_graph(&specs, &dbt_lineages)))
+}
+
+/// Column-level detail for one pipeline's Lineage node — source/output
+/// columns and (when the pipeline has a SQL transform) column-to-column
+/// provenance. Fetched on demand (clicking the node in the Lineage tab),
+/// not bundled into `GET /lineage` — most pipelines are never inspected at
+/// this level, no reason to decrypt+compute it for every node on every
+/// tab load. 404 when the pipeline has never run (`PipelineSchemaStore`
+/// only ever holds a captured run's schema, see `runner.rs`).
+async fn pipeline_schema_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<pipeline_schema_store::PipelineSchema>, ApiError> {
+    state
+        .pipeline_schemas
+        .get(&id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::not_found(format!("no schema captured yet for pipeline {id:?}")))
+        .map(Json)
 }
 
 #[derive(Deserialize)]
@@ -1375,6 +1399,8 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         dbt_lineage_store::DbtLineageStore::connect(&config.pipelines_database_url).await?;
     let dbt_test_results =
         dbt_test_result_store::DbtTestResultStore::connect(&config.pipelines_database_url).await?;
+    let pipeline_schemas =
+        pipeline_schema_store::PipelineSchemaStore::connect(&config.pipelines_database_url).await?;
     if let Some((username, password)) = &config.bootstrap_admin {
         auth_store.seed_admin_if_empty(username, password).await?;
     }
@@ -1397,6 +1423,7 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         resource_stats,
         dbt_lineage,
         dbt_test_results,
+        pipeline_schemas,
         progress: ProgressHub::default(),
         alerts: AlertNotifier::new(AlertConfig {
             slack_webhook_url: config.slack_webhook_url.clone(),
@@ -1656,6 +1683,11 @@ mod tests {
             dbt_test_results: dbt_test_result_store::DbtTestResultStore::connect("sqlite::memory:")
                 .await
                 .unwrap(),
+            pipeline_schemas: pipeline_schema_store::PipelineSchemaStore::connect(
+                "sqlite::memory:",
+            )
+            .await
+            .unwrap(),
             progress: ProgressHub::default(),
             alerts: AlertNotifier::new(AlertConfig::default()),
             login_rate_limiter: std::sync::Arc::new(rate_limit::LoginRateLimiter::new(
@@ -3045,6 +3077,11 @@ mod tests {
             dbt_test_results: dbt_test_result_store::DbtTestResultStore::connect("sqlite::memory:")
                 .await
                 .unwrap(),
+            pipeline_schemas: pipeline_schema_store::PipelineSchemaStore::connect(
+                "sqlite::memory:",
+            )
+            .await
+            .unwrap(),
             progress: ProgressHub::default(),
             alerts: AlertNotifier::new(AlertConfig::default()),
             login_rate_limiter: limiter,

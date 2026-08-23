@@ -291,6 +291,39 @@ export function getLineage(token: string): Promise<LineageGraph> {
   return request<LineageGraph>('/lineage', {}, token)
 }
 
+/** Matches nexus-server::pipeline_schema_store::ColumnInfo. */
+export interface LineageColumnInfo {
+  name: string
+  data_type: string
+}
+
+/** Matches nexus-server::pipeline_schema_store::ColumnLineageInfo —
+ *  `source_columns: null` means the backend's `LogicalPlan` walk couldn't
+ *  determine provenance for this output column (an unsupported query shape,
+ *  e.g. a `UNION`), not that it has none. */
+export interface LineageColumnLineageInfo {
+  output_column: string
+  source_columns: string[] | null
+}
+
+/** Matches nexus-server::pipeline_schema_store::PipelineSchema, returned by
+ *  `GET /lineage/{id}/schema`. `column_lineage` is only present when the
+ *  pipeline has a SQL transform stage. */
+export interface PipelineSchema {
+  pipeline_id: string
+  source_columns: LineageColumnInfo[]
+  output_columns: LineageColumnInfo[]
+  column_lineage: LineageColumnLineageInfo[] | null
+  captured_at: string
+}
+
+/** Fetched on demand — clicking a pipeline node in the Lineage tab, not
+ *  bundled into `GET /lineage`. Throws `ApiError` with `status: 404` when
+ *  the pipeline has never run (nothing captured yet). */
+export function getPipelineSchema(token: string, pipelineId: string): Promise<PipelineSchema> {
+  return request<PipelineSchema>(`/lineage/${encodeURIComponent(pipelineId)}/schema`, {}, token)
+}
+
 /**
  * Replays a run's execution log after the fact — works whether the run is
  * still going, already finished, or (the reason this exists) was triggered
@@ -389,6 +422,36 @@ export function updatePipeline(
  * canvas inspector. */
 export function getPipelineSpec(token: string, pipelineId: string): Promise<PipelineSpec> {
   return request<PipelineSpec>(`/pipelines/${encodeURIComponent(pipelineId)}/spec`, {}, token)
+}
+
+/** A resolved source/sink node's own name — `sink0`/`source0` for an
+ *  unnamed node, or its explicit `name` — same string
+ *  `NodeSpec::resolved_name` produces server-side and what `GET
+ *  /pipelines/{id}/preview`'s `node` query param expects. */
+export function resolvedNodeName(node: NodeSummary, index: number, prefix: 'source' | 'sink'): string {
+  return node.name ?? `${prefix}${index}`
+}
+
+/** GET /pipelines/{id}/preview — first `limit` rows (default 50, capped at
+ *  500 server-side) of one saved source/sink node, read live via the same
+ *  `build_source` path a real run uses. Only works for a connector that can
+ *  act as a `Source` — a sink-only connector (milvus/qdrant/lancedb/
+ *  pgvector/pinecone/chromadb/webhook) rejects with a 400 `ApiError`. Each
+ *  row is a plain JSON object keyed by column name; there is no separate
+ *  schema — infer types from the values themselves. */
+export function previewNode(
+  token: string,
+  pipelineId: string,
+  node: string,
+  limit?: number,
+): Promise<{ rows: Record<string, unknown>[] }> {
+  const params = new URLSearchParams({ node })
+  if (limit) params.set('limit', String(limit))
+  return request<{ rows: Record<string, unknown>[] }>(
+    `/pipelines/${encodeURIComponent(pipelineId)}/preview?${params.toString()}`,
+    {},
+    token,
+  )
 }
 
 export function deletePipeline(token: string, pipelineId: string): Promise<void> {

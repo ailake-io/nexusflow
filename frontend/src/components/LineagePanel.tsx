@@ -1,10 +1,25 @@
 import { useEffect, useMemo, useState } from 'react'
-import { AlertCircle, Loader2, Waypoints } from 'lucide-react'
-import { Background, ReactFlow, ReactFlowProvider, type Edge, type Node } from '@xyflow/react'
+import { AlertCircle, Loader2, Waypoints, X } from 'lucide-react'
+import {
+  Background,
+  ReactFlow,
+  ReactFlowProvider,
+  type Edge,
+  type Node,
+  type NodeMouseHandler,
+} from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { useAuth } from '@/lib/auth-context'
 import { useI18n } from '@/lib/i18n'
-import { getLineage, type LineageEdge, type LineageGraph, type LineageNode } from '@/lib/api'
+import {
+  ApiError,
+  getLineage,
+  getPipelineSchema,
+  type LineageEdge,
+  type LineageGraph,
+  type LineageNode,
+  type PipelineSchema,
+} from '@/lib/api'
 import { EmptyState } from '@/components/EmptyState'
 import {
   LineagePipelineNodeView,
@@ -166,12 +181,151 @@ function toFlowElements(graph: LineageGraph): { nodes: Node[]; edges: Edge[] } {
   return { nodes, edges }
 }
 
+function ColumnList({ columns }: { columns: PipelineSchema['source_columns'] }) {
+  if (columns.length === 0) {
+    return <p className="text-xs text-muted-foreground">—</p>
+  }
+  return (
+    <ul className="flex flex-col gap-1">
+      {columns.map((c) => (
+        <li
+          key={c.name}
+          className="flex items-baseline justify-between gap-3 font-mono text-xs text-foreground"
+        >
+          <span className="truncate">{c.name}</span>
+          <span className="shrink-0 text-muted-foreground">{c.data_type}</span>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+/** Fetched and shown only on demand — clicking a pipeline node in the
+ *  Lineage tab, per the "not up front" scope: nothing is fetched or
+ *  rendered here until `pipelineId` is set. */
+function PipelineSchemaPanel({ pipelineId, onClose }: { pipelineId: string; onClose: () => void }) {
+  const { token } = useAuth()
+  const { t } = useI18n()
+  const [schema, setSchema] = useState<PipelineSchema | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [notRun, setNotRun] = useState(false)
+
+  useEffect(() => {
+    if (!token) return
+    let cancelled = false
+    setLoading(true)
+    setSchema(null)
+    setError(null)
+    setNotRun(false)
+    getPipelineSchema(token, pipelineId)
+      .then((data) => {
+        if (!cancelled) setSchema(data)
+      })
+      .catch((err) => {
+        if (cancelled) return
+        if (err instanceof ApiError && err.status === 404) {
+          setNotRun(true)
+        } else {
+          setError(t('lineage.schema.error'))
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [token, pipelineId, t])
+
+  return (
+    <div className="absolute right-0 top-0 z-10 flex h-full w-80 flex-col overflow-hidden border-l border-white/10 bg-card shadow-xl">
+      <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+        <div>
+          <h2 className="text-sm font-semibold text-foreground">{t('lineage.schema.title')}</h2>
+          <p className="truncate font-mono text-[11px] text-muted-foreground">{pipelineId}</p>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label={t('lineage.schema.close')}
+          className="rounded-md p-1.5 text-muted-foreground hover:bg-white/5 hover:text-foreground"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+
+      <div className="flex-1 overflow-auto p-4">
+        {loading && (
+          <div className="flex items-center justify-center py-8 text-xs text-muted-foreground">
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            {t('lineage.schema.loading')}
+          </div>
+        )}
+
+        {!loading && notRun && (
+          <p className="text-xs text-muted-foreground">{t('lineage.schema.neverRun')}</p>
+        )}
+
+        {!loading && error && (
+          <div className="flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-xs text-red-400">
+            <AlertCircle className="h-4 w-4" />
+            {error}
+          </div>
+        )}
+
+        {!loading && schema && (
+          <div className="flex flex-col gap-5">
+            <div>
+              <div className="mb-2 text-xs font-medium text-muted-foreground">
+                {t('lineage.schema.sourceColumns')}
+              </div>
+              <ColumnList columns={schema.source_columns} />
+            </div>
+
+            <div>
+              <div className="mb-2 text-xs font-medium text-muted-foreground">
+                {t('lineage.schema.outputColumns')}
+              </div>
+              <ColumnList columns={schema.output_columns} />
+            </div>
+
+            {schema.column_lineage && (
+              <div>
+                <div className="mb-2 text-xs font-medium text-muted-foreground">
+                  {t('lineage.schema.columnLineage')}
+                </div>
+                <ul className="flex flex-col gap-1.5">
+                  {schema.column_lineage.map((l) => (
+                    <li key={l.output_column} className="font-mono text-xs text-foreground">
+                      <span className="text-primary">{l.output_column}</span>{' '}
+                      <span className="text-muted-foreground">{t('lineage.schema.from')}</span>{' '}
+                      {l.source_columns ? (
+                        l.source_columns.join(', ')
+                      ) : (
+                        <span className="italic text-muted-foreground">
+                          {t('lineage.schema.notDetermined')}
+                        </span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function LineageGraphView() {
   const { token } = useAuth()
   const { t } = useI18n()
   const [graph, setGraph] = useState<LineageGraph | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [selectedPipelineId, setSelectedPipelineId] = useState<string | null>(null)
 
   useEffect(() => {
     if (!token) return
@@ -196,6 +350,18 @@ function LineageGraphView() {
   }, [token, t])
 
   const { nodes, edges } = useMemo(() => toFlowElements(graph ?? { nodes: [], edges: [] }), [graph])
+
+  // Schema is fetched/shown only on demand — clicking a pipeline node opens
+  // the panel; other node kinds (resource, dbt) don't react to this click.
+  // A pipeline node's graph id is `pipeline::{pipeline_id}` (see
+  // lineage.rs::build_graph, mirrors the `dbt::{pipeline_id}::...` prefix
+  // dbt nodes use) — strip it back to the raw id the schema endpoint keys
+  // on.
+  const handleNodeClick: NodeMouseHandler = (_event, node) => {
+    if (node.type === 'pipeline') {
+      setSelectedPipelineId(node.id.replace(/^pipeline::/, ''))
+    }
+  }
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -237,12 +403,19 @@ function LineageGraphView() {
             nodesDraggable={false}
             nodesConnectable={false}
             elementsSelectable={true}
+            onNodeClick={handleNodeClick}
             colorMode="dark"
             fitView
             fitViewOptions={{ maxZoom: 1 }}
           >
             <Background gap={20} size={1} color="oklch(1 0 0 / 8%)" />
           </ReactFlow>
+          {selectedPipelineId && (
+            <PipelineSchemaPanel
+              pipelineId={selectedPipelineId}
+              onClose={() => setSelectedPipelineId(null)}
+            />
+          )}
         </div>
       )}
     </div>
