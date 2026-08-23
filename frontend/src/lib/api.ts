@@ -203,6 +203,35 @@ export function listRuns(token: string, pipelineId: string): Promise<RunRecord[]
   return request<RunRecord[]>(`/pipelines/${encodeURIComponent(pipelineId)}/runs`, {}, token)
 }
 
+/** Matches nexus-server::lineage::ResourceKind. */
+export type LineageResourceKind = 'table' | 'collection' | 'topic' | 'file'
+
+/** Matches nexus-server::lineage::LineageNode — a saved pipeline, or a
+ *  resource one or more pipelines touch (identified by a connector-specific
+ *  allowlisted field only, e.g. `table`/`collection`/`topic`; never a raw
+ *  connection string). Discriminated by `kind`. */
+export type LineageNode =
+  | { kind: 'pipeline'; id: string; label: string; has_schedule: boolean }
+  | { kind: 'resource'; id: string; label: string; connector: string; resource_kind: LineageResourceKind }
+
+/** Matches nexus-server::lineage::LineageEdge. */
+export interface LineageEdge {
+  from: string
+  to: string
+}
+
+/** Matches nexus-server::lineage::LineageGraph, as returned by GET /lineage.
+ *  Whole-catalog graph, computed fresh on every request — no polling
+ *  needed, saved pipelines change rarely compared to live resource usage. */
+export interface LineageGraph {
+  nodes: LineageNode[]
+  edges: LineageEdge[]
+}
+
+export function getLineage(token: string): Promise<LineageGraph> {
+  return request<LineageGraph>('/lineage', {}, token)
+}
+
 /**
  * Replays a run's execution log after the fact — works whether the run is
  * still going, already finished, or (the reason this exists) was triggered

@@ -381,6 +381,33 @@ impl PipelineStore {
         decode_spec(&ciphertext, cipher)
     }
 
+    /// Every saved `PipelineSpec`, decrypted — for internal use only, same
+    /// warning as `get_spec` (never expose this over the API; extract only
+    /// what's safe first, as `lineage.rs` does). Used to build the lineage
+    /// graph, which needs every source/sink's connector config, not just
+    /// the connector *names* `PipelineSummary` exposes.
+    pub async fn list_all_specs(
+        &self,
+        cipher: &SecretCipher,
+    ) -> Result<Vec<PipelineSpec>, PipelineStoreError> {
+        let sql = self.q("SELECT spec_ciphertext FROM pipelines ORDER BY created_at");
+        let rows: Vec<(String,)> = match &self.pool {
+            MetadataPool::Sqlite(p) => {
+                sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .fetch_all(p)
+                    .await?
+            }
+            MetadataPool::Postgres(p) => {
+                sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .fetch_all(p)
+                    .await?
+            }
+        };
+        rows.into_iter()
+            .map(|(ciphertext,)| decode_spec(&ciphertext, cipher))
+            .collect()
+    }
+
     pub async fn list_summaries(
         &self,
         cipher: &SecretCipher,

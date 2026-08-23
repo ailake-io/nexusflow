@@ -12,6 +12,7 @@ mod error;
 mod hardware_stats;
 mod license;
 mod license_store;
+mod lineage;
 pub mod migrate;
 mod pipeline_store;
 mod progress;
@@ -185,6 +186,10 @@ fn router(state: AppState) -> Router {
             "/pipelines/{id}/runs/{run_id}/logs",
             get(list_run_logs_handler),
         )
+        // Whole-catalog graph, not a per-pipeline secret — the handler
+        // below only ever hands back connector names + allowlisted
+        // resource identifiers, never raw config (see lineage.rs).
+        .route("/lineage", get(lineage_handler))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_role::<AppState>,
@@ -862,6 +867,28 @@ async fn list_run_logs_handler(
             .await
             .map_err(ApiError::internal)?,
     ))
+}
+
+/// Whole-catalog, pipeline-level lineage graph — every saved pipeline plus
+/// the resources its sources/sinks touch, computed fresh on every request
+/// (no persistence, no background task; same cost `list_summaries` already
+/// pays to decrypt every saved spec). See `lineage.rs`'s module doc for the
+/// allowlist that keeps connector secrets out of the response.
+async fn lineage_handler(
+    State(state): State<AppState>,
+) -> Result<Json<lineage::LineageGraph>, ApiError> {
+    let specs: Vec<_> = state
+        .pipelines
+        .list_all_specs(&state.secrets)
+        .await
+        .map_err(ApiError::internal)?
+        .into_iter()
+        // Drafts only have `pipeline_id` validated (dag.rs's own doc
+        // comment on `draft`) — connector configs may be incomplete or
+        // garbage, so they'd pollute the graph rather than inform it.
+        .filter(|spec| !spec.draft)
+        .collect();
+    Ok(Json(lineage::build_graph(&specs)))
 }
 
 #[derive(Deserialize)]
