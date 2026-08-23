@@ -194,6 +194,10 @@ fn router(state: AppState) -> Router {
             "/pipelines/{id}/runs/{run_id}/logs",
             get(list_run_logs_handler),
         )
+        .route(
+            "/pipelines/{id}/dbt-tests",
+            get(list_dbt_test_results_handler),
+        )
         // Whole-catalog graph, not a per-pipeline secret — the handler
         // below only ever hands back connector names + allowlisted
         // resource identifiers, never raw config (see lineage.rs).
@@ -898,6 +902,24 @@ async fn list_runs_handler(
 ) -> Result<Json<Vec<RunRecord>>, ApiError> {
     let (limit, offset) = pagination.validated()?;
     Ok(Json(state.pipelines.list_runs(&id, limit, offset).await?))
+}
+
+/// Every recorded dbt test result for this pipeline, grouped by test —
+/// what the Quality tab renders as a per-test pass/fail history. The
+/// aggregate counts (`tests_total`/`tests_passed`) already ride along on
+/// each `RunRecord.dbt_summary` from `GET /pipelines/{id}/runs`; this is
+/// the detail behind them (`dbt_test_result_store.rs`).
+async fn list_dbt_test_results_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<dbt_test_result_store::DbtTestOutcome>>, ApiError> {
+    Ok(Json(
+        state
+            .dbt_test_results
+            .list_for_pipeline(&id)
+            .await
+            .map_err(ApiError::internal)?,
+    ))
 }
 
 /// Historical/replayable view of a run's execution log — works for a run
@@ -2110,6 +2132,69 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("connect failed"));
+    }
+
+    #[tokio::test]
+    async fn dbt_test_results_endpoint_returns_what_was_recorded() {
+        let state = test_state().await;
+        let read_token = bearer(&state, Role::Read);
+        // Seeded directly (not via a real dbt run) — this endpoint's own
+        // job is just serving back what `DbtTestResultStore` already has,
+        // same scope as `dbt_lineage_store.rs`'s own store-level tests.
+        state
+            .dbt_test_results
+            .record_all(
+                "p1",
+                1,
+                &[dbt_test_result_store::DbtTestOutcome {
+                    unique_id: "test.proj.not_null_orders_id".to_string(),
+                    status: "fail".to_string(),
+                    message: Some("3 rows failed".to_string()),
+                    execution_time: 0.01,
+                }],
+            )
+            .await
+            .unwrap();
+        let app = router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/pipelines/p1/dbt-tests")
+                    .header("authorization", &read_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let results = body_json(response).await;
+        let results = results.as_array().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["unique_id"], "test.proj.not_null_orders_id");
+        assert_eq!(results[0]["status"], "fail");
+        assert_eq!(results[0]["message"], "3 rows failed");
+    }
+
+    #[tokio::test]
+    async fn dbt_test_results_endpoint_is_empty_for_a_pipeline_that_never_ran_dbt() {
+        let state = test_state().await;
+        let read_token = bearer(&state, Role::Read);
+        let app = router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/pipelines/no-such-pipeline/dbt-tests")
+                    .header("authorization", &read_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_json(response).await.as_array().unwrap().len(), 0);
     }
 
     #[tokio::test]

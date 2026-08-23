@@ -7,32 +7,10 @@ import { formatDuration } from '@/lib/utils'
 import { useRunHistory } from '@/hooks/useRunHistory'
 import { useRunLogs } from '@/hooks/useRunLogs'
 import { LogTerminal } from '@/components/LogTerminal'
-import type { RunRecord } from '@/lib/api'
+import type { PartitionStats, RunRecord } from '@/lib/api'
 
-/** Matches nexus_core::PartitionStats — one entry per partition/sink
- * written by a run. `RunRecord.stats` is `unknown` on the wire (the API
- * type doesn't pin it down further), so this is a defensive read, not a
- * trusted cast: fields are checked before use. */
-interface PartitionStats {
-  partition_id: string
-  batches_written: number
-  rows_written: number
-}
-
-function isPartitionStatsArray(value: unknown): value is PartitionStats[] {
-  return (
-    Array.isArray(value) &&
-    value.every(
-      (v) =>
-        typeof v === 'object' &&
-        v !== null &&
-        typeof (v as Record<string, unknown>).rows_written === 'number',
-    )
-  )
-}
-
-function totalRowsWritten(stats: unknown): number | null {
-  if (!isPartitionStatsArray(stats)) return null
+function totalRowsWritten(stats: PartitionStats[] | null): number | null {
+  if (!stats) return null
   return stats.reduce((sum, s) => sum + s.rows_written, 0)
 }
 

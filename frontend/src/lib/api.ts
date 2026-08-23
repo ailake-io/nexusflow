@@ -168,6 +168,15 @@ export interface DbtRunSummary {
   nodes_in_lineage: number | null
 }
 
+/** Matches nexus-core::pipeline::PartitionStats — one entry per partition/
+ *  sink written during a run, embedded in RunRecord.stats below. */
+export interface PartitionStats {
+  partition_id: string
+  batches_written: number
+  rows_written: number
+  resume_state: string | null
+}
+
 /** Matches nexus-server::pipeline_store::RunRecord, as returned by GET /pipelines/{id}/runs. */
 export interface RunRecord {
   id: number
@@ -176,7 +185,7 @@ export interface RunRecord {
   finished_at: string | null
   status: 'running' | 'success' | 'failed'
   error: string | null
-  stats: unknown
+  stats: PartitionStats[] | null
   dbt_summary: DbtRunSummary | null
 }
 
@@ -201,6 +210,26 @@ export function runPipeline(
 
 export function listRuns(token: string, pipelineId: string): Promise<RunRecord[]> {
   return request<RunRecord[]>(`/pipelines/${encodeURIComponent(pipelineId)}/runs`, {}, token)
+}
+
+/** Matches nexus-server::dbt_test_result_store::DbtTestOutcome, as returned
+ *  by GET /pipelines/{id}/dbt-tests. One row per recorded test result —
+ *  history, not just the latest run (dbt's own CLI has no cross-run memory
+ *  of this; nexus-server persists it instead of discarding it after the
+ *  aggregate pass/fail count already on RunRecord.dbt_summary is derived). */
+export interface DbtTestOutcome {
+  unique_id: string
+  status: 'pass' | 'fail' | 'warn'
+  message: string | null
+  execution_time: number
+}
+
+export function getDbtTestResults(token: string, pipelineId: string): Promise<DbtTestOutcome[]> {
+  return request<DbtTestOutcome[]>(
+    `/pipelines/${encodeURIComponent(pipelineId)}/dbt-tests`,
+    {},
+    token,
+  )
 }
 
 /** Matches nexus-server::lineage::ResourceKind. */

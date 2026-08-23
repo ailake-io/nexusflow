@@ -4,9 +4,9 @@ use crate::db::{rewrite_placeholders, MetadataPool};
 /// only exists behind the `dbt` Cargo feature, and this store (like
 /// `DbtLineageStore`) needs to always compile regardless of which features
 /// are on. The `dbt` feature's own persistence call site maps `DbtRunResult`
-/// into this shape before calling `record_all`.
-#[allow(dead_code)] // constructed only from lib.rs's `#[cfg(feature = "dbt")]` block
-#[derive(Debug, Clone, PartialEq)]
+/// into this shape before calling `record_all`. `Serialize` is what
+/// `GET /pipelines/{id}/dbt-tests` (the Quality tab) sends over the wire.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct DbtTestOutcome {
     pub unique_id: String,
     /// "pass"/"fail"/"warn" — dbt's own vocabulary, passed through as-is.
@@ -117,11 +117,16 @@ impl DbtTestResultStore {
         Ok(())
     }
 
-    #[cfg(test)]
-    async fn list_for_pipeline(&self, pipeline_id: &str) -> anyhow::Result<Vec<DbtTestOutcome>> {
+    /// Every recorded result for `pipeline_id`, grouped by test and ordered
+    /// oldest-first within each group — what the Quality tab renders as a
+    /// per-test history. Powers `GET /pipelines/{id}/dbt-tests`.
+    pub async fn list_for_pipeline(
+        &self,
+        pipeline_id: &str,
+    ) -> anyhow::Result<Vec<DbtTestOutcome>> {
         let sql = self.q(
             "SELECT unique_id, status, message, execution_time FROM dbt_test_results \
-             WHERE pipeline_id = ? ORDER BY unique_id",
+             WHERE pipeline_id = ? ORDER BY unique_id, recorded_at",
         );
         let rows: Vec<(String, String, Option<String>, f64)> = match &self.pool {
             MetadataPool::Sqlite(p) => {
