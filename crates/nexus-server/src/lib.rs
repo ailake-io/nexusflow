@@ -20,6 +20,7 @@ mod pipeline_store;
 mod progress;
 mod python_transform;
 mod rate_limit;
+mod resource_stats;
 mod run_log_store;
 mod runner;
 mod scheduler;
@@ -85,6 +86,7 @@ struct AppState {
     pipelines: PipelineStore,
     run_logs: RunLogStore,
     license_store: LicenseStore,
+    resource_stats: resource_stats::ResourceStatsStore,
     dbt_lineage: dbt_lineage_store::DbtLineageStore,
     // Only read from `execute_pipeline_run`'s `#[cfg(feature = "dbt")]`
     // block — kept on `AppState` unconditionally so build_state/test_state
@@ -194,6 +196,9 @@ fn router(state: AppState) -> Router {
             "/pipelines/{id}/runs/{run_id}/logs",
             get(list_run_logs_handler),
         )
+        // Observability data, not an action — same tier as /connectors and
+        // /pipelines above (see resource_stats.rs).
+        .route("/system/resource-stats", get(resource_stats_handler))
         .route(
             "/pipelines/{id}/dbt-tests",
             get(list_dbt_test_results_handler),
@@ -969,6 +974,37 @@ async fn lineage_handler(
 }
 
 #[derive(Deserialize)]
+struct ResourceStatsQuery {
+    /// `<number><unit>` (`5m`/`45m`/`3h`/`12d`, ...) — free-form, not just
+    /// the 5 preset shortcuts the frontend also offers. Defaults to `5m`,
+    /// same default the frontend applies when the tab first opens.
+    range: Option<String>,
+}
+
+/// Historical CPU/memory/disk usage for the "resources" tab, bucketed to
+/// ~120 points regardless of range (see `resource_stats::bucket_samples`).
+/// Sampling itself runs continuously in the background
+/// (`resource_stats::spawn`), independent of any pipeline run — unlike the
+/// per-run `hardware_stats` frame on the progress WebSocket.
+async fn resource_stats_handler(
+    State(state): State<AppState>,
+    Query(query): Query<ResourceStatsQuery>,
+) -> Result<Json<Vec<resource_stats::ResourceStatsBucket>>, ApiError> {
+    let range_str = query.range.as_deref().unwrap_or("5m");
+    let lookback = resource_stats::parse_range(range_str)
+        .map_err(|e| ApiError::bad_request(format!("invalid range {range_str:?}: {e}")))?;
+    let cutoff =
+        chrono::Utc::now() - chrono::Duration::from_std(lookback).expect("bounded by parse_range");
+    let samples = state
+        .resource_stats
+        .range(cutoff)
+        .await
+        .map_err(ApiError::internal)?;
+    let bucket_width = resource_stats::bucket_width_for(lookback);
+    Ok(Json(resource_stats::bucket_samples(&samples, bucket_width)))
+}
+
+#[derive(Deserialize)]
 struct CreateUserRequest {
     username: String,
     password: String,
@@ -1328,6 +1364,11 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
     // operate — a license is a single-row table, not worth its own
     // connection pool/URL to configure.
     let license_store = LicenseStore::connect(&config.auth_database_url).await?;
+    // Same database as checkpoints, not a 5th env var — same reasoning as
+    // `run_logs`/`license_store` above, one small table doesn't need its
+    // own connection pool/URL.
+    let resource_stats =
+        resource_stats::ResourceStatsStore::connect(&config.checkpoint_database_url).await?;
     // Same database as pipelines/run_logs — dbt lineage/test results are
     // intrinsically tied to a pipeline's own runs, not worth a 6th env var.
     let dbt_lineage =
@@ -1353,6 +1394,7 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         pipelines,
         run_logs,
         license_store,
+        resource_stats,
         dbt_lineage,
         dbt_test_results,
         progress: ProgressHub::default(),
@@ -1529,6 +1571,11 @@ pub async fn run() -> anyhow::Result<()> {
     // it racing their own assertions).
     scheduler::spawn(state.clone());
 
+    // CPU/memory/disk sampler for the "resources" tab (see
+    // resource_stats.rs) — same "only the real boot path" rule as the
+    // scheduler above.
+    resource_stats::spawn(state.clone());
+
     let app = router(state);
 
     let port: u16 = std::env::var("NEXUS_PORT")
@@ -1600,6 +1647,9 @@ mod tests {
             pipelines: PipelineStore::connect("sqlite::memory:").await.unwrap(),
             run_logs: RunLogStore::connect("sqlite::memory:").await.unwrap(),
             license_store: LicenseStore::connect("sqlite::memory:").await.unwrap(),
+            resource_stats: resource_stats::ResourceStatsStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
             dbt_lineage: dbt_lineage_store::DbtLineageStore::connect("sqlite::memory:")
                 .await
                 .unwrap(),
@@ -2986,6 +3036,9 @@ mod tests {
             pipelines: PipelineStore::connect("sqlite::memory:").await.unwrap(),
             run_logs: RunLogStore::connect("sqlite::memory:").await.unwrap(),
             license_store: LicenseStore::connect("sqlite::memory:").await.unwrap(),
+            resource_stats: resource_stats::ResourceStatsStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
             dbt_lineage: dbt_lineage_store::DbtLineageStore::connect("sqlite::memory:")
                 .await
                 .unwrap(),

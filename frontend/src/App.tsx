@@ -7,6 +7,7 @@ import {
   Sparkles,
   ShieldCheck,
   Store as StoreIcon,
+  Gauge,
   Waypoints,
   BadgeCheck,
 } from 'lucide-react'
@@ -23,10 +24,19 @@ const PipelinesList = lazy(() => import('@/components/PipelinesList'))
 const PipelineStatusBoard = lazy(() => import('@/components/PipelineStatusBoard'))
 const UsersPanel = lazy(() => import('@/components/UsersPanel'))
 const Store = lazy(() => import('@/components/Store'))
+const ResourcesPanel = lazy(() => import('@/components/ResourcesPanel'))
 const LineagePanel = lazy(() => import('@/components/LineagePanel'))
 const QualityPanel = lazy(() => import('@/components/QualityPanel'))
 
-type View = 'canvas' | 'pipelines' | 'status' | 'store' | 'lineage' | 'quality' | 'admin'
+type View =
+  | 'canvas'
+  | 'pipelines'
+  | 'status'
+  | 'store'
+  | 'resources'
+  | 'lineage'
+  | 'quality'
+  | 'admin'
 
 function ViewFallback() {
   const { t } = useI18n()
@@ -68,6 +78,7 @@ function App() {
     { id: 'pipelines', label: t('nav.pipelines'), icon: List },
     { id: 'status', label: t('nav.status'), icon: Activity },
     { id: 'store', label: t('nav.store'), icon: StoreIcon },
+    { id: 'resources', label: t('nav.resources'), icon: Gauge },
     { id: 'lineage', label: t('nav.lineage'), icon: Waypoints },
     { id: 'quality', label: t('nav.quality'), icon: BadgeCheck },
     // Client-side gating only decides visibility of the nav item — the
@@ -156,6 +167,7 @@ function App() {
             {view === 'pipelines' && <PipelinesList onEdit={handleEdit} />}
             {view === 'status' && <PipelineStatusBoard />}
             {view === 'store' && <Store />}
+            {view === 'resources' && <ResourcesPanel />}
             {view === 'lineage' && <LineagePanel />}
             {view === 'quality' && <QualityPanel />}
             {view === 'admin' && <UsersPanel />}

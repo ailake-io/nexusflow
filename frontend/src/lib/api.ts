@@ -212,6 +212,33 @@ export function listRuns(token: string, pipelineId: string): Promise<RunRecord[]
   return request<RunRecord[]>(`/pipelines/${encodeURIComponent(pipelineId)}/runs`, {}, token)
 }
 
+/** Matches nexus-server::resource_stats::ResourceStatsBucket — one averaged
+ *  point returned by GET /system/resource-stats. `disk_*` are `null` when
+ *  the backend couldn't resolve the data directory's containing mount. */
+export interface ResourceStatsBucket {
+  bucket_start: string
+  cpu_percent: number
+  memory_used_bytes: number
+  memory_total_bytes: number
+  disk_used_bytes: number | null
+  disk_total_bytes: number | null
+}
+
+/**
+ * Historical CPU/memory/disk usage for the Resources tab. `range` is
+ * `<number><unit>` (`5m`/`45m`/`3h`/`12d`, unit ∈ m/h/d) — the same 5
+ * preset shortcuts the panel offers (`1h`/`6h`/`1d`/`7d`/`30d`) plus
+ * whatever custom value the user types. Defaults to `5m` server-side when
+ * omitted, matching the panel's own initial state.
+ */
+export function getResourceStats(token: string, range: string): Promise<ResourceStatsBucket[]> {
+  return request<ResourceStatsBucket[]>(
+    `/system/resource-stats?range=${encodeURIComponent(range)}`,
+    {},
+    token,
+  )
+}
+
 /** Matches nexus-server::dbt_test_result_store::DbtTestOutcome, as returned
  *  by GET /pipelines/{id}/dbt-tests. One row per recorded test result —
  *  history, not just the latest run (dbt's own CLI has no cross-run memory
