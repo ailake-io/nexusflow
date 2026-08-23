@@ -168,6 +168,15 @@ export interface DbtRunSummary {
   nodes_in_lineage: number | null
 }
 
+/** Matches nexus-core::pipeline::PartitionStats — one entry per partition/
+ *  sink written during a run, embedded in RunRecord.stats below. */
+export interface PartitionStats {
+  partition_id: string
+  batches_written: number
+  rows_written: number
+  resume_state: string | null
+}
+
 /** Matches nexus-server::pipeline_store::RunRecord, as returned by GET /pipelines/{id}/runs. */
 export interface RunRecord {
   id: number
@@ -176,7 +185,7 @@ export interface RunRecord {
   finished_at: string | null
   status: 'running' | 'success' | 'failed'
   error: string | null
-  stats: unknown
+  stats: PartitionStats[] | null
   dbt_summary: DbtRunSummary | null
 }
 
@@ -228,6 +237,58 @@ export function getResourceStats(token: string, range: string): Promise<Resource
     {},
     token,
   )
+}
+
+/** Matches nexus-server::dbt_test_result_store::DbtTestOutcome, as returned
+ *  by GET /pipelines/{id}/dbt-tests. One row per recorded test result —
+ *  history, not just the latest run (dbt's own CLI has no cross-run memory
+ *  of this; nexus-server persists it instead of discarding it after the
+ *  aggregate pass/fail count already on RunRecord.dbt_summary is derived). */
+export interface DbtTestOutcome {
+  unique_id: string
+  status: 'pass' | 'fail' | 'warn'
+  message: string | null
+  execution_time: number
+}
+
+export function getDbtTestResults(token: string, pipelineId: string): Promise<DbtTestOutcome[]> {
+  return request<DbtTestOutcome[]>(
+    `/pipelines/${encodeURIComponent(pipelineId)}/dbt-tests`,
+    {},
+    token,
+  )
+}
+
+/** Matches nexus-server::lineage::ResourceKind. */
+export type LineageResourceKind = 'table' | 'collection' | 'topic' | 'file'
+
+/** Matches nexus-server::lineage::LineageNode — a saved pipeline, a
+ *  resource one or more pipelines touch (identified by a connector-specific
+ *  allowlisted field only, e.g. `table`/`collection`/`topic`; never a raw
+ *  connection string), or a node from a pipeline's dbt project
+ *  (`resource_type` is dbt's own vocabulary — `model`/`source`/`seed`/
+ *  `snapshot`). Discriminated by `kind`. */
+export type LineageNode =
+  | { kind: 'pipeline'; id: string; label: string; has_schedule: boolean }
+  | { kind: 'resource'; id: string; label: string; connector: string; resource_kind: LineageResourceKind }
+  | { kind: 'dbt_node'; id: string; label: string; resource_type: string }
+
+/** Matches nexus-server::lineage::LineageEdge. */
+export interface LineageEdge {
+  from: string
+  to: string
+}
+
+/** Matches nexus-server::lineage::LineageGraph, as returned by GET /lineage.
+ *  Whole-catalog graph, computed fresh on every request — no polling
+ *  needed, saved pipelines change rarely compared to live resource usage. */
+export interface LineageGraph {
+  nodes: LineageNode[]
+  edges: LineageEdge[]
+}
+
+export function getLineage(token: string): Promise<LineageGraph> {
+  return request<LineageGraph>('/lineage', {}, token)
 }
 
 /**
