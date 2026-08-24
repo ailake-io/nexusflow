@@ -11,12 +11,14 @@ import {
   AlertCircle,
   FilePlus,
   Timer,
+  Bell,
 } from 'lucide-react'
 import { useI18n } from '@/lib/i18n'
 import { Button } from '@/components/ui/button'
 import { FieldHint } from '@/components/FieldHint'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { AlertsConfigDialog } from '@/components/AlertsConfigDialog'
 import type { PipelineMeta } from '@/lib/dag'
 
 interface PipelineIoPanelProps {
@@ -60,6 +62,7 @@ export function PipelineIoPanel({
   const [text, setText] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
+  const [alertsOpen, setAlertsOpen] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleExport = () => {
@@ -201,6 +204,15 @@ export function PipelineIoPanel({
           </Button>
           <Button
             type="button"
+            variant="outline"
+            onClick={() => setAlertsOpen(true)}
+            className="gap-1.5"
+          >
+            <Bell className="h-3.5 w-3.5" />
+            {t('ioPanel.alerts')}
+          </Button>
+          <Button
+            type="button"
             variant={autoSaveEnabled ? 'default' : 'outline'}
             onClick={onToggleAutoSave}
             disabled={!meta.pipelineId.trim()}
@@ -287,6 +299,13 @@ export function PipelineIoPanel({
         spellCheck={false}
         placeholder={t('ioPanel.placeholder')}
         className="w-full rounded-lg border border-input bg-transparent p-3 font-mono text-xs text-foreground outline-none focus:ring-2 focus:ring-ring"
+      />
+
+      <AlertsConfigDialog
+        open={alertsOpen}
+        onOpenChange={setAlertsOpen}
+        alerts={meta.alerts}
+        onChange={(alerts) => onMetaChange({ ...meta, alerts })}
       />
     </div>
   )

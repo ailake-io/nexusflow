@@ -90,6 +90,72 @@ pub struct DbtConfig {
     pub output: Option<NodeSpec>,
 }
 
+/// Per-pipeline alert notification config — additive to (never replaces)
+/// nexus-server's process-wide, env-var-configured `AlertConfig`
+/// (`alerts.rs`), which keeps firing exactly as it does today (failure
+/// only, whoever set the env vars). A pipeline that sets this field gets
+/// its own channels dispatched *in addition* to the global one, with
+/// success/failure notification toggled independently per channel —
+/// unlike the global config, which has always been failure-only.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AlertsConfig {
+    pub slack: Option<WebhookAlertChannel>,
+    pub teams: Option<WebhookAlertChannel>,
+    /// Generic outbound webhook — same plain-JSON-body shape as
+    /// nexus-server's global `webhook_url` channel.
+    pub webhook: Option<WebhookAlertChannel>,
+    pub pagerduty: Option<PagerDutyAlertChannel>,
+    pub email: Option<EmailAlertChannel>,
+}
+
+/// Shared shape for Slack/Teams/generic-webhook — all three are "POST a
+/// JSON payload to this URL", differing only in payload format (built
+/// server-side).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebhookAlertChannel {
+    pub url: String,
+    /// Fire when a run succeeds. Defaults to `false` — opt-in, since
+    /// success notifications are new (the global channel never had them).
+    #[serde(default)]
+    pub on_success: bool,
+    /// Fire when a run fails. Defaults to `true` — matches the one
+    /// behavior every alert channel in this app has always had.
+    #[serde(default = "default_true")]
+    pub on_failure: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PagerDutyAlertChannel {
+    /// PagerDuty Events API v2 integration/routing key — the API endpoint
+    /// itself is fixed (not user-supplied), so this carries no SSRF
+    /// surface the way the webhook URLs above do.
+    pub routing_key: String,
+    #[serde(default)]
+    pub on_success: bool,
+    #[serde(default = "default_true")]
+    pub on_failure: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmailAlertChannel {
+    pub smtp_host: String,
+    pub smtp_port: u16,
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+    pub from: String,
+    pub to: Vec<String>,
+    #[serde(default)]
+    pub on_success: bool,
+    #[serde(default = "default_true")]
+    pub on_failure: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 /// Configuration for the optional embedding/chunking stage. Defined in
 /// nexus-core so `PipelineSpec` can carry it without adding an nexus-ai
 /// dependency to the core crate; nexus-ai consumes this spec at runtime.
@@ -220,6 +286,12 @@ pub struct PipelineSpec {
     /// before this field existed.
     #[serde(default)]
     pub schedule: Option<String>,
+    /// Per-pipeline alert channels — additive to nexus-server's global,
+    /// env-var-configured channels (`alerts.rs::AlertConfig`), which keep
+    /// firing exactly as before. `None` (the default) means no per-pipeline
+    /// channels, same as before this field existed.
+    #[serde(default)]
+    pub alerts: Option<AlertsConfig>,
     /// When true, the spec is saved as a draft: only `pipeline_id` is
     /// validated, and connector configs/embedding/dbt are not checked.
     /// Drafts cannot be executed; they must be completed and re-saved
@@ -538,8 +610,56 @@ impl PipelineSpec {
         if let Some(embedding) = &self.embedding {
             validate_embedding_security(&embedding.model, allow_internal_hosts)?;
         }
+        if let Some(alerts) = &self.alerts {
+            validate_alerts_security(alerts, allow_internal_hosts)?;
+        }
         Ok(())
     }
+}
+
+/// `alerts`' webhook URLs/SMTP host are typed Rust fields, not
+/// `serde_json::Value` — same reason `validate_embedding_security` exists
+/// for `embedding.model.base_url`, they never go through
+/// `validate_node_security`'s recursive scan. Without this, a `Write`-role
+/// pipeline spec could point an alert channel at an internal service and
+/// have this server make an outbound request to it on every run.
+/// PagerDuty's `routing_key` carries no such surface — the API endpoint is
+/// the fixed `PAGERDUTY_EVENTS_URL` constant in `alerts.rs`, never
+/// user-supplied, so it's intentionally not checked here.
+fn validate_alerts_security(
+    alerts: &AlertsConfig,
+    allow_internal_hosts: bool,
+) -> Result<(), NexusError> {
+    if allow_internal_hosts {
+        return Ok(());
+    }
+    let check_url = |label: &str, url: &str| -> Result<(), NexusError> {
+        if let Some(host) = http_host(url) {
+            if is_internal_host(&host) {
+                return Err(NexusError::Schema(format!(
+                    "alerts.{label}.url points to an internal host"
+                )));
+            }
+        }
+        Ok(())
+    };
+    if let Some(c) = &alerts.slack {
+        check_url("slack", &c.url)?;
+    }
+    if let Some(c) = &alerts.teams {
+        check_url("teams", &c.url)?;
+    }
+    if let Some(c) = &alerts.webhook {
+        check_url("webhook", &c.url)?;
+    }
+    if let Some(email) = &alerts.email {
+        if is_internal_host(&email.smtp_host.to_lowercase()) {
+            return Err(NexusError::Schema(
+                "alerts.email.smtp_host points to an internal host".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// `embedding.model`'s `Api` variant carries a `base_url` the server will
@@ -1291,5 +1411,58 @@ mod tests {
         let spec = PipelineSpec::parse(json).unwrap();
         spec.validate_security()
             .expect("external embedding API base_url must be accepted");
+    }
+
+    #[test]
+    fn validate_security_rejects_ssrf_via_alerts_slack_url() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "postgres", "config": {}}],
+            "sinks": [{"connector": "postgres", "config": {}}],
+            "alerts": {
+                "slack": {"url": "http://169.254.169.254/latest/meta-data", "on_failure": true}
+            }
+        }"#;
+        let spec = PipelineSpec::parse(json).unwrap();
+        let err = spec
+            .validate_security()
+            .expect_err("alerts.slack.url pointing at a cloud metadata endpoint must be rejected");
+        assert!(err.to_string().contains("internal host"));
+    }
+
+    #[test]
+    fn validate_security_rejects_ssrf_via_alerts_email_smtp_host() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "postgres", "config": {}}],
+            "sinks": [{"connector": "postgres", "config": {}}],
+            "alerts": {
+                "email": {
+                    "smtp_host": "127.0.0.1", "smtp_port": 25,
+                    "from": "a@b.com", "to": ["c@d.com"]
+                }
+            }
+        }"#;
+        let spec = PipelineSpec::parse(json).unwrap();
+        let err = spec
+            .validate_security()
+            .expect_err("alerts.email.smtp_host pointing at localhost must be rejected");
+        assert!(err.to_string().contains("internal host"));
+    }
+
+    #[test]
+    fn validate_security_accepts_external_alerts_channels() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "postgres", "config": {}}],
+            "sinks": [{"connector": "postgres", "config": {}}],
+            "alerts": {
+                "slack": {"url": "https://hooks.slack.com/services/T/B/x", "on_failure": true},
+                "pagerduty": {"routing_key": "abc123", "on_failure": true}
+            }
+        }"#;
+        let spec = PipelineSpec::parse(json).unwrap();
+        spec.validate_security()
+            .expect("external alerts channels must be accepted");
     }
 }

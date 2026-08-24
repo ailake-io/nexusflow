@@ -661,8 +661,16 @@ async fn execute_pipeline_run(
                         dbt_summary = outcome.summary_json();
                     }
                     Err(e) => {
-                        record_run_failure(&state, run_id, &spec.pipeline_id, &e, &logger, started)
-                            .await;
+                        record_run_failure(
+                            &state,
+                            run_id,
+                            &spec.pipeline_id,
+                            &e,
+                            &logger,
+                            started,
+                            spec.alerts.as_ref(),
+                        )
+                        .await;
                         return;
                     }
                 }
@@ -692,6 +700,7 @@ async fn execute_pipeline_run(
                                     &e,
                                     &logger,
                                     started,
+                                    spec.alerts.as_ref(),
                                 )
                                 .await;
                                 return;
@@ -715,8 +724,29 @@ async fn execute_pipeline_run(
                 tracing::warn!(error = %e, "failed to record successful pipeline run");
             }
             server_metrics::record_run_outcome(&spec.pipeline_id, "success", started.elapsed());
+            state.alerts.notify_pipeline_run(
+                spec.alerts.as_ref(),
+                &spec.pipeline_id,
+                run_id,
+                true,
+                &format!(
+                    "{total_rows} row(s) across {} partition(s)/sink(s)",
+                    stats.len()
+                ),
+            );
         }
-        Err(e) => record_run_failure(&state, run_id, &spec.pipeline_id, &e, &logger, started).await,
+        Err(e) => {
+            record_run_failure(
+                &state,
+                run_id,
+                &spec.pipeline_id,
+                &e,
+                &logger,
+                started,
+                spec.alerts.as_ref(),
+            )
+            .await
+        }
     }
 }
 
@@ -727,6 +757,7 @@ async fn record_run_failure(
     error: &anyhow::Error,
     logger: &RunLogger,
     started: std::time::Instant,
+    alerts: Option<&nexus_core::AlertsConfig>,
 ) {
     let error_debug = format!("{error:?}");
     // Full detail (cause chain included) stays in the server log, but the
@@ -745,6 +776,9 @@ async fn record_run_failure(
     state
         .alerts
         .notify_pipeline_failed(pipeline_id, run_id, &sanitized);
+    state
+        .alerts
+        .notify_pipeline_run(alerts, pipeline_id, run_id, false, &sanitized);
 }
 
 async fn create_pipeline_handler(
@@ -2975,6 +3009,7 @@ mod tests {
             &err,
             &logger,
             std::time::Instant::now(),
+            None,
         )
         .await;
 
