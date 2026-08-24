@@ -128,6 +128,8 @@ curl -s -X POST http://localhost:8080/pipelines/meu-pipeline/run -H "authorizati
 
 Todos os campos abaixo são os nomes **exatos** dos structs de config em Rust (`serde` sem `rename`, exceto onde indicado). Campos sem `default` são obrigatórios. Convenção comum: quase todo conector de rede tem `timeout_seconds` (default `30`); conectores "bridging" sem schema próprio (mongodb, kafka, rest, odbc, csv) exigem `fields: [{"name", "data_type", "nullable"}]` explícito, com `data_type` em `int64|float64|boolean|utf8`.
 
+No Canvas, todo campo `path`/`file_path` (csv, parquet, sqlite, deltalake, lancedb) tem um botão **"Procurar…"** que abre um navegador de arquivos do servidor (`GET /system/browse-fs`, papel `Write`) — evita digitar o path absoluto às cegas. Não abre capacidade nova: um conector de path local já lê/escreve qualquer arquivo que o processo do servidor acesse assim que o path é digitado no config; o botão só torna essa navegação visual.
+
 ### 4.1 Fast-path ADBC (nativo, binário, sem overhead de serialização)
 
 #### `postgres` — source + sink
@@ -377,6 +379,8 @@ Totalmente embarcado (catálogo SQLite + warehouse local, sem metastore externo)
 ```
 Config mais simples de todas (sem `timeout_seconds` — é I/O de arquivo local, não rede). Upsert/delete são feitos via read-filter-rewrite (arquivo temporário + rename atômico) — correto, mas custo `O(tamanho do arquivo)` por batch.
 
+**`path` pode ser uma pasta** (source, storage local): lê todo arquivo regular dentro dela (não-recursivo, sem entrar em subpastas, dotfiles ignorados), em ordem alfabética, concatenando tudo contra o schema do primeiro arquivo — erro claro (citando o arquivo) se algum divergir. O sink continua exigindo um arquivo — apontar pra uma pasta existente é rejeitado na conexão.
+
 #### `ailake` — formato Parquet + índice HNSW nativo para vetores
 ```json
 {"connector": "ailake", "config": {
@@ -402,6 +406,7 @@ Config mais simples de todas (sem `timeout_seconds` — é I/O de arquivo local,
 ```
 - `delimiter`: qualquer caractere único — `,` (CSV, default), `\t` (TSV), `;`/`|` (TXT customizado).
 - `primary_key`: opcional na source, mas **obrigatório de fato no sink** (usado pra upsert/delete).
+- `path`/`uri` **pode ser uma pasta** (source, storage local): lê todo arquivo regular dentro dela (não-recursivo, sem entrar em subpastas, dotfiles ignorados), em ordem alfabética — mesmo `delimiter`/`has_header`/`quote`/`escape`/`fields` aplicados a todos, concatenados num stream só. O sink continua exigindo um arquivo — apontar pra uma pasta existente é rejeitado na conexão com erro claro.
 - `uri` aceita path local **ou** URL de nuvem — `s3://bucket/key`, `gs://bucket/key`, `az://container/key`:
 
 ```json
@@ -445,9 +450,9 @@ Chaves de `storage_options` por provedor:
 | `chromadb` | — | ✅ | vetorial |
 | `deltalake` | ✅ | ✅ | data lake |
 | `iceberg` | ✅ | ✅ | data lake, append-only |
-| `parquet` | ✅ | ✅ | data lake, arquivo único |
+| `parquet` | ✅ | ✅ | data lake, `path` aceita pasta na source (local) |
 | `ailake` | ✅ | ✅ | data lake + vetorial (HNSW) |
-| `csv` | ✅ | ✅ | local ou S3/GCS/Azure |
+| `csv` | ✅ | ✅ | local ou S3/GCS/Azure, `path` aceita pasta na source (local) |
 
 > `lancedb` não tem config listada acima por brevidade — segue o mesmo padrão vetorial de `pgvector`/`milvus`: `{"uri": "/dados/vectors", "table": "docs", "primary_key": "id", "embedding_column": "embedding", "dimension": 384, "timeout_seconds": 30}`, path local embarcado (sem servidor), criado automaticamente no primeiro write.
 
