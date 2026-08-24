@@ -32,7 +32,19 @@ pub struct ParquetSink {
 
 impl ParquetSink {
     pub fn connect(cfg: &ParquetConnectorConfig) -> Result<Self, NexusError> {
-        let (store, path) = open_store(&cfg.uri()?, &cfg.storage_options())?;
+        let uri = cfg.uri()?;
+        // `open_store` reads a whole directory's worth of files for a
+        // source — a sink always writes exactly one file, so a `path` that
+        // already resolves to a directory is a config error.
+        if std::path::Path::new(&uri).is_dir() {
+            return Err(NexusError::Schema(
+                "parquet sink: path must be a file, not a directory".to_string(),
+            ));
+        }
+        let (store, mut paths) = open_store(&uri, &cfg.storage_options())?;
+        let path = paths.pop().ok_or_else(|| {
+            NexusError::Connector("parquet sink: open_store returned no path".to_string())
+        })?;
         Ok(Self {
             store,
             path,

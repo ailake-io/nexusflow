@@ -1,6 +1,7 @@
 mod alerts;
 mod auth;
 mod auth_store;
+mod browse;
 mod checkpoint_store;
 mod connectors;
 mod crypto;
@@ -180,6 +181,12 @@ fn router(state: AppState) -> Router {
         // them back. `get_pipeline_handler` above stays masked for anyone
         // with only `Read` (Marco 8 task #17).
         .route("/pipelines/{id}/spec", get(get_pipeline_spec_handler))
+        // Backs the Canvas "browse path" button (frontend/SchemaForm.tsx)
+        // for local-path connector fields (csv/parquet/sqlite/...). Same
+        // role as editing a node's config in the first place — see
+        // `browse_fs_handler`'s doc comment for why no extra sandbox is
+        // layered underneath this.
+        .route("/system/browse-fs", get(browse_fs_handler))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_role::<AppState>,
@@ -1026,6 +1033,37 @@ async fn resource_stats_handler(
         .map_err(ApiError::internal)?;
     let bucket_width = resource_stats::bucket_width_for(lookback);
     Ok(Json(resource_stats::bucket_samples(&samples, bucket_width)))
+}
+
+#[derive(Deserialize)]
+struct BrowseQuery {
+    /// Absolute path to list. Empty/absent lists `/`.
+    path: Option<String>,
+}
+
+/// Lists a directory's contents for the Canvas "browse path" file picker.
+///
+/// Deliberately **no extra sandbox root** on top of whatever the server
+/// process can read: a local-path connector (`csv`/`parquet`/`sqlite`/...)
+/// already reads/writes any absolute path the process can access the moment
+/// it's typed into a node's config (`nexus_core::
+/// submit_local_path_connector!` is the existing opt-out from the SSRF path
+/// guard in `dag.rs`). This endpoint grants no new capability — it only
+/// makes that same space visually discoverable instead of requiring the
+/// caller to already know the path blind. Gated at `Write`, the same role
+/// already required to edit a Canvas node's config.
+async fn browse_fs_handler(
+    Query(query): Query<BrowseQuery>,
+) -> Result<Json<browse::BrowseListing>, ApiError> {
+    let path = query
+        .path
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| "/".to_string());
+    tokio::task::spawn_blocking(move || browse::list_directory(std::path::Path::new(&path)))
+        .await
+        .map_err(ApiError::internal)?
+        .map(Json)
+        .map_err(|e| ApiError::bad_request(format!("could not list path: {e}")))
 }
 
 #[derive(Deserialize)]
