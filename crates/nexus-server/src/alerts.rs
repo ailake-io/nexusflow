@@ -98,8 +98,12 @@ impl AlertNotifier {
             let pipeline_id = pipeline_id.to_string();
             let error = error.to_string();
             tokio::spawn(async move {
-                if let Err(e) = send_failure_email(&email, &pipeline_id, run_id, &error).await {
-                    tracing::warn!(channel = "Email", error = %e, "failed to send alert");
+                match send_failure_email(&email, &pipeline_id, run_id, &error).await {
+                    Ok(()) => crate::server_metrics::record_alert_sent("Email", "success"),
+                    Err(e) => {
+                        tracing::warn!(channel = "Email", error = %e, "failed to send alert");
+                        crate::server_metrics::record_alert_sent("Email", "failure");
+                    }
                 }
             });
         }
@@ -165,9 +169,13 @@ fn spawn_webhook_post(client: reqwest::Client, url: String, payload: Value, chan
                     status = %response.status(),
                     "alert webhook returned a non-success status"
                 );
+                crate::server_metrics::record_alert_sent(channel, "failure");
             }
-            Err(e) => tracing::warn!(channel, error = %e, "failed to send alert"),
-            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(channel, error = %e, "failed to send alert");
+                crate::server_metrics::record_alert_sent(channel, "failure");
+            }
+            Ok(_) => crate::server_metrics::record_alert_sent(channel, "success"),
         }
     });
 }
