@@ -454,6 +454,30 @@ export function previewNode(
   )
 }
 
+/** One entry (file or subdirectory) returned by `browseFilesystem`. */
+export interface BrowseEntry {
+  name: string
+  is_dir: boolean
+  size: number | null
+}
+
+/** Matches nexus-server::browse::BrowseListing, as returned by
+ *  GET /system/browse-fs. */
+export interface BrowseListing {
+  path: string
+  entries: BrowseEntry[]
+}
+
+/** Lists a server-side directory's contents for the Canvas "browse path"
+ *  file picker (`FileBrowserDialog`) — backs any file-based connector's
+ *  `path`/`file_path` config field. `path` omitted/empty lists `/`. */
+export function browseFilesystem(token: string, path?: string): Promise<BrowseListing> {
+  const params = new URLSearchParams()
+  if (path) params.set('path', path)
+  const query = params.toString()
+  return request<BrowseListing>(`/system/browse-fs${query ? `?${query}` : ''}`, {}, token)
+}
+
 export function deletePipeline(token: string, pipelineId: string): Promise<void> {
   return request<void>(
     `/pipelines/${encodeURIComponent(pipelineId)}`,

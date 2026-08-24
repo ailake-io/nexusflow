@@ -334,6 +334,14 @@ export const translations = {
       select: 'select',
       mapKey: 'key',
       mapValue: 'value',
+      browse: 'Browse…',
+    },
+    fileBrowser: {
+      title: 'Browse server files',
+      selectFolder: 'Select this folder',
+      selectFile: 'Select',
+      empty: 'Empty directory',
+      loadError: 'Could not list this directory',
     },
     store: {
       title: 'Store',
@@ -720,6 +728,14 @@ export const translations = {
       select: 'selecione',
       mapKey: 'chave',
       mapValue: 'valor',
+      browse: 'Procurar…',
+    },
+    fileBrowser: {
+      title: 'Procurar arquivos do servidor',
+      selectFolder: 'Selecionar esta pasta',
+      selectFile: 'Selecionar',
+      empty: 'Pasta vazia',
+      loadError: 'Não foi possível listar essa pasta',
     },
     store: {
       title: 'Store',
