@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use futures::stream::{BoxStream, Stream};
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Error as MySqlError, Row};
-use nexus_core::{with_timeout, NexusError, RecordBatchBuilder, Source};
+use nexus_core::{quote_identifier, with_timeout, NexusError, RecordBatchBuilder, Source};
 use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
@@ -30,21 +30,88 @@ pub struct MySqlSource {
 
 impl MySqlSource {
     pub async fn connect(config: &MySqlConnectorConfig) -> Result<Self, NexusError> {
-        let conn = with_timeout(config.timeout_seconds, "mysql connect", async {
+        let mut conn = with_timeout(config.timeout_seconds, "mysql connect", async {
             Conn::from_url(config.connection_string())
                 .await
                 .map_err(|e| NexusError::Connector(format!("mysql connect failed: {e}")))
         })
         .await?;
 
+        let fields = if config.fields.is_empty() {
+            discover_fields(&mut conn, &config.table, config.timeout_seconds).await?
+        } else {
+            config.fields.clone()
+        };
+
         Ok(Self {
             conn,
-            select_sql: build_select_sql(&config.table, &config.fields)?,
-            schema: build_schema(&config.fields),
-            fields: config.fields.clone(),
+            select_sql: build_select_sql(&config.table, &fields)?,
+            schema: build_schema(&fields),
+            fields,
             batch_size: config.batch_size,
             timeout_seconds: config.timeout_seconds,
         })
+    }
+}
+
+/// Reads `table`'s real column metadata from MySQL's own catalog
+/// (`SHOW COLUMNS FROM table`) — shared by the batch source's
+/// `MySqlConnectorConfig::fields` fallback and `mysql-cdc`'s (see
+/// `cdc.rs`), since binlog events carry column values positionally but
+/// never names (`binlog_row_metadata=FULL` is off by default — see
+/// `MySqlCdcSourceConfig::fields` doc comment), so CDC needs this same
+/// query to know what to call each position. `SHOW COLUMNS` returns rows
+/// in table-definition order, which is exactly the order the binlog's
+/// positional values arrive in.
+pub(crate) async fn discover_fields(
+    conn: &mut Conn,
+    table: &str,
+    timeout_seconds: u64,
+) -> Result<Vec<MySqlCdcFieldSpec>, NexusError> {
+    let quoted_table = quote_identifier(table)?;
+    let rows: Vec<Row> = with_timeout(timeout_seconds, "mysql show columns", async {
+        conn.query(format!("SHOW COLUMNS FROM {quoted_table}"))
+            .await
+            .map_err(|e| NexusError::Connector(format!("mysql SHOW COLUMNS failed: {e}")))
+    })
+    .await?;
+
+    rows.into_iter()
+        .map(|mut row| {
+            let name: String = row
+                .take("Field")
+                .ok_or_else(|| NexusError::Connector("SHOW COLUMNS: missing Field".into()))?;
+            let sql_type: String = row
+                .take("Type")
+                .ok_or_else(|| NexusError::Connector("SHOW COLUMNS: missing Type".into()))?;
+            let nullable: String = row
+                .take("Null")
+                .ok_or_else(|| NexusError::Connector("SHOW COLUMNS: missing Null".into()))?;
+            Ok(MySqlCdcFieldSpec {
+                name,
+                data_type: mysql_type_to_data_type(&sql_type),
+                nullable: nullable.eq_ignore_ascii_case("yes"),
+            })
+        })
+        .collect()
+}
+
+/// Narrows a MySQL column type string (as `SHOW COLUMNS`' `Type` column
+/// reports it, e.g. `"int(11)"`, `"varchar(255)"`, `"decimal(10,2)"`) down
+/// to this connector's 4 supported Arrow types — matched on the prefix
+/// before any `(...)` precision/length suffix. Anything not recognized
+/// falls back to `Utf8`, same "never lose the value" principle as the
+/// other connectors' inference.
+pub(crate) fn mysql_type_to_data_type(sql_type: &str) -> MySqlCdcDataType {
+    let base = sql_type.split('(').next().unwrap_or(sql_type).trim();
+    match base {
+        "tinyint" if sql_type.contains("(1)") => MySqlCdcDataType::Boolean,
+        "tinyint" | "smallint" | "mediumint" | "int" | "integer" | "bigint" | "year" => {
+            MySqlCdcDataType::Int64
+        }
+        "float" | "double" | "decimal" | "numeric" => MySqlCdcDataType::Float64,
+        "bool" | "boolean" => MySqlCdcDataType::Boolean,
+        _ => MySqlCdcDataType::Utf8,
     }
 }
 

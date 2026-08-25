@@ -21,8 +21,7 @@ pub struct RestSource {
 }
 
 impl RestSource {
-    pub fn connect(config: &RestConnectorConfig) -> Result<Self, NexusError> {
-        let schema = build_schema(&config.fields);
+    pub async fn connect(config: &RestConnectorConfig) -> Result<Self, NexusError> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(config.timeout_seconds))
             // Disable automatic redirects: the DAG's validate_security() only
@@ -31,12 +30,36 @@ impl RestSource {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| NexusError::Connector(format!("REST client build failed: {e}")))?;
+
+        let schema = if config.fields.is_empty() {
+            infer_schema(&client, config).await?
+        } else {
+            build_schema(&config.fields)
+        };
+
         Ok(Self {
             client,
             config: config.clone(),
             schema,
         })
     }
+}
+
+/// Fetches the first page — same unparameterized request every pagination
+/// mode starts with (`PaginationState::None`/`Offset { offset: 0 }`/
+/// `Cursor { cursor: None }` in `read_batches` below all issue the exact
+/// same initial query) — and infers a schema from its rows. Source-side
+/// fallback for when `fields` is left empty (see
+/// `RestConnectorConfig::fields` doc comment). Reuses `fetch_page_with_retry`
+/// so a flaky first request gets the same retry/backoff treatment a real
+/// read would.
+async fn infer_schema(
+    client: &reqwest::Client,
+    config: &RestConnectorConfig,
+) -> Result<SchemaRef, NexusError> {
+    let body = fetch_page_with_retry(client, config, &[]).await?;
+    let rows = rows_from_body(config, &body)?;
+    Ok(RecordBatchBuilder::infer_schema(rows))
 }
 
 fn build_schema(fields: &[crate::config::RestFieldSpec]) -> SchemaRef {

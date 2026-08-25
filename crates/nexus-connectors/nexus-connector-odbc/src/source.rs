@@ -4,8 +4,10 @@ use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
 use futures::stream::{self, BoxStream};
-use nexus_core::{NexusError, RecordBatchBuilder, Source};
-use odbc_api::{Bit, ConnectionOptions, Cursor, Environment, Nullable};
+use nexus_core::{quote_identifier, NexusError, RecordBatchBuilder, Source};
+use odbc_api::{
+    Bit, ColumnDescription, ConnectionOptions, Cursor, Environment, Nullable, ResultSetMetadata,
+};
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,15 +27,86 @@ const CHANNEL_CAPACITY: usize = 4;
 /// buffer binding: this is the generic/portable tier, not a perf fast-path.
 pub struct OdbcSource {
     config: OdbcConnectorConfig,
+    /// Effective field list — `config.fields` verbatim when non-empty,
+    /// otherwise the result of `discover_fields`. `read_batches` reads by
+    /// this, never `config.fields` directly, so a discovered schema is
+    /// honored the same way an explicit one would be.
+    fields: Vec<OdbcFieldSpec>,
     schema: SchemaRef,
 }
 
 impl OdbcSource {
     pub fn connect(config: &OdbcConnectorConfig) -> Result<Self, NexusError> {
+        let fields = if config.fields.is_empty() {
+            discover_fields(config)?
+        } else {
+            config.fields.clone()
+        };
         Ok(Self {
             config: config.clone(),
-            schema: build_schema(&config.fields),
+            schema: build_schema(&fields),
+            fields,
         })
+    }
+}
+
+/// Runs `SELECT * FROM {table}` and reads back each column's name/SQL type
+/// via `describe_col` — never fetches a row, just the result-set shape.
+/// Source-side fallback for when `fields` is left empty (see
+/// `OdbcConnectorConfig::fields` doc comment on why this is best-effort).
+fn discover_fields(config: &OdbcConnectorConfig) -> Result<Vec<OdbcFieldSpec>, NexusError> {
+    let quoted_table = quote_identifier(&config.table)?;
+    let env = Environment::new().map_err(|e| NexusError::Connector(format!("odbc env: {e}")))?;
+    let conn = env
+        .connect_with_connection_string(&config.connection_string(), ConnectionOptions::default())
+        .map_err(|e| NexusError::Connector(format!("odbc connect: {e}")))?;
+    let mut cursor = conn
+        .execute(&format!("SELECT * FROM {quoted_table}"), (), None)
+        .map_err(|e| NexusError::Connector(format!("odbc schema discovery query failed: {e}")))?
+        .ok_or_else(|| {
+            NexusError::Connector("odbc schema discovery: SELECT * returned no result set".into())
+        })?;
+
+    let num_cols = cursor
+        .num_result_cols()
+        .map_err(|e| NexusError::Connector(format!("odbc num_result_cols failed: {e}")))?;
+    let mut fields = Vec::with_capacity(num_cols as usize);
+    for col in 1..=num_cols as u16 {
+        let mut desc = ColumnDescription::default();
+        cursor
+            .describe_col(col, &mut desc)
+            .map_err(|e| NexusError::Connector(format!("odbc describe_col failed: {e}")))?;
+        fields.push(OdbcFieldSpec {
+            name: desc.name_to_string().map_err(|e| {
+                NexusError::Connector(format!("odbc column name decode failed: {e}"))
+            })?,
+            data_type: sql_type_to_odbc_data_type(desc.data_type),
+            nullable: desc.could_be_nullable(),
+        });
+    }
+    Ok(fields)
+}
+
+/// Narrows an ODBC `SQLDescribeCol` type down to this connector's 4
+/// supported Arrow types. Anything not obviously an integer/float/bit
+/// falls back to `Utf8` — same "never lose the value for lack of a
+/// matching variant" principle the other connectors' inference uses, and
+/// the reason `discover_fields` is documented as best-effort rather than
+/// exhaustive: a driver-specific type this doesn't recognize still reads
+/// back as text, not an error.
+fn sql_type_to_odbc_data_type(sql_type: odbc_api::DataType) -> OdbcDataType {
+    use odbc_api::DataType as SqlType;
+    match sql_type {
+        SqlType::TinyInt | SqlType::SmallInt | SqlType::Integer | SqlType::BigInt => {
+            OdbcDataType::Int64
+        }
+        SqlType::Real | SqlType::Float { .. } | SqlType::Double => OdbcDataType::Float64,
+        SqlType::Numeric { scale, .. } | SqlType::Decimal { scale, .. } if scale == 0 => {
+            OdbcDataType::Int64
+        }
+        SqlType::Numeric { .. } | SqlType::Decimal { .. } => OdbcDataType::Float64,
+        SqlType::Bit => OdbcDataType::Boolean,
+        _ => OdbcDataType::Utf8,
     }
 }
 
@@ -62,16 +135,18 @@ fn build_schema(fields: &[OdbcFieldSpec]) -> SchemaRef {
 /// inside `spawn_blocking` — see `read_batches` below.
 fn fetch_all(
     config: &OdbcConnectorConfig,
+    fields: &[OdbcFieldSpec],
     schema: &SchemaRef,
     tx: &Sender<Result<RecordBatch, NexusError>>,
 ) {
-    if let Err(e) = fetch_all_inner(config, schema, tx) {
+    if let Err(e) = fetch_all_inner(config, fields, schema, tx) {
         let _ = tx.blocking_send(Err(e));
     }
 }
 
 fn fetch_all_inner(
     config: &OdbcConnectorConfig,
+    fields: &[OdbcFieldSpec],
     schema: &SchemaRef,
     tx: &Sender<Result<RecordBatch, NexusError>>,
 ) -> Result<(), NexusError> {
@@ -80,7 +155,7 @@ fn fetch_all_inner(
         .connect_with_connection_string(&config.connection_string(), ConnectionOptions::default())
         .map_err(|e| NexusError::Connector(format!("odbc connect: {e}")))?;
 
-    let sql = build_select_sql(&config.table, &config.fields)?;
+    let sql = build_select_sql(&config.table, fields)?;
     let mut cursor = conn
         .execute(&sql, (), None)
         .map_err(|e| NexusError::Connector(format!("odbc query failed: {e}")))?
@@ -99,7 +174,7 @@ fn fetch_all_inner(
         .map_err(|e| NexusError::Connector(format!("odbc fetch failed: {e}")))?
     {
         let mut object = serde_json::Map::new();
-        for (idx, field) in config.fields.iter().enumerate() {
+        for (idx, field) in fields.iter().enumerate() {
             let col = (idx + 1) as u16;
             let value = read_column(&mut row, col, field.data_type)?;
             object.insert(field.name.clone(), value);
@@ -167,6 +242,7 @@ impl Source for OdbcSource {
         &mut self,
     ) -> Result<BoxStream<'_, Result<RecordBatch, NexusError>>, NexusError> {
         let config = self.config.clone();
+        let fields = self.fields.clone();
         let schema = self.schema.clone();
         let (tx, rx) =
             tokio::sync::mpsc::channel::<Result<RecordBatch, NexusError>>(CHANNEL_CAPACITY);
@@ -177,7 +253,7 @@ impl Source for OdbcSource {
         // is no separate result to join back here — that's the whole point
         // of streaming the batches out as they're produced instead of
         // collecting them first.
-        tokio::task::spawn_blocking(move || fetch_all(&config, &schema, &tx));
+        tokio::task::spawn_blocking(move || fetch_all(&config, &fields, &schema, &tx));
 
         // Idle cutoff, not a total-scan timeout: `deadline` resets every
         // time a batch actually arrives, so a large-but-healthy scan never

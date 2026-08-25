@@ -1,7 +1,52 @@
 use crate::config::{CsvConnectorConfig, CsvDataType, CsvFieldSpec};
+use arrow_csv::reader::Format;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use nexus_core::NexusError;
+use std::io::Cursor;
 use std::sync::Arc;
+
+/// Samples up to `max_records` rows of `bytes` and infers a schema —
+/// source-side fallback for when `fields` is left empty (see
+/// `CsvConnectorConfig::fields` doc comment). Narrows whatever `arrow-csv`
+/// infers down to this connector's 4 supported types: `Int64`/`Float64`/
+/// `Boolean` map straight across, everything else (dates, timestamps,
+/// wider int/float widths) falls back to `Utf8` so a value is never
+/// dropped for lack of a matching variant — same "never lose the value"
+/// principle `build_schema`'s 4-way match already commits to.
+pub(crate) fn infer_schema(
+    bytes: &[u8],
+    delimiter: u8,
+    quote: u8,
+    escape: Option<u8>,
+    has_header: bool,
+    max_records: usize,
+) -> Result<SchemaRef, NexusError> {
+    let mut format = Format::default()
+        .with_header(has_header)
+        .with_delimiter(delimiter)
+        .with_quote(quote);
+    if let Some(escape) = escape {
+        format = format.with_escape(escape);
+    }
+    let (inferred, _records_read) = format
+        .infer_schema(Cursor::new(bytes), Some(max_records))
+        .map_err(|e| NexusError::Schema(format!("csv schema inference failed: {e}")))?;
+    Ok(Arc::new(Schema::new(
+        inferred
+            .fields()
+            .iter()
+            .map(|f| {
+                let data_type = match f.data_type() {
+                    DataType::Int64 => DataType::Int64,
+                    DataType::Float64 => DataType::Float64,
+                    DataType::Boolean => DataType::Boolean,
+                    _ => DataType::Utf8,
+                };
+                Field::new(f.name(), data_type, true)
+            })
+            .collect::<Vec<_>>(),
+    )))
+}
 
 pub(crate) fn build_schema(fields: &[CsvFieldSpec]) -> SchemaRef {
     Arc::new(Schema::new(

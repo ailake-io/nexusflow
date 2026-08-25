@@ -94,6 +94,27 @@ export function listConnectors(token: string): Promise<ConnectorDescriptor[]> {
   return request<ConnectorDescriptor[]>('/connectors', {}, token)
 }
 
+/** Matches nexus-server::preview_adhoc_handler's response
+ * (POST /connectors/preview) — same shape GET /pipelines/{id}/preview
+ * returns, just for a bare connector/config pair instead of a saved
+ * pipeline's node. */
+export interface PreviewResult {
+  rows: Record<string, unknown>[]
+}
+
+export function previewConnector(
+  token: string,
+  connector: string,
+  config: Record<string, unknown>,
+  limit = 20,
+): Promise<PreviewResult> {
+  return request<PreviewResult>(
+    '/connectors/preview',
+    { method: 'POST', body: JSON.stringify({ connector, config, limit }) },
+    token,
+  )
+}
+
 /** Matches nexus-server::LicenseStatusResponse, as returned by both
  * GET /license and POST /license (Admin-only, see `docs/ENTERPRISE_LICENSING.md`). */
 export interface LicenseStatus {
@@ -113,6 +134,64 @@ export function installLicense(token: string, licenseKey: string): Promise<Licen
     { method: 'POST', body: JSON.stringify({ license_key: licenseKey }) },
     token,
   )
+}
+
+/**
+ * `nexus-licensing` — a separate, centrally-run service (never this
+ * `nexus-server` instance itself, see `docs/ENTERPRISE_LICENSING.md`), so
+ * these calls go to their own origin instead of through `request()` above.
+ * Configured via `VITE_LICENSING_API_URL`; the Store page hides the buy
+ * flow entirely when it's unset — the manual "cole a license key" flow
+ * (`installLicense` above) always works regardless.
+ */
+const LICENSING_API_URL = (import.meta.env.VITE_LICENSING_API_URL as string | undefined)?.replace(
+  /\/$/,
+  '',
+)
+
+export function isLicensingConfigured(): boolean {
+  return Boolean(LICENSING_API_URL)
+}
+
+async function licensingRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const headers = new Headers(init.headers)
+  if (init.body) headers.set('content-type', 'application/json')
+  const response = await fetch(`${LICENSING_API_URL}${path}`, { ...init, headers })
+  if (!response.ok) {
+    const body = await response.json().catch(() => null)
+    throw new ApiError(response.status, body?.error ?? response.statusText)
+  }
+  return response.json() as Promise<T>
+}
+
+/** Matches nexus-licensing::Product (its own catalog, separate from this
+ * server's `/connectors` — see `docs/ENTERPRISE_LICENSING.md §3`). */
+export interface LicensingProduct {
+  id: number
+  connector_slug: string
+  name: string
+  price_cents_brl: number
+  price_cents_usd: number
+  active: boolean
+}
+
+export function listLicensingProducts(): Promise<LicensingProduct[]> {
+  return licensingRequest<LicensingProduct[]>('/products')
+}
+
+export interface CheckoutResponse {
+  checkout_url: string
+}
+
+export function createCheckout(
+  productIds: number[],
+  email: string,
+  currency: 'brl' | 'usd',
+): Promise<CheckoutResponse> {
+  return licensingRequest<CheckoutResponse>('/checkout', {
+    method: 'POST',
+    body: JSON.stringify({ product_ids: productIds, email, currency }),
+  })
 }
 
 /** Matches nexus-core::ProgressEvent, as sent over the progress WebSocket. */

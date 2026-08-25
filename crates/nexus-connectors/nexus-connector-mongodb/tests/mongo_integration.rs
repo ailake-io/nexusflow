@@ -54,6 +54,7 @@ async fn source_reads_documents_as_record_batches() {
         read_preference: None,
         tls: None,
         fields: fields(),
+        schema_sample_rows: 1000,
         batch_size: 1000,
         timeout_seconds: 30,
     };
@@ -90,6 +91,7 @@ async fn sink_upsert_is_idempotent_on_replay() {
         read_preference: None,
         tls: None,
         fields: fields(),
+        schema_sample_rows: 1000,
         batch_size: 1000,
         timeout_seconds: 30,
     };

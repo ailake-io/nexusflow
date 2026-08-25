@@ -71,8 +71,18 @@ pub struct MongoConnectorConfig {
     pub tls: Option<bool>,
 
     /// Explicit target schema — a MongoDB collection carries no fixed schema
-    /// of its own, so the node config must say what to project each field to.
+    /// of its own. Left empty **on the source side**, the connector samples
+    /// the first `schema_sample_rows` documents and infers one (union of
+    /// keys across the sample, typed by first non-null value —
+    /// `nexus_core::RecordBatchBuilder::infer_schema`). The sink side still
+    /// requires this explicitly.
+    #[serde(default)]
     pub fields: Vec<MongoFieldSpec>,
+
+    /// How many documents to sample when inferring `fields` (source side
+    /// only, only used when `fields` is empty). Defaults to 1000.
+    #[serde(default = "default_schema_sample_rows")]
+    pub schema_sample_rows: i64,
 
     /// How many documents to fold into a single `RecordBatch` while scanning.
     #[serde(default = "default_batch_size")]
@@ -187,6 +197,10 @@ pub enum MongoDataType {
 }
 
 fn default_batch_size() -> usize {
+    1000
+}
+
+fn default_schema_sample_rows() -> i64 {
     1000
 }
 
@@ -338,6 +352,7 @@ mod tests {
             read_preference: None,
             tls: None,
             fields: Vec::new(),
+            schema_sample_rows: 1000,
             batch_size: 1000,
             timeout_seconds: 30,
         }

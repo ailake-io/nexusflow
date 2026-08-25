@@ -65,9 +65,16 @@ pub struct OdbcConnectorConfig {
     /// Column used to partition reads and upsert on write — should be
     /// indexed on the source database.
     pub primary_key: String,
-    /// Explicit target schema — generic ODBC introspection varies too much
-    /// across legacy drivers to infer types reliably, so the node config
-    /// must say what to project each column to.
+    /// Explicit target schema. Left empty, the connector runs `SELECT *`
+    /// against `table` and asks the driver for each column's name/type via
+    /// `SQLDescribeCol` (`ResultSetMetadata::describe_col`) instead of
+    /// reading any rows — best-effort: ODBC driver quality varies a lot
+    /// across legacy databases, and a driver that misreports a column's
+    /// SQL type produces a wrong (though never silently-dropped — unknown
+    /// SQL types fall back to `Utf8`) inferred type. If introspection
+    /// looks wrong for a given driver, fall back to specifying `fields`
+    /// explicitly.
+    #[serde(default)]
     pub fields: Vec<OdbcFieldSpec>,
     /// How many rows to fold into a single `RecordBatch` while scanning.
     #[serde(default = "default_batch_size")]

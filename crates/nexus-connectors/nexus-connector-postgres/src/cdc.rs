@@ -33,6 +33,17 @@ pub struct PostgresCdcSource {
 
 impl PostgresCdcSource {
     pub async fn connect(config: &PostgresCdcConfig) -> Result<Self, NexusError> {
+        let fields = if config.fields.is_empty() {
+            crate::introspect::cdc_fields(
+                &config.connection_string(),
+                &config.table,
+                config.timeout_seconds,
+            )
+            .await?
+        } else {
+            config.fields.clone()
+        };
+
         let replication_uri = with_replication_param(&config.connection_string());
 
         let stream_config = ReplicationStreamConfig::builder(
@@ -52,8 +63,8 @@ impl PostgresCdcSource {
 
         Ok(Self {
             event_stream,
-            schema: build_schema(&config.fields),
-            fields: config.fields.clone(),
+            schema: build_schema(&fields),
+            fields,
             table: config.table.clone(),
             max_batch_events: config.max_batch_events,
         })

@@ -45,6 +45,7 @@ async fn consumes_json_messages_as_record_batches_with_topic_column() {
             data_type: MqttDataType::Float64,
             nullable: false,
         }],
+        schema_sample_rows: 1000,
         batch_size: 500,
         poll_timeout_ms: 5000,
         max_messages: 3,

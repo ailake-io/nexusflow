@@ -65,8 +65,11 @@ pub struct RestConnectorConfig {
     /// key/bearer token goes (e.g. `{"Authorization": "Bearer ..."}`).
     #[serde(default)]
     pub headers: HashMap<String, String>,
-    /// Explicit target schema — REST responses carry no schema of their own,
-    /// so the node config must say what to project each field to.
+    /// Explicit target schema — REST responses carry no schema of their own.
+    /// Left empty, the connector fetches the first page (same request the
+    /// real read would make first) and infers one from its rows — see
+    /// `nexus_core::RecordBatchBuilder::infer_schema`.
+    #[serde(default)]
     pub fields: Vec<RestFieldSpec>,
     /// Dot-separated path to the array of row objects in the response body
     /// (e.g. `"data.items"`). `None` means the response body itself is the array.

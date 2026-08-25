@@ -52,7 +52,7 @@ async fn no_pagination_reads_single_page() {
         requests_per_second: 0,
     };
 
-    let mut source = RestSource::connect(&config).unwrap();
+    let mut source = RestSource::connect(&config).await.unwrap();
     let mut stream = source.read_batches().await.unwrap();
     let mut total_rows = 0;
     while let Some(batch) = stream.next().await {
@@ -89,7 +89,7 @@ async fn legacy_url_takes_precedence() {
         requests_per_second: 0,
     };
 
-    let mut source = RestSource::connect(&config).unwrap();
+    let mut source = RestSource::connect(&config).await.unwrap();
     let mut stream = source.read_batches().await.unwrap();
     let mut total_rows = 0;
     while let Some(batch) = stream.next().await {
@@ -143,7 +143,7 @@ async fn offset_pagination_stops_on_short_page() {
         requests_per_second: 0,
     };
 
-    let mut source = RestSource::connect(&config).unwrap();
+    let mut source = RestSource::connect(&config).await.unwrap();
     let mut stream = source.read_batches().await.unwrap();
     let mut total_rows = 0;
     let mut page_count = 0;
@@ -198,7 +198,7 @@ async fn cursor_pagination_stops_when_next_cursor_absent() {
         requests_per_second: 0,
     };
 
-    let mut source = RestSource::connect(&config).unwrap();
+    let mut source = RestSource::connect(&config).await.unwrap();
     let mut stream = source.read_batches().await.unwrap();
     let mut total_rows = 0;
     while let Some(batch) = stream.next().await {
