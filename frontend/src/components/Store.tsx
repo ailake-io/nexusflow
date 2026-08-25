@@ -1,12 +1,22 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { Lock, CheckCircle2, Loader2, AlertCircle, KeyRound } from 'lucide-react'
+import { Lock, CheckCircle2, Loader2, AlertCircle, KeyRound, ShoppingCart } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useI18n } from '@/lib/i18n'
 import { useAuth } from '@/lib/auth-context'
 import { useConnectors } from '@/hooks/useConnectors'
-import { getLicenseStatus, installLicense, type LicenseStatus } from '@/lib/api'
+import {
+  getLicenseStatus,
+  installLicense,
+  isLicensingConfigured,
+  listLicensingProducts,
+  createCheckout,
+  type LicenseStatus,
+  type LicensingProduct,
+} from '@/lib/api'
+
+type Currency = 'brl' | 'usd'
 
 /**
  * Roadmap candidates (ROADMAP.md Fase 12 Bloco 3, priorização em
@@ -50,6 +60,34 @@ export function Store() {
   const [licenseKey, setLicenseKey] = useState('')
   const [installing, setInstalling] = useState(false)
   const [installError, setInstallError] = useState<string | null>(null)
+
+  const licensingConfigured = isLicensingConfigured()
+  const [products, setProducts] = useState<LicensingProduct[]>([])
+  const [buyerEmail, setBuyerEmail] = useState('')
+  const [currency, setCurrency] = useState<Currency>('brl')
+  const [buyingSlug, setBuyingSlug] = useState<string | null>(null)
+  const [buyError, setBuyError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!licensingConfigured) return
+    listLicensingProducts()
+      .then(setProducts)
+      .catch((err) => setBuyError(err instanceof Error ? err.message : String(err)))
+  }, [licensingConfigured])
+
+  const handleBuy = async (slug: string) => {
+    const product = products.find((p) => p.connector_slug === slug && p.active)
+    if (!product || !buyerEmail.trim()) return
+    setBuyingSlug(slug)
+    setBuyError(null)
+    try {
+      const { checkout_url } = await createCheckout([product.id], buyerEmail.trim(), currency)
+      window.location.href = checkout_url
+    } catch (err) {
+      setBuyError(err instanceof Error ? err.message : String(err))
+      setBuyingSlug(null)
+    }
+  }
 
   const refreshLicense = async () => {
     if (!token) return
@@ -122,6 +160,38 @@ export function Store() {
         </div>
       )}
 
+      {licensingConfigured && (
+        <div className="mb-6 rounded-xl border border-white/10 bg-card p-4">
+          <p className="text-xs font-medium text-foreground">{t('store.billingTitle')}</p>
+          <div className="mt-1.5 flex flex-wrap items-center gap-2">
+            <Input
+              type="email"
+              value={buyerEmail}
+              onChange={(e) => setBuyerEmail(e.target.value)}
+              placeholder={t('store.billingEmailPlaceholder')}
+              className="max-w-xs flex-1 text-xs"
+            />
+            <div className="flex overflow-hidden rounded-md border border-white/10">
+              {(['brl', 'usd'] as const).map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => setCurrency(c)}
+                  className={`px-2.5 py-1.5 text-xs font-medium uppercase transition-colors ${
+                    currency === c
+                      ? 'bg-primary text-primary-foreground'
+                      : 'text-muted-foreground hover:bg-white/5'
+                  }`}
+                >
+                  {c}
+                </button>
+              ))}
+            </div>
+          </div>
+          {buyError && <p className="mt-2 text-xs text-red-400">{buyError}</p>}
+        </div>
+      )}
+
       {role === 'admin' && (
         <form
           onSubmit={handleInstall}
@@ -170,22 +240,49 @@ export function Store() {
             {t('store.availableNow')}
           </h2>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {enterpriseConnectors.map((c) => (
-              <div key={c.name} className="rounded-xl border border-white/10 bg-card p-4">
-                <div className="flex items-center justify-between">
-                  <span className="font-medium text-foreground">{c.name}</span>
-                  {c.licensed ? (
-                    <span className="flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-400">
-                      <CheckCircle2 className="h-3 w-3" /> {t('store.acquired')}
-                    </span>
-                  ) : (
-                    <span className="flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-400">
-                      <Lock className="h-3 w-3" /> {t('store.locked')}
-                    </span>
+            {enterpriseConnectors.map((c) => {
+              const product =
+                !c.licensed && c.requires_license
+                  ? products.find((p) => p.connector_slug === c.requires_license && p.active)
+                  : undefined
+              return (
+                <div key={c.name} className="rounded-xl border border-white/10 bg-card p-4">
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium text-foreground">{c.name}</span>
+                    {c.licensed ? (
+                      <span className="flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-400">
+                        <CheckCircle2 className="h-3 w-3" /> {t('store.acquired')}
+                      </span>
+                    ) : (
+                      <span className="flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-400">
+                        <Lock className="h-3 w-3" /> {t('store.locked')}
+                      </span>
+                    )}
+                  </div>
+                  {product && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="mt-3 w-full"
+                      disabled={buyingSlug === product.connector_slug || !buyerEmail.trim()}
+                      onClick={() => handleBuy(product.connector_slug)}
+                    >
+                      {buyingSlug === product.connector_slug ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <ShoppingCart className="h-3.5 w-3.5" />
+                      )}
+                      {t('store.buy', {
+                        price:
+                          currency === 'brl'
+                            ? `R$ ${(product.price_cents_brl / 100).toFixed(2)}`
+                            : `US$ ${(product.price_cents_usd / 100).toFixed(2)}`,
+                      })}
+                    </Button>
                   )}
                 </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         </div>
       )}
