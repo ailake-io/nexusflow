@@ -26,6 +26,7 @@ mod resource_stats;
 mod run_log_store;
 mod runner;
 mod scheduler;
+mod server_metrics;
 pub mod telemetry;
 
 use alerts::{AlertConfig, AlertNotifier};
@@ -395,6 +396,11 @@ async fn login_handler(
         Ok(None) => (false, "invalid username or password"),
         Err(_) => (false, "login verification error"),
     };
+    server_metrics::record_login_attempt(match &result {
+        Ok(Some(_)) => "success",
+        Ok(None) => "invalid_credentials",
+        Err(_) => "error",
+    });
     // Log to stdout/tracing and to the durable audit table. Do not block the
     // response on audit persistence, but surface failures in server logs.
     tracing::info!(
@@ -555,6 +561,7 @@ async fn execute_pipeline_run(
     progress_tx: ProgressSender,
     logger: RunLogger,
 ) {
+    let started = std::time::Instant::now();
     let mode = if spec.has_transform() {
         if spec.dbt.is_some() {
             "transform+dbt"
@@ -644,13 +651,18 @@ async fn execute_pipeline_run(
                                     {
                                         tracing::warn!(error = %e, "failed to persist dbt test results");
                                     }
+                                    server_metrics::record_dbt_test_results(
+                                        &spec.pipeline_id,
+                                        &test_results,
+                                    );
                                 }
                             }
                         }
                         dbt_summary = outcome.summary_json();
                     }
                     Err(e) => {
-                        record_run_failure(&state, run_id, &spec.pipeline_id, &e, &logger).await;
+                        record_run_failure(&state, run_id, &spec.pipeline_id, &e, &logger, started)
+                            .await;
                         return;
                     }
                 }
@@ -673,8 +685,15 @@ async fn execute_pipeline_run(
                         {
                             Ok(post_dbt_stats) => stats.extend(post_dbt_stats),
                             Err(e) => {
-                                record_run_failure(&state, run_id, &spec.pipeline_id, &e, &logger)
-                                    .await;
+                                record_run_failure(
+                                    &state,
+                                    run_id,
+                                    &spec.pipeline_id,
+                                    &e,
+                                    &logger,
+                                    started,
+                                )
+                                .await;
                                 return;
                             }
                         }
@@ -695,8 +714,9 @@ async fn execute_pipeline_run(
             {
                 tracing::warn!(error = %e, "failed to record successful pipeline run");
             }
+            server_metrics::record_run_outcome(&spec.pipeline_id, "success", started.elapsed());
         }
-        Err(e) => record_run_failure(&state, run_id, &spec.pipeline_id, &e, &logger).await,
+        Err(e) => record_run_failure(&state, run_id, &spec.pipeline_id, &e, &logger, started).await,
     }
 }
 
@@ -706,6 +726,7 @@ async fn record_run_failure(
     pipeline_id: &str,
     error: &anyhow::Error,
     logger: &RunLogger,
+    started: std::time::Instant,
 ) {
     let error_debug = format!("{error:?}");
     // Full detail (cause chain included) stays in the server log, but the
@@ -720,6 +741,7 @@ async fn record_run_failure(
     if let Err(record_err) = state.pipelines.finish_run_failure(run_id, &sanitized).await {
         tracing::warn!(error = %record_err, "failed to record failed pipeline run");
     }
+    server_metrics::record_run_outcome(pipeline_id, "failed", started.elapsed());
     state
         .alerts
         .notify_pipeline_failed(pipeline_id, run_id, &sanitized);
@@ -2946,7 +2968,15 @@ mod tests {
         );
         let (_progress_tx, log_tx) = state.progress.start(run_id).await;
         let logger = RunLogger::new(run_id, log_tx, state.run_logs.clone());
-        record_run_failure(&state, run_id, "p1", &err, &logger).await;
+        record_run_failure(
+            &state,
+            run_id,
+            "p1",
+            &err,
+            &logger,
+            std::time::Instant::now(),
+        )
+        .await;
 
         let runs = state.pipelines.list_runs("p1", 100, 0).await.unwrap();
         let stored = runs[0].error.as_deref().unwrap();

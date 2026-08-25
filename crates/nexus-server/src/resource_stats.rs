@@ -431,6 +431,7 @@ pub fn spawn(state: AppState) {
         loop {
             interval.tick().await;
             let sample = monitor.sample();
+            crate::server_metrics::record_resource_sample(&sample);
             if let Err(e) = state.resource_stats.record(&sample).await {
                 tracing::warn!(error = %e, "failed to record resource stats sample");
             }
