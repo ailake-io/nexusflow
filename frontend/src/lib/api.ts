@@ -94,6 +94,27 @@ export function listConnectors(token: string): Promise<ConnectorDescriptor[]> {
   return request<ConnectorDescriptor[]>('/connectors', {}, token)
 }
 
+/** Matches nexus-server::preview_adhoc_handler's response
+ * (POST /connectors/preview) — same shape GET /pipelines/{id}/preview
+ * returns, just for a bare connector/config pair instead of a saved
+ * pipeline's node. */
+export interface PreviewResult {
+  rows: Record<string, unknown>[]
+}
+
+export function previewConnector(
+  token: string,
+  connector: string,
+  config: Record<string, unknown>,
+  limit = 20,
+): Promise<PreviewResult> {
+  return request<PreviewResult>(
+    '/connectors/preview',
+    { method: 'POST', body: JSON.stringify({ connector, config, limit }) },
+    token,
+  )
+}
+
 /** Matches nexus-server::LicenseStatusResponse, as returned by both
  * GET /license and POST /license (Admin-only, see `docs/ENTERPRISE_LICENSING.md`). */
 export interface LicenseStatus {

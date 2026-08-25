@@ -29,24 +29,13 @@ pub struct MqttSource {
 
 impl MqttSource {
     pub async fn connect(config: &MqttConnectorConfig) -> Result<Self, NexusError> {
-        let (host, port, use_tls) = config
-            .host_port_tls()
-            .map_err(|e| NexusError::Connector(format!("mqtt broker_url invalid: {e}")))?;
+        let schema = if config.fields.is_empty() {
+            infer_schema(config).await?
+        } else {
+            build_schema(&config.fields)
+        };
 
-        let mut options = MqttOptions::new(config.client_id.clone(), (host, port));
-        options.set_keep_alive(30);
-        // Persistent session: see the struct doc comment above for why this
-        // is never `true`.
-        options.set_clean_session(false);
-
-        if let (Some(username), Some(password)) = (&config.username, &config.password) {
-            options.set_credentials(username.clone(), password.clone());
-        }
-
-        if use_tls {
-            options.set_transport(build_transport(config)?);
-        }
-
+        let options = build_options(config, &config.client_id, false)?;
         let (client, mut eventloop) = AsyncClient::builder(options)
             .capacity(100)
             .try_build()
@@ -90,12 +79,85 @@ impl MqttSource {
         Ok(Self {
             client,
             eventloop,
-            schema: build_schema(&config.fields),
+            schema,
             batch_size: config.batch_size,
             poll_timeout: Duration::from_millis(config.poll_timeout_ms),
             max_messages: config.max_messages,
         })
     }
+}
+
+/// Builds `MqttOptions` shared by the real connection and the schema-sample
+/// one below — same host/port/TLS/credentials, different `client_id` and
+/// `clean_session`.
+fn build_options(
+    config: &MqttConnectorConfig,
+    client_id: &str,
+    clean_session: bool,
+) -> Result<MqttOptions, NexusError> {
+    let (host, port, use_tls) = config
+        .host_port_tls()
+        .map_err(|e| NexusError::Connector(format!("mqtt broker_url invalid: {e}")))?;
+
+    let mut options = MqttOptions::new(client_id, (host, port));
+    options.set_keep_alive(30);
+    options.set_clean_session(clean_session);
+
+    if let (Some(username), Some(password)) = (&config.username, &config.password) {
+        options.set_credentials(username.clone(), password.clone());
+    }
+
+    if use_tls {
+        options.set_transport(build_transport(config)?);
+    }
+
+    Ok(options)
+}
+
+/// Samples up to `config.schema_sample_rows` messages and infers a schema
+/// — source-side fallback for when `fields` is left empty (see
+/// `MqttConnectorConfig::fields` doc comment). Connects with a throwaway
+/// `client_id` and `clean_session: true` instead of the real
+/// `config.client_id` — the real client always uses a *persistent*
+/// session (`clean_session: false`, see the struct doc comment on
+/// `MqttSource`), so sampling through it would ack and drain QoS 1/2
+/// messages the broker was holding for the real run. A disposable client
+/// with its own clean session can't touch that state at all.
+async fn infer_schema(config: &MqttConnectorConfig) -> Result<SchemaRef, NexusError> {
+    let sample_client_id = format!("{}-schema-sample-{}", config.client_id, std::process::id());
+    let options = build_options(config, &sample_client_id, true)?;
+    let (client, mut eventloop) = AsyncClient::builder(options)
+        .capacity(100)
+        .try_build()
+        .map_err(|e| {
+            NexusError::Connector(format!("mqtt schema-sample client build failed: {e}"))
+        })?;
+    let qos = match config.qos {
+        MqttQos::AtMostOnce => QoS::AtMostOnce,
+        MqttQos::AtLeastOnce => QoS::AtLeastOnce,
+        MqttQos::ExactlyOnce => QoS::ExactlyOnce,
+    };
+    client
+        .subscribe(config.topic_filter.clone(), qos)
+        .await
+        .map_err(|e| NexusError::Connector(format!("mqtt schema-sample subscribe failed: {e}")))?;
+
+    let poll_timeout = Duration::from_millis(config.poll_timeout_ms);
+    let mut rows = Vec::new();
+    while rows.len() < config.schema_sample_rows {
+        match tokio::time::timeout(poll_timeout, eventloop.poll()).await {
+            Ok(Ok(Event::Incoming(Packet::Publish(publish)))) => {
+                if let Ok(row) = parse_payload(&publish.payload) {
+                    rows.push(row);
+                }
+            }
+            Ok(Ok(_)) => continue,
+            // Idle cutoff, connection error, or the broker never acked —
+            // treat the sample as complete with whatever was collected.
+            _ => break,
+        }
+    }
+    Ok(RecordBatchBuilder::infer_schema(&rows))
 }
 
 fn build_transport(config: &MqttConnectorConfig) -> Result<Transport, NexusError> {

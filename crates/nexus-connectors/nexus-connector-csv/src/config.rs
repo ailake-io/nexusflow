@@ -73,10 +73,25 @@ pub struct CsvConnectorConfig {
     /// for the writer).
     #[serde(default)]
     pub escape: Option<char>,
-    /// Explicit target schema, in file-column order — delimited text has no
-    /// type information of its own, so the node config must say what to
-    /// project each column to.
+    /// Explicit target schema, in file-column order. Delimited text has no
+    /// type information of its own, so if this is left empty **on the
+    /// source side**, the connector samples the first `schema_sample_rows`
+    /// rows of the first resolved file and infers one (see
+    /// `schema::infer_schema`) — same approach `arrow-csv`'s own
+    /// `Format::infer_schema` uses elsewhere in the ecosystem, narrowed to
+    /// this connector's 4 supported types (anything else, e.g. a date/time
+    /// arrow infers, falls back to `utf8` so the value is never dropped).
+    /// The sink side still requires this explicitly — there's no data yet
+    /// to sample from when a sink connects.
+    #[serde(default)]
     pub fields: Vec<CsvFieldSpec>,
+    /// How many rows to sample when inferring `fields` (source side only,
+    /// only used when `fields` is empty). Defaults to 1000 — enough to
+    /// catch a column that's `int64` for many rows then turns out to need
+    /// `utf8` (a stray non-numeric value), without reading a huge file
+    /// twice just to guess its schema.
+    #[serde(default = "default_schema_sample_rows")]
+    pub schema_sample_rows: usize,
     /// Column used to upsert/delete on write — required for the sink side;
     /// ignored by the source.
     #[serde(default)]
@@ -237,4 +252,8 @@ fn default_timeout_seconds() -> u64 {
 
 fn default_quote() -> char {
     '"'
+}
+
+fn default_schema_sample_rows() -> usize {
+    1000
 }

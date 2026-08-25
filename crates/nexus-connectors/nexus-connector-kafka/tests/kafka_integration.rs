@@ -64,6 +64,7 @@ async fn consumes_json_messages_as_record_batches() {
                 nullable: true,
             },
         ],
+        schema_sample_rows: 1000,
         batch_size: 500,
         // Generous idle cutoff — a fresh consumer group's first poll pays for
         // a full JoinGroup/SyncGroup rebalance before any message arrives.
@@ -72,7 +73,9 @@ async fn consumes_json_messages_as_record_batches() {
         start_offsets: HashMap::new(),
     };
 
-    let mut source = KafkaSource::connect(&config).expect("source connects");
+    let mut source = KafkaSource::connect(&config)
+        .await
+        .expect("source connects");
     let mut stream = source.read_batches().await.expect("read_batches");
     let mut total_rows = 0;
     while let Some(batch) = stream.next().await {
@@ -133,13 +136,16 @@ async fn resumes_from_explicit_start_offset() {
             data_type: KafkaDataType::Int64,
             nullable: false,
         }],
+        schema_sample_rows: 1000,
         batch_size: 500,
         poll_timeout_ms: 15000,
         max_messages: 3,
         start_offsets: HashMap::new(),
     };
 
-    let mut first = KafkaSource::connect(&base_config).expect("first source connects");
+    let mut first = KafkaSource::connect(&base_config)
+        .await
+        .expect("first source connects");
     let mut first_rows = 0;
     {
         let mut stream = first.read_batches().await.expect("read_batches");
@@ -157,7 +163,9 @@ async fn resumes_from_explicit_start_offset() {
         ..base_config
     };
 
-    let mut second = KafkaSource::connect(&resume_config).expect("resumed source connects");
+    let mut second = KafkaSource::connect(&resume_config)
+        .await
+        .expect("resumed source connects");
     let mut second_rows = 0;
     {
         let mut stream = second.read_batches().await.expect("read_batches");

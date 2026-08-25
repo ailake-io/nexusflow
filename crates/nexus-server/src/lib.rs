@@ -160,6 +160,12 @@ fn router(state: AppState) -> Router {
         // Same role as running the pipeline: a real, live connection to an
         // external system with a decrypted credential, same trust bar.
         .route("/pipelines/{id}/preview", get(preview_node_handler))
+        // Same trust bar as the saved-pipeline preview above — a bare
+        // connector config isn't backed by validate_security_with() at
+        // save time the way a persisted node is, so the handler itself
+        // runs that check before connecting (see its doc comment). Read
+        // alone isn't enough for "make an arbitrary outbound connection".
+        .route("/connectors/preview", post(preview_adhoc_handler))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_role::<AppState>,
@@ -871,10 +877,26 @@ async fn preview_node_handler(
     })?;
 
     let active_license = state.license_store.active().await.unwrap_or(None);
-    let (_, mut source) = crate::connectors::build_source(node, 0, active_license.as_ref())
+    let (_, source) = crate::connectors::build_source(node, 0, active_license.as_ref())
         .await
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
 
+    let rows = read_preview_rows(source, limit).await?;
+    Ok(Json(serde_json::json!({ "rows": rows })))
+}
+
+/// Pulls the first `limit` rows off a freshly-connected `Source` and
+/// renders them as JSON — shared by `preview_node_handler` (saved
+/// pipeline, node looked up by name) and `preview_adhoc_handler` (a bare
+/// connector/config pair, no pipeline needed). The trimming logic exists
+/// because a connector's batch size rarely divides `limit` evenly — the
+/// last batch pulled is sliced back down instead of just capping the
+/// batch count, so the row count in the response always matches `limit`
+/// exactly (when the source has that many rows to give).
+async fn read_preview_rows(
+    mut source: Box<dyn nexus_core::Source>,
+    limit: usize,
+) -> Result<Vec<serde_json::Value>, ApiError> {
     let mut stream = source.read_batches().await.map_err(ApiError::internal)?;
     let mut collected = Vec::new();
     let mut row_count = 0usize;
@@ -899,20 +921,84 @@ async fn preview_node_handler(
         }
     }
 
-    let rows: Vec<serde_json::Value> = if collected.is_empty() {
-        Vec::new()
-    } else {
-        let mut buf = Vec::new();
-        {
-            let mut writer = arrow_json::writer::ArrayWriter::new(&mut buf);
-            for batch in &collected {
-                writer.write(batch).map_err(ApiError::internal)?;
-            }
-            writer.finish().map_err(ApiError::internal)?;
+    if collected.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut buf = Vec::new();
+    {
+        let mut writer = arrow_json::writer::ArrayWriter::new(&mut buf);
+        for batch in &collected {
+            writer.write(batch).map_err(ApiError::internal)?;
         }
-        serde_json::from_slice(&buf).map_err(ApiError::internal)?
-    };
+        writer.finish().map_err(ApiError::internal)?;
+    }
+    serde_json::from_slice(&buf).map_err(ApiError::internal)
+}
 
+/// Body for `POST /connectors/preview`.
+#[derive(Debug, Deserialize)]
+struct AdhocPreviewRequest {
+    /// A single source or sink node — same shape as an entry in
+    /// `PipelineSpec::sources`/`sinks`. `name` is ignored (nothing to
+    /// resolve against, there's no pipeline).
+    #[serde(flatten)]
+    node: NodeSpec,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// Previews a connector's data directly from its config — no saved
+/// pipeline required, unlike `GET /pipelines/{id}/preview`. Lets the
+/// Canvas show a data sample the moment a source *or* sink node's config
+/// is filled in, before the pipeline is ever saved. Same underlying
+/// mechanism as the saved-pipeline preview (`build_source` +
+/// `read_preview_rows`): works for any connector that can act as a
+/// `Source` on either side, same "sink-only connectors are rejected"
+/// behavior via `build_source`'s own error for those.
+///
+/// Unlike a saved pipeline's node — already checked by
+/// `validate_security_with` in `create_pipeline_handler`/
+/// `update_pipeline_handler` before it was ever persisted — this config
+/// arrives fresh on every call and was never validated by anything. Run
+/// the same SSRF/path-traversal check here, for the same reason
+/// `run_pipeline_handler` requires `Write`/`Admin` for an unsaved spec:
+/// a bare config is an arbitrary caller-controlled outbound connection
+/// (REST URL, Mongo/Kafka/MQTT/Postgres/MySQL/ODBC host, csv/parquet
+/// object-store URI) until proven otherwise.
+async fn preview_adhoc_handler(
+    State(state): State<AppState>,
+    Json(req): Json<AdhocPreviewRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let limit = req
+        .limit
+        .unwrap_or(DEFAULT_PREVIEW_LIMIT)
+        .min(MAX_PREVIEW_LIMIT);
+
+    let probe_spec = PipelineSpec {
+        pipeline_id: "adhoc-preview".to_string(),
+        sources: vec![req.node.clone()],
+        transform: None,
+        sinks: Vec::new(),
+        embedding: None,
+        python: None,
+        channel_capacity: 100,
+        partitions: 1,
+        dbt: None,
+        post_dbt_sinks: Vec::new(),
+        schedule: None,
+        alerts: None,
+        draft: false,
+    };
+    probe_spec
+        .validate_security_with(state.allow_internal_hosts)
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+
+    let active_license = state.license_store.active().await.unwrap_or(None);
+    let (_, source) = crate::connectors::build_source(&req.node, 0, active_license.as_ref())
+        .await
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+
+    let rows = read_preview_rows(source, limit).await?;
     Ok(Json(serde_json::json!({ "rows": rows })))
 }
 

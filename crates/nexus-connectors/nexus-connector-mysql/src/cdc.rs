@@ -1,8 +1,10 @@
 use crate::config::{MySqlCdcConfig, MySqlCdcDataType, MySqlCdcFieldSpec};
+use crate::source::discover_fields;
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
 use futures::stream::BoxStream;
+use mysql_async::Conn;
 use mysql_cdc::binlog_client::BinlogClient;
 use mysql_cdc::binlog_options::BinlogOptions;
 use mysql_cdc::events::binlog_event::BinlogEvent;
@@ -38,9 +40,31 @@ pub struct MySqlCdcSource {
 
 impl MySqlCdcSource {
     pub async fn connect(config: &MySqlCdcConfig) -> Result<Self, NexusError> {
+        let fields = if config.fields.is_empty() {
+            // Binlog row events carry column values positionally, never by
+            // name, unless the server has `binlog_row_metadata=FULL` set
+            // (off by default — see `MySqlCdcFieldSpec` doc comment on the
+            // config struct). A plain SQL connection to the same server
+            // doesn't have that limitation, so discovery goes through
+            // `SHOW COLUMNS` instead of the replication stream itself.
+            let mut conn = Conn::from_url(config.connection_string())
+                .await
+                .map_err(|e| {
+                    NexusError::Connector(format!("mysql-cdc schema discovery connect failed: {e}"))
+                })?;
+            let discovered = discover_fields(&mut conn, &config.table, 30).await?;
+            conn.disconnect().await.ok();
+            discovered
+        } else {
+            config.fields.clone()
+        };
+
         Ok(Self {
-            config: config.clone(),
-            schema: build_schema(&config.fields),
+            config: MySqlCdcConfig {
+                fields: fields.clone(),
+                ..config.clone()
+            },
+            schema: build_schema(&fields),
             position: Arc::new(Mutex::new(None)),
         })
     }

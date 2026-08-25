@@ -1,5 +1,5 @@
 use crate::config::CsvConnectorConfig;
-use crate::schema::{build_schema, delimiter_byte, quote_byte};
+use crate::schema::{build_schema, delimiter_byte, infer_schema, quote_byte};
 use crate::store::open_store;
 use arrow_array::RecordBatch;
 use arrow_csv::ReaderBuilder;
@@ -33,15 +33,49 @@ pub struct CsvSource {
 }
 
 impl CsvSource {
-    pub fn connect(cfg: &CsvConnectorConfig) -> Result<Self, NexusError> {
+    pub async fn connect(cfg: &CsvConnectorConfig) -> Result<Self, NexusError> {
         let (store, paths) = open_store(&cfg.uri()?, &cfg.storage_options())?;
+        let delimiter = delimiter_byte(cfg.delimiter)?;
+        let quote = quote_byte(cfg.quote)?;
+        let escape = cfg.escape.map(quote_byte).transpose()?;
+
+        let schema = if cfg.fields.is_empty() {
+            let first_path = paths.first().ok_or_else(|| {
+                NexusError::Connector("csv source: no files found to infer schema from".into())
+            })?;
+            let sample = with_timeout(cfg.timeout_seconds, "csv schema sample get", async {
+                store
+                    .get(first_path)
+                    .await
+                    .map_err(|e| {
+                        NexusError::Connector(format!("csv get '{first_path}' failed: {e}"))
+                    })?
+                    .bytes()
+                    .await
+                    .map_err(|e| {
+                        NexusError::Connector(format!("csv read body '{first_path}' failed: {e}"))
+                    })
+            })
+            .await?;
+            infer_schema(
+                &sample,
+                delimiter,
+                quote,
+                escape,
+                cfg.has_header,
+                cfg.schema_sample_rows,
+            )?
+        } else {
+            build_schema(&cfg.fields)
+        };
+
         Ok(Self {
             store,
             paths,
-            schema: build_schema(&cfg.fields),
-            delimiter: delimiter_byte(cfg.delimiter)?,
-            quote: quote_byte(cfg.quote)?,
-            escape: cfg.escape.map(quote_byte).transpose()?,
+            schema,
+            delimiter,
+            quote,
+            escape,
             has_header: cfg.has_header,
             batch_size: cfg.batch_size,
             timeout_seconds: cfg.timeout_seconds,

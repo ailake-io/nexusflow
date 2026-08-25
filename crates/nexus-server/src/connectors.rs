@@ -224,7 +224,7 @@ pub async fn build_source(
         #[cfg(feature = "kafka")]
         "kafka" => {
             let cfg: KafkaConnectorConfig = serde_json::from_value(node.config.clone())?;
-            Box::new(KafkaSource::connect(&cfg)?)
+            Box::new(KafkaSource::connect(&cfg).await?)
         }
         #[cfg(feature = "mqtt")]
         "mqtt" => {
@@ -234,7 +234,7 @@ pub async fn build_source(
         #[cfg(feature = "rest")]
         "rest" => {
             let cfg: RestConnectorConfig = serde_json::from_value(node.config.clone())?;
-            Box::new(RestSource::connect(&cfg)?)
+            Box::new(RestSource::connect(&cfg).await?)
         }
         #[cfg(feature = "odbc")]
         "odbc" => {
@@ -264,7 +264,7 @@ pub async fn build_source(
         #[cfg(feature = "csv")]
         "csv" => {
             let cfg: CsvConnectorConfig = serde_json::from_value(node.config.clone())?;
-            Box::new(CsvSource::connect(&cfg)?)
+            Box::new(CsvSource::connect(&cfg).await?)
         }
         #[cfg(feature = "clickhouse")]
         "clickhouse" => {

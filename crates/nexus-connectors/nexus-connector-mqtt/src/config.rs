@@ -64,9 +64,17 @@ pub struct MqttConnectorConfig {
     pub client_key_path: Option<String>,
 
     /// Explicit target schema — a JSON message payload carries no fixed
-    /// schema of its own, so the node config must say what to project each
-    /// field to.
+    /// schema of its own. Left empty, the connector samples up to
+    /// `schema_sample_rows` messages via a throwaway, clean-session client
+    /// (never touches `client_id`'s persistent session) and infers one —
+    /// see `nexus_core::RecordBatchBuilder::infer_schema`.
+    #[serde(default)]
     pub fields: Vec<MqttFieldSpec>,
+
+    /// How many messages to sample when inferring `fields` (only used when
+    /// `fields` is empty). Defaults to 1000.
+    #[serde(default = "default_schema_sample_rows")]
+    pub schema_sample_rows: usize,
 
     /// How many decoded messages to fold into a single `RecordBatch`.
     #[serde(default = "default_batch_size")]
@@ -147,6 +155,10 @@ fn default_batch_size() -> usize {
     500
 }
 
+fn default_schema_sample_rows() -> usize {
+    1000
+}
+
 fn default_poll_timeout_ms() -> u64 {
     2000
 }
@@ -171,6 +183,7 @@ mod tests {
             client_cert_path: None,
             client_key_path: None,
             fields: Vec::new(),
+            schema_sample_rows: 1000,
             batch_size: 500,
             poll_timeout_ms: 2000,
             max_messages: 100_000,
