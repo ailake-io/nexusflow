@@ -300,6 +300,7 @@ mod tests {
             dbt: None,
             post_dbt_sinks: Vec::new(),
             schedule: None,
+            alerts: None,
             draft: false,
         }
     }

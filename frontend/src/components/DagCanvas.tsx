@@ -288,6 +288,7 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
       channelCapacity: spec.channel_capacity,
       partitions: spec.partitions,
       schedule: spec.schedule,
+      alerts: spec.alerts,
     })
   }, [])
 
