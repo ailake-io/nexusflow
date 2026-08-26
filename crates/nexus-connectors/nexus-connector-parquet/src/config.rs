@@ -109,6 +109,13 @@ pub struct ParquetConnectorConfig {
     pub row_group_size: Option<usize>,
     /// Column used to identify a row for upsert/delete on write.
     pub primary_key: String,
+    /// When true, each non-CDC batch is written as a new numbered Parquet
+    /// file inside the target directory instead of reading back and
+    /// rewriting the single target file. This avoids the read-filter-rewrite
+    /// cycle for large append-only loads. CDC batches still use the rewrite
+    /// path so deletes/updates are honored.
+    #[serde(default)]
+    pub append_only: bool,
 }
 
 impl ParquetConnectorConfig {
