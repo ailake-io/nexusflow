@@ -1,4 +1,6 @@
-use crate::config::{OdbcDataType, OdbcFieldSpec};
+use crate::config::OdbcFieldSpec;
+#[cfg(feature = "legacy")]
+use crate::config::OdbcDataType;
 use nexus_core::{quote_identifier, NexusError};
 
 /// Connector-type -> SQL column type for `CREATE TABLE`, using SQL-92
@@ -11,6 +13,7 @@ use nexus_core::{quote_identifier, NexusError};
 /// If a given driver rejects these specific types or the length limit is
 /// too small for real data, create the table manually instead — this is a
 /// convenience for the common case, not a guarantee for every backend.
+#[cfg(feature = "legacy")]
 fn odbc_column_type(data_type: OdbcDataType) -> &'static str {
     match data_type {
         OdbcDataType::Int64 => "INTEGER",
@@ -26,6 +29,7 @@ fn odbc_column_type(data_type: OdbcDataType) -> &'static str {
 /// equivalent, with the portability caveat in `odbc_column_type`'s doc
 /// comment. `IF NOT EXISTS` itself isn't universally supported by every
 /// ODBC-fronted database either — best-effort like everything else here.
+#[cfg(feature = "legacy")]
 pub fn build_create_table_sql(
     table: &str,
     primary_key: &str,

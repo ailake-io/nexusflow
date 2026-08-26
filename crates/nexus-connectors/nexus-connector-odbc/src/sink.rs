@@ -27,6 +27,7 @@ pub struct OdbcSink {
 
 struct BatchRequest {
     batch: RecordBatch,
+    allow_upsert: bool,
     response: tokio::sync::oneshot::Sender<Result<(), NexusError>>,
 }
 
@@ -77,7 +78,8 @@ fn run_worker(
         .map_err(|e| NexusError::Connector(format!("odbc commit after create table: {e}")))?;
 
     for req in rx {
-        let result = write_batch(&config, &conn, &req.batch);
+        let allow_upsert = req.allow_upsert;
+        let result = write_batch(&config, &conn, &req.batch, allow_upsert);
         let _ = req.response.send(result);
     }
 
@@ -88,21 +90,11 @@ fn write_batch(
     config: &OdbcConnectorConfig,
     conn: &Connection<'_>,
     batch: &RecordBatch,
+    allow_upsert: bool,
 ) -> Result<(), NexusError> {
-    let update_sql = build_update_sql(&config.table, &config.primary_key, &config.fields)?;
     let insert_sql = build_insert_sql(&config.table, &config.fields)?;
     let delete_sql = build_delete_sql(&config.table, &config.primary_key)?;
 
-    let ordered_fields = update_param_order(&config.primary_key, &config.fields);
-    let update_field_indices: Vec<_> = ordered_fields
-        .iter()
-        .map(|f| {
-            batch
-                .schema()
-                .index_of(&f.name)
-                .map_err(|_| NexusError::Schema(format!("column '{}' not found", f.name)))
-        })
-        .collect::<Result<_, _>>()?;
     let field_spec_by_name: std::collections::HashMap<_, _> =
         config.fields.iter().map(|f| (&f.name, f)).collect();
     let pk_field = config
@@ -116,9 +108,6 @@ fn write_batch(
             ))
         })?;
 
-    let mut update_stmt = conn
-        .preallocate()
-        .map_err(|e| NexusError::Connector(format!("odbc preallocate update: {e}")))?;
     let mut insert_stmt = conn
         .preallocate()
         .map_err(|e| NexusError::Connector(format!("odbc preallocate insert: {e}")))?;
@@ -126,35 +115,74 @@ fn write_batch(
         .preallocate()
         .map_err(|e| NexusError::Connector(format!("odbc preallocate delete: {e}")))?;
 
-    let result: Result<(), NexusError> = (|| {
-        for row_idx in 0..batch.num_rows() {
-            if opcode_for_row(batch, row_idx) == Some(Opcode::Delete) {
-                let delete_params = vec![pk_param(batch, row_idx, pk_field)?];
-                delete_stmt
-                    .execute(&delete_sql, delete_params.as_slice())
-                    .map_err(|e| NexusError::Connector(format!("odbc delete failed: {e}")))?;
-                continue;
+    // Plain (non-CDC) batches can skip the UPDATE-then-INSERT dance and go
+    // straight to INSERT — this halves the number of round-trips per row.
+    let result: Result<(), NexusError> = if allow_upsert {
+        let update_sql = build_update_sql(&config.table, &config.primary_key, &config.fields)?;
+        let ordered_fields = update_param_order(&config.primary_key, &config.fields);
+        let update_field_indices: Vec<_> = ordered_fields
+            .iter()
+            .map(|f| {
+                batch
+                    .schema()
+                    .index_of(&f.name)
+                    .map_err(|_| NexusError::Schema(format!("column '{}' not found", f.name)))
+            })
+            .collect::<Result<_, _>>()?;
+
+        let mut update_stmt = conn
+            .preallocate()
+            .map_err(|e| NexusError::Connector(format!("odbc preallocate update: {e}")))?;
+
+        (|| {
+            for row_idx in 0..batch.num_rows() {
+                if opcode_for_row(batch, row_idx) == Some(Opcode::Delete) {
+                    let delete_params = vec![pk_param(batch, row_idx, pk_field)?];
+                    delete_stmt
+                        .execute(&delete_sql, delete_params.as_slice())
+                        .map_err(|e| NexusError::Connector(format!("odbc delete failed: {e}")))?;
+                    continue;
+                }
+
+                let update_params: Vec<Box<dyn InputParameter>> = update_field_indices
+                    .iter()
+                    .zip(&ordered_fields)
+                    .map(|(&col, f)| {
+                        let spec = field_spec_by_name.get(&f.name).ok_or_else(|| {
+                            NexusError::Schema(format!("field '{}' not configured", f.name))
+                        })?;
+                        crate::row_mapping::cell_to_param(batch, row_idx, col, spec.data_type)
+                    })
+                    .collect::<Result<_, _>>()?;
+                update_stmt
+                    .execute(&update_sql, update_params.as_slice())
+                    .map_err(|e| NexusError::Connector(format!("odbc update failed: {e}")))?;
+                let updated = update_stmt
+                    .row_count()
+                    .map_err(|e| NexusError::Connector(format!("odbc row_count failed: {e}")))?
+                    .unwrap_or(0);
+
+                if updated == 0 {
+                    let insert_params: Vec<Box<dyn InputParameter>> = config
+                        .fields
+                        .iter()
+                        .map(|f| {
+                            let col = batch.schema().index_of(&f.name).map_err(|_| {
+                                NexusError::Schema(format!("column '{}' not found", f.name))
+                            })?;
+                            crate::row_mapping::cell_to_param(batch, row_idx, col, f.data_type)
+                        })
+                        .collect::<Result<_, _>>()?;
+                    insert_stmt
+                        .execute(&insert_sql, insert_params.as_slice())
+                        .map_err(|e| NexusError::Connector(format!("odbc insert failed: {e}")))?;
+                }
             }
-
-            let update_params: Vec<Box<dyn InputParameter>> = update_field_indices
-                .iter()
-                .zip(&ordered_fields)
-                .map(|(&col, f)| {
-                    let spec = field_spec_by_name.get(&f.name).ok_or_else(|| {
-                        NexusError::Schema(format!("field '{}' not configured", f.name))
-                    })?;
-                    crate::row_mapping::cell_to_param(batch, row_idx, col, spec.data_type)
-                })
-                .collect::<Result<_, _>>()?;
-            update_stmt
-                .execute(&update_sql, update_params.as_slice())
-                .map_err(|e| NexusError::Connector(format!("odbc update failed: {e}")))?;
-            let updated = update_stmt
-                .row_count()
-                .map_err(|e| NexusError::Connector(format!("odbc row_count failed: {e}")))?
-                .unwrap_or(0);
-
-            if updated == 0 {
+            Ok(())
+        })()
+    } else {
+        (|| {
+            for row_idx in 0..batch.num_rows() {
                 let insert_params: Vec<Box<dyn InputParameter>> = config
                     .fields
                     .iter()
@@ -169,9 +197,9 @@ fn write_batch(
                     .execute(&insert_sql, insert_params.as_slice())
                     .map_err(|e| NexusError::Connector(format!("odbc insert failed: {e}")))?;
             }
-        }
-        Ok(())
-    })();
+            Ok(())
+        })()
+    };
 
     match result {
         Ok(()) => conn
@@ -209,10 +237,16 @@ fn opcode_for_row(batch: &RecordBatch, row: usize) -> Option<Opcode> {
 #[async_trait]
 impl Sink for OdbcSink {
     async fn write_batch(&mut self, batch: RecordBatch) -> Result<(), NexusError> {
+        // CDC batches may contain deletes/updates, so the worker must run the
+        // full UPDATE-then-INSERT path. Plain (non-CDC) batches can use the
+        // faster INSERT-only path.
+        let allow_upsert = nexus_core::split_by_opcode(&batch)?.is_some();
+
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.tx
             .send(BatchRequest {
                 batch,
+                allow_upsert,
                 response: tx,
             })
             .map_err(|_| NexusError::Connector("odbc sink worker has terminated".to_string()))?;
