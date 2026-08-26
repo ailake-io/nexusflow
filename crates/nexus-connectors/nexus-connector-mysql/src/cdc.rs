@@ -267,8 +267,11 @@ fn run_replication_loop(
         }
 
         if let Some(filename) = &current_filename {
-            *position.lock().expect("position mutex poisoned") =
-                Some(format!("{filename}:{}", header.next_event_position));
+            if let Ok(mut guard) = position.lock() {
+                *guard = Some(format!("{filename}:{}", header.next_event_position));
+            } else {
+                tracing::error!("MySQL CDC position mutex poisoned; checkpoint lost");
+            }
         }
 
         client.commit(&header, &event);

@@ -241,11 +241,11 @@ fn batch_to_copy_text(batch: &RecordBatch) -> Result<Vec<u8>, NexusError> {
         .map(|col| {
             let string_arr = cast(col.as_ref(), &DataType::Utf8)
                 .map_err(|e| NexusError::Connector(format!("cast to utf8 failed: {e}")))?;
-            Ok(string_arr
+            string_arr
                 .as_any()
                 .downcast_ref::<StringArray>()
-                .expect("cast to Utf8 returns StringArray")
-                .clone())
+                .ok_or_else(|| NexusError::Schema("cast to Utf8 did not produce StringArray".into()))
+                .cloned()
         })
         .collect::<Result<Vec<_>, NexusError>>()?;
 
