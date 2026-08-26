@@ -14,7 +14,7 @@ use nexus_core::{with_timeout, CheckpointCursor, NexusError, Opcode, Sink, OPCOD
 /// bounded concurrent fan-out replaces the previous strictly serial
 /// replace_one/delete_one loop and removes the per-row network latency as the
 /// dominant bottleneck.
-const WRITE_CONCURRENCY: usize = 16;
+const WRITE_CONCURRENCY: usize = 32;
 
 /// Idempotent by construction: every row is a `replace_one` upsert keyed on
 /// `primary_key`, matching the `Sink` contract in ARCHITECTURE.md §5
