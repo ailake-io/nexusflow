@@ -265,6 +265,18 @@ impl PostgresSink {
     }
 }
 
+/// Builds a schema whose fields have the same names as `schema` but whose
+/// types are `List(Utf8)`, matching the arrays produced by `array_to_text_list`.
+fn text_list_schema(schema: &SchemaRef) -> SchemaRef {
+    let item_field = Arc::new(Field::new("item", DataType::Utf8, true));
+    let fields: Vec<Arc<Field>> = schema
+        .fields()
+        .iter()
+        .map(|f| Arc::new(Field::new(f.name(), DataType::List(item_field.clone()), f.is_nullable())))
+        .collect();
+    Arc::new(arrow_schema::Schema::new(fields))
+}
+
 #[async_trait]
 impl Sink for PostgresSink {
     async fn write_batch(&mut self, batch: RecordBatch) -> Result<(), NexusError> {
@@ -280,7 +292,7 @@ impl Sink for PostgresSink {
                     .map(|col| array_to_text_list(col))
                     .collect();
                 let upsert_batch = RecordBatch::try_new(
-                    batch.schema().clone(),
+                    text_list_schema(&batch.schema()),
                     list_columns?,
                 )
                 .map_err(|e| NexusError::Connector(format!("upsert batch rebuild failed: {e}")))?;
@@ -295,7 +307,7 @@ impl Sink for PostgresSink {
                         .map(|col| array_to_text_list(col))
                         .collect();
                     let upsert_batch = RecordBatch::try_new(
-                        split.upserts.schema().clone(),
+                        text_list_schema(&split.upserts.schema()),
                         list_columns?,
                     )
                     .map_err(|e| NexusError::Connector(format!("cdc upsert batch rebuild failed: {e}")))?;
