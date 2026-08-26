@@ -435,6 +435,7 @@ pub async fn build_sink(
     // `columns` so their call sites don't change. postgres/sqlite now take
     // `schema` directly (types included) to drive `CREATE TABLE IF NOT
     // EXISTS`; see their own `connect()` doc comments for why.
+    #[cfg(any(feature = "pgvector", feature = "clickhouse"))]
     let columns: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
     let sink: Box<dyn Sink> = match node.connector.as_str() {
         "postgres" => {
@@ -752,13 +753,17 @@ mod tests {
 
     #[tokio::test]
     async fn build_sink_falls_back_to_a_registered_plugin_builder() {
+        use arrow_schema::Schema;
+        use std::sync::Arc;
+
         let node = NodeSpec {
             name: None,
             connector: "test-plugin-connector".to_string(),
             config: serde_json::json!({"value": "x"}),
         };
         let license = claims(vec!["test-plugin-connector"]);
-        build_sink(&node, 0, &[], Some(&license))
+        let schema = Arc::new(Schema::empty());
+        build_sink(&node, 0, &schema, Some(&license))
             .await
             .expect("builds via plugin");
     }
