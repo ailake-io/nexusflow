@@ -426,19 +426,24 @@ pub fn validate_pipeline_configs(
 pub async fn build_sink(
     node: &NodeSpec,
     index: usize,
-    columns: &[String],
+    schema: &arrow_schema::SchemaRef,
     active_license: Option<&LicenseClaims>,
 ) -> anyhow::Result<(String, Box<dyn Sink>)> {
     check_connector_license(&node.connector, active_license)?;
     let name = node.resolved_name(index, "sink")?;
+    // Most connectors below only ever needed the column *names* — kept as
+    // `columns` so their call sites don't change. postgres/sqlite now take
+    // `schema` directly (types included) to drive `CREATE TABLE IF NOT
+    // EXISTS`; see their own `connect()` doc comments for why.
+    let columns: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
     let sink: Box<dyn Sink> = match node.connector.as_str() {
         "postgres" => {
             let cfg: PostgresConnectorConfig = serde_json::from_value(node.config.clone())?;
-            Box::new(PostgresSink::connect(&cfg, columns).await?)
+            Box::new(PostgresSink::connect(&cfg, schema).await?)
         }
         "sqlite" => {
             let cfg: SqliteConnectorConfig = serde_json::from_value(node.config.clone())?;
-            Box::new(SqliteSink::connect(&cfg, columns).await?)
+            Box::new(SqliteSink::connect(&cfg, schema).await?)
         }
         #[cfg(feature = "mongodb")]
         "mongodb" => {
@@ -533,7 +538,7 @@ pub async fn build_sink(
         #[cfg(feature = "clickhouse")]
         "clickhouse" => {
             let cfg: ClickHouseConnectorConfig = serde_json::from_value(node.config.clone())?;
-            Box::new(ClickHouseSink::connect(&cfg, columns).await?)
+            Box::new(ClickHouseSink::connect(&cfg, &columns).await?)
         }
         other => match ConnectorRegistry::find_sink_builder(other) {
             Some(builder) => (builder.build)(node.config.clone()).await?,

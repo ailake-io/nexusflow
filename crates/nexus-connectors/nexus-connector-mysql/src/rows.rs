@@ -64,6 +64,49 @@ pub fn build_upsert_sql(
     ))
 }
 
+/// Arrow-ceiling type -> MySQL column type. `tinyint(1)` is the MySQL
+/// convention for boolean (see `source::mysql_type_to_data_type`'s inverse
+/// mapping for the same convention read back on the source side).
+fn mysql_column_type(data_type: MySqlCdcDataType) -> &'static str {
+    match data_type {
+        MySqlCdcDataType::Int64 => "BIGINT",
+        MySqlCdcDataType::Float64 => "DOUBLE",
+        MySqlCdcDataType::Boolean => "TINYINT(1)",
+        MySqlCdcDataType::Utf8 => "TEXT",
+    }
+}
+
+/// `CREATE TABLE IF NOT EXISTS` from the connector's declared `fields` — a
+/// target table that doesn't exist yet is created instead of the sink
+/// failing outright on the first upsert with a bare "table doesn't exist".
+/// A table that already exists is left alone (no reconciliation), same
+/// posture as `nexus-connector-postgres`/`nexus-connector-sqlite`'s
+/// equivalent.
+pub fn build_create_table_sql(
+    table: &str,
+    primary_key: &str,
+    fields: &[MySqlCdcFieldSpec],
+) -> Result<String, NexusError> {
+    let quoted_table = quote_ident(table)?;
+    let columns = fields
+        .iter()
+        .map(|f| {
+            let quoted_name = quote_ident(&f.name)?;
+            let sql_type = mysql_column_type(f.data_type);
+            let pk_suffix = if f.name == primary_key {
+                " PRIMARY KEY"
+            } else {
+                ""
+            };
+            Ok(format!("{quoted_name} {sql_type}{pk_suffix}"))
+        })
+        .collect::<Result<Vec<_>, NexusError>>()?;
+    Ok(format!(
+        "CREATE TABLE IF NOT EXISTS {quoted_table} ({})",
+        columns.join(", ")
+    ))
+}
+
 /// `DELETE FROM table WHERE pk = ?`.
 pub fn build_delete_sql(table: &str, primary_key: &str) -> Result<String, NexusError> {
     let table = quote_ident(table)?;

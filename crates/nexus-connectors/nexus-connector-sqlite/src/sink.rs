@@ -3,6 +3,7 @@ use crate::driver::open_connection;
 use adbc_core::{Connection as _, Statement as _};
 use adbc_driver_manager::ManagedConnection;
 use arrow_array::RecordBatch;
+use arrow_schema::{DataType, SchemaRef};
 use async_trait::async_trait;
 use nexus_core::{
     project_column, quote_identifier, split_by_opcode, with_timeout, CheckpointCursor, NexusError,
@@ -18,20 +19,39 @@ pub struct SqliteSink {
 }
 
 impl SqliteSink {
-    /// `columns` must match the column order of every `RecordBatch` passed to
-    /// `write_batch` — ADBC binds parameters positionally.
+    /// `schema` must match the column order of every `RecordBatch` passed to
+    /// `write_batch` — ADBC binds parameters positionally. Also drives
+    /// `CREATE TABLE IF NOT EXISTS` — see `PostgresSink::connect`'s doc
+    /// comment for the same reasoning (a target table that doesn't exist
+    /// yet is created from `schema`, not left to fail on the first upsert).
     pub async fn connect(
         cfg: &SqliteConnectorConfig,
-        columns: &[String],
+        schema: &SchemaRef,
     ) -> Result<Self, NexusError> {
         let uri = cfg.connection_url();
+        let table = cfg.table.clone();
+        let primary_key = cfg.primary_key.clone();
+        let create_table_sql = build_create_table_sql(&table, &primary_key, schema)?;
         let connection = with_timeout(cfg.timeout_seconds, "sqlite connect", async {
-            tokio::task::spawn_blocking(move || open_connection(&uri))
-                .await
-                .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))?
+            tokio::task::spawn_blocking(move || -> Result<ManagedConnection, NexusError> {
+                let mut connection = open_connection(&uri)?;
+                let mut statement = connection
+                    .new_statement()
+                    .map_err(|e| NexusError::Connector(e.to_string()))?;
+                statement
+                    .set_sql_query(&create_table_sql)
+                    .map_err(|e| NexusError::Connector(e.to_string()))?;
+                statement
+                    .execute_update()
+                    .map_err(|e| NexusError::Connector(format!("create table failed: {e}")))?;
+                Ok(connection)
+            })
+            .await
+            .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))?
         })
         .await?;
-        let upsert_sql = build_upsert_sql(&cfg.table, &cfg.primary_key, columns)?;
+        let columns: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
+        let upsert_sql = build_upsert_sql(&cfg.table, &cfg.primary_key, &columns)?;
         let delete_sql = build_delete_sql(&cfg.table, &cfg.primary_key)?;
         Ok(Self {
             connection,
@@ -41,6 +61,57 @@ impl SqliteSink {
             timeout_seconds: cfg.timeout_seconds,
         })
     }
+}
+
+/// Arrow type -> SQLite column type affinity. SQLite has no real `BOOLEAN`
+/// (stored as 0/1 under `INTEGER` affinity by convention) and no native
+/// date/time type (ISO-8601 text by convention), so those map onto the
+/// closest affinity rather than a dedicated type name. Anything else not
+/// explicitly matched falls back to `TEXT` — same "never lose the value"
+/// posture as `PostgresSink`'s equivalent.
+fn arrow_type_to_sqlite(data_type: &DataType) -> &'static str {
+    match data_type {
+        DataType::Int8
+        | DataType::Int16
+        | DataType::Int32
+        | DataType::Int64
+        | DataType::UInt8
+        | DataType::UInt16
+        | DataType::UInt32
+        | DataType::UInt64
+        | DataType::Boolean => "INTEGER",
+        DataType::Float16 | DataType::Float32 | DataType::Float64 => "REAL",
+        DataType::Decimal128(_, _) | DataType::Decimal256(_, _) => "NUMERIC",
+        _ => "TEXT",
+    }
+}
+
+/// `CREATE TABLE IF NOT EXISTS` from an Arrow schema — see
+/// `SqliteSink::connect`'s doc comment.
+fn build_create_table_sql(
+    table: &str,
+    primary_key: &str,
+    schema: &SchemaRef,
+) -> Result<String, NexusError> {
+    let quoted_table = quote_identifier(table)?;
+    let columns = schema
+        .fields()
+        .iter()
+        .map(|f| {
+            let quoted_name = quote_identifier(f.name())?;
+            let sql_type = arrow_type_to_sqlite(f.data_type());
+            let pk_suffix = if f.name() == primary_key {
+                " PRIMARY KEY"
+            } else {
+                ""
+            };
+            Ok(format!("{quoted_name} {sql_type}{pk_suffix}"))
+        })
+        .collect::<Result<Vec<_>, NexusError>>()?;
+    Ok(format!(
+        "CREATE TABLE IF NOT EXISTS {quoted_table} ({})",
+        columns.join(", ")
+    ))
 }
 
 /// SQLite's `INSERT ... ON CONFLICT DO UPDATE` (3.24+) gives the same
@@ -146,6 +217,22 @@ impl Sink for SqliteSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow_schema::{Field, Schema};
+    use std::sync::Arc;
+
+    #[test]
+    fn create_table_sql_marks_the_primary_key_and_maps_types() {
+        let schema: SchemaRef = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("active", DataType::Boolean, true),
+            Field::new("name", DataType::Utf8, true),
+        ]));
+        let sql = build_create_table_sql("events", "id", &schema).unwrap();
+        assert_eq!(
+            sql,
+            "CREATE TABLE IF NOT EXISTS \"events\" (\"id\" INTEGER PRIMARY KEY, \"active\" INTEGER, \"name\" TEXT)"
+        );
+    }
 
     #[test]
     fn upsert_sql_uses_plain_question_mark_placeholders() {

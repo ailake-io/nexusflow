@@ -78,6 +78,23 @@ fn column_infos(schema: &arrow_schema::Schema) -> Vec<crate::pipeline_schema_sto
         .collect()
 }
 
+/// `schema` minus `__opcode` (CDC metadata, never a real destination
+/// column) — same exclusion `column_infos` above applies, but returning a
+/// real `SchemaRef` instead of the Lineage tab's `ColumnInfo` shape, for
+/// `build_sink`'s `schema` argument (drives `CREATE TABLE IF NOT EXISTS`
+/// on the postgres/sqlite sinks — a `__opcode` column would otherwise get
+/// created alongside the real ones).
+fn schema_without_opcode(schema: &arrow_schema::SchemaRef) -> arrow_schema::SchemaRef {
+    std::sync::Arc::new(arrow_schema::Schema::new(
+        schema
+            .fields()
+            .iter()
+            .filter(|f| f.name() != OPCODE_COLUMN)
+            .cloned()
+            .collect::<Vec<_>>(),
+    ))
+}
+
 /// Persists a pipeline's captured schema (Fase "Linhagem — colunas e
 /// tipos"). Best-effort, same posture as dbt lineage/test-result
 /// persistence in `lib.rs::execute_pipeline_run`: a failure here is logged
@@ -277,7 +294,6 @@ async fn run_linear_pipeline(
     let sink_cfg: PostgresConnectorConfig = serde_json::from_value(sink_node.config.clone())?;
 
     let schema = table_schema(&source_cfg).await?;
-    let columns: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
 
     // No transform on this path — the sink receives exactly the source's
     // own schema.
@@ -307,7 +323,7 @@ async fn run_linear_pipeline(
                 let sink = log_on_err(
                     log,
                     "p0 sink connect failed",
-                    PostgresSink::connect(&sink_cfg, &columns).await,
+                    PostgresSink::connect(&sink_cfg, &schema).await,
                 )
                 .await?;
                 handles.push(PartitionHandle {
@@ -333,7 +349,7 @@ async fn run_linear_pipeline(
                 let sink = log_on_err(
                     log,
                     &format!("{partition_id} sink connect failed"),
-                    PostgresSink::connect(&sink_cfg, &columns).await,
+                    PostgresSink::connect(&sink_cfg, &schema).await,
                 )
                 .await?;
                 handles.push(PartitionHandle {
@@ -524,12 +540,7 @@ async fn run_streaming_cdc_pipeline(
             .await,
     )
     .await?;
-    let columns: Vec<String> = output_schema
-        .fields()
-        .iter()
-        .map(|f| f.name().clone())
-        .filter(|name| name != OPCODE_COLUMN)
-        .collect();
+    let sink_schema = schema_without_opcode(&output_schema);
 
     let column_lineage = transform
         .column_lineage(vec![(source_name.clone(), source_schema.clone())])
@@ -551,7 +562,7 @@ async fn run_streaming_cdc_pipeline(
         let (name, sink) = log_on_err(
             log,
             &format!("sink {i} ({}) connect failed", node.connector),
-            build_sink(node, i, &columns, active_license).await,
+            build_sink(node, i, &sink_schema, active_license).await,
         )
         .await?;
         if done.contains(&name) {
@@ -724,12 +735,7 @@ async fn run_passthrough_pipeline(
     // source's own declared schema includes it (see e.g. postgres-cdc's
     // `build_schema`), and it's never a real destination column.
     let source_schema = source.schema();
-    let columns: Vec<String> = source_schema
-        .fields()
-        .iter()
-        .map(|f| f.name().clone())
-        .filter(|name| name != OPCODE_COLUMN)
-        .collect();
+    let sink_schema = schema_without_opcode(&source_schema);
 
     // No transform on this path — the sink receives exactly the source's
     // own schema (minus `__opcode`, `column_infos` filters it the same way).
@@ -746,7 +752,7 @@ async fn run_passthrough_pipeline(
     let (_name, sink) = log_on_err(
         log,
         &format!("sink 0 ({}) connect failed", sink_node.connector),
-        build_sink(sink_node, 0, &columns, active_license).await,
+        build_sink(sink_node, 0, &sink_schema, active_license).await,
     )
     .await?;
 
@@ -942,17 +948,10 @@ async fn run_transform_pipeline(
     // failed every single write with "column \"__opcode\" of relation ...
     // does not exist" — the SQL text and the bound values disagreed on the
     // column count.
-    let columns: Vec<String> = output
+    let sink_schema = output
         .first()
-        .map(|b| {
-            b.schema()
-                .fields()
-                .iter()
-                .map(|f| f.name().clone())
-                .filter(|name| name != OPCODE_COLUMN)
-                .collect()
-        })
-        .unwrap_or_default();
+        .map(|b| schema_without_opcode(&b.schema()))
+        .unwrap_or_else(|| std::sync::Arc::new(arrow_schema::Schema::empty()));
 
     let output_columns = output
         .first()
@@ -972,7 +971,7 @@ async fn run_transform_pipeline(
         let (name, sink) = log_on_err(
             log,
             &format!("sink {i} ({}) connect failed", node.connector),
-            build_sink(node, i, &columns, active_license).await,
+            build_sink(node, i, &sink_schema, active_license).await,
         )
         .await?;
         if done.contains(&name) {
@@ -1061,23 +1060,17 @@ pub async fn run_post_dbt_stage(
     let inputs = PipelineEngine::drain_sources(vec![source]).await?;
     let batches: Vec<_> = inputs.into_iter().flat_map(|(_, _, b)| b).collect();
 
-    let columns: Vec<String> = batches
+    let sink_schema = batches
         .first()
-        .map(|b| {
-            b.schema()
-                .fields()
-                .iter()
-                .map(|f| f.name().clone())
-                .collect()
-        })
-        .unwrap_or_default();
+        .map(|b| schema_without_opcode(&b.schema()))
+        .unwrap_or_else(|| std::sync::Arc::new(arrow_schema::Schema::empty()));
 
     let mut sinks = Vec::with_capacity(spec.post_dbt_sinks.len());
     for (i, node) in spec.post_dbt_sinks.iter().enumerate() {
         let (raw_name, sink) = log_on_err(
             log,
             &format!("post-dbt sink {i} ({}) connect failed", node.connector),
-            build_sink(node, i, &columns, active_license).await,
+            build_sink(node, i, &sink_schema, active_license).await,
         )
         .await?;
         let name = format!("post_dbt_{raw_name}");

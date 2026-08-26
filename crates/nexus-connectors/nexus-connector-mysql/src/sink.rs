@@ -1,6 +1,7 @@
 use crate::config::{MySqlCdcFieldSpec, MySqlConnectorConfig};
 use crate::rows::{
-    batch_to_delete_params, batch_to_upsert_params, build_delete_sql, build_upsert_sql,
+    batch_to_delete_params, batch_to_upsert_params, build_create_table_sql, build_delete_sql,
+    build_upsert_sql,
 };
 use arrow_array::RecordBatch;
 use async_trait::async_trait;
@@ -30,10 +31,22 @@ pub struct MySqlSink {
 
 impl MySqlSink {
     pub async fn connect(config: &MySqlConnectorConfig) -> Result<Self, NexusError> {
-        let conn = with_timeout(config.timeout_seconds, "mysql connect", async {
+        let mut conn = with_timeout(config.timeout_seconds, "mysql connect", async {
             Conn::from_url(config.connection_string())
                 .await
                 .map_err(|e| NexusError::Connector(format!("mysql connect failed: {e}")))
+        })
+        .await?;
+
+        // Auto-create the target table from the declared `fields` if it
+        // doesn't exist yet — see `rows::build_create_table_sql`'s doc
+        // comment.
+        let create_table_sql =
+            build_create_table_sql(&config.table, &config.primary_key, &config.fields)?;
+        with_timeout(config.timeout_seconds, "mysql create table", async {
+            conn.query_drop(&create_table_sql)
+                .await
+                .map_err(|e| NexusError::Connector(format!("create table failed: {e}")))
         })
         .await?;
 

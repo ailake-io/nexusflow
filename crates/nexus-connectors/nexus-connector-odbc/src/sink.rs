@@ -1,5 +1,8 @@
 use crate::config::OdbcConnectorConfig;
-use crate::sql::{build_delete_sql, build_insert_sql, build_update_sql, update_param_order};
+use crate::sql::{
+    build_create_table_sql, build_delete_sql, build_insert_sql, build_update_sql,
+    update_param_order,
+};
 use arrow_array::{Array, RecordBatch, StringArray};
 use async_trait::async_trait;
 use nexus_core::{CheckpointCursor, NexusError, Opcode, Sink, OPCODE_COLUMN};
@@ -61,6 +64,17 @@ fn run_worker(
 
     conn.set_autocommit(false)
         .map_err(|e| NexusError::Connector(format!("odbc set_autocommit(false): {e}")))?;
+
+    // Auto-create the target table from the declared `fields` if it
+    // doesn't exist yet — see `sql::build_create_table_sql`'s doc comment
+    // (best-effort: SQL-92 types/`IF NOT EXISTS`, not guaranteed across
+    // every ODBC-fronted database).
+    let create_table_sql =
+        build_create_table_sql(&config.table, &config.primary_key, &config.fields)?;
+    conn.execute(&create_table_sql, (), None)
+        .map_err(|e| NexusError::Connector(format!("create table failed: {e}")))?;
+    conn.commit()
+        .map_err(|e| NexusError::Connector(format!("odbc commit after create table: {e}")))?;
 
     for req in rx {
         let result = write_batch(&config, &conn, &req.batch);
