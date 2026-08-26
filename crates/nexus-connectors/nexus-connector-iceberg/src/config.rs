@@ -150,6 +150,12 @@ pub struct IcebergConnectorConfig {
     /// duplicate lines on retry/resume (A01). Leave unset for pure append.
     #[serde(default)]
     pub primary_key: Option<String>,
+    /// When true, the sink appends batches without scanning the current
+    /// snapshot for existing primary keys. This avoids the full-snapshot read
+    /// for large append-only loads. CDC (`__opcode`) batches still honor the
+    /// existing semantics.
+    #[serde(default)]
+    pub append_only: bool,
     /// Timeout in seconds for each catalog/table call — both the SQLite
     /// catalog and local warehouse are embedded today, but this still
     /// guards against a locked catalog file or a future remote storage
@@ -426,6 +432,7 @@ mod tests {
             storage_options: StorageOptions::default(),
             format_version: IcebergFormatVersion::V2,
             primary_key: None,
+            append_only: false,
             timeout_seconds: 30,
         }
     }
@@ -453,6 +460,7 @@ mod tests {
             storage_options: StorageOptions::default(),
             format_version: IcebergFormatVersion::V2,
             primary_key: None,
+            append_only: false,
             timeout_seconds: 30,
         };
         assert_eq!(cfg.catalog_uri(), "sqlite:///new/catalog.db?mode=rwc");
@@ -475,6 +483,7 @@ mod tests {
             storage_options: StorageOptions::default(),
             format_version: IcebergFormatVersion::V2,
             primary_key: None,
+            append_only: false,
             timeout_seconds: 30,
         };
         assert_eq!(cfg.warehouse_location(), "file:///data/warehouse");
@@ -494,6 +503,7 @@ mod tests {
             storage_options: StorageOptions::default(),
             format_version: IcebergFormatVersion::V2,
             primary_key: None,
+            append_only: false,
             timeout_seconds: 30,
         };
         assert!(cfg.catalog_uri().is_empty());
@@ -522,6 +532,7 @@ mod tests {
             },
             format_version: IcebergFormatVersion::V2,
             primary_key: None,
+            append_only: false,
             timeout_seconds: 30,
         };
         let map = cfg.storage_options();

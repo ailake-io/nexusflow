@@ -35,6 +35,7 @@ fn test_cfg(dir: &std::path::Path, format_version: IcebergFormatVersion) -> Iceb
         storage_options: Default::default(),
         format_version,
         primary_key: None,
+        append_only: false,
         timeout_seconds: 30,
     }
 }

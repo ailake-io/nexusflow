@@ -108,7 +108,11 @@ impl IcebergSink {
                 .map_err(|e| NexusError::Connector(format!("iceberg create_table failed: {e}")))?
         };
 
-        let batch = self.dedup_against_existing(&table, batch).await?;
+        let batch = if self.cfg.append_only {
+            batch
+        } else {
+            self.dedup_against_existing(&table, batch).await?
+        };
         if batch.num_rows() == 0 {
             return Ok(());
         }
