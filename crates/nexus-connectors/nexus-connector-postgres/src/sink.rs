@@ -2,31 +2,35 @@ use crate::config::PostgresConnectorConfig;
 use crate::driver::open_connection;
 use adbc_core::{Connection as _, Statement as _};
 use adbc_driver_manager::ManagedStatement;
-use arrow_array::{Array, ListArray, RecordBatch, StringArray};
+use arrow_array::{Array, RecordBatch, StringArray};
 use arrow_cast::cast;
-use arrow_schema::{DataType, Field, SchemaRef};
+use arrow_schema::{DataType, SchemaRef};
 use async_trait::async_trait;
+use futures::{pin_mut, SinkExt};
 use nexus_core::quote_identifier;
+use std::sync::Arc;
 use nexus_core::{
     project_column, split_by_opcode, with_timeout, CheckpointCursor, NexusError, Sink,
 };
-use std::sync::Arc;
+use tokio_postgres::Client;
 
 pub struct PostgresSink {
     upsert_statement: ManagedStatement,
     delete_statement: ManagedStatement,
+    copy_client: Arc<Client>,
+    table: String,
+    schema: SchemaRef,
     primary_key: String,
     timeout_seconds: u64,
 }
 
 impl PostgresSink {
     /// `schema` must match the column order of every `RecordBatch` passed to
-    /// `write_batch` — ADBC binds parameters positionally. Also drives
-    /// `CREATE TABLE IF NOT EXISTS`: a target table that doesn't exist yet
-    /// is created from `schema`'s columns/types before the first upsert,
-    /// instead of failing with a bare "relation does not exist". A table
-    /// that already exists is left alone (no `ALTER TABLE` reconciliation —
-    /// out of scope, same as every other connector's sink).
+    /// `write_batch`. Also drives `CREATE TABLE IF NOT EXISTS`: a target table
+    /// that doesn't exist yet is created from `schema`'s columns/types before
+    /// the first write, instead of failing with a bare "relation does not exist".
+    /// A table that already exists is left alone (no `ALTER TABLE`
+    /// reconciliation).
     pub async fn connect(
         cfg: &PostgresConnectorConfig,
         schema: &SchemaRef,
@@ -36,6 +40,23 @@ impl PostgresSink {
         let primary_key = cfg.primary_key.clone();
         let schema = schema.clone();
         let create_table_sql = build_create_table_sql(&table, &primary_key, &schema)?;
+
+        // Clones for the ADBC setup closure.
+        let table_for_adbc = table.clone();
+        let schema_for_adbc = schema.clone();
+
+        // Direct tokio-postgres connection for COPY-based bulk loads.
+        let pg_config = build_pg_config(cfg)?;
+        let (copy_client, copy_connection) = pg_config
+            .connect(tokio_postgres::NoTls)
+            .await
+            .map_err(|e| NexusError::Connector(format!("postgres direct connect failed: {e}")))?;
+        tokio::spawn(async move {
+            if let Err(e) = copy_connection.await {
+                tracing::error!("postgres copy connection closed: {e}");
+            }
+        });
+
         let (upsert_statement, delete_statement) =
             with_timeout(cfg.timeout_seconds, "postgres connect", async {
                 tokio::task::spawn_blocking(
@@ -52,8 +73,8 @@ impl PostgresSink {
                             .execute_update()
                             .map_err(|e| NexusError::Connector(format!("create table failed: {e}")))?;
 
-                        let upsert_sql = build_upsert_sql(&table, &primary_key, &schema)?;
-                        let delete_sql = build_delete_sql(&table, &primary_key)?;
+                        let upsert_sql = build_upsert_sql(&table_for_adbc, &primary_key, &schema_for_adbc)?;
+                        let delete_sql = build_delete_sql(&table_for_adbc, &primary_key)?;
 
                         let mut upsert_statement = connection
                             .new_statement()
@@ -86,10 +107,24 @@ impl PostgresSink {
         Ok(Self {
             upsert_statement,
             delete_statement,
+            copy_client: Arc::new(copy_client),
+            table,
+            schema,
             primary_key: cfg.primary_key.clone(),
             timeout_seconds: cfg.timeout_seconds,
         })
     }
+}
+
+fn build_pg_config(cfg: &PostgresConnectorConfig) -> Result<tokio_postgres::Config, NexusError> {
+    let mut config = tokio_postgres::Config::new();
+    config
+        .host(&cfg.host)
+        .port(cfg.port)
+        .user(&cfg.username)
+        .password(&cfg.password)
+        .dbname(&cfg.database);
+    Ok(config)
 }
 
 /// Arrow type -> Postgres column type. Anything not explicitly matched
@@ -115,13 +150,6 @@ fn arrow_type_to_postgres(data_type: &DataType) -> &'static str {
     }
 }
 
-/// `CREATE TABLE IF NOT EXISTS` from an Arrow schema — see
-/// `PostgresSink::connect`'s doc comment. `primary_key` must be one of
-/// `schema`'s field names (checked at the DAG-validation layer, same as
-/// every other connector's `primary_key`); if it somehow isn't, the
-/// `PRIMARY KEY` constraint is simply never added rather than erroring
-/// here — Postgres itself will reject the later upsert's `ON CONFLICT`
-/// clause with a clear error instead.
 fn build_create_table_sql(
     table: &str,
     primary_key: &str,
@@ -148,12 +176,8 @@ fn build_create_table_sql(
     ))
 }
 
-/// `INSERT ... ON CONFLICT (pk) DO UPDATE` using `UNNEST` so a single
-/// prepared statement can ingest an arbitrary number of rows per batch.
-/// ADBC binds each parameter as a PostgreSQL `text[]`; `UNNEST` turns those
-/// arrays back into rows, and each selected column is explicitly cast to the
-/// target PostgreSQL type so the insert/coerce step succeeds for numeric,
-/// boolean and temporal columns.
+/// `INSERT ... ON CONFLICT (pk) DO UPDATE` — used for CDC upserts where the
+/// batch sizes are typically small and the idempotency contract must hold.
 fn build_upsert_sql(
     table: &str,
     primary_key: &str,
@@ -167,17 +191,8 @@ fn build_upsert_sql(
         .map(|f| quote_identifier(f.name()))
         .collect::<Result<Vec<_>, _>>()?;
 
-    let unnest_args: Vec<String> = (1..=columns.len())
-        .map(|i| format!("${i}::text[]"))
-        .collect();
-
-    let casts: Vec<String> = columns
-        .iter()
-        .zip(quoted_columns.iter())
-        .map(|(f, quoted)| {
-            let pg_type = arrow_type_to_postgres(f.data_type());
-            format!("{quoted}::{pg_type}")
-        })
+    let placeholders: Vec<String> = (1..=columns.len())
+        .map(|i| format!("${i}"))
         .collect();
 
     let updates: Vec<String> = columns
@@ -188,10 +203,9 @@ fn build_upsert_sql(
         .collect();
 
     Ok(format!(
-        "INSERT INTO {quoted_table} ({cols}) SELECT {casts} FROM UNNEST({args}) AS t({cols}) ON CONFLICT ({quoted_primary_key}) DO UPDATE SET {upd}",
+        "INSERT INTO {quoted_table} ({cols}) VALUES ({vals}) ON CONFLICT ({quoted_primary_key}) DO UPDATE SET {upd}",
         cols = quoted_columns.join(", "),
-        args = unnest_args.join(", "),
-        casts = casts.join(", "),
+        vals = placeholders.join(", "),
         upd = updates.join(", "),
     ))
 }
@@ -204,26 +218,97 @@ fn build_delete_sql(table: &str, primary_key: &str) -> Result<String, NexusError
     ))
 }
 
-/// Converts any Arrow array into a single-element `ListArray<StringArray>`,
-/// where the list contains every original value formatted as text. Used to
-/// build parameters for `INSERT ... SELECT * FROM UNNEST($1::text[], ...)`.
-fn array_to_text_list(arr: &Arc<dyn Array>) -> Result<Arc<dyn Array>, NexusError> {
-    let string_arr = cast(arr.as_ref(), &DataType::Utf8)
-        .map_err(|e| NexusError::Connector(format!("cast to utf8 failed: {e}")))?;
-    let string_arr = string_arr
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .expect("cast to Utf8 returns StringArray");
+/// Escapes a value for PostgreSQL COPY TEXT format.
+fn copy_escape(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('\t', "\\t")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+}
 
-    let item_field = Arc::new(Field::new("item", DataType::Utf8, true));
-    let offsets = arrow_buffer::OffsetBuffer::from_lengths([string_arr.len()]);
-    let list_arr = ListArray::new(item_field, offsets, Arc::new(string_arr.clone()), None);
-    Ok(Arc::new(list_arr))
+/// Converts a `RecordBatch` into PostgreSQL COPY TEXT format bytes.
+fn batch_to_copy_text(batch: &RecordBatch) -> Result<Vec<u8>, NexusError> {
+    let num_rows = batch.num_rows();
+    if num_rows == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Cast every column to Utf8 so we can format each value as text.
+    let string_columns: Vec<StringArray> = batch
+        .columns()
+        .iter()
+        .map(|col| {
+            let string_arr = cast(col.as_ref(), &DataType::Utf8)
+                .map_err(|e| NexusError::Connector(format!("cast to utf8 failed: {e}")))?;
+            Ok(string_arr
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .expect("cast to Utf8 returns StringArray")
+                .clone())
+        })
+        .collect::<Result<Vec<_>, NexusError>>()?;
+
+    let mut buf = Vec::with_capacity(num_rows * 64);
+    for row in 0..num_rows {
+        for (col_idx, col) in string_columns.iter().enumerate() {
+            if col_idx > 0 {
+                buf.push(b'\t');
+            }
+            if col.is_null(row) {
+                buf.extend_from_slice(b"\\N");
+            } else {
+                let escaped = copy_escape(col.value(row));
+                buf.extend_from_slice(escaped.as_bytes());
+            }
+        }
+        buf.push(b'\n');
+    }
+    Ok(buf)
 }
 
 impl PostgresSink {
-    /// Executes the prepared UNNEST upsert with a batch whose columns have
-    /// been converted to single-element text lists.
+    /// Bulk-loads a non-CDC batch using `COPY ... FROM STDIN`.
+    async fn execute_copy(&self, batch: &RecordBatch) -> Result<(), NexusError> {
+        if batch.num_rows() == 0 {
+            return Ok(());
+        }
+
+        let quoted_table = quote_identifier(&self.table)?;
+        let quoted_columns: Vec<_> = self
+            .schema
+            .fields()
+            .iter()
+            .map(|f| quote_identifier(f.name()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let copy_sql = format!(
+            "COPY {quoted_table} ({}) FROM STDIN WITH (FORMAT text)",
+            quoted_columns.join(", ")
+        );
+
+        let data = batch_to_copy_text(batch)?;
+        let client = self.copy_client.clone();
+
+        with_timeout(self.timeout_seconds, "postgres copy", async move {
+            let sink = client
+                .copy_in(&copy_sql)
+                .await
+                .map_err(|e| NexusError::Connector(format!("copy_in failed: {e}")))?;
+            pin_mut!(sink);
+            sink
+                .send(bytes::Bytes::from(data))
+                .await
+                .map_err(|e| NexusError::Connector(format!("copy send failed: {e}")))?;
+            sink
+                .finish()
+                .await
+                .map_err(|e| NexusError::Connector(format!("copy finish failed: {e}")))?;
+            Ok::<(), NexusError>(())
+        })
+        .await
+    }
+
+    /// Executes the prepared single-row upsert statement. Used for CDC upserts.
     async fn execute_upsert(&self, batch: RecordBatch) -> Result<(), NexusError> {
         if batch.num_rows() == 0 {
             return Ok(());
@@ -248,7 +333,7 @@ impl PostgresSink {
         .await
     }
 
-    /// Executes the prepared single-row delete statement. ACDC delete batches
+    /// Executes the prepared single-row delete statement. CDC delete batches
     /// are normally small, so row-by-row execution is fine.
     async fn execute_delete(&self, batch: RecordBatch) -> Result<(), NexusError> {
         if batch.num_rows() == 0 {
@@ -275,53 +360,17 @@ impl PostgresSink {
     }
 }
 
-/// Builds a schema whose fields have the same names as `schema` but whose
-/// types are `List(Utf8)`, matching the arrays produced by `array_to_text_list`.
-fn text_list_schema(schema: &SchemaRef) -> SchemaRef {
-    let item_field = Arc::new(Field::new("item", DataType::Utf8, true));
-    let fields: Vec<Arc<Field>> = schema
-        .fields()
-        .iter()
-        .map(|f| Arc::new(Field::new(f.name(), DataType::List(item_field.clone()), f.is_nullable())))
-        .collect();
-    Arc::new(arrow_schema::Schema::new(fields))
-}
-
 #[async_trait]
 impl Sink for PostgresSink {
     async fn write_batch(&mut self, batch: RecordBatch) -> Result<(), NexusError> {
         // CDC batches carry an `__opcode` column (ARCHITECTURE.md §5) — split
         // it so deletes are issued as real `DELETE`s instead of being
-        // silently upserted. Plain (non-CDC) batches take the UNNEST bulk
-        // upsert path.
+        // silently upserted. Plain (non-CDC) batches take the COPY bulk path.
         match split_by_opcode(&batch)? {
-            None => {
-                let list_columns: Result<Vec<_>, _> = batch
-                    .columns()
-                    .iter()
-                    .map(|col| array_to_text_list(col))
-                    .collect();
-                let upsert_batch = RecordBatch::try_new(
-                    text_list_schema(&batch.schema()),
-                    list_columns?,
-                )
-                .map_err(|e| NexusError::Connector(format!("upsert batch rebuild failed: {e}")))?;
-                self.execute_upsert(upsert_batch).await
-            }
+            None => self.execute_copy(&batch).await,
             Some(split) => {
                 if split.upserts.num_rows() > 0 {
-                    let list_columns: Result<Vec<_>, _> = split
-                        .upserts
-                        .columns()
-                        .iter()
-                        .map(|col| array_to_text_list(col))
-                        .collect();
-                    let upsert_batch = RecordBatch::try_new(
-                        text_list_schema(&split.upserts.schema()),
-                        list_columns?,
-                    )
-                    .map_err(|e| NexusError::Connector(format!("cdc upsert batch rebuild failed: {e}")))?;
-                    self.execute_upsert(upsert_batch).await?;
+                    self.execute_upsert(split.upserts).await?;
                 }
                 if split.deletes.num_rows() > 0 {
                     let keys = project_column(&split.deletes, &self.primary_key)?;
@@ -368,7 +417,7 @@ mod tests {
     }
 
     #[test]
-    fn upsert_sql_uses_unnest_with_text_arrays() {
+    fn upsert_sql_updates_every_column_except_the_primary_key() {
         let schema: SchemaRef = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int64, false),
             Field::new("name", DataType::Utf8, true),
@@ -378,9 +427,7 @@ mod tests {
 
         assert_eq!(
             sql,
-            "INSERT INTO \"events\" (\"id\", \"name\", \"score\") \
-             SELECT \"id\"::BIGINT, \"name\"::TEXT, \"score\"::DOUBLE PRECISION \
-             FROM UNNEST($1::text[], $2::text[], $3::text[]) AS t(\"id\", \"name\", \"score\") \
+            "INSERT INTO \"events\" (\"id\", \"name\", \"score\") VALUES ($1, $2, $3) \
              ON CONFLICT (\"id\") DO UPDATE SET \"name\" = EXCLUDED.\"name\", \"score\" = EXCLUDED.\"score\""
         );
     }
@@ -418,14 +465,16 @@ mod tests {
     }
 
     #[test]
-    fn array_to_text_list_builds_single_element_list() {
-        let arr = Arc::new(Int64Array::from(vec![1, 2, 3])) as Arc<dyn Array>;
-        let list = array_to_text_list(&arr).unwrap();
-        let list = list
-            .as_any()
-            .downcast_ref::<ListArray>()
-            .expect("returns ListArray");
-        assert_eq!(list.len(), 1);
-        assert_eq!(list.value_length(0), 3);
+    fn batch_to_copy_text_formats_rows() {
+        let schema: SchemaRef = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, true),
+        ]));
+        let id = Arc::new(Int64Array::from(vec![1, 2])) as Arc<dyn Array>;
+        let name = Arc::new(StringArray::from(vec![Some("a\tb"), None])) as Arc<dyn Array>;
+        let batch = RecordBatch::try_new(schema, vec![id, name]).unwrap();
+
+        let text = String::from_utf8(batch_to_copy_text(&batch).unwrap()).unwrap();
+        assert_eq!(text, "1\ta\\tb\n2\t\\N\n");
     }
 }

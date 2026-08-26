@@ -7476,6 +7476,7 @@ dependencies = [
  "arrow-cast 58.4.0",
  "arrow-schema 58.4.0",
  "async-trait",
+ "bytes",
  "futures",
  "nexus-core",
  "pg_walstream",
@@ -7485,6 +7486,7 @@ dependencies = [
  "testcontainers",
  "tokio",
  "tokio-postgres",
+ "tracing",
 ]
 
 [[package]]

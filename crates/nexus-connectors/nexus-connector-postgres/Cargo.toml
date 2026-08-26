@@ -23,10 +23,13 @@ arrow-schema = "58.4.0"
 async-trait = "0.1.91"
 futures = "0.3.33"
 nexus-core = { version = "0.1.0", path = "../../nexus-core" }
+bytes = "1.10.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 schemars = "1.2.2"
 tokio = { version = "1.53.1", features = ["rt", "time"] }
+tokio-postgres = "0.7.13"
+tracing = "0.1.41"
 pg_walstream = { version = "0.8.1", optional = true }
 
 [dev-dependencies]
