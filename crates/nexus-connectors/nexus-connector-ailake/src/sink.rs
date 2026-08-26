@@ -28,6 +28,7 @@ pub struct AilakeSink {
     policy: VectorStoragePolicy,
     primary_key: String,
     embedding_column: String,
+    append_only: bool,
     timeout_seconds: u64,
 }
 
@@ -55,6 +56,7 @@ impl AilakeSink {
             policy,
             primary_key: cfg.primary_key.clone(),
             embedding_column: cfg.embedding_column.clone(),
+            append_only: cfg.append_only,
             timeout_seconds: cfg.timeout_seconds,
         })
     }
@@ -82,7 +84,9 @@ impl AilakeSink {
         // metadata.json and errors if it's missing — nothing to be created
         // by it (unlike `TableWriter::create_or_open` below) — so skip the
         // delete entirely in that case; there is nothing to mask anyway.
-        if self.catalog.load_table(&self.table).await.is_ok() {
+        // Also skipped in append-only mode to avoid the extra equality-delete
+        // commit and scan for large non-CDC loads.
+        if !self.append_only && self.catalog.load_table(&self.table).await.is_ok() {
             self.delete(&batch).await?;
         }
         with_timeout(self.timeout_seconds, "ailake upsert", async {

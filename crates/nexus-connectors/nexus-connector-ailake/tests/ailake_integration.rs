@@ -80,6 +80,7 @@ async fn text_chunk_embed_ailake_end_to_end() {
         embedding_column: "embedding".to_string(),
         dimension: 384,
         storage_options: nexus_connector_ailake::AilakeStorageOptions::default(),
+        append_only: false,
         timeout_seconds: 30,
     };
     let mut sink = AilakeSink::connect(&sink_cfg).expect("sink connects");
@@ -194,6 +195,7 @@ async fn upsert_replaces_prior_row_instead_of_duplicating_it() {
         embedding_column: "embedding".to_string(),
         dimension: DIMENSION as u32,
         storage_options: nexus_connector_ailake::AilakeStorageOptions::default(),
+        append_only: false,
         timeout_seconds: 30,
     };
     let mut sink = AilakeSink::connect(&cfg).expect("sink connects");

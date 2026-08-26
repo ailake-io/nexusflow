@@ -75,6 +75,12 @@ pub struct AilakeConnectorConfig {
     /// deployments.
     #[serde(default)]
     pub storage_options: AilakeStorageOptions,
+    /// When true, the sink appends batches without issuing the equality delete
+    /// that masks pre-existing rows sharing the primary key. This avoids the
+    /// extra commit and delete scan for large append-only loads. CDC (`__opcode`)
+    /// batches still honor deletes.
+    #[serde(default)]
+    pub append_only: bool,
     /// Timeout in seconds for each catalog/store call — the warehouse is a
     /// local filesystem today, but this still guards against a locked
     /// catalog file or a slow disk stalling the pipeline indefinitely (C15).
@@ -314,6 +320,7 @@ mod tests {
             embedding_column: "embedding".to_string(),
             dimension: 384,
             storage_options: AilakeStorageOptions::default(),
+            append_only: false,
             timeout_seconds: 30,
         }
     }
