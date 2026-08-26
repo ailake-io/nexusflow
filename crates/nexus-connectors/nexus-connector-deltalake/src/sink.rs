@@ -21,6 +21,7 @@ use nexus_core::{split_by_opcode, with_timeout, CheckpointCursor, NexusError, Si
 pub struct DeltaSink {
     table_uri: String,
     primary_key: String,
+    append_only: bool,
     timeout_seconds: u64,
 }
 
@@ -29,6 +30,7 @@ impl DeltaSink {
         Ok(Self {
             table_uri: cfg.table_uri.clone(),
             primary_key: cfg.primary_key.clone(),
+            append_only: cfg.append_only,
             timeout_seconds: cfg.timeout_seconds,
         })
     }
@@ -104,9 +106,12 @@ impl DeltaSink {
         let mut table = self.ensure_table(&batch).await?;
         // Dedup: drop any pre-existing rows sharing a primary key with this
         // batch before appending, so re-upserting a key updates it instead
-        // of leaving a stale duplicate row behind.
-        let pks = extract_pk_strings(&batch, &self.primary_key)?;
-        table = self.delete_by_pks(table, &batch, &pks).await?;
+        // of leaving a stale duplicate row behind. Skipped in append-only
+        // mode for large non-CDC loads where duplicates are acceptable.
+        if !self.append_only {
+            let pks = extract_pk_strings(&batch, &self.primary_key)?;
+            table = self.delete_by_pks(table, &batch, &pks).await?;
+        }
 
         with_timeout(self.timeout_seconds, "delta write", async {
             let mut writer = RecordBatchWriter::for_table(&table)

@@ -50,6 +50,11 @@ pub struct DeltaConnectorConfig {
     pub storage_options: StorageOptions,
     /// Column used to upsert on write.
     pub primary_key: String,
+    /// When true, the sink appends batches without deleting pre-existing rows
+    /// that share the primary key. This avoids the delete-then-append cost for
+    /// large append-only loads. CDC (`__opcode`) batches still honor deletes.
+    #[serde(default)]
+    pub append_only: bool,
     /// Timeout in seconds for each call to the table's storage backend
     /// (open, create, write, delete) — matters most for ADLS/S3/GCS URIs,
     /// the only case where a call can actually stall on the network (C15).
@@ -247,6 +252,7 @@ mod tests {
             table_name: None,
             storage_options: StorageOptions::default(),
             primary_key: "id".to_string(),
+            append_only: false,
             timeout_seconds: 30,
         }
     }
@@ -259,6 +265,7 @@ mod tests {
             table_name: Some("orders".to_string()),
             storage_options: StorageOptions::default(),
             primary_key: "id".to_string(),
+            append_only: false,
             timeout_seconds: 30,
         };
         assert_eq!(cfg.table_uri(), "s3://bucket/legacy");
@@ -273,6 +280,7 @@ mod tests {
             table_name: Some("orders".to_string()),
             storage_options: StorageOptions::default(),
             primary_key: "id".to_string(),
+            append_only: false,
             timeout_seconds: 30,
         };
         assert_eq!(cfg.table_uri(), "/tmp/data/orders");
@@ -299,6 +307,7 @@ mod tests {
                 s3_endpoint: Some("http://localhost:9000".to_string()),
             },
             primary_key: "id".to_string(),
+            append_only: false,
             timeout_seconds: 30,
         };
         let opts = cfg.storage_options();
