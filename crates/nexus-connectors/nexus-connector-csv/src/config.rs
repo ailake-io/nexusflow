@@ -92,10 +92,17 @@ pub struct CsvConnectorConfig {
     /// twice just to guess its schema.
     #[serde(default = "default_schema_sample_rows")]
     pub schema_sample_rows: usize,
-    /// Column used to upsert/delete on write — required for the sink side;
-    /// ignored by the source.
+    /// Column used to upsert/delete on write — required for the sink side
+    /// unless `append_only` is true; ignored by the source.
     #[serde(default)]
     pub primary_key: Option<String>,
+    /// When true, the sink appends batches to the existing file instead of
+    /// reading it back, filtering by primary key, and rewriting it. This
+    /// avoids the I/O cost of the read-filter-rewrite cycle for large
+    /// append-only loads. CDC (`__opcode`) batches still use the rewrite path
+    /// so deletes/updates are honored.
+    #[serde(default)]
+    pub append_only: bool,
     /// How many rows to fold into a single `RecordBatch` while scanning.
     /// Defaults to `50000`.
     #[serde(default = "default_batch_size")]

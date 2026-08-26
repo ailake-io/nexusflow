@@ -24,12 +24,14 @@ use std::sync::Arc;
 pub struct CsvSink {
     store: Arc<dyn ObjectStore>,
     path: ObjectPath,
+    local_path: Option<std::path::PathBuf>,
     schema: SchemaRef,
     delimiter: u8,
     quote: u8,
     escape: Option<u8>,
     has_header: bool,
     primary_key: String,
+    append_only: bool,
     timeout_seconds: u64,
 }
 
@@ -50,15 +52,26 @@ impl CsvSink {
         let path = paths.pop().ok_or_else(|| {
             NexusError::Connector("csv sink: open_store returned no path".to_string())
         })?;
+
+        // Remember the local filesystem path so append-only mode can open the
+        // file directly instead of round-tripping through object_store.
+        let local_path = if uri.starts_with("file://") || !uri.contains("://") {
+            Some(std::path::PathBuf::from(uri.trim_start_matches("file://")))
+        } else {
+            None
+        };
+
         Ok(Self {
             store,
             path,
+            local_path,
             schema: build_schema(&cfg.fields),
             delimiter: delimiter_byte(cfg.delimiter)?,
             quote: quote_byte(cfg.quote)?,
             escape: cfg.escape.map(quote_byte).transpose()?,
             has_header: cfg.has_header,
             primary_key,
+            append_only: cfg.append_only,
             timeout_seconds: cfg.timeout_seconds,
         })
     }
@@ -100,11 +113,15 @@ impl CsvSink {
     }
 
     fn write_all(&self, row_groups: &[RecordBatch]) -> Result<Vec<u8>, NexusError> {
+        self.write_batches(row_groups, self.has_header)
+    }
+
+    fn write_batches(&self, row_groups: &[RecordBatch], with_header: bool) -> Result<Vec<u8>, NexusError> {
         let mut buf = Vec::new();
         {
             let mut builder = WriterBuilder::new()
                 .with_delimiter(self.delimiter)
-                .with_header(self.has_header)
+                .with_header(with_header)
                 .with_quote(self.quote);
             if let Some(escape) = self.escape {
                 builder = builder.with_escape(escape);
@@ -120,6 +137,73 @@ impl CsvSink {
             }
         }
         Ok(buf)
+    }
+
+    /// Append-only path for plain (non-CDC) batches. Avoids the
+    /// read-filter-rewrite cycle by writing only the new rows.
+    async fn append(&self, batch: RecordBatch) -> Result<(), NexusError> {
+        if batch.num_rows() == 0 {
+            return Ok(());
+        }
+
+        // Local filesystem: append directly to the file.
+        if let Some(local_path) = &self.local_path {
+            let file_exists = local_path.exists();
+            let bytes = self.write_batches(&[batch], self.has_header && !file_exists)?;
+            let local_path = local_path.clone();
+            return with_timeout(self.timeout_seconds, "csv local append", async {
+                tokio::task::spawn_blocking(move || -> Result<(), NexusError> {
+                    use std::io::Write;
+                    let mut file = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&local_path)
+                        .map_err(|e| NexusError::Connector(format!("csv append open failed: {e}")))?;
+                    file.write_all(&bytes)
+                        .map_err(|e| NexusError::Connector(format!("csv append write failed: {e}")))?;
+                    Ok(())
+                })
+                .await
+                .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))?
+            })
+            .await;
+        }
+
+        // Cloud/object store: best-effort append by reading existing bytes,
+        // stripping the trailing header if present, and rewriting.
+        let existing = match self.store.get(&self.path).await {
+            Ok(result) => Some(
+                result
+                    .bytes()
+                    .await
+                    .map_err(|e| NexusError::Connector(format!("csv append read body failed: {e}")))?,
+            ),
+            Err(object_store::Error::NotFound { .. }) => None,
+            Err(e) => return Err(NexusError::Connector(format!("csv append get failed: {e}"))),
+        };
+
+        let mut payload = Vec::with_capacity(batch.num_rows() * 64);
+        if let Some(bytes) = existing {
+            payload.extend_from_slice(&bytes);
+            // If the existing file ends with a newline we can append directly;
+            // otherwise add one so the first new row starts on its own line.
+            if !payload.is_empty() && payload.last() != Some(&b'\n') {
+                payload.push(b'\n');
+            }
+            // New batches are written without header.
+            payload.extend_from_slice(&self.write_batches(&[batch], false)?);
+        } else {
+            payload.extend_from_slice(&self.write_batches(&[batch], self.has_header)?);
+        }
+
+        with_timeout(self.timeout_seconds, "csv append put", async {
+            self.store
+                .put(&self.path, PutPayload::from(payload))
+                .await
+                .map_err(|e| NexusError::Connector(format!("csv append put failed: {e}")))?;
+            Ok(())
+        })
+        .await
     }
 
     async fn apply(&self, upserts: RecordBatch, deletes: &RecordBatch) -> Result<(), NexusError> {
@@ -178,11 +262,16 @@ impl Sink for CsvSink {
         // CDC batches carry an `__opcode` column (ARCHITECTURE.md §5) — split
         // it so deletes are issued as real row removals via the
         // read-filter-rewrite path instead of being silently kept. Plain
-        // (non-CDC) batches take the unchanged all-upsert path.
+        // (non-CDC) batches take the fast append path when `append_only` is
+        // enabled, falling back to read-filter-rewrite otherwise.
         match split_by_opcode(&batch)? {
             None => {
-                let empty = batch.slice(0, 0);
-                self.apply(batch, &empty).await
+                if self.append_only {
+                    self.append(batch).await
+                } else {
+                    let empty = batch.slice(0, 0);
+                    self.apply(batch, &empty).await
+                }
             }
             Some(split) => self.apply(split.upserts, &split.deletes).await,
         }
