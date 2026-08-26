@@ -7,6 +7,10 @@ use nexus_core::{
 };
 use serde_json::{json, Value};
 
+/// Maximum items per ChromaDB upsert/delete request. ChromaDB's REST API
+/// can reject very large payloads; stay under ~1000 items per call.
+const CHROMA_CHUNK_SIZE: usize = 1000;
+
 /// AI Lakehouse sink #6 (last, most complex to operate — ROADMAP.md Fase 5).
 /// Talks to ChromaDB's v2 REST API directly (no official/stable Rust client
 /// crate to depend on, same call as `nexus-connector-pinecone`). See
@@ -97,11 +101,22 @@ impl ChromaSink {
         let embeddings = extract_embeddings(batch, &self.embedding_column)?;
         let metadatas = batch_to_metadata(batch, &[self.embedding_column.as_str(), OPCODE_COLUMN])?;
 
-        self.post(
-            "upsert",
-            json!({ "ids": ids, "embeddings": embeddings, "metadatas": metadatas }),
-        )
-        .await
+        let total = ids.len();
+        let mut offset = 0;
+        while offset < total {
+            let end = (offset + CHROMA_CHUNK_SIZE).min(total);
+            self.post(
+                "upsert",
+                json!({
+                    "ids": &ids[offset..end],
+                    "embeddings": &embeddings[offset..end],
+                    "metadatas": &metadatas[offset..end],
+                }),
+            )
+            .await?;
+            offset = end;
+        }
+        Ok(())
     }
 
     async fn delete(&self, batch: &RecordBatch) -> Result<(), NexusError> {
@@ -110,7 +125,11 @@ impl ChromaSink {
         }
         let keys = project_column(batch, &self.primary_key)?;
         let ids = extract_ids(&keys, &self.primary_key)?;
-        self.post("delete", json!({ "ids": ids })).await
+
+        for chunk in ids.chunks(CHROMA_CHUNK_SIZE) {
+            self.post("delete", json!({ "ids": chunk })).await?;
+        }
+        Ok(())
     }
 }
 
