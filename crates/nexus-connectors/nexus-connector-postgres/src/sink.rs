@@ -1,7 +1,6 @@
 use crate::config::PostgresConnectorConfig;
 use crate::driver::open_connection;
 use adbc_core::{Connection as _, Statement as _};
-use adbc_driver_manager::ManagedConnection;
 use adbc_driver_manager::ManagedStatement;
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, SchemaRef};
@@ -11,20 +10,10 @@ use nexus_core::{
     project_column, split_by_opcode, with_timeout, CheckpointCursor, NexusError, Sink,
 };
 
-/// Limite conservador de parâmetros por query no PostgreSQL. O protocolo usa
-/// Int16 para contar placeholders, então o limite teórico é 32.767. Usamos
-/// 30.000 para sobrar margem para planos grandes e evitar estouro em versões
-/// antigas / drivers. (`u16::MAX` = 65535, mas o parser do Postgres limita a
-/// 32767 parâmetros posicionais.)
-const MAX_PARAMS_PER_QUERY: usize = 30_000;
-
 pub struct PostgresSink {
-    connection: ManagedConnection,
     upsert_statement: ManagedStatement,
     delete_statement: ManagedStatement,
-    table: String,
     primary_key: String,
-    columns: Vec<String>,
     timeout_seconds: u64,
 }
 
@@ -45,15 +34,14 @@ impl PostgresSink {
         let primary_key = cfg.primary_key.clone();
         let schema = schema.clone();
         let create_table_sql = build_create_table_sql(&table, &primary_key, &schema)?;
-        let (connection, upsert_statement, delete_statement, table, columns) =
+        let (upsert_statement, delete_statement) =
             with_timeout(cfg.timeout_seconds, "postgres connect", async {
                 tokio::task::spawn_blocking(
                     move || -> Result<_, NexusError> {
                         let mut connection = open_connection(&uri)?;
 
                         // CREATE TABLE IF NOT EXISTS, depois prepara as
-                        // statements fixas (uma linha) usadas para CDC,
-                        // deletes e batches pequenos.
+                        // statements fixas usadas para upserts e deletes.
                         let mut statement = connection
                             .new_statement()
                             .map_err(|e| NexusError::Connector(e.to_string()))?;
@@ -66,7 +54,7 @@ impl PostgresSink {
 
                         let columns: Vec<String> =
                             schema.fields().iter().map(|f| f.name().clone()).collect();
-                        let upsert_sql = build_upsert_sql(&table, &primary_key, &columns, 1)?;
+                        let upsert_sql = build_upsert_sql(&table, &primary_key, &columns)?;
                         let delete_sql = build_delete_sql(&table, &primary_key)?;
 
                         let mut upsert_statement = connection
@@ -89,13 +77,7 @@ impl PostgresSink {
                             .prepare()
                             .map_err(|e| NexusError::Connector(e.to_string()))?;
 
-                        Ok((
-                            connection,
-                            upsert_statement,
-                            delete_statement,
-                            table,
-                            columns,
-                        ))
+                        Ok((upsert_statement, delete_statement))
                     },
                 )
                 .await
@@ -104,12 +86,9 @@ impl PostgresSink {
             .await?;
 
         Ok(Self {
-            connection,
             upsert_statement,
             delete_statement,
-            table,
             primary_key: cfg.primary_key.clone(),
-            columns,
             timeout_seconds: cfg.timeout_seconds,
         })
     }
@@ -185,30 +164,21 @@ fn build_create_table_sql(
 /// ADBC's `bind` only covers row *values*, not identifiers. Every one of them
 /// is validated and quoted via `quote_identifier` before that happens; this
 /// is the only place allowed to build the upsert SQL.
-///
-/// `rows` controla quantos grupos de placeholders são gerados. `rows == 1`
-/// produz a SQL single-row usada para CDC/deletes/batches pequenos;
-/// `rows > 1` produz um bulk `INSERT ... VALUES (...), (...), ... ON CONFLICT`.
 fn build_upsert_sql(
     table: &str,
     primary_key: &str,
     columns: &[String],
-    rows: usize,
 ) -> Result<String, NexusError> {
     let quoted_table = quote_identifier(table)?;
     let quoted_primary_key = quote_identifier(primary_key)?;
-    let quoted_columns: Vec<_> = columns
+    let quoted_columns = columns
         .iter()
         .map(|c| quote_identifier(c))
         .collect::<Result<Vec<_>, _>>()?;
 
-    let num_cols = quoted_columns.len();
-    if num_cols == 0 {
-        return Err(NexusError::Schema(
-            "upsert requires at least one column".into(),
-        ));
-    }
-
+    let placeholders: Vec<String> = (1..=quoted_columns.len())
+        .map(|i| format!("${i}"))
+        .collect();
     let updates: Vec<String> = columns
         .iter()
         .zip(quoted_columns.iter())
@@ -216,23 +186,10 @@ fn build_upsert_sql(
         .map(|(_, quoted)| format!("{quoted} = EXCLUDED.{quoted}"))
         .collect();
 
-    let mut placeholder = 1usize;
-    let mut value_groups = Vec::with_capacity(rows);
-    for _ in 0..rows {
-        let group: Vec<String> = (0..num_cols)
-            .map(|_| {
-                let p = placeholder;
-                placeholder += 1;
-                format!("${p}")
-            })
-            .collect();
-        value_groups.push(format!("({})", group.join(", ")));
-    }
-
     Ok(format!(
-        "INSERT INTO {quoted_table} ({cols}) VALUES {vals} ON CONFLICT ({quoted_primary_key}) DO UPDATE SET {upd}",
+        "INSERT INTO {quoted_table} ({cols}) VALUES ({vals}) ON CONFLICT ({quoted_primary_key}) DO UPDATE SET {upd}",
         cols = quoted_columns.join(", "),
-        vals = value_groups.join(", "),
+        vals = placeholders.join(", "),
         upd = updates.join(", "),
     ))
 }
@@ -245,19 +202,15 @@ fn build_delete_sql(table: &str, primary_key: &str) -> Result<String, NexusError
     ))
 }
 
-/// Número máximo de linhas que cabem em uma query dado o número de colunas,
-/// respeitando `MAX_PARAMS_PER_QUERY`.
-fn max_rows_per_upsert(num_cols: usize) -> usize {
-    if num_cols == 0 {
-        return 0;
-    }
-    MAX_PARAMS_PER_QUERY / num_cols
-}
-
 impl PostgresSink {
-    /// Executa a statement preparada fixa (single-row) usando uma cópia da
-    /// statement. Usada para deletes e para batches pequenos/CDC.
-    async fn execute_prepared(&self, statement: &ManagedStatement, batch: RecordBatch) -> Result<(), NexusError> {
+    /// Executa a statement preparada usando uma cópia da statement.
+    /// ADBC itera sobre as linhas do `RecordBatch` e executa a statement
+    /// uma vez por linha, mantendo a idempotência do upsert.
+    async fn execute_prepared(
+        &self,
+        statement: &ManagedStatement,
+        batch: RecordBatch,
+    ) -> Result<(), NexusError> {
         let mut statement = statement.clone();
         let timeout_seconds = self.timeout_seconds;
 
@@ -276,73 +229,6 @@ impl PostgresSink {
         })
         .await
     }
-
-    /// Executa um bulk upsert, dividindo o batch em chunks que respeitem o
-    /// limite de parâmetros do PostgreSQL. Para cada chunk constrói uma SQL
-    /// dinâmica multi-row, prepara, binda e executa.
-    async fn execute_bulk_upsert(&self, batch: RecordBatch) -> Result<(), NexusError> {
-        let num_rows = batch.num_rows();
-        if num_rows == 0 {
-            return Ok(());
-        }
-
-        let num_cols = batch.num_columns();
-        if num_rows == 1 {
-            // Caminho rápido: uma única linha usa a statement já preparada.
-            return self.execute_prepared(&self.upsert_statement, batch).await;
-        }
-
-        let max_rows = max_rows_per_upsert(num_cols).max(1);
-
-        let schema = batch.schema();
-        let columns: Vec<_> = (0..num_cols).map(|i| batch.column(i).clone()).collect();
-        let mut connection = self.connection.clone();
-        let table = self.table.clone();
-        let primary_key = self.primary_key.clone();
-        let column_names = self.columns.clone();
-        let timeout_seconds = self.timeout_seconds;
-
-        with_timeout(timeout_seconds, "postgres bulk upsert", async {
-            tokio::task::spawn_blocking(move || -> Result<(), NexusError> {
-                let mut offset = 0usize;
-                while offset < num_rows {
-                    let end = (offset + max_rows).min(num_rows);
-                    let chunk_len = end - offset;
-
-                    let chunk_columns: Vec<_> = columns
-                        .iter()
-                        .map(|col| col.slice(offset, chunk_len))
-                        .collect();
-                    let chunk_batch = RecordBatch::try_new(schema.clone(), chunk_columns)
-                        .map_err(|e| NexusError::Connector(format!("chunk batch failed: {e}")))?;
-
-                    let sql = build_upsert_sql(&table, &primary_key, &column_names, chunk_len)?;
-
-                    let mut statement = connection
-                        .new_statement()
-                        .map_err(|e| NexusError::Connector(e.to_string()))?;
-                    statement
-                        .set_sql_query(&sql)
-                        .map_err(|e| NexusError::Connector(e.to_string()))?;
-                    statement
-                        .prepare()
-                        .map_err(|e| NexusError::Connector(e.to_string()))?;
-                    statement
-                        .bind(chunk_batch)
-                        .map_err(|e| NexusError::Connector(e.to_string()))?;
-                    statement
-                        .execute_update()
-                        .map_err(|e| NexusError::Connector(e.to_string()))?;
-
-                    offset = end;
-                }
-                Ok(())
-            })
-            .await
-            .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))?
-        })
-        .await
-    }
 }
 
 #[async_trait]
@@ -350,15 +236,14 @@ impl Sink for PostgresSink {
     async fn write_batch(&mut self, batch: RecordBatch) -> Result<(), NexusError> {
         // CDC batches carry an `__opcode` column (ARCHITECTURE.md §5) — split
         // it so deletes are issued as real `DELETE`s instead of being
-        // silently upserted. Plain (non-CDC) batches take the bulk upsert
-        // path.
+        // silently upserted. Plain (non-CDC) batches take the unchanged
+        // single upsert path.
         match split_by_opcode(&batch)? {
-            None => self.execute_bulk_upsert(batch).await,
+            None => self.execute_prepared(&self.upsert_statement, batch).await,
             Some(split) => {
                 if split.upserts.num_rows() > 0 {
-                    // CDC upserts normalmente são micro-batches; bulk ainda
-                    // funciona e permanece idempotente.
-                    self.execute_bulk_upsert(split.upserts).await?;
+                    self.execute_prepared(&self.upsert_statement, split.upserts)
+                        .await?;
                 }
                 if split.deletes.num_rows() > 0 {
                     let keys = project_column(&split.deletes, &self.primary_key)?;
@@ -412,7 +297,6 @@ mod tests {
             "events",
             "id",
             &["id".to_string(), "name".to_string(), "score".to_string()],
-            1,
         )
         .unwrap();
 
@@ -421,29 +305,6 @@ mod tests {
             "INSERT INTO \"events\" (\"id\", \"name\", \"score\") VALUES ($1, $2, $3) \
              ON CONFLICT (\"id\") DO UPDATE SET \"name\" = EXCLUDED.\"name\", \"score\" = EXCLUDED.\"score\""
         );
-    }
-
-    #[test]
-    fn upsert_sql_builds_bulk_values() {
-        let sql = build_upsert_sql(
-            "events",
-            "id",
-            &["id".to_string(), "name".to_string()],
-            3,
-        )
-        .unwrap();
-
-        assert_eq!(
-            sql,
-            "INSERT INTO \"events\" (\"id\", \"name\") VALUES ($1, $2), ($3, $4), ($5, $6) \
-             ON CONFLICT (\"id\") DO UPDATE SET \"name\" = EXCLUDED.\"name\""
-        );
-    }
-
-    #[test]
-    fn upsert_sql_with_zero_columns_fails() {
-        let err = build_upsert_sql("events", "id", &[], 1).expect_err("zero columns must fail");
-        assert!(matches!(err, NexusError::Schema(_)));
     }
 
     #[test]
@@ -461,13 +322,8 @@ mod tests {
 
     #[test]
     fn rejects_sql_injection_in_table_name() {
-        let err = build_upsert_sql(
-            "events\"; DROP TABLE users; --",
-            "id",
-            &["id".to_string()],
-            1,
-        )
-        .expect_err("malicious table name must be rejected");
+        let err = build_upsert_sql("events\"; DROP TABLE users; --", "id", &["id".to_string()])
+            .expect_err("malicious table name must be rejected");
         assert!(matches!(err, NexusError::Schema(_)));
     }
 
@@ -477,16 +333,8 @@ mod tests {
             "events",
             "id",
             &["id".to_string(), "score); DROP TABLE users; --".to_string()],
-            1,
         )
         .expect_err("malicious column name must be rejected");
         assert!(matches!(err, NexusError::Schema(_)));
-    }
-
-    #[test]
-    fn max_rows_per_upsert_respects_param_limit() {
-        assert_eq!(max_rows_per_upsert(1), MAX_PARAMS_PER_QUERY);
-        assert_eq!(max_rows_per_upsert(3), MAX_PARAMS_PER_QUERY / 3);
-        assert_eq!(max_rows_per_upsert(0), 0);
     }
 }
