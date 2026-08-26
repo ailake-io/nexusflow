@@ -64,6 +64,15 @@ connectors-all = [
     "ailake", "csv", "clickhouse", "embeddings", "embeddings-api",
     "postgres-cdc", "mysql-cdc", "deltalake-cdc", "iceberg-cdc", "ailake-cdc",
 ]
+# Same as connectors-all but without the heavy ONNX/embedding dependencies.
+# Useful for Docker images that only need the data connectors, not the local
+# embedding pipeline stage.
+connectors-all-no-embeddings = [
+    "mongodb", "mysql", "kafka", "mqtt", "rest", "odbc", "milvus", "qdrant", "lancedb",
+    "pgvector", "pinecone", "chromadb", "deltalake", "iceberg", "parquet",
+    "ailake", "csv", "clickhouse",
+    "postgres-cdc", "mysql-cdc", "deltalake-cdc", "iceberg-cdc", "ailake-cdc",
+]
 # Native logical-replication CDC for the always-linked "postgres" connector
 # — forwards to that crate's own `cdc` feature (ARCHITECTURE.md §7), which
 # is what actually gates its heavier pg_walstream/rustls-tls dependency.
