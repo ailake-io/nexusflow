@@ -7472,6 +7472,8 @@ dependencies = [
  "adbc_core",
  "adbc_driver_manager",
  "arrow-array 58.4.0",
+ "arrow-buffer 58.4.0",
+ "arrow-cast 58.4.0",
  "arrow-schema 58.4.0",
  "async-trait",
  "futures",

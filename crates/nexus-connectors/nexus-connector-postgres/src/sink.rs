@@ -2,13 +2,15 @@ use crate::config::PostgresConnectorConfig;
 use crate::driver::open_connection;
 use adbc_core::{Connection as _, Statement as _};
 use adbc_driver_manager::ManagedStatement;
-use arrow_array::RecordBatch;
-use arrow_schema::{DataType, SchemaRef};
+use arrow_array::{Array, ListArray, RecordBatch, StringArray};
+use arrow_cast::cast;
+use arrow_schema::{DataType, Field, SchemaRef};
 use async_trait::async_trait;
 use nexus_core::quote_identifier;
 use nexus_core::{
     project_column, split_by_opcode, with_timeout, CheckpointCursor, NexusError, Sink,
 };
+use std::sync::Arc;
 
 pub struct PostgresSink {
     upsert_statement: ManagedStatement,
@@ -40,8 +42,6 @@ impl PostgresSink {
                     move || -> Result<_, NexusError> {
                         let mut connection = open_connection(&uri)?;
 
-                        // CREATE TABLE IF NOT EXISTS, depois prepara as
-                        // statements fixas usadas para upserts e deletes.
                         let mut statement = connection
                             .new_statement()
                             .map_err(|e| NexusError::Connector(e.to_string()))?;
@@ -110,11 +110,6 @@ fn arrow_type_to_postgres(data_type: &DataType) -> &'static str {
         DataType::Date32 | DataType::Date64 => "DATE",
         DataType::Timestamp(_, _) => "TIMESTAMP",
         DataType::Decimal128(precision, scale) | DataType::Decimal256(precision, scale) => {
-            // Can't format a dynamic "NUMERIC(p,s)" through this fn's
-            // `&'static str` return type — the 3 precision/scale
-            // combinations that matter in practice for the connector's own
-            // supported types don't need one; anything else still gets a
-            // safe, lossless NUMERIC via the catch-all below.
             let _ = (precision, scale);
             "NUMERIC"
         }
@@ -155,15 +150,12 @@ fn build_create_table_sql(
     ))
 }
 
-/// `INSERT ... ON CONFLICT (pk) DO UPDATE` — the idempotency contract every
-/// Sink must satisfy (ARCHITECTURE.md §5: checkpointing guarantees
-/// at-least-once, so retried batches must not duplicate rows).
-///
-/// `table`, `primary_key` and every entry in `columns` come from the pipeline
-/// spec (attacker-controlled request body) and get spliced into SQL text —
-/// ADBC's `bind` only covers row *values*, not identifiers. Every one of them
-/// is validated and quoted via `quote_identifier` before that happens; this
-/// is the only place allowed to build the upsert SQL.
+/// `INSERT ... ON CONFLICT (pk) DO UPDATE` using `UNNEST` so a single
+/// prepared statement can ingest an arbitrary number of rows per batch.
+/// ADBC binds each parameter as a PostgreSQL array; `UNNEST` turns those
+/// arrays back into rows. All values are sent as `text[]` and Postgres
+/// coerces them to the target column types on insert, matching the
+/// "never lose the value" fallback posture.
 fn build_upsert_sql(
     table: &str,
     primary_key: &str,
@@ -171,13 +163,13 @@ fn build_upsert_sql(
 ) -> Result<String, NexusError> {
     let quoted_table = quote_identifier(table)?;
     let quoted_primary_key = quote_identifier(primary_key)?;
-    let quoted_columns = columns
+    let quoted_columns: Vec<_> = columns
         .iter()
         .map(|c| quote_identifier(c))
         .collect::<Result<Vec<_>, _>>()?;
 
-    let placeholders: Vec<String> = (1..=quoted_columns.len())
-        .map(|i| format!("${i}"))
+    let unnest_args: Vec<String> = (1..=columns.len())
+        .map(|i| format!("${i}::text[]"))
         .collect();
     let updates: Vec<String> = columns
         .iter()
@@ -187,9 +179,9 @@ fn build_upsert_sql(
         .collect();
 
     Ok(format!(
-        "INSERT INTO {quoted_table} ({cols}) VALUES ({vals}) ON CONFLICT ({quoted_primary_key}) DO UPDATE SET {upd}",
+        "INSERT INTO {quoted_table} ({cols}) SELECT * FROM UNNEST({args}) ON CONFLICT ({quoted_primary_key}) DO UPDATE SET {upd}",
         cols = quoted_columns.join(", "),
-        vals = placeholders.join(", "),
+        args = unnest_args.join(", "),
         upd = updates.join(", "),
     ))
 }
@@ -202,19 +194,61 @@ fn build_delete_sql(table: &str, primary_key: &str) -> Result<String, NexusError
     ))
 }
 
+/// Converts any Arrow array into a single-element `ListArray<StringArray>`,
+/// where the list contains every original value formatted as text. Used to
+/// build parameters for `INSERT ... SELECT * FROM UNNEST($1::text[], ...)`.
+fn array_to_text_list(arr: &Arc<dyn Array>) -> Result<Arc<dyn Array>, NexusError> {
+    let string_arr = cast(arr.as_ref(), &DataType::Utf8)
+        .map_err(|e| NexusError::Connector(format!("cast to utf8 failed: {e}")))?;
+    let string_arr = string_arr
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("cast to Utf8 returns StringArray");
+
+    let item_field = Arc::new(Field::new("item", DataType::Utf8, true));
+    let offsets = arrow_buffer::OffsetBuffer::from_lengths([string_arr.len()]);
+    let list_arr = ListArray::new(item_field, offsets, Arc::new(string_arr.clone()), None);
+    Ok(Arc::new(list_arr))
+}
+
 impl PostgresSink {
-    /// Executa a statement preparada usando uma cópia da statement.
-    /// ADBC itera sobre as linhas do `RecordBatch` e executa a statement
-    /// uma vez por linha, mantendo a idempotência do upsert.
-    async fn execute_prepared(
-        &self,
-        statement: &ManagedStatement,
-        batch: RecordBatch,
-    ) -> Result<(), NexusError> {
-        let mut statement = statement.clone();
+    /// Executes the prepared UNNEST upsert with a batch whose columns have
+    /// been converted to single-element text lists.
+    async fn execute_upsert(&self, batch: RecordBatch) -> Result<(), NexusError> {
+        if batch.num_rows() == 0 {
+            return Ok(());
+        }
+
+        let mut statement = self.upsert_statement.clone();
         let timeout_seconds = self.timeout_seconds;
 
-        with_timeout(timeout_seconds, "postgres execute", async {
+        with_timeout(timeout_seconds, "postgres upsert", async {
+            tokio::task::spawn_blocking(move || -> Result<(), NexusError> {
+                statement
+                    .bind(batch)
+                    .map_err(|e| NexusError::Connector(e.to_string()))?;
+                statement
+                    .execute_update()
+                    .map_err(|e| NexusError::Connector(e.to_string()))?;
+                Ok(())
+            })
+            .await
+            .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))?
+        })
+        .await
+    }
+
+    /// Executes the prepared single-row delete statement. ACDC delete batches
+    /// are normally small, so row-by-row execution is fine.
+    async fn execute_delete(&self, batch: RecordBatch) -> Result<(), NexusError> {
+        if batch.num_rows() == 0 {
+            return Ok(());
+        }
+
+        let mut statement = self.delete_statement.clone();
+        let timeout_seconds = self.timeout_seconds;
+
+        with_timeout(timeout_seconds, "postgres delete", async {
             tokio::task::spawn_blocking(move || -> Result<(), NexusError> {
                 statement
                     .bind(batch)
@@ -236,18 +270,40 @@ impl Sink for PostgresSink {
     async fn write_batch(&mut self, batch: RecordBatch) -> Result<(), NexusError> {
         // CDC batches carry an `__opcode` column (ARCHITECTURE.md §5) — split
         // it so deletes are issued as real `DELETE`s instead of being
-        // silently upserted. Plain (non-CDC) batches take the unchanged
-        // single upsert path.
+        // silently upserted. Plain (non-CDC) batches take the UNNEST bulk
+        // upsert path.
         match split_by_opcode(&batch)? {
-            None => self.execute_prepared(&self.upsert_statement, batch).await,
+            None => {
+                let list_columns: Result<Vec<_>, _> = batch
+                    .columns()
+                    .iter()
+                    .map(|col| array_to_text_list(col))
+                    .collect();
+                let upsert_batch = RecordBatch::try_new(
+                    batch.schema().clone(),
+                    list_columns?,
+                )
+                .map_err(|e| NexusError::Connector(format!("upsert batch rebuild failed: {e}")))?;
+                self.execute_upsert(upsert_batch).await
+            }
             Some(split) => {
                 if split.upserts.num_rows() > 0 {
-                    self.execute_prepared(&self.upsert_statement, split.upserts)
-                        .await?;
+                    let list_columns: Result<Vec<_>, _> = split
+                        .upserts
+                        .columns()
+                        .iter()
+                        .map(|col| array_to_text_list(col))
+                        .collect();
+                    let upsert_batch = RecordBatch::try_new(
+                        split.upserts.schema().clone(),
+                        list_columns?,
+                    )
+                    .map_err(|e| NexusError::Connector(format!("cdc upsert batch rebuild failed: {e}")))?;
+                    self.execute_upsert(upsert_batch).await?;
                 }
                 if split.deletes.num_rows() > 0 {
                     let keys = project_column(&split.deletes, &self.primary_key)?;
-                    self.execute_prepared(&self.delete_statement, keys).await?;
+                    self.execute_delete(keys).await?;
                 }
                 Ok(())
             }
@@ -255,9 +311,6 @@ impl Sink for PostgresSink {
     }
 
     async fn commit_checkpoint(&mut self, _cursor: CheckpointCursor) -> Result<(), NexusError> {
-        // Persisting the cursor is nexus-server's job (SQLite checkpoint
-        // store) — see IMPLEMENTATION_PLAN.md Marco 1. The connector's only
-        // idempotency obligation is the upsert above.
         Ok(())
     }
 }
@@ -265,6 +318,7 @@ impl Sink for PostgresSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow_array::Int64Array;
     use arrow_schema::{Field, Schema};
     use std::sync::Arc;
 
@@ -292,7 +346,7 @@ mod tests {
     }
 
     #[test]
-    fn upsert_sql_updates_every_column_except_the_primary_key() {
+    fn upsert_sql_uses_unnest_with_text_arrays() {
         let sql = build_upsert_sql(
             "events",
             "id",
@@ -302,7 +356,7 @@ mod tests {
 
         assert_eq!(
             sql,
-            "INSERT INTO \"events\" (\"id\", \"name\", \"score\") VALUES ($1, $2, $3) \
+            "INSERT INTO \"events\" (\"id\", \"name\", \"score\") SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[]) \
              ON CONFLICT (\"id\") DO UPDATE SET \"name\" = EXCLUDED.\"name\", \"score\" = EXCLUDED.\"score\""
         );
     }
@@ -336,5 +390,17 @@ mod tests {
         )
         .expect_err("malicious column name must be rejected");
         assert!(matches!(err, NexusError::Schema(_)));
+    }
+
+    #[test]
+    fn array_to_text_list_builds_single_element_list() {
+        let arr = Arc::new(Int64Array::from(vec![1, 2, 3])) as Arc<dyn Array>;
+        let list = array_to_text_list(&arr).unwrap();
+        let list = list
+            .as_any()
+            .downcast_ref::<ListArray>()
+            .expect("returns ListArray");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list.value_length(0), 3);
     }
 }
