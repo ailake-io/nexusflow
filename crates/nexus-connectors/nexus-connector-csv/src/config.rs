@@ -97,7 +97,7 @@ pub struct CsvConnectorConfig {
     #[serde(default)]
     pub primary_key: Option<String>,
     /// How many rows to fold into a single `RecordBatch` while scanning.
-    /// Defaults to `1000`.
+    /// Defaults to `50000`.
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
     /// Extra key/value options forwarded to `object_store`'s cloud builders.
@@ -243,7 +243,7 @@ fn default_has_header() -> bool {
 }
 
 fn default_batch_size() -> usize {
-    1000
+    50000
 }
 
 fn default_timeout_seconds() -> u64 {
