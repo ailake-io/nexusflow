@@ -1,6 +1,6 @@
 use crate::config::DeltaCdcConfig;
 use crate::rows::delta_schema_to_arrow;
-use arrow_array::{Array, RecordBatch, StringArray};
+use arrow_array::{Array, RecordBatch, StringArray, UInt64Array};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use arrow_select::filter::filter_record_batch;
 use async_trait::async_trait;
@@ -11,7 +11,7 @@ use deltalake::open_table;
 use deltalake::table::builder::ensure_table_uri;
 use futures::stream::{self, BoxStream};
 use nexus_core::{with_timeout, NexusError, Source, OPCODE_COLUMN};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Native CDC source for Delta Lake's built-in Change Data Feed (no
 /// Debezium/Kafka, no polling loop of our own — `DeltaOps::load_cdf` does
@@ -25,6 +25,10 @@ pub struct DeltaCdcSource {
     starting_version: u64,
     schema: SchemaRef,
     timeout_seconds: u64,
+    /// Updated by `read_batches` with the highest `_commit_version` seen —
+    /// `Source::position_handle`'s backing storage, used by the runner to
+    /// persist the resume cursor in `CheckpointCursor.resume_state`.
+    position: Arc<Mutex<Option<String>>>,
 }
 
 impl DeltaCdcSource {
@@ -53,6 +57,7 @@ impl DeltaCdcSource {
             starting_version: config.starting_version.unwrap_or(0),
             schema: Arc::new(Schema::new(fields)),
             timeout_seconds: config.timeout_seconds,
+            position: Arc::new(Mutex::new(None)),
         })
     }
 }
@@ -115,9 +120,28 @@ impl Source for DeltaCdcSource {
 
         let target_schema = self.schema.clone();
         let mut batches = Vec::with_capacity(cdf_batches.len());
+        let mut max_commit_version: Option<u64> = None;
         for batch in cdf_batches {
+            if let Ok(version_col) = batch.schema().index_of(COMMIT_VERSION_COL) {
+                if let Some(versions) = batch
+                    .column(version_col)
+                    .as_any()
+                    .downcast_ref::<UInt64Array>()
+                {
+                    for i in 0..versions.len() {
+                        let v = versions.value(i);
+                        max_commit_version = Some(max_commit_version.map_or(v, |m| m.max(v)));
+                    }
+                }
+            }
             if let Some(mapped) = remap_cdf_batch(&batch, &target_schema)? {
                 batches.push(mapped);
+            }
+        }
+
+        if let Some(version) = max_commit_version {
+            if let Ok(mut pos) = self.position.lock() {
+                *pos = Some(version.to_string());
             }
         }
 
@@ -126,6 +150,10 @@ impl Source for DeltaCdcSource {
 
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
+    }
+
+    fn position_handle(&self) -> Option<Arc<Mutex<Option<String>>>> {
+        Some(self.position.clone())
     }
 }
 

@@ -10,7 +10,7 @@ use iceberg::table::Table;
 use iceberg::{Catalog, NamespaceIdent, TableIdent};
 use nexus_core::{with_timeout, NexusError, Source, OPCODE_COLUMN};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Native CDC source for Iceberg — manual manifest diffing (`iceberg`
 /// 0.10.0 has no built-in incremental/CDC scan, unlike Delta's Change Data
@@ -20,6 +20,10 @@ use std::sync::Arc;
 pub struct IcebergCdcSource {
     cfg: IcebergCdcConfig,
     schema: SchemaRef,
+    /// Updated by `read_batches` with the newest snapshot id seen —
+    /// `Source::position_handle`'s backing storage, used by the runner to
+    /// persist the resume cursor in `CheckpointCursor.resume_state`.
+    position: Arc<Mutex<Option<String>>>,
 }
 
 impl IcebergCdcSource {
@@ -38,6 +42,7 @@ impl IcebergCdcSource {
         Ok(Self {
             cfg: cfg.clone(),
             schema: Arc::new(Schema::new(fields)),
+            position: Arc::new(Mutex::new(None)),
         })
     }
 }
@@ -74,6 +79,7 @@ impl From<IcebergCdcConfigAsBatch<'_>> for crate::config::IcebergConnectorConfig
             storage_options: cfg.storage_options.clone(),
             format_version: Default::default(),
             primary_key: None,
+            append_only: false,
             timeout_seconds: cfg.timeout_seconds,
         }
     }
@@ -109,6 +115,10 @@ impl Source for IcebergCdcSource {
 
         let mut batches = Vec::new();
         for snapshot in &snapshots {
+            if let Ok(mut pos) = self.position.lock() {
+                *pos = Some(snapshot.snapshot_id().to_string());
+            }
+
             let manifest_list = with_timeout(
                 self.cfg.timeout_seconds,
                 "iceberg-cdc load manifest list",
@@ -193,6 +203,10 @@ impl Source for IcebergCdcSource {
 
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
+    }
+
+    fn position_handle(&self) -> Option<Arc<Mutex<Option<String>>>> {
+        Some(self.position.clone())
     }
 }
 

@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use futures::stream::{self, BoxStream};
 use nexus_core::{with_timeout, NexusError, Source, OPCODE_COLUMN};
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Native CDC source for AI-Lake — see `AilakeCdcConfig`'s doc comment for
 /// why this one supports the full `I`/`U`/`D` set (unlike `iceberg-cdc`).
@@ -28,6 +28,10 @@ pub struct AilakeCdcSource {
     starting_snapshot_id: Option<i64>,
     schema: SchemaRef,
     timeout_seconds: u64,
+    /// Updated by `read_batches` with the current snapshot id after each
+    /// poll — `Source::position_handle`'s backing storage, used by the
+    /// runner to persist the resume cursor in `CheckpointCursor.resume_state`.
+    position: Arc<Mutex<Option<String>>>,
 }
 
 impl AilakeCdcSource {
@@ -85,6 +89,7 @@ impl AilakeCdcSource {
                 starting_snapshot_id: cfg.starting_snapshot_id,
                 schema: Arc::new(Schema::new(fields)),
                 timeout_seconds: cfg.timeout_seconds,
+                position: Arc::new(Mutex::new(None)),
             })
         })
         .await
@@ -312,10 +317,20 @@ impl Source for AilakeCdcSource {
             }
         }
 
+        if let Some(current_id) = current_id {
+            if let Ok(mut pos) = self.position.lock() {
+                *pos = Some(current_id.to_string());
+            }
+        }
+
         Ok(Box::pin(stream::iter(batches.into_iter().map(Ok))))
     }
 
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
+    }
+
+    fn position_handle(&self) -> Option<Arc<Mutex<Option<String>>>> {
+        Some(self.position.clone())
     }
 }

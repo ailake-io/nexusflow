@@ -458,6 +458,22 @@ async fn inject_cdc_resume_state(
                         node.config["start_scn"] = serde_json::Value::from(scn);
                     }
                 }
+                // deltalake-cdc reports the highest `_commit_version` read
+                // as a decimal string; the connector expects `starting_version`
+                // as u64.
+                "deltalake-cdc" => {
+                    if let Ok(version) = resume_state.parse::<u64>() {
+                        node.config["starting_version"] = serde_json::Value::from(version);
+                    }
+                }
+                // iceberg-cdc / ailake-cdc report the newest snapshot id read
+                // as a decimal string; the connectors expect `starting_snapshot_id`
+                // as i64.
+                "iceberg-cdc" | "ailake-cdc" => {
+                    if let Ok(snapshot_id) = resume_state.parse::<i64>() {
+                        node.config["starting_snapshot_id"] = serde_json::Value::from(snapshot_id);
+                    }
+                }
                 // Any other *-cdc connector either manages its own
                 // server-side resume (postgres-cdc) or doesn't implement
                 // `position_handle` yet (no resume_state would ever be
