@@ -149,31 +149,59 @@ impl SqliteSink {
     async fn execute(&self, sql: &str, batch: RecordBatch) -> Result<(), NexusError> {
         let mut connection = self.connection.clone();
         let sql = sql.to_string();
+        let timeout_seconds = self.timeout_seconds;
 
-        with_timeout(self.timeout_seconds, "sqlite execute", async {
+        with_timeout(timeout_seconds, "sqlite execute", async {
             tokio::task::spawn_blocking(move || -> Result<(), NexusError> {
-                let mut statement = connection
-                    .new_statement()
-                    .map_err(|e| NexusError::Connector(e.to_string()))?;
-                statement
-                    .set_sql_query(&sql)
-                    .map_err(|e| NexusError::Connector(e.to_string()))?;
-                statement
-                    .prepare()
-                    .map_err(|e| NexusError::Connector(e.to_string()))?;
-                statement
-                    .bind(batch)
-                    .map_err(|e| NexusError::Connector(e.to_string()))?;
-                statement
-                    .execute_update()
-                    .map_err(|e| NexusError::Connector(e.to_string()))?;
-                Ok(())
+                // Wrap the batch in a transaction so SQLite does not fsync
+                // after every row. This is the dominant cost for row-by-row
+                // ADBC execution on this sink.
+                Self::execute_sql(&mut connection, "BEGIN")?;
+                let result = (|| -> Result<(), NexusError> {
+                    let mut statement = connection
+                        .new_statement()
+                        .map_err(|e| NexusError::Connector(e.to_string()))?;
+                    statement
+                        .set_sql_query(&sql)
+                        .map_err(|e| NexusError::Connector(e.to_string()))?;
+                    statement
+                        .prepare()
+                        .map_err(|e| NexusError::Connector(e.to_string()))?;
+                    statement
+                        .bind(batch)
+                        .map_err(|e| NexusError::Connector(e.to_string()))?;
+                    statement
+                        .execute_update()
+                        .map_err(|e| NexusError::Connector(e.to_string()))?;
+                    Ok(())
+                })();
+                match result {
+                    Ok(()) => Self::execute_sql(&mut connection, "COMMIT"),
+                    Err(e) => {
+                        let _ = Self::execute_sql(&mut connection, "ROLLBACK");
+                        Err(e)
+                    }
+                }
             })
             .await
             .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))?
         })
-        .await?;
+        .await
+    }
 
+    fn execute_sql(
+        connection: &mut ManagedConnection,
+        sql: &str,
+    ) -> Result<(), NexusError> {
+        let mut statement = connection
+            .new_statement()
+            .map_err(|e| NexusError::Connector(e.to_string()))?;
+        statement
+            .set_sql_query(sql)
+            .map_err(|e| NexusError::Connector(e.to_string()))?;
+        statement
+            .execute_update()
+            .map_err(|e| NexusError::Connector(format!("sqlite {sql} failed: {e}")))?;
         Ok(())
     }
 }
