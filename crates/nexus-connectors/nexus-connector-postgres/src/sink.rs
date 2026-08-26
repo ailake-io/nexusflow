@@ -52,9 +52,7 @@ impl PostgresSink {
                             .execute_update()
                             .map_err(|e| NexusError::Connector(format!("create table failed: {e}")))?;
 
-                        let columns: Vec<String> =
-                            schema.fields().iter().map(|f| f.name().clone()).collect();
-                        let upsert_sql = build_upsert_sql(&table, &primary_key, &columns)?;
+                        let upsert_sql = build_upsert_sql(&table, &primary_key, &schema)?;
                         let delete_sql = build_delete_sql(&table, &primary_key)?;
 
                         let mut upsert_statement = connection
@@ -152,36 +150,48 @@ fn build_create_table_sql(
 
 /// `INSERT ... ON CONFLICT (pk) DO UPDATE` using `UNNEST` so a single
 /// prepared statement can ingest an arbitrary number of rows per batch.
-/// ADBC binds each parameter as a PostgreSQL array; `UNNEST` turns those
-/// arrays back into rows. All values are sent as `text[]` and Postgres
-/// coerces them to the target column types on insert, matching the
-/// "never lose the value" fallback posture.
+/// ADBC binds each parameter as a PostgreSQL `text[]`; `UNNEST` turns those
+/// arrays back into rows, and each selected column is explicitly cast to the
+/// target PostgreSQL type so the insert/coerce step succeeds for numeric,
+/// boolean and temporal columns.
 fn build_upsert_sql(
     table: &str,
     primary_key: &str,
-    columns: &[String],
+    schema: &SchemaRef,
 ) -> Result<String, NexusError> {
     let quoted_table = quote_identifier(table)?;
     let quoted_primary_key = quote_identifier(primary_key)?;
+    let columns: Vec<_> = schema.fields().iter().collect();
     let quoted_columns: Vec<_> = columns
         .iter()
-        .map(|c| quote_identifier(c))
+        .map(|f| quote_identifier(f.name()))
         .collect::<Result<Vec<_>, _>>()?;
 
     let unnest_args: Vec<String> = (1..=columns.len())
         .map(|i| format!("${i}::text[]"))
         .collect();
+
+    let casts: Vec<String> = columns
+        .iter()
+        .zip(quoted_columns.iter())
+        .map(|(f, quoted)| {
+            let pg_type = arrow_type_to_postgres(f.data_type());
+            format!("{quoted}::{pg_type}")
+        })
+        .collect();
+
     let updates: Vec<String> = columns
         .iter()
         .zip(quoted_columns.iter())
-        .filter(|(raw, _)| raw.as_str() != primary_key)
+        .filter(|(f, _)| f.name().as_str() != primary_key)
         .map(|(_, quoted)| format!("{quoted} = EXCLUDED.{quoted}"))
         .collect();
 
     Ok(format!(
-        "INSERT INTO {quoted_table} ({cols}) SELECT * FROM UNNEST({args}) ON CONFLICT ({quoted_primary_key}) DO UPDATE SET {upd}",
+        "INSERT INTO {quoted_table} ({cols}) SELECT {casts} FROM UNNEST({args}) AS t({cols}) ON CONFLICT ({quoted_primary_key}) DO UPDATE SET {upd}",
         cols = quoted_columns.join(", "),
         args = unnest_args.join(", "),
+        casts = casts.join(", "),
         upd = updates.join(", "),
     ))
 }
@@ -359,16 +369,18 @@ mod tests {
 
     #[test]
     fn upsert_sql_uses_unnest_with_text_arrays() {
-        let sql = build_upsert_sql(
-            "events",
-            "id",
-            &["id".to_string(), "name".to_string(), "score".to_string()],
-        )
-        .unwrap();
+        let schema: SchemaRef = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, true),
+            Field::new("score", DataType::Float64, true),
+        ]));
+        let sql = build_upsert_sql("events", "id", &schema).unwrap();
 
         assert_eq!(
             sql,
-            "INSERT INTO \"events\" (\"id\", \"name\", \"score\") SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[]) \
+            "INSERT INTO \"events\" (\"id\", \"name\", \"score\") \
+             SELECT \"id\"::BIGINT, \"name\"::TEXT, \"score\"::DOUBLE PRECISION \
+             FROM UNNEST($1::text[], $2::text[], $3::text[]) AS t(\"id\", \"name\", \"score\") \
              ON CONFLICT (\"id\") DO UPDATE SET \"name\" = EXCLUDED.\"name\", \"score\" = EXCLUDED.\"score\""
         );
     }
@@ -388,19 +400,20 @@ mod tests {
 
     #[test]
     fn rejects_sql_injection_in_table_name() {
-        let err = build_upsert_sql("events\"; DROP TABLE users; --", "id", &["id".to_string()])
+        let schema: SchemaRef = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let err = build_upsert_sql("events\"; DROP TABLE users; --", "id", &schema)
             .expect_err("malicious table name must be rejected");
         assert!(matches!(err, NexusError::Schema(_)));
     }
 
     #[test]
     fn rejects_sql_injection_in_column_name() {
-        let err = build_upsert_sql(
-            "events",
-            "id",
-            &["id".to_string(), "score); DROP TABLE users; --".to_string()],
-        )
-        .expect_err("malicious column name must be rejected");
+        let schema: SchemaRef = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("score); DROP TABLE users; --", DataType::Float64, true),
+        ]));
+        let err = build_upsert_sql("events", "id", &schema)
+            .expect_err("malicious column name must be rejected");
         assert!(matches!(err, NexusError::Schema(_)));
     }
 
