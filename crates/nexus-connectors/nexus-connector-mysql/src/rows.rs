@@ -6,6 +6,7 @@
 
 use crate::config::{MySqlCdcDataType, MySqlCdcFieldSpec};
 use arrow_array::{Array, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray};
+use arrow_schema::SchemaRef;
 use mysql_async::{Row, Value as MySqlValue};
 use nexus_core::NexusError;
 use serde_json::Value as JsonValue;
@@ -15,7 +16,7 @@ use serde_json::Value as JsonValue;
 /// default. `validate_identifier` still rejects anything that isn't a plain
 /// `[A-Za-z_][A-Za-z0-9_]*` up to 128 bytes, so there's nothing to escape
 /// inside the backticks — this only wraps.
-fn quote_ident(name: &str) -> Result<String, NexusError> {
+pub(crate) fn quote_ident(name: &str) -> Result<String, NexusError> {
     nexus_core::validate_identifier(name).map(|valid| format!("`{valid}`"))
 }
 
@@ -62,6 +63,73 @@ pub fn build_upsert_sql(
         "INSERT INTO {table} ({columns_sql}) VALUES ({placeholders}) \
          ON DUPLICATE KEY UPDATE {updates_sql}"
     ))
+}
+
+/// `INSERT INTO table (...) VALUES (?, ?), (?, ?), ... ON DUPLICATE KEY UPDATE
+/// col = VALUES(col), ...` — multi-row version for bulk loading. Each row's
+/// placeholders are appended in `fields` order, and the parameter vector is
+/// flattened accordingly.
+pub fn build_multi_upsert_sql(
+    table: &str,
+    primary_key: &str,
+    fields: &[MySqlCdcFieldSpec],
+    rows_per_stmt: usize,
+) -> Result<String, NexusError> {
+    let table = quote_ident(table)?;
+    let mut columns = Vec::with_capacity(fields.len());
+    let mut updates = Vec::with_capacity(fields.len());
+    for f in fields {
+        let quoted = quote_ident(&f.name)?;
+        columns.push(quoted.clone());
+        if f.name != primary_key {
+            updates.push(format!("{quoted} = VALUES({quoted})"));
+        }
+    }
+    let row_placeholder = format!("({})", vec!["?"; fields.len()].join(", "));
+    let placeholders = vec![row_placeholder.as_str(); rows_per_stmt].join(", ");
+    let columns_sql = columns.join(", ");
+    let updates_sql = updates.join(", ");
+    Ok(format!(
+        "INSERT INTO {table} ({columns_sql}) VALUES {placeholders} \
+         ON DUPLICATE KEY UPDATE {updates_sql}"
+    ))
+}
+
+/// Arrow type -> MySQL column type for sink-side DDL. Anything outside the
+/// four supported primitives narrows to the closest safe type.
+pub(crate) fn arrow_type_to_mysql(data_type: &arrow_schema::DataType) -> MySqlCdcDataType {
+    match data_type {
+        arrow_schema::DataType::Int8
+        | arrow_schema::DataType::Int16
+        | arrow_schema::DataType::Int32
+        | arrow_schema::DataType::Int64
+        | arrow_schema::DataType::UInt8
+        | arrow_schema::DataType::UInt16
+        | arrow_schema::DataType::UInt32
+        | arrow_schema::DataType::UInt64 => MySqlCdcDataType::Int64,
+        arrow_schema::DataType::Float16
+        | arrow_schema::DataType::Float32
+        | arrow_schema::DataType::Float64
+        | arrow_schema::DataType::Decimal128(_, _)
+        | arrow_schema::DataType::Decimal256(_, _) => MySqlCdcDataType::Float64,
+        arrow_schema::DataType::Boolean => MySqlCdcDataType::Boolean,
+        _ => MySqlCdcDataType::Utf8,
+    }
+}
+
+/// Converts an Arrow schema into the MySQL field spec list used by the sink.
+/// Keeps the sink working when the user leaves `fields` empty (common for
+/// passthrough pipelines from CSV/Parquet/Postgres).
+pub(crate) fn schema_to_fields(schema: &SchemaRef) -> Vec<MySqlCdcFieldSpec> {
+    schema
+        .fields()
+        .iter()
+        .map(|f| MySqlCdcFieldSpec {
+            name: f.name().clone(),
+            data_type: arrow_type_to_mysql(f.data_type()),
+            nullable: f.is_nullable(),
+        })
+        .collect()
 }
 
 /// Arrow-ceiling type -> MySQL column type. `tinyint(1)` is the MySQL
@@ -177,6 +245,20 @@ pub fn batch_to_upsert_params(
                 .collect()
         })
         .collect()
+}
+
+/// Multi-row `INSERT ... VALUES (...), (...), ...` parameters, flattened and
+/// split into chunks of `chunk_size` rows. The last chunk may be smaller.
+pub fn batch_to_multi_upsert_params(
+    batch: &RecordBatch,
+    fields: &[MySqlCdcFieldSpec],
+    chunk_size: usize,
+) -> Result<Vec<Vec<MySqlValue>>, NexusError> {
+    let per_row = batch_to_upsert_params(batch, fields)?;
+    Ok(per_row
+        .chunks(chunk_size.max(1))
+        .map(|chunk| chunk.iter().flatten().cloned().collect())
+        .collect())
 }
 
 /// One row's worth of `exec_batch` parameters for the `DELETE ... WHERE pk =

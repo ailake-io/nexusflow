@@ -110,7 +110,10 @@ async fn sink_upsert_is_idempotent_on_replay() {
     )
     .unwrap();
 
-    let mut sink = MySqlSink::connect(&config).await.expect("sink connects");
+    let schema = std::sync::Arc::new(schema);
+    let mut sink = MySqlSink::connect(&config, &schema)
+        .await
+        .expect("sink connects");
     // Write the same batch twice — replay after a crash must not duplicate
     // or fail on the primary-key conflict.
     sink.write_batch(batch.clone()).await.expect("first write");
@@ -177,7 +180,10 @@ async fn sink_deletes_rows_carrying_the_d_opcode() {
     )
     .unwrap();
 
-    let mut sink = MySqlSink::connect(&config).await.expect("sink connects");
+    let schema = std::sync::Arc::new(schema);
+    let mut sink = MySqlSink::connect(&config, &schema)
+        .await
+        .expect("sink connects");
     sink.write_batch(batch).await.expect("cdc write");
 
     let remaining: Vec<(i64, String)> = setup_conn
