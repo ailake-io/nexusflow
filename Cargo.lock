@@ -7775,6 +7775,7 @@ dependencies = [
  "arrow-array 58.4.0",
  "arrow-schema 58.4.0",
  "async-trait",
+ "futures",
  "nexus-ai",
  "nexus-core",
  "reqwest 0.12.28",

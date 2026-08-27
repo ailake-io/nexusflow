@@ -50,32 +50,20 @@ impl ClickHouseConnectorConfig {
     /// Returns the connection URI to hand to the ADBC driver.
     ///
     /// If a legacy `uri` is present it is returned unchanged; otherwise an
-    /// `http://` URI is built from the individual fields. Credentials go in
-    /// the URI's userinfo component — ClickHouse's HTTP interface supports
-    /// this natively (`http://user:password@host:8123/`), same mechanism
-    /// documented at https://clickhouse.com/docs/interfaces/http.
+    /// `http://` URI is built from `host` and `port` only. The database name is
+    /// intentionally omitted from the path because the ClickHouse ADBC driver's
+    /// underlying Rust HTTP client does not accept a database path component;
+    /// credentials are passed as separate ADBC options.
     pub fn connection_string(&self) -> String {
         if let Some(uri) = self.uri.as_deref().filter(|s| !s.is_empty()) {
             return uri.to_string();
         }
 
-        if self.username.is_empty() {
-            format!(
-                "http://{}:{}/{}",
-                percent_encode(&self.host),
-                self.port,
-                percent_encode(&self.database)
-            )
-        } else {
-            format!(
-                "http://{}:{}@{}:{}/{}",
-                percent_encode(&self.username),
-                percent_encode(&self.password),
-                percent_encode(&self.host),
-                self.port,
-                percent_encode(&self.database)
-            )
-        }
+        format!(
+            "http://{}:{}/",
+            percent_encode(&self.host),
+            self.port
+        )
     }
 }
 
@@ -142,26 +130,23 @@ mod tests {
     fn connection_string_falls_back_to_fields_when_uri_is_empty_string() {
         let mut cfg = base_cfg();
         cfg.uri = Some(String::new());
-        assert_eq!(cfg.connection_string(), "http://localhost:8123/default");
+        assert_eq!(cfg.connection_string(), "http://localhost:8123/");
     }
 
     #[test]
     fn connection_string_omits_userinfo_when_username_is_empty() {
         let cfg = base_cfg();
-        assert_eq!(cfg.connection_string(), "http://localhost:8123/default");
+        assert_eq!(cfg.connection_string(), "http://localhost:8123/");
     }
 
     #[test]
-    fn connection_string_includes_userinfo_when_username_is_set() {
+    fn connection_string_uses_host_and_port_only() {
         let mut cfg = base_cfg();
         cfg.username = "nexus".to_string();
         cfg.password = "s3cr@t".to_string();
         cfg.host = "ch.example.com".to_string();
         cfg.port = 8443;
         cfg.database = "analytics".to_string();
-        assert_eq!(
-            cfg.connection_string(),
-            "http://nexus:s3cr%40t@ch.example.com:8443/analytics"
-        );
+        assert_eq!(cfg.connection_string(), "http://ch.example.com:8443/");
     }
 }

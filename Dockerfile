@@ -41,6 +41,14 @@ COPY scripts/build-adbc-postgresql-driver.sh scripts/build-adbc-sqlite-driver.sh
 RUN scripts/build-adbc-postgresql-driver.sh /out \
  && scripts/build-adbc-sqlite-driver.sh /out
 
+FROM rust:1-slim-trixie@sha256:8e8cf8f7fd54a2d23d5a743b3a03f56e26b6c774276c33fa0595111704ebb15c AS clickhouse-adbc
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git ca-certificates pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY scripts/build-adbc-clickhouse-driver.sh scripts/
+RUN scripts/build-adbc-clickhouse-driver.sh /out
+
 FROM rust:1-slim-trixie@sha256:8e8cf8f7fd54a2d23d5a743b3a03f56e26b6c774276c33fa0595111704ebb15c AS builder
 ARG FEATURES
 # Trixie gives us glibc/libstdc++ new enough to link the prebuilt ONNX
@@ -91,6 +99,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=builder /tmp/nexusflow-bin /usr/lib/nexusflow/nexusflow-bin
 COPY --from=adbc /out/libadbc_driver_postgresql.so /out/libadbc_driver_sqlite.so /usr/lib/nexusflow/
+COPY --from=clickhouse-adbc /out/libadbc_clickhouse.so /usr/lib/nexusflow/
 COPY packaging/linux/nexusflow-wrapper.sh /usr/bin/nexusflow
 RUN chmod +x /usr/bin/nexusflow \
     && chown -R nexusflow:nexusflow /usr/lib/nexusflow

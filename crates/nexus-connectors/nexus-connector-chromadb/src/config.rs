@@ -67,6 +67,14 @@ pub struct ChromaConnectorConfig {
     /// ChromaDB would otherwise block the pipeline indefinitely (C15).
     #[serde(default = "default_timeout_seconds")]
     pub timeout_seconds: u64,
+
+    /// Maximum concurrent ChromaDB upsert/delete requests issued per batch.
+    ///
+    /// ChromaDB's REST API handles small sequential chunks slowly on large
+    /// loads; parallelizing chunk submission while capping concurrency avoids
+    /// overwhelming the server. Defaults to 8.
+    #[serde(default = "default_max_concurrent_requests")]
+    pub max_concurrent_requests: usize,
 }
 
 fn default_tenant() -> String {
@@ -79,6 +87,10 @@ fn default_database() -> String {
 
 fn default_timeout_seconds() -> u64 {
     30
+}
+
+fn default_max_concurrent_requests() -> usize {
+    8
 }
 
 impl ChromaConnectorConfig {
@@ -135,6 +147,7 @@ mod tests {
             embedding_column: "embedding".to_string(),
             dimension: 384,
             timeout_seconds: default_timeout_seconds(),
+            max_concurrent_requests: default_max_concurrent_requests(),
         };
         assert_eq!(cfg.base_url(), "http://localhost:8000");
     }
@@ -152,6 +165,7 @@ mod tests {
             embedding_column: "embedding".to_string(),
             dimension: 384,
             timeout_seconds: default_timeout_seconds(),
+            max_concurrent_requests: default_max_concurrent_requests(),
         };
         assert_eq!(cfg.base_url(), "http://chromadb.internal:9000");
     }
@@ -169,6 +183,7 @@ mod tests {
             embedding_column: "embedding".to_string(),
             dimension: 384,
             timeout_seconds: default_timeout_seconds(),
+            max_concurrent_requests: default_max_concurrent_requests(),
         };
         assert_eq!(cfg.base_url(), "http://localhost:8000");
     }
@@ -186,6 +201,7 @@ mod tests {
             embedding_column: "embedding".to_string(),
             dimension: 384,
             timeout_seconds: default_timeout_seconds(),
+            max_concurrent_requests: default_max_concurrent_requests(),
         };
         assert_eq!(cfg.base_url(), "https://chroma.example.com");
     }
@@ -203,6 +219,7 @@ mod tests {
             embedding_column: "embedding".to_string(),
             dimension: 384,
             timeout_seconds: default_timeout_seconds(),
+            max_concurrent_requests: default_max_concurrent_requests(),
         };
         assert_eq!(
             cfg.authorization_header(),
@@ -223,6 +240,7 @@ mod tests {
             embedding_column: "embedding".to_string(),
             dimension: 384,
             timeout_seconds: default_timeout_seconds(),
+            max_concurrent_requests: default_max_concurrent_requests(),
         };
         assert_eq!(cfg.tenant(), "my_tenant");
         assert_eq!(cfg.database(), "my_database");

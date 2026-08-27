@@ -8,6 +8,7 @@ license.workspace = true
 arrow-array = "58.4.0"
 arrow-schema = "58.4.0"
 async-trait = "0.1.91"
+futures = "0.3.31"
 nexus-core = { version = "0.1.0", path = "../../nexus-core" }
 reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1.0.229", features = ["derive"] }
