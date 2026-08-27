@@ -53,18 +53,26 @@ As correções para ChromaDB e ClickHouse já estão em andamento (commits no br
   - Adicionada config `max_concurrent_requests` (default 8).
   - Chunks de upsert/delete agora são submetidos com `buffer_unordered`.
   - CDC split entre upserts e deletes preservado.
-- Resultado esperado: redução de ~46 s para ~6–10 s para 100 k (dependendo do ChromaDB).
+- Resultado observado: a paralelização interna de chunks manteve o tempo próximo do original (~44 s) porque cada batch do pipeline já tem ~1.020 registros (apenas ~2 chunks de 1.000). O ganho real virá de:
+  - Aumentar `CHROMA_CHUNK_SIZE` e/ou acumular múltiplos batches antes de enviar.
+  - Ajustar o batch size do source ou o pipeline engine para reduzir o número de batches.
 
-### 2. ClickHouse — inclusão do driver ADBC na imagem Docker
+### 2. ClickHouse — inclusão do driver ADBC na imagem Docker + correção de autenticação
 
 - Arquivos alterados:
   - `scripts/build-adbc-clickhouse-driver.sh` (novo)
   - `Dockerfile`
+  - `crates/nexus-connectors/nexus-connector-clickhouse/src/driver.rs`
+  - `crates/nexus-connectors/nexus-connector-clickhouse/src/config.rs`
+  - `crates/nexus-connectors/nexus-connector-clickhouse/src/source.rs`
+  - `crates/nexus-connectors/nexus-connector-clickhouse/src/sink.rs`
   - `scratchpad/nexusflow-compose/docker-compose.yml`
 - O que mudou:
   - Nova stage `clickhouse-adbc` no Dockerfile compilando `libadbc_clickhouse.so`.
   - Driver copiado para `/usr/lib/nexusflow/`.
   - Env `ADBC_DRIVER_CLICKHOUSE_PATH` apontando para a biblioteca no compose.
+  - URI sem database no path (o driver não aceita path component).
+  - Username/password passados como opções ADBC separadas em vez de userinfo na URI.
 - Resultado esperado: CSV ↔ ClickHouse passa a funcionar.
 
 ---
