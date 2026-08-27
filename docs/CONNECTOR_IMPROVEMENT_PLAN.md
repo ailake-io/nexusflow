@@ -170,10 +170,10 @@ Os conectores do repositório `nexus-connectors-enterprise` foram inspecionados 
 | Vector / Search | **Azure AI Search** | Sim | Subscription Azure + serviço Azure AI Search + api key | ❌ Não |
 | Vector / Search | **Vertex Vector Search** | Sim | Projeto GCP + service account + índice criado | ❌ Não |
 | Data warehouse | **Snowflake** | Sim | Trial Snowflake (30 dias) + warehouse/database/schema + auth password ou key-pair | ❌ Não |
-| Data warehouse | **BigQuery** | Sim | Projeto GCP + service account JSON + dataset/table | ❌ Não |
-| Data warehouse | **Redshift** | Sim | AWS account + cluster Redshift + usuário/senha | ❌ Não |
+| Data warehouse | **BigQuery** | Sim | Projeto GCP + service account JSON + dataset/table | ✅ Sim — `ghcr.io/goccy/bigquery-emulator` ou `gcr.io/cloud-devrel-public-resources/bigquery-emulator` |
+| Data warehouse | **Redshift** | Sim | AWS account + cluster Redshift + usuário/senha | ✅ Sim — LocalStack Pro (suporta Redshift via `localstack/localstack`) |
 | Data warehouse | **Databricks** | Sim | Workspace Databricks + personal access token + cluster SQL warehouse | ❌ Não |
-| Data warehouse | **Starburst** | Sim | Galaxy Starburst ou cluster Trino/Presto + usuário/senha | ⚠️ Pode usar Trino/Presto local como substituto de API similar |
+| Data warehouse | **Starburst** | Sim | Galaxy Starburst ou cluster Trino/Presto + usuário/senha | ✅ Sim — container `trinodb/trino` local (API compatível) |
 | Bancos enterprise | **MSSQL** | Não (container) | Container Docker `mcr.microsoft.com/mssql/server` + banco + tabela | ✅ Sim — roda local |
 | Bancos enterprise | **Oracle** | Não (container) | Container Docker `gvenzl/oracle-free` ou `gvenzl/oracle-xe` + tabela | ✅ Sim — roda local |
 | Bancos enterprise | **HANA** | Sim | Imagem SAP HANA Express (requer registro SAP) ou instância cloud | ⚠️ Imagem Docker disponível com registro SAP |
@@ -187,7 +187,7 @@ Os conectores do repositório `nexus-connectors-enterprise` foram inspecionados 
 | SaaS / APIs | **TikTok Ads** | Sim | Conta TikTok for Business + access token + advertiser ID | ❌ Não |
 | SaaS / APIs | **X Ads** | Sim | Conta X Developer + app OAuth + access token | ❌ Não |
 | SaaS / APIs | **YouTube Analytics** | Sim | Canal YouTube + projeto GCP OAuth | ❌ Não |
-| Streaming | **Kinesis** | Sim | AWS account + stream Kinesis + credenciais IAM | ❌ Não |
+| Streaming | **Kinesis** | Sim | AWS account + stream Kinesis + credenciais IAM | ✅ Sim — LocalStack `localstack/localstack` com Kinesis + credenciais dummy |
 | Streaming | **Pulsar** | Não (self-hosted) | Container Docker `apachepulsar/pulsar` standalone + topic | ✅ Sim — roda local |
 | File | **Excel** | Não | Arquivo `.xlsx` local ou em storage S3/GCS/Azure compatível | ✅ Sim — arquivo local |
 
@@ -199,6 +199,10 @@ Os conectores do repositório `nexus-connectors-enterprise` foram inspecionados 
 - **Oracle** — container Docker (`gvenzl/oracle-free`).
 - **Pulsar** — container Docker standalone.
 - **Excel** — arquivo local.
+- **BigQuery** — emulator Docker (`ghcr.io/goccy/bigquery-emulator`).
+- **Redshift** — LocalStack Pro com serviço Redshift.
+- **Kinesis** — LocalStack com serviço Kinesis.
+- **Starburst** — Trino local (`trinodb/trino`).
 
 ### Conectores que precisam de trial/conta (prioridade para testes)
 
