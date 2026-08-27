@@ -26,14 +26,14 @@ As correções para ChromaDB e ClickHouse já estão em andamento (commits no br
 | MySQL → CSV | csv | ✅ sucesso | ~5 s |  |
 | MongoDB → CSV | csv | ✅ sucesso | ~5 s |  |
 | Parquet → Qdrant | qdrant | ✅ sucesso | ~1,5 s | Upsert em batch único |
-| Parquet → ChromaDB | chromadb | ✅ sucesso | ~46 s | **Lento: chunks sequenciais** |
+| Parquet → ChromaDB | chromadb | ✅ sucesso | ~60 s | 98 batches; ganho real exige aumentar chunk/batch size |
 | Parquet → PGVector | pgvector | ✅ sucesso | ~2,5 s | COPY/batch |
 | REST → CSV | rest | ✅ sucesso | ~1 s |  |
 | CSV → Webhook | webhook | ✅ sucesso | ~1 s |  |
 | Kafka → CSV | kafka | ✅ sucesso | ~9 s | Depois de recriar broker com RF=1 |
 | MQTT → CSV | mqtt | ✅ sucesso | ~21 s | Publicação durante o run |
-| CSV → ClickHouse | clickhouse | ❌ falha | — | Driver ADBC não presente na imagem |
-| ClickHouse → CSV | clickhouse | ❌ falha | — | Driver ADBC não presente na imagem |
+| CSV → ClickHouse | clickhouse | ✅ sucesso | < 1 s | Driver ADBC incluído; qualified table corrigido |
+| ClickHouse → CSV | clickhouse | ✅ sucesso | ~2 s | Driver ADBC incluído; qualified table corrigido |
 | CSV → Delta Lake | deltalake | ✅ sucesso | — | Já com CDC/batch buffer |
 | CSV → Iceberg | iceberg | ✅ sucesso | — | Já com CDC/batch buffer |
 | Parquet → AI-Lake | ailake | ✅ sucesso | — | Já com CDC/batch buffer |
@@ -74,6 +74,24 @@ As correções para ChromaDB e ClickHouse já estão em andamento (commits no br
   - URI sem database no path (o driver não aceita path component).
   - Username/password passados como opções ADBC separadas em vez de userinfo na URI.
 - Resultado esperado: CSV ↔ ClickHouse passa a funcionar.
+- Resultado observado: CSV → ClickHouse 100 k em < 1 s; ClickHouse → CSV 100 k em ~2 s.
+
+### 3. ClickHouse — qualified table
+
+- Arquivos alterados:
+  - `crates/nexus-connectors/nexus-connector-clickhouse/src/sink.rs`
+  - `crates/nexus-connectors/nexus-connector-clickhouse/src/source.rs`
+- O que mudou:
+  - Todas as queries passam a usar `"database"."tabela"` qualificado.
+  - O driver ADBC do ClickHouse não suporta `current_schema`/default database via opções de conexão, então sem isso as queries caíam no database `default`.
+
+---
+
+## Teste de regressão 1 M CSV → Postgres
+
+| Direção | Conector | Status | Tempo | Observação |
+|---|---|---|---|---|
+| CSV → Postgres | postgres | ✅ sucesso | ~3 s | 1 000 000 linhas, 20 batches; sem regressão dos 71 min |
 
 ---
 
