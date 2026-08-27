@@ -67,6 +67,7 @@ async fn cdc_source_replays_inserts_and_deletes_from_change_data_feed() {
         primary_key: "id".to_string(),
         append_only: false,
         timeout_seconds: 30,
+        flush_threshold_rows: 50_000,
     };
     let mut sink = DeltaSink::connect(&batch_cfg).expect("sink connects");
 

@@ -81,6 +81,7 @@ impl From<IcebergCdcConfigAsBatch<'_>> for crate::config::IcebergConnectorConfig
             primary_key: None,
             append_only: false,
             timeout_seconds: cfg.timeout_seconds,
+            flush_threshold_rows: crate::config::default_flush_threshold_rows(),
         }
     }
 }

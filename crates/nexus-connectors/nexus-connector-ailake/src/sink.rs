@@ -11,16 +11,24 @@ use ailake_store::local::LocalStore;
 use ailake_store::store::Store;
 use arrow_array::RecordBatch;
 use async_trait::async_trait;
-use nexus_core::{split_by_opcode, with_timeout, CheckpointCursor, NexusError, Sink};
+use nexus_core::{
+    batch_buffer::RecordBatchBuffer, split_by_opcode, with_timeout, CheckpointCursor, NexusError,
+    Sink,
+};
 use std::sync::Arc;
+
+/// Default byte threshold for the buffered writer. 32 MiB keeps memory bounded
+/// while still amortizing create-or-open/write/commit cycles across many rows.
+const FLUSH_THRESHOLD_BYTES: usize = 32 * 1024 * 1024;
 
 /// AI-Lake sink — writes into the self-contained Parquet+HNSW vector-native
 /// Lakehouse format (github.com/ailake-io/ai-lakehouse). Backed by
 /// `HadoopCatalog` + `LocalStore`: no server/container, `warehouse` is a
 /// plain local directory (same embedded shape as the Marco 5 LanceDB sink).
-/// One `TableWriter` session (create-or-open, write, commit) per
-/// `write_batch` call — AI-Lake has no long-lived write-session API to
-/// stream across calls the way `Sink::write_batch` is invoked.
+///
+/// Plain (non-CDC) batches are buffered and flushed only when the row or byte
+/// threshold is reached, or at `commit_checkpoint`. This reduces the number of
+/// create-or-open/write/commit cycles for large historical loads.
 pub struct AilakeSink {
     catalog: Arc<dyn CatalogProvider>,
     store: Arc<dyn Store>,
@@ -30,6 +38,7 @@ pub struct AilakeSink {
     embedding_column: String,
     append_only: bool,
     timeout_seconds: u64,
+    buffer: RecordBatchBuffer,
 }
 
 const FORMAT_VERSION: u8 = 2;
@@ -58,10 +67,11 @@ impl AilakeSink {
             embedding_column: cfg.embedding_column.clone(),
             append_only: cfg.append_only,
             timeout_seconds: cfg.timeout_seconds,
+            buffer: RecordBatchBuffer::new(cfg.flush_threshold_rows, FLUSH_THRESHOLD_BYTES),
         })
     }
 
-    async fn upsert(&self, batch: RecordBatch) -> Result<(), NexusError> {
+    async fn write_buffered_upsert(&self, batch: RecordBatch) -> Result<(), NexusError> {
         if batch.num_rows() == 0 {
             return Ok(());
         }
@@ -74,18 +84,11 @@ impl AilakeSink {
         // freshly-appended rows always carry a higher sequence number than
         // this delete and are therefore never masked by it, while any prior
         // row sharing the same key (necessarily an even earlier commit) is.
-        // Safe to run even when no prior row exists for these keys yet — an
-        // equality delete for a value with no current match is a no-op today
-        // and, by the same sequence-number rule, can never retroactively mask
-        // a future row that reuses the key.
         //
         // Exception: the table itself may not exist yet (this sink's very
         // first write). `delete_where` unconditionally loads the table's
-        // metadata.json and errors if it's missing — nothing to be created
-        // by it (unlike `TableWriter::create_or_open` below) — so skip the
-        // delete entirely in that case; there is nothing to mask anyway.
-        // Also skipped in append-only mode to avoid the extra equality-delete
-        // commit and scan for large non-CDC loads.
+        // metadata.json and errors if it's missing — skip the delete entirely
+        // in that case. Also skipped in append-only mode.
         if !self.append_only && self.catalog.load_table(&self.table).await.is_ok() {
             self.delete(&batch).await?;
         }
@@ -119,6 +122,17 @@ impl AilakeSink {
         .await
     }
 
+    async fn flush_buffer(&mut self) -> Result<(), NexusError> {
+        if let Some(batch) = self
+            .buffer
+            .take()
+            .map_err(|e| NexusError::Serialization(format!("ailake batch concat failed: {e}")))?
+        {
+            self.write_buffered_upsert(batch).await?;
+        }
+        Ok(())
+    }
+
     async fn delete(&self, batch: &RecordBatch) -> Result<(), NexusError> {
         if batch.num_rows() == 0 {
             return Ok(());
@@ -146,12 +160,23 @@ impl Sink for AilakeSink {
     async fn write_batch(&mut self, batch: RecordBatch) -> Result<(), NexusError> {
         // CDC batches carry an `__opcode` column (ARCHITECTURE.md §5) — split
         // it so deletes are issued as real Iceberg equality deletes instead
-        // of being silently appended. Plain (non-CDC) batches take the
-        // unchanged single-append path.
+        // of being silently appended. CDC traffic is applied immediately to
+        // preserve ordering between upserts and deletes; plain historical
+        // loads are buffered and flushed in larger chunks.
         match split_by_opcode(&batch)? {
-            None => self.upsert(batch).await,
+            None => {
+                if let Some(flushed) = self
+                    .buffer
+                    .push(batch)
+                    .map_err(|e| NexusError::Serialization(format!("ailake batch concat failed: {e}")))?
+                {
+                    self.write_buffered_upsert(flushed).await?;
+                }
+                Ok(())
+            }
             Some(split) => {
-                self.upsert(split.upserts).await?;
+                self.flush_buffer().await?;
+                self.write_buffered_upsert(split.upserts).await?;
                 self.delete(&split.deletes).await?;
                 Ok(())
             }
@@ -159,6 +184,6 @@ impl Sink for AilakeSink {
     }
 
     async fn commit_checkpoint(&mut self, _cursor: CheckpointCursor) -> Result<(), NexusError> {
-        Ok(())
+        self.flush_buffer().await
     }
 }

@@ -17,10 +17,17 @@ use iceberg::writer::file_writer::rolling_writer::RollingFileWriterBuilder;
 use iceberg::writer::file_writer::ParquetWriterBuilder;
 use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
 use iceberg::{Catalog, NamespaceIdent, TableCreation, TableIdent};
-use nexus_core::{split_by_opcode, with_timeout, CheckpointCursor, NexusError, Sink};
+use nexus_core::{
+    batch_buffer::RecordBatchBuffer, split_by_opcode, with_timeout, CheckpointCursor, NexusError,
+    Sink,
+};
 use parquet::file::properties::WriterProperties;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Default byte threshold for the buffered writer. 32 MiB keeps memory bounded
+/// while still amortizing catalog commits across many rows.
+const FLUSH_THRESHOLD_BYTES: usize = 32 * 1024 * 1024;
 
 /// Iceberg sink (Marco 6 — `iceberg` crate + `iceberg-catalog-sql`).
 /// Append-only: `iceberg` 0.10.0/0.10.1's `Transaction` API only exposes
@@ -34,6 +41,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// path — either equality-delete files (MoR) or filtered data-file rewrites
 /// (CoW). Until then, delete batches are rejected explicitly instead of being
 /// silently dropped.
+///
+/// Plain (non-CDC) batches are buffered and flushed only when the row or byte
+/// threshold is reached, or at `commit_checkpoint`. This reduces the number of
+/// Iceberg transactions and the frequency of the expensive dedup scan.
 pub struct IcebergSink {
     cfg: IcebergConnectorConfig,
     // `DefaultFileNameGenerator`'s per-file counter starts at 0 for every
@@ -42,6 +53,7 @@ pub struct IcebergSink {
     // two calls would both try to write "data-00000.parquet" and the
     // second commit would fail ("files already referenced by table").
     write_counter: AtomicU64,
+    buffer: RecordBatchBuffer,
 }
 
 impl IcebergSink {
@@ -49,6 +61,7 @@ impl IcebergSink {
         Ok(Self {
             cfg: cfg.clone(),
             write_counter: AtomicU64::new(0),
+            buffer: RecordBatchBuffer::new(cfg.flush_threshold_rows, FLUSH_THRESHOLD_BYTES),
         })
     }
 
@@ -179,6 +192,17 @@ impl IcebergSink {
         Ok(())
     }
 
+    async fn flush_buffer(&mut self) -> Result<(), NexusError> {
+        if let Some(batch) = self
+            .buffer
+            .take()
+            .map_err(|e| NexusError::Serialization(format!("iceberg batch concat failed: {e}")))?
+        {
+            self.append(batch).await?;
+        }
+        Ok(())
+    }
+
     /// When `primary_key` is configured, drop rows whose key already exists in
     /// the current table snapshot. This makes Iceberg appends idempotent and
     /// prevents duplicate lines on retry/resume (A01).
@@ -186,7 +210,7 @@ impl IcebergSink {
     /// **Cost:** scans the entire current snapshot on every write call, so it
     /// trades memory/CPU for idempotency. For very large tables prefer a
     /// dedicated merge-on-read pipeline once iceberg-rust exposes equality
-    /// deletes.
+    /// deletes, or use `append_only: true` for large historical loads.
     async fn dedup_against_existing(
         &self,
         table: &iceberg::table::Table,
@@ -197,10 +221,11 @@ impl IcebergSink {
             Some(name) => name,
         };
 
-        let scan =
-            table.scan().select_all().build().map_err(|e| {
-                NexusError::Connector(format!("iceberg dedup scan build failed: {e}"))
-            })?;
+        let scan = table
+            .scan()
+            .select_all()
+            .build()
+            .map_err(|e| NexusError::Connector(format!("iceberg dedup scan build failed: {e}")))?;
         let stream = with_timeout(
             self.cfg.timeout_seconds,
             "iceberg dedup scan to_arrow",
@@ -233,8 +258,18 @@ impl IcebergSink {
 impl Sink for IcebergSink {
     async fn write_batch(&mut self, batch: RecordBatch) -> Result<(), NexusError> {
         match split_by_opcode(&batch)? {
-            None => self.append(batch).await,
+            None => {
+                if let Some(flushed) = self
+                    .buffer
+                    .push(batch)
+                    .map_err(|e| NexusError::Serialization(format!("iceberg batch concat failed: {e}")))?
+                {
+                    self.append(flushed).await?;
+                }
+                Ok(())
+            }
             Some(split) => {
+                self.flush_buffer().await?;
                 if split.deletes.num_rows() > 0 {
                     return Err(NexusError::Connector(
                         "iceberg sink: CDC deletes are not supported — iceberg-rust 0.10.0's \
@@ -248,7 +283,7 @@ impl Sink for IcebergSink {
     }
 
     async fn commit_checkpoint(&mut self, _cursor: CheckpointCursor) -> Result<(), NexusError> {
-        Ok(())
+        self.flush_buffer().await
     }
 }
 

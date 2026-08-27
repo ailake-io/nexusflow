@@ -82,6 +82,7 @@ async fn text_chunk_embed_ailake_end_to_end() {
         storage_options: nexus_connector_ailake::AilakeStorageOptions::default(),
         append_only: false,
         timeout_seconds: 30,
+        flush_threshold_rows: 50_000,
     };
     let mut sink = AilakeSink::connect(&sink_cfg).expect("sink connects");
     sink.write_batch(batch).await.expect("writes batch");
@@ -197,6 +198,7 @@ async fn upsert_replaces_prior_row_instead_of_duplicating_it() {
         storage_options: nexus_connector_ailake::AilakeStorageOptions::default(),
         append_only: false,
         timeout_seconds: 30,
+        flush_threshold_rows: 50_000,
     };
     let mut sink = AilakeSink::connect(&cfg).expect("sink connects");
 
