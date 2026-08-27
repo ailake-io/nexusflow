@@ -72,7 +72,7 @@ pub fn split_into_partitions(min: i64, max: i64, n: u32) -> Vec<PartitionRange> 
 
 pub struct ClickHouseSource {
     connection: ManagedConnection,
-    table: String,
+    qualified_table: String,
     partition_column: Option<String>,
     range: Option<PartitionRange>,
     schema: SchemaRef,
@@ -94,6 +94,7 @@ impl ClickHouseSource {
         let password = cfg.password.clone();
         let table = cfg.table.clone();
         let database = cfg.database.clone();
+        let qualified_table = crate::sink::qualified_table_name(&database, &table)?;
         let (connection, schema) = with_timeout(cfg.timeout_seconds, "clickhouse connect", async {
             tokio::task::spawn_blocking(
                 move || -> Result<(ManagedConnection, arrow_schema::Schema), NexusError> {
@@ -117,7 +118,7 @@ impl ClickHouseSource {
 
         Ok(Self {
             connection,
-            table: cfg.table.clone(),
+            qualified_table,
             partition_column: cfg.partition_column.clone(),
             range,
             schema: Arc::new(schema),
@@ -126,7 +127,7 @@ impl ClickHouseSource {
     }
 
     fn build_query(&self) -> Result<String, NexusError> {
-        build_select_query(&self.table, self.partition_column.as_deref(), self.range)
+        build_select_query(&self.qualified_table, self.partition_column.as_deref(), self.range)
     }
 }
 
@@ -135,26 +136,25 @@ impl ClickHouseSource {
 /// and quoted here — this is the only place allowed to splice them into SQL
 /// text.
 fn build_select_query(
-    table: &str,
+    qualified_table: &str,
     partition_column: Option<&str>,
     range: Option<PartitionRange>,
 ) -> Result<String, NexusError> {
-    let table = quote_identifier(table)?;
     Ok(match (partition_column, range) {
         (Some(column), Some(range)) => {
             let column = quote_identifier(column)?;
             match range.upper_exclusive {
                 Some(upper) => format!(
-                    "SELECT * FROM {table} WHERE {column} >= {} AND {column} < {upper}",
+                    "SELECT * FROM {qualified_table} WHERE {column} >= {} AND {column} < {upper}",
                     range.lower_inclusive
                 ),
                 None => format!(
-                    "SELECT * FROM {table} WHERE {column} >= {}",
+                    "SELECT * FROM {qualified_table} WHERE {column} >= {}",
                     range.lower_inclusive
                 ),
             }
         }
-        _ => format!("SELECT * FROM {table}"),
+        _ => format!("SELECT * FROM {qualified_table}"),
     })
 }
 

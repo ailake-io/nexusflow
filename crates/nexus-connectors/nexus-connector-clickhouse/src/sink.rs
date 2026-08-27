@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 pub struct ClickHouseSink {
     connection: ManagedConnection,
-    table: String,
+    qualified_table: String,
     columns: Vec<String>,
     timeout_seconds: u64,
 }
@@ -35,24 +35,32 @@ impl ClickHouseSink {
         .await?;
         Ok(Self {
             connection,
-            table: cfg.table.clone(),
+            qualified_table: qualified_table_name(&cfg.database, &cfg.table)?,
             columns: columns.to_vec(),
             timeout_seconds: cfg.timeout_seconds,
         })
     }
 }
 
+/// Builds a `database.table` identifier, quoting each part. The ClickHouse ADBC
+/// driver does not support setting the default database via connection options,
+/// so every query must use a fully qualified table name.
+pub(crate) fn qualified_table_name(database: &str, table: &str) -> Result<String, NexusError> {
+    let quoted_database = quote_identifier(database)?;
+    let quoted_table = quote_identifier(table)?;
+    Ok(format!("{quoted_database}.{quoted_table}"))
+}
+
 /// Builds the `INSERT INTO table (cols)` prefix. The full statement appends a
 /// multi-row `VALUES (...), (...), ...` clause built per batch.
 fn build_insert_prefix(table: &str, columns: &[String]) -> Result<String, NexusError> {
-    let quoted_table = quote_identifier(table)?;
     let quoted_columns = columns
         .iter()
         .map(|c| quote_identifier(c))
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(format!(
-        "INSERT INTO {quoted_table} ({cols}) VALUES ",
+        "INSERT INTO {table} ({cols}) VALUES ",
         cols = quoted_columns.join(", ")
     ))
 }
@@ -144,7 +152,7 @@ impl ClickHouseSink {
             return Ok(());
         }
 
-        let prefix = build_insert_prefix(&self.table, &self.columns)?;
+        let prefix = build_insert_prefix(&self.qualified_table, &self.columns)?;
         let sql = build_insert_sql(&prefix, &batch, &self.columns)?;
         if sql.is_empty() {
             return Ok(());
@@ -212,8 +220,16 @@ mod tests {
 
     #[test]
     fn insert_prefix_lists_columns() {
-        let prefix = build_insert_prefix("events", &["id".to_string(), "name".to_string()]).unwrap();
-        assert_eq!(prefix, "INSERT INTO \"events\" (\"id\", \"name\") VALUES ");
+        let prefix = build_insert_prefix("\"db\".\"events\"", &["id".to_string(), "name".to_string()]).unwrap();
+        assert_eq!(prefix, "INSERT INTO \"db\".\"events\" (\"id\", \"name\") VALUES ");
+    }
+
+    #[test]
+    fn qualified_table_name_quotes_database_and_table() {
+        assert_eq!(
+            qualified_table_name("nexus_test", "events").unwrap(),
+            "\"nexus_test\".\"events\""
+        );
     }
 
     #[test]
@@ -236,8 +252,8 @@ mod tests {
     }
 
     #[test]
-    fn rejects_sql_injection_in_table_name() {
-        let err = build_insert_prefix("events\"; DROP TABLE users; --", &["id".to_string()])
+    fn rejects_sql_injection_in_qualified_table_name() {
+        let err = qualified_table_name("nexus_test", "events\"; DROP TABLE users; --")
             .expect_err("malicious table name must be rejected");
         assert!(matches!(err, NexusError::Schema(_)));
     }
