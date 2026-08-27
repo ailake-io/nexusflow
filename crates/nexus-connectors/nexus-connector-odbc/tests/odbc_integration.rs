@@ -8,6 +8,8 @@
 //! and data round-trip. This is intentionally a local, self-contained test
 //! that needs no network credentials.
 
+#![cfg(feature = "legacy")]
+
 use arrow_array::{Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use futures::StreamExt;
