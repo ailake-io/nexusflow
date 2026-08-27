@@ -1,4 +1,6 @@
 /target
+*.db
+.tmp-analysis/
 
 # nexus-connectors is a nested workspace (crate-per-connector, see
 # ARCHITECTURE.md §3). Its Cargo.lock is now tracked so the CI drift check
