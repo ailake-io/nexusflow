@@ -15,6 +15,14 @@ use nexus_core::{with_timeout, CheckpointCursor, NexusError, Opcode, Sink, OPCOD
 /// replace_one/delete_one loop and removes the per-row network latency as the
 /// dominant bottleneck.
 const WRITE_CONCURRENCY: usize = 32;
+/// Max operations per `bulk_write` call. MongoDB accepts up to 100k, but
+/// splitting into smaller chunks keeps memory bounded and avoids huge
+/// server-side sort/buffer costs that can stall a large batch.
+const BULK_WRITE_CHUNK_SIZE: usize = 1000;
+/// Plain inserts are much cheaper than upserts, so we can use larger chunks.
+/// `ordered(false)` lets the server continue on duplicate-key errors and
+/// removes the per-document acknowledgement latency of ordered inserts.
+const INSERT_MANY_CHUNK_SIZE: usize = 5000;
 
 /// Idempotent by construction: every row is a `replace_one` upsert keyed on
 /// `primary_key`, matching the `Sink` contract in ARCHITECTURE.md §5
@@ -157,6 +165,31 @@ impl Sink for MongoSink {
             ops.push((opcodes[i], key_bson, document));
         }
 
+        // Fast path for plain (non-CDC) batches: `insert_many` is orders of
+        // magnitude faster than `replace_one` upserts because it skips the
+        // index probe and conflict resolution for every document.
+        let is_plain_insert = ops.iter().all(|(opcode, _, _)| opcode.is_none());
+
+        if is_plain_insert {
+            let collection: Collection<Document> = self
+                .client
+                .database(&namespace.db)
+                .collection(&namespace.coll);
+            let docs: Vec<Document> = ops.into_iter().map(|(_, _, doc)| doc).collect();
+            for chunk in docs.chunks(INSERT_MANY_CHUNK_SIZE) {
+                let chunk = chunk.to_vec();
+                with_timeout(self.timeout_seconds, "mongo insert_many", async {
+                    collection
+                        .insert_many(chunk)
+                        .ordered(false)
+                        .await
+                        .map_err(|e| NexusError::Connector(format!("mongo insert_many failed: {e}")))
+                })
+                .await?;
+            }
+            return Ok(());
+        }
+
         if self.use_bulk_write {
             let models: Vec<WriteModel> = ops
                 .into_iter()
@@ -181,14 +214,19 @@ impl Sink for MongoSink {
                 })
                 .collect();
 
-            with_timeout(self.timeout_seconds, "mongo bulk_write", async {
-                self.client
-                    .bulk_write(models)
-                    .ordered(false)
-                    .await
-                    .map_err(|e| NexusError::Connector(format!("mongo bulk_write failed: {e}")))
-            })
-            .await?;
+            // Chunk the batch so a single huge bulk_write doesn't hold server
+            // resources for an unbounded time; timeout is per chunk.
+            for chunk in models.chunks(BULK_WRITE_CHUNK_SIZE) {
+                let chunk = chunk.to_vec();
+                with_timeout(self.timeout_seconds, "mongo bulk_write", async {
+                    self.client
+                        .bulk_write(chunk)
+                        .ordered(false)
+                        .await
+                        .map_err(|e| NexusError::Connector(format!("mongo bulk_write failed: {e}")))
+                })
+                .await?;
+            }
         } else {
             let collection: Collection<Document> = self
                 .client

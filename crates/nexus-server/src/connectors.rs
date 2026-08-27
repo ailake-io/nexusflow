@@ -476,7 +476,7 @@ pub async fn build_sink(
         #[cfg(feature = "mysql")]
         "mysql" => {
             let cfg: MySqlConnectorConfig = serde_json::from_value(node.config.clone())?;
-            Box::new(MySqlSink::connect(&cfg).await?)
+            Box::new(MySqlSink::connect(&cfg, schema).await?)
         }
         #[cfg(feature = "odbc")]
         "odbc" => {

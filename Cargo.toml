@@ -37,7 +37,9 @@ embeddings-api = ["nexus-server/embeddings-api"]
 # Cargo.toml for why each one exists) so `cargo build -p nexusflow
 # --features X` reaches the crate that actually declares X.
 connectors-all = ["nexus-server/connectors-all"]
+connectors-all-no-embeddings = ["nexus-server/connectors-all-no-embeddings"]
 mongodb = ["nexus-server/mongodb"]
+mysql = ["nexus-server/mysql"]
 kafka = ["nexus-server/kafka"]
 mqtt = ["nexus-server/mqtt"]
 rest = ["nexus-server/rest"]
