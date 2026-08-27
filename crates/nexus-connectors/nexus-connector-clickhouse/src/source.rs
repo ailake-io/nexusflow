@@ -90,12 +90,14 @@ impl ClickHouseSource {
         }
 
         let uri = cfg.connection_string();
+        let username = cfg.username.clone();
+        let password = cfg.password.clone();
         let table = cfg.table.clone();
         let database = cfg.database.clone();
         let (connection, schema) = with_timeout(cfg.timeout_seconds, "clickhouse connect", async {
             tokio::task::spawn_blocking(
                 move || -> Result<(ManagedConnection, arrow_schema::Schema), NexusError> {
-                    let connection = open_connection(&uri)?;
+                    let connection = open_connection(&uri, &username, &password)?;
                     // The ClickHouse ADBC driver is early/WIP (v0.1.0 at
                     // time of writing) — get_table_schema's metadata path
                     // isn't verified against a real instance. If this

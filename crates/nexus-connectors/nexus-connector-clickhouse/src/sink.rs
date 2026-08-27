@@ -25,8 +25,10 @@ impl ClickHouseSink {
         columns: &[String],
     ) -> Result<Self, NexusError> {
         let uri = cfg.connection_string();
+        let username = cfg.username.clone();
+        let password = cfg.password.clone();
         let connection = with_timeout(cfg.timeout_seconds, "clickhouse connect", async {
-            tokio::task::spawn_blocking(move || open_connection(&uri))
+            tokio::task::spawn_blocking(move || open_connection(&uri, &username, &password))
                 .await
                 .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))?
         })
