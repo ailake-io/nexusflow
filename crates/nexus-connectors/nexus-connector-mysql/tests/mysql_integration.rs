@@ -101,16 +101,15 @@ async fn sink_upsert_is_idempotent_on_replay() {
         arrow_schema::Field::new("id", arrow_schema::DataType::Int64, false),
         arrow_schema::Field::new("name", arrow_schema::DataType::Utf8, true),
     ]);
+    let schema = std::sync::Arc::new(schema);
     let batch = arrow_array::RecordBatch::try_new(
-        std::sync::Arc::new(schema),
+        schema.clone(),
         vec![
             std::sync::Arc::new(arrow_array::Int64Array::from(vec![1, 2])),
             std::sync::Arc::new(arrow_array::StringArray::from(vec!["alice", "bob"])),
         ],
     )
     .unwrap();
-
-    let schema = std::sync::Arc::new(schema);
     let mut sink = MySqlSink::connect(&config, &schema)
         .await
         .expect("sink connects");
@@ -170,8 +169,9 @@ async fn sink_deletes_rows_carrying_the_d_opcode() {
         arrow_schema::Field::new("name", arrow_schema::DataType::Utf8, true),
         arrow_schema::Field::new(OPCODE_COLUMN, arrow_schema::DataType::Utf8, false),
     ]);
+    let schema = std::sync::Arc::new(schema);
     let batch = arrow_array::RecordBatch::try_new(
-        std::sync::Arc::new(schema),
+        schema.clone(),
         vec![
             std::sync::Arc::new(arrow_array::Int64Array::from(vec![1, 2])),
             std::sync::Arc::new(arrow_array::StringArray::from(vec![Some("alice2"), None])),
@@ -179,8 +179,6 @@ async fn sink_deletes_rows_carrying_the_d_opcode() {
         ],
     )
     .unwrap();
-
-    let schema = std::sync::Arc::new(schema);
     let mut sink = MySqlSink::connect(&config, &schema)
         .await
         .expect("sink connects");

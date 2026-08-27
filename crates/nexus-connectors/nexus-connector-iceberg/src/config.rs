@@ -162,10 +162,19 @@ pub struct IcebergConnectorConfig {
     /// backend stalling the pipeline indefinitely (C15).
     #[serde(default = "default_timeout_seconds")]
     pub timeout_seconds: u64,
+    /// Number of rows to accumulate before committing an Iceberg transaction.
+    /// Larger values reduce catalog-commit overhead; the remaining rows are
+    /// flushed when the pipeline finishes (`commit_checkpoint`).
+    #[serde(default = "default_flush_threshold_rows")]
+    pub flush_threshold_rows: usize,
 }
 
 fn default_timeout_seconds() -> u64 {
     30
+}
+
+pub(crate) fn default_flush_threshold_rows() -> usize {
+    50_000
 }
 
 impl IcebergConnectorConfig {
@@ -434,6 +443,7 @@ mod tests {
             primary_key: None,
             append_only: false,
             timeout_seconds: 30,
+            flush_threshold_rows: 50_000,
         }
     }
 
@@ -462,6 +472,7 @@ mod tests {
             primary_key: None,
             append_only: false,
             timeout_seconds: 30,
+            flush_threshold_rows: 50_000,
         };
         assert_eq!(cfg.catalog_uri(), "sqlite:///new/catalog.db?mode=rwc");
         assert_eq!(cfg.warehouse_location(), "file:///new/warehouse");
@@ -485,6 +496,7 @@ mod tests {
             primary_key: None,
             append_only: false,
             timeout_seconds: 30,
+            flush_threshold_rows: 50_000,
         };
         assert_eq!(cfg.warehouse_location(), "file:///data/warehouse");
     }
@@ -505,6 +517,7 @@ mod tests {
             primary_key: None,
             append_only: false,
             timeout_seconds: 30,
+            flush_threshold_rows: 50_000,
         };
         assert!(cfg.catalog_uri().is_empty());
         assert!(cfg.warehouse_location().is_empty());
@@ -534,6 +547,7 @@ mod tests {
             primary_key: None,
             append_only: false,
             timeout_seconds: 30,
+            flush_threshold_rows: 50_000,
         };
         let map = cfg.storage_options();
         assert_eq!(map.get("s3.bucket"), Some(&"bucket".to_string()));

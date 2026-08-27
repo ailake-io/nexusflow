@@ -24,6 +24,7 @@ async fn writes_reads_back_and_deletes_via_delta_ops() {
         primary_key: "id".to_string(),
         append_only: false,
         timeout_seconds: 30,
+        flush_threshold_rows: 50_000,
     };
 
     let schema = Arc::new(Schema::new(vec![

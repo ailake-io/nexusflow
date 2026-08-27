@@ -60,6 +60,11 @@ pub struct DeltaConnectorConfig {
     /// the only case where a call can actually stall on the network (C15).
     #[serde(default = "default_timeout_seconds")]
     pub timeout_seconds: u64,
+    /// Number of rows to accumulate before committing a Delta transaction.
+    /// Larger values reduce transaction overhead; the remaining rows are
+    /// flushed when the pipeline finishes (`commit_checkpoint`).
+    #[serde(default = "default_flush_threshold_rows")]
+    pub flush_threshold_rows: usize,
 }
 
 impl DeltaConnectorConfig {
@@ -128,6 +133,10 @@ impl DeltaConnectorConfig {
 
 fn default_timeout_seconds() -> u64 {
     30
+}
+
+fn default_flush_threshold_rows() -> usize {
+    50_000
 }
 
 /// Native CDC source for Delta Lake's built-in Change Data Feed — a separate
@@ -254,6 +263,7 @@ mod tests {
             primary_key: "id".to_string(),
             append_only: false,
             timeout_seconds: 30,
+            flush_threshold_rows: 50_000,
         }
     }
 
@@ -267,6 +277,7 @@ mod tests {
             primary_key: "id".to_string(),
             append_only: false,
             timeout_seconds: 30,
+            flush_threshold_rows: 50_000,
         };
         assert_eq!(cfg.table_uri(), "s3://bucket/legacy");
         assert_eq!(cfg.table_name(), "orders");
@@ -282,6 +293,7 @@ mod tests {
             primary_key: "id".to_string(),
             append_only: false,
             timeout_seconds: 30,
+            flush_threshold_rows: 50_000,
         };
         assert_eq!(cfg.table_uri(), "/tmp/data/orders");
         assert_eq!(cfg.table_name(), "orders");
@@ -309,6 +321,7 @@ mod tests {
             primary_key: "id".to_string(),
             append_only: false,
             timeout_seconds: 30,
+            flush_threshold_rows: 50_000,
         };
         let opts = cfg.storage_options();
         assert_eq!(opts.get("bucket"), Some(&"bucket".to_string()));

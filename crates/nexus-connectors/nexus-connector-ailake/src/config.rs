@@ -86,6 +86,12 @@ pub struct AilakeConnectorConfig {
     /// catalog file or a slow disk stalling the pipeline indefinitely (C15).
     #[serde(default = "default_timeout_seconds")]
     pub timeout_seconds: u64,
+    /// Number of rows to accumulate before committing an AI-Lake write
+    /// session. Larger values reduce the number of create-or-open/write/commit
+    /// cycles; the remaining rows are flushed when the pipeline finishes
+    /// (`commit_checkpoint`).
+    #[serde(default = "default_flush_threshold_rows")]
+    pub flush_threshold_rows: usize,
 }
 
 impl AilakeConnectorConfig {
@@ -159,6 +165,10 @@ impl AilakeConnectorConfig {
 
 fn default_timeout_seconds() -> u64 {
     30
+}
+
+fn default_flush_threshold_rows() -> usize {
+    50_000
 }
 
 /// Native CDC source for AI-Lake — separate connector name
@@ -322,6 +332,7 @@ mod tests {
             storage_options: AilakeStorageOptions::default(),
             append_only: false,
             timeout_seconds: 30,
+            flush_threshold_rows: 50_000,
         }
     }
 

@@ -1,3 +1,4 @@
+pub mod batch_buffer;
 pub mod cdc;
 pub mod checkpoint;
 pub mod dag;

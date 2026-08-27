@@ -56,6 +56,7 @@ async fn cdc_source_replays_every_append_as_insert() {
         primary_key: None,
         append_only: false,
         timeout_seconds: 30,
+        flush_threshold_rows: 50_000,
     };
 
     let mut sink = IcebergSink::connect(&batch_cfg).expect("sink connects");
