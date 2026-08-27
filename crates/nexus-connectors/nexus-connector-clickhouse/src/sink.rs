@@ -67,7 +67,7 @@ fn column_to_sql_literals(
     let string_arr = string_arr
         .as_any()
         .downcast_ref::<StringArray>()
-        .expect("cast to Utf8 returns StringArray");
+        .ok_or_else(|| NexusError::Schema("cast to Utf8 did not produce StringArray".into()))?;
 
     let is_numeric = matches!(
         data_type,

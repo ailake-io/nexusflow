@@ -5,6 +5,7 @@ pub mod error;
 pub mod pipeline;
 pub mod record_batch_builder;
 pub mod registry;
+pub mod retry;
 pub mod schedule;
 pub mod sql;
 pub mod traits;
@@ -24,6 +25,7 @@ pub use pipeline::{
 };
 pub use record_batch_builder::RecordBatchBuilder;
 pub use registry::{ConnectorDescriptor, ConnectorRegistry, SinkBuilder, SourceBuilder};
+pub use retry::{is_transient_error, retry_with_backoff, RetryConfig};
 pub use schedule::parse_cron_expression;
 pub use sql::{quote_identifier, validate_identifier};
 pub use traits::{ConnectorCapability, Sink, Source, Transform};

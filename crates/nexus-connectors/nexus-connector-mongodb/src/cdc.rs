@@ -167,7 +167,11 @@ impl Stream for MongoCdcStream {
                     // ones that produce a row (schema changes, drops, etc.
                     // still move the stream's position forward).
                     if let Ok(token_json) = serde_json::to_string(&event.id) {
-                        *self.position.lock().expect("position mutex poisoned") = Some(token_json);
+                        if let Ok(mut guard) = self.position.lock() {
+                            *guard = Some(token_json);
+                        } else {
+                            tracing::error!("MongoDB CDC position mutex poisoned; checkpoint lost");
+                        }
                     }
                     if let Some(row) = Self::event_to_row(event) {
                         self.buffer.push(row);

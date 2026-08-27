@@ -460,16 +460,16 @@ Chaves de `storage_options` por provedor:
 
 Os 6 conectores abaixo operam em **micro-batch** (`max_batch_events` default 1000): cada run lê até esse limite de eventos, grava no sink e termina; o scheduler inicia o próximo batch.
 
-**Resume automático real** (`postgres-cdc`/`mysql-cdc`/`mongodb-cdc`, ver `ARCHITECTURE.md §4.2`): `postgres-cdc` agora confirma cada LSN processado ao servidor (`update_applied_lsn`) — o próprio slot de replicação rastreia a posição, restart não reprocessa desde a criação do slot. `mysql-cdc` e `mongodb-cdc` persistem a posição final de cada micro-batch (`binlog_filename`+`binlog_position` / `resume_token`) num checkpoint e o `nexus-server` reinjeta automaticamente na config do próximo run — não precisa mais digitar essas posições manualmente, os campos abaixo continuam existindo só como override manual (replay a partir de um ponto específico). `deltalake-cdc`/`iceberg-cdc`/`ailake-cdc` ainda dependem do cursor estático na config (`starting_version`/`starting_snapshot_id`) — sem resume automático.
+**Resume automático real** (ver `ARCHITECTURE.md §4.2`): `postgres-cdc` confirma cada LSN processado ao servidor (`update_applied_lsn`) — o próprio slot de replicação rastreia a posição, restart não reprocessa desde a criação do slot. `mysql-cdc`, `mongodb-cdc`, `deltalake-cdc`, `iceberg-cdc` e `ailake-cdc` persistem a posição final de cada micro-batch (`binlog_filename`+`binlog_position` / `resume_token` / `starting_version` / `starting_snapshot_id`) num checkpoint e o `nexus-server` reinjeta automaticamente na config do próximo run — não precisa mais digitar essas posições manualmente, os campos abaixo continuam existindo só como override manual (replay a partir de um ponto específico).
 
 | Conector | Nome no catálogo | Mecanismo | Resume por | Pré-requisitos |
 |---|---|---|---|---|
 | PostgreSQL | `postgres-cdc` | logical replication slot | automático (slot no servidor) | `CREATE PUBLICATION <publication_name> FOR TABLE <table>` |
 | MySQL | `mysql-cdc` | binlog (fake replica) | automático (checkpoint) — `binlog_filename`+`binlog_position` só pra override manual | Usuário com `REPLICATION SLAVE/CLIENT`; `binlog_row_image=FULL` recomendado |
 | MongoDB | `mongodb-cdc` | Change Streams | automático (checkpoint) — `resume_token` só pra override manual | Replica set (mesmo single-node) |
-| Delta Lake | `deltalake-cdc` | Delta change feed | manual — `starting_version` | `delta.enableChangeDataFeed = true` na tabela |
-| Iceberg | `iceberg-cdc` | diff de snapshots | manual — `starting_snapshot_id` | Catálogo SQLite + warehouse local; **insert-only** |
-| AI-Lake | `ailake-cdc` | diff de snapshots | manual — `starting_snapshot_id` | Warehouse local HNSW; emite `I` para upserts também |
+| Delta Lake | `deltalake-cdc` | Delta change feed | automático (checkpoint) — `starting_version` só pra override manual | `delta.enableChangeDataFeed = true` na tabela |
+| Iceberg | `iceberg-cdc` | diff de snapshots | automático (checkpoint) — `starting_snapshot_id` só pra override manual | Catálogo SQLite + warehouse local; **insert-only** |
+| AI-Lake | `ailake-cdc` | diff de snapshots | automático (checkpoint) — `starting_snapshot_id` só pra override manual | Warehouse local HNSW; emite `I` para upserts também |
 
 Exemplo mínimo (`postgres-cdc` → `mongodb`):
 
