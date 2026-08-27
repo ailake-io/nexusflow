@@ -61,7 +61,7 @@ embed-ui = ["dep:rust-embed"]
 connectors-all = [
     "mongodb", "mysql", "kafka", "mqtt", "rest", "odbc", "milvus", "qdrant", "lancedb",
     "pgvector", "pinecone", "chromadb", "deltalake", "iceberg", "parquet",
-    "ailake", "csv", "clickhouse", "embeddings", "embeddings-api",
+    "ailake", "csv", "clickhouse", "kinesis", "pulsar", "embeddings", "embeddings-api",
     "postgres-cdc", "mysql-cdc", "deltalake-cdc", "iceberg-cdc", "ailake-cdc",
 ]
 # Same as connectors-all but without the heavy ONNX/embedding dependencies.
@@ -70,7 +70,7 @@ connectors-all = [
 connectors-all-no-embeddings = [
     "mongodb", "mysql", "kafka", "mqtt", "rest", "odbc", "milvus", "qdrant", "lancedb",
     "pgvector", "pinecone", "chromadb", "deltalake", "iceberg", "parquet",
-    "ailake", "csv", "clickhouse",
+    "ailake", "csv", "clickhouse", "kinesis", "pulsar",
     "postgres-cdc", "mysql-cdc", "deltalake-cdc", "iceberg-cdc", "ailake-cdc",
 ]
 # Native logical-replication CDC for the always-linked "postgres" connector
@@ -111,6 +111,8 @@ iceberg-cdc = ["iceberg", "nexus-connector-iceberg/cdc"]
 ailake-cdc = ["ailake", "nexus-connector-ailake/cdc"]
 csv = ["dep:nexus-connector-csv"]
 clickhouse = ["dep:nexus-connector-clickhouse"]
+kinesis = ["dep:nexus-connector-kinesis"]
+pulsar = ["dep:nexus-connector-pulsar"]
 
 [dependencies]
 aes-gcm = "0.10.3"
@@ -151,6 +153,8 @@ nexus-connector-parquet = { version = "0.1.0", path = "../nexus-connectors/nexus
 nexus-connector-ailake = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-ailake", optional = true }
 nexus-connector-csv = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-csv", optional = true }
 nexus-connector-clickhouse = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-clickhouse", optional = true }
+nexus-connector-kinesis = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-kinesis", optional = true }
+nexus-connector-pulsar = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-pulsar", optional = true }
 nexus-core = { version = "0.1.0", path = "../nexus-core" }
 nexus-ai = { version = "0.1.0", path = "../nexus-ai", optional = true }
 hex = "0.4.3"
