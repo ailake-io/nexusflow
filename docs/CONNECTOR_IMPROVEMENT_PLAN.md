@@ -161,11 +161,67 @@ Os conectores do repositório `nexus-connectors-enterprise` foram inspecionados 
 
 ---
 
+## Requisitos para testar cada conector Enterprise
+
+| Família | Conector | Precisa de conta/infra? | O que é necessário para testar | Alternativa local/mock disponível? |
+|---|---|---|---|---|
+| Vector / Search | **Weaviate** | Não (self-hosted) | Container Docker `semitechnologies/weaviate` + collection criada | ✅ Sim — roda local |
+| Vector / Search | **Elasticsearch** | Não (self-hosted) | Container Docker `elasticsearch:8.x` + índice criado | ✅ Sim — roda local |
+| Vector / Search | **Azure AI Search** | Sim | Subscription Azure + serviço Azure AI Search + api key | ❌ Não |
+| Vector / Search | **Vertex Vector Search** | Sim | Projeto GCP + service account + índice criado | ❌ Não |
+| Data warehouse | **Snowflake** | Sim | Trial Snowflake (30 dias) + warehouse/database/schema + auth password ou key-pair | ❌ Não |
+| Data warehouse | **BigQuery** | Sim | Projeto GCP + service account JSON + dataset/table | ❌ Não |
+| Data warehouse | **Redshift** | Sim | AWS account + cluster Redshift + usuário/senha | ❌ Não |
+| Data warehouse | **Databricks** | Sim | Workspace Databricks + personal access token + cluster SQL warehouse | ❌ Não |
+| Data warehouse | **Starburst** | Sim | Galaxy Starburst ou cluster Trino/Presto + usuário/senha | ⚠️ Pode usar Trino/Presto local como substituto de API similar |
+| Bancos enterprise | **MSSQL** | Não (container) | Container Docker `mcr.microsoft.com/mssql/server` + banco + tabela | ✅ Sim — roda local |
+| Bancos enterprise | **Oracle** | Não (container) | Container Docker `gvenzl/oracle-free` ou `gvenzl/oracle-xe` + tabela | ✅ Sim — roda local |
+| Bancos enterprise | **HANA** | Sim | Imagem SAP HANA Express (requer registro SAP) ou instância cloud | ⚠️ Imagem Docker disponível com registro SAP |
+| SaaS / APIs | **Salesforce** | Sim | Developer Edition (grátis) + connected app + certificado JWT | ⚠️ Conta grátis disponível |
+| SaaS / APIs | **Stripe** | Sim | Conta Stripe + secret key (modo teste gratuito) | ❌ Não — mas modo teste é gratuito |
+| SaaS / APIs | **Shopify** | Sim | Loja de desenvolvedor Shopify (grátis) + access token | ⚠️ Conta dev grátis disponível |
+| SaaS / APIs | **GA4** | Sim | Propriedade GA4 + service account Google Cloud | ❌ Não |
+| SaaS / APIs | **Google Ads** | Sim | Conta Google Ads + developer token + refresh token OAuth | ❌ Não |
+| SaaS / APIs | **Meta Ads** | Sim | Conta Business Meta + access token Graph API | ❌ Não |
+| SaaS / APIs | **LinkedIn Ads** | Sim | Conta LinkedIn Campaign Manager + access token | ❌ Não |
+| SaaS / APIs | **TikTok Ads** | Sim | Conta TikTok for Business + access token + advertiser ID | ❌ Não |
+| SaaS / APIs | **X Ads** | Sim | Conta X Developer + app OAuth + access token | ❌ Não |
+| SaaS / APIs | **YouTube Analytics** | Sim | Canal YouTube + projeto GCP OAuth | ❌ Não |
+| Streaming | **Kinesis** | Sim | AWS account + stream Kinesis + credenciais IAM | ❌ Não |
+| Streaming | **Pulsar** | Não (self-hosted) | Container Docker `apachepulsar/pulsar` standalone + topic | ✅ Sim — roda local |
+| File | **Excel** | Não | Arquivo `.xlsx` local ou em storage S3/GCS/Azure compatível | ✅ Sim — arquivo local |
+
+### Conectores que já podem ser testados localmente sem conta
+
+- **Weaviate** — container Docker.
+- **Elasticsearch** — container Docker.
+- **MSSQL** — container Docker.
+- **Oracle** — container Docker (`gvenzl/oracle-free`).
+- **Pulsar** — container Docker standalone.
+- **Excel** — arquivo local.
+
+### Conectores que precisam de trial/conta (prioridade para testes)
+
+1. **Snowflake** — trial de 30 dias, ideal para validar bulk ingest ADBC.
+2. **BigQuery** — projeto GCP com billing (ou créditos gratuitos).
+3. **Stripe** — modo teste gratuito, ideal para validar paralelismo de páginas.
+4. **Salesforce** — Developer Edition gratuita.
+5. **Shopify** — loja de desenvolvedor gratuita.
+6. **AWS (Redshift, Kinesis)** — requer conta AWS (possível usar créditos free tier).
+7. **Databricks** — trial/community edition.
+8. **SAP HANA** — registro SAP para baixar imagem Express.
+9. **Google/Meta/LinkedIn/TikTok/X Ads + GA4/YouTube** — requerem contas nas respectivas plataformas + projetos OAuth.
+10. **Azure AI Search** — subscription Azure.
+11. **Vertex Vector Search** — projeto GCP.
+
+---
+
 ## Próximos passos recomendados
 
 1. **Validar o build Docker atual** com as correções de ChromaDB + ClickHouse.
 2. **Recuperar o container `nexusflow-app`** com a nova imagem.
 3. **Re-executar os testes 100 k** para ChromaDB e ClickHouse e medir o novo tempo.
 4. **Executar teste de 1 milhão de linhas** CSV → Postgres para confirmar que o tempo está linear (não 71 min).
-5. **Criar conta de teste/trial** para no mínimo um conector enterprise de cada família (Snowflake, BigQuery, Weaviate, Stripe) e executar benchmarks.
-6. **Abrir issues/tasks** para cada item do plano Enterprise acima.
+5. **Testar localmente sem conta** Weaviate, Elasticsearch, MSSQL, Oracle, Pulsar e Excel.
+6. **Criar contas trial** para Snowflake, BigQuery, Stripe, Salesforce, Shopify e AWS (Redshift/Kinesis) para benchmarks reais.
+7. **Abrir issues/tasks** para cada item do plano Enterprise acima.
