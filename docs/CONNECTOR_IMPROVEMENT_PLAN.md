@@ -220,12 +220,27 @@ Os conectores do repositório `nexus-connectors-enterprise` foram inspecionados 
 
 ---
 
+## Resultados dos testes Enterprise locais
+
+Testes executados com o binário `nexusflow-enterprise --features connectors-all` (repo `nexus-connectors-enterprise`) após instalar uma licença de teste JWT.
+
+| Direção | Conector | Infra | Status | Tempo aprox. | Linhas | Observação |
+|---|---|---|---|---|---|---|
+| Parquet → Elasticsearch | elasticsearch | Container local | ✅ sucesso | ~18 s | 100 000 | Bulk API; precisou ajustar watermark de disco |
+| Parquet → Weaviate | weaviate | Container local | ✅ sucesso | ~58 s | 100 000 | Batch upsert; batch delete implementado; precisou ajustar threshold de disco e usar UUID como primary key |
+
+Observações:
+- **Weaviate** exige que o campo `primary_key` seja um UUID válido. Conectores que recebem inteiros precisam de uma estratégia de geração de UUID (documentar ou implementar no connector).
+- **Elasticsearch** e **Weaviate** entraram em modo read-only devido ao watermark de disco do host (disco acima de 90%). Em ambiente de teste local é necessário desabilitar/elevar os thresholds.
+
+---
+
 ## Próximos passos recomendados
 
 1. **Validar o build Docker atual** com as correções de ChromaDB + ClickHouse.
 2. **Recuperar o container `nexusflow-app`** com a nova imagem.
 3. **Re-executar os testes 100 k** para ChromaDB e ClickHouse e medir o novo tempo.
 4. **Executar teste de 1 milhão de linhas** CSV → Postgres para confirmar que o tempo está linear (não 71 min).
-5. **Testar localmente sem conta** Weaviate, Elasticsearch, MSSQL, Oracle, Pulsar e Excel.
-6. **Criar contas trial** para Snowflake, BigQuery, Stripe, Salesforce, Shopify e AWS (Redshift/Kinesis) para benchmarks reais.
+5. **Testar localmente sem conta** MSSQL, Oracle, Pulsar, Excel, BigQuery emulator, LocalStack (Kinesis/Redshift) e Trino (Starburst).
+6. **Criar contas trial** para Snowflake, Stripe, Salesforce, Shopify e contas de ads (Google/Meta/LinkedIn/TikTok/X) para benchmarks reais.
 7. **Abrir issues/tasks** para cada item do plano Enterprise acima.
