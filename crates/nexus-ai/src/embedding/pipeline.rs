@@ -483,7 +483,7 @@ fn new_empty_array(data_type: &DataType) -> Result<ArrayRef, EmbeddingError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow_array::Int64Array;
+    use arrow_array::{Int32Array, Int64Array};
     use arrow_schema::TimeUnit;
 
     #[test]
