@@ -73,8 +73,7 @@ where
                 if attempt == config.retries || !is_transient_error(&err) {
                     return Err(err);
                 }
-                let delay =
-                    Duration::from_secs(config.retry_backoff_seconds) * 2u32.pow(attempt);
+                let delay = Duration::from_secs(config.retry_backoff_seconds) * 2u32.pow(attempt);
                 tracing::warn!(
                     "{op_name} failed (attempt {}/{}): {err}, retrying in {:?}",
                     attempt + 1,

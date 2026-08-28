@@ -220,8 +220,13 @@ mod tests {
 
     #[test]
     fn insert_prefix_lists_columns() {
-        let prefix = build_insert_prefix("\"db\".\"events\"", &["id".to_string(), "name".to_string()]).unwrap();
-        assert_eq!(prefix, "INSERT INTO \"db\".\"events\" (\"id\", \"name\") VALUES ");
+        let prefix =
+            build_insert_prefix("\"db\".\"events\"", &["id".to_string(), "name".to_string()])
+                .unwrap();
+        assert_eq!(
+            prefix,
+            "INSERT INTO \"db\".\"events\" (\"id\", \"name\") VALUES "
+        );
     }
 
     #[test]

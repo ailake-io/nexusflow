@@ -189,10 +189,7 @@ impl ParquetSink {
         let idx = self.append_counter.fetch_add(1, Ordering::Relaxed);
         let file_name = format!("part-{idx:05}.parquet");
         let path_str = self.path.as_ref();
-        let target_dir = path_str
-            .rfind('/')
-            .map(|i| &path_str[..i])
-            .unwrap_or("");
+        let target_dir = path_str.rfind('/').map(|i| &path_str[..i]).unwrap_or("");
         let target_path = if target_dir.is_empty() {
             ObjectPath::from(file_name)
         } else {

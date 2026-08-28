@@ -165,11 +165,9 @@ impl Sink for AilakeSink {
         // loads are buffered and flushed in larger chunks.
         match split_by_opcode(&batch)? {
             None => {
-                if let Some(flushed) = self
-                    .buffer
-                    .push(batch)
-                    .map_err(|e| NexusError::Serialization(format!("ailake batch concat failed: {e}")))?
-                {
+                if let Some(flushed) = self.buffer.push(batch).map_err(|e| {
+                    NexusError::Serialization(format!("ailake batch concat failed: {e}"))
+                })? {
                     self.write_buffered_upsert(flushed).await?;
                 }
                 Ok(())

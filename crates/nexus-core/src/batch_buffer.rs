@@ -31,7 +31,10 @@ impl RecordBatchBuffer {
 
     /// Adds a batch to the buffer. Returns the concatenated buffered batches
     /// if the threshold was crossed and the buffer was flushed.
-    pub fn push(&mut self, batch: RecordBatch) -> Result<Option<RecordBatch>, arrow_schema::ArrowError> {
+    pub fn push(
+        &mut self,
+        batch: RecordBatch,
+    ) -> Result<Option<RecordBatch>, arrow_schema::ArrowError> {
         let batch_rows = batch.num_rows();
         let batch_bytes = batch.get_array_memory_size();
         if batch_rows == 0 {
@@ -132,7 +135,8 @@ mod tests {
         let mut buf = RecordBatchBuffer::new(100, usize::MAX);
         buf.push(make_batch(vec![1, 2])).unwrap();
         let schema2 = Arc::new(Schema::new(vec![Field::new("name", DataType::Utf8, false)]));
-        let batch2 = RecordBatch::try_new(schema2, vec![Arc::new(StringArray::from(vec!["a"]))]).unwrap();
+        let batch2 =
+            RecordBatch::try_new(schema2, vec![Arc::new(StringArray::from(vec!["a"]))]).unwrap();
         let flushed = buf.push(batch2).unwrap();
         assert_eq!(flushed.unwrap().num_rows(), 2);
         assert_eq!(buf.rows(), 1);

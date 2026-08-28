@@ -70,7 +70,9 @@ impl PineconeSink {
                 .json(&body)
                 .send()
                 .await
-                .map_err(|e| NexusError::Connector(format!("pinecone upsert request failed: {e}")))?;
+                .map_err(|e| {
+                    NexusError::Connector(format!("pinecone upsert request failed: {e}"))
+                })?;
             if !response.status().is_success() {
                 let status = response.status();
                 let text = response.text().await.unwrap_or_default();
@@ -102,7 +104,9 @@ impl PineconeSink {
                 .json(&body)
                 .send()
                 .await
-                .map_err(|e| NexusError::Connector(format!("pinecone delete request failed: {e}")))?;
+                .map_err(|e| {
+                    NexusError::Connector(format!("pinecone delete request failed: {e}"))
+                })?;
             if !response.status().is_success() {
                 let status = response.status();
                 let text = response.text().await.unwrap_or_default();

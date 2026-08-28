@@ -59,11 +59,7 @@ impl ClickHouseConnectorConfig {
             return uri.to_string();
         }
 
-        format!(
-            "http://{}:{}/",
-            percent_encode(&self.host),
-            self.port
-        )
+        format!("http://{}:{}/", percent_encode(&self.host), self.port)
     }
 }
 

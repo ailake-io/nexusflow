@@ -105,7 +105,11 @@ async fn writes_and_reads_back_via_odbc_sqlite() {
     assert_eq!(source.schema(), schema);
 
     let mut stream = source.read_batches().await.expect("read batches");
-    let read_batch = stream.next().await.expect("batch yielded").expect("batch ok");
+    let read_batch = stream
+        .next()
+        .await
+        .expect("batch yielded")
+        .expect("batch ok");
     assert!(stream.next().await.is_none(), "only one batch expected");
 
     let id_col = read_batch
@@ -144,11 +148,8 @@ async fn upserts_existing_rows_via_odbc_sqlite() {
         [],
     )
     .expect("create orders table");
-    conn.execute(
-        "INSERT INTO orders (id, status) VALUES (1, 'pending')",
-        [],
-    )
-    .expect("seed row");
+    conn.execute("INSERT INTO orders (id, status) VALUES (1, 'pending')", [])
+        .expect("seed row");
     drop(conn);
 
     let cfg = test_cfg(db_path_str);

@@ -8,10 +8,10 @@ use arrow_schema::{DataType, SchemaRef};
 use async_trait::async_trait;
 use futures::{pin_mut, SinkExt};
 use nexus_core::quote_identifier;
-use std::sync::Arc;
 use nexus_core::{
     project_column, split_by_opcode, with_timeout, CheckpointCursor, NexusError, Sink,
 };
+use std::sync::Arc;
 use tokio_postgres::Client;
 
 pub struct PostgresSink {
@@ -59,46 +59,45 @@ impl PostgresSink {
 
         let (upsert_statement, delete_statement) =
             with_timeout(cfg.timeout_seconds, "postgres connect", async {
-                tokio::task::spawn_blocking(
-                    move || -> Result<_, NexusError> {
-                        let mut connection = open_connection(&uri)?;
+                tokio::task::spawn_blocking(move || -> Result<_, NexusError> {
+                    let mut connection = open_connection(&uri)?;
 
-                        let mut statement = connection
-                            .new_statement()
-                            .map_err(|e| NexusError::Connector(e.to_string()))?;
-                        statement
-                            .set_sql_query(&create_table_sql)
-                            .map_err(|e| NexusError::Connector(e.to_string()))?;
-                        statement
-                            .execute_update()
-                            .map_err(|e| NexusError::Connector(format!("create table failed: {e}")))?;
+                    let mut statement = connection
+                        .new_statement()
+                        .map_err(|e| NexusError::Connector(e.to_string()))?;
+                    statement
+                        .set_sql_query(&create_table_sql)
+                        .map_err(|e| NexusError::Connector(e.to_string()))?;
+                    statement
+                        .execute_update()
+                        .map_err(|e| NexusError::Connector(format!("create table failed: {e}")))?;
 
-                        let upsert_sql = build_upsert_sql(&table_for_adbc, &primary_key, &schema_for_adbc)?;
-                        let delete_sql = build_delete_sql(&table_for_adbc, &primary_key)?;
+                    let upsert_sql =
+                        build_upsert_sql(&table_for_adbc, &primary_key, &schema_for_adbc)?;
+                    let delete_sql = build_delete_sql(&table_for_adbc, &primary_key)?;
 
-                        let mut upsert_statement = connection
-                            .new_statement()
-                            .map_err(|e| NexusError::Connector(e.to_string()))?;
-                        upsert_statement
-                            .set_sql_query(&upsert_sql)
-                            .map_err(|e| NexusError::Connector(e.to_string()))?;
-                        upsert_statement
-                            .prepare()
-                            .map_err(|e| NexusError::Connector(e.to_string()))?;
+                    let mut upsert_statement = connection
+                        .new_statement()
+                        .map_err(|e| NexusError::Connector(e.to_string()))?;
+                    upsert_statement
+                        .set_sql_query(&upsert_sql)
+                        .map_err(|e| NexusError::Connector(e.to_string()))?;
+                    upsert_statement
+                        .prepare()
+                        .map_err(|e| NexusError::Connector(e.to_string()))?;
 
-                        let mut delete_statement = connection
-                            .new_statement()
-                            .map_err(|e| NexusError::Connector(e.to_string()))?;
-                        delete_statement
-                            .set_sql_query(&delete_sql)
-                            .map_err(|e| NexusError::Connector(e.to_string()))?;
-                        delete_statement
-                            .prepare()
-                            .map_err(|e| NexusError::Connector(e.to_string()))?;
+                    let mut delete_statement = connection
+                        .new_statement()
+                        .map_err(|e| NexusError::Connector(e.to_string()))?;
+                    delete_statement
+                        .set_sql_query(&delete_sql)
+                        .map_err(|e| NexusError::Connector(e.to_string()))?;
+                    delete_statement
+                        .prepare()
+                        .map_err(|e| NexusError::Connector(e.to_string()))?;
 
-                        Ok((upsert_statement, delete_statement))
-                    },
-                )
+                    Ok((upsert_statement, delete_statement))
+                })
                 .await
                 .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))?
             })
@@ -191,9 +190,7 @@ fn build_upsert_sql(
         .map(|f| quote_identifier(f.name()))
         .collect::<Result<Vec<_>, _>>()?;
 
-    let placeholders: Vec<String> = (1..=columns.len())
-        .map(|i| format!("${i}"))
-        .collect();
+    let placeholders: Vec<String> = (1..=columns.len()).map(|i| format!("${i}")).collect();
 
     let updates: Vec<String> = columns
         .iter()
@@ -244,7 +241,9 @@ fn batch_to_copy_text(batch: &RecordBatch) -> Result<Vec<u8>, NexusError> {
             string_arr
                 .as_any()
                 .downcast_ref::<StringArray>()
-                .ok_or_else(|| NexusError::Schema("cast to Utf8 did not produce StringArray".into()))
+                .ok_or_else(|| {
+                    NexusError::Schema("cast to Utf8 did not produce StringArray".into())
+                })
                 .cloned()
         })
         .collect::<Result<Vec<_>, NexusError>>()?;
@@ -295,12 +294,10 @@ impl PostgresSink {
                 .await
                 .map_err(|e| NexusError::Connector(format!("copy_in failed: {e}")))?;
             pin_mut!(sink);
-            sink
-                .send(bytes::Bytes::from(data))
+            sink.send(bytes::Bytes::from(data))
                 .await
                 .map_err(|e| NexusError::Connector(format!("copy send failed: {e}")))?;
-            sink
-                .finish()
+            sink.finish()
                 .await
                 .map_err(|e| NexusError::Connector(format!("copy finish failed: {e}")))?;
             Ok::<(), NexusError>(())
@@ -447,7 +444,8 @@ mod tests {
 
     #[test]
     fn rejects_sql_injection_in_table_name() {
-        let schema: SchemaRef = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let schema: SchemaRef =
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
         let err = build_upsert_sql("events\"; DROP TABLE users; --", "id", &schema)
             .expect_err("malicious table name must be rejected");
         assert!(matches!(err, NexusError::Schema(_)));

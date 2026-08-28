@@ -116,7 +116,11 @@ impl CsvSink {
         self.write_batches(row_groups, self.has_header)
     }
 
-    fn write_batches(&self, row_groups: &[RecordBatch], with_header: bool) -> Result<Vec<u8>, NexusError> {
+    fn write_batches(
+        &self,
+        row_groups: &[RecordBatch],
+        with_header: bool,
+    ) -> Result<Vec<u8>, NexusError> {
         let mut buf = Vec::new();
         {
             let mut builder = WriterBuilder::new()
@@ -158,9 +162,12 @@ impl CsvSink {
                         .create(true)
                         .append(true)
                         .open(&local_path)
-                        .map_err(|e| NexusError::Connector(format!("csv append open failed: {e}")))?;
-                    file.write_all(&bytes)
-                        .map_err(|e| NexusError::Connector(format!("csv append write failed: {e}")))?;
+                        .map_err(|e| {
+                            NexusError::Connector(format!("csv append open failed: {e}"))
+                        })?;
+                    file.write_all(&bytes).map_err(|e| {
+                        NexusError::Connector(format!("csv append write failed: {e}"))
+                    })?;
                     Ok(())
                 })
                 .await
@@ -171,16 +178,14 @@ impl CsvSink {
 
         // Cloud/object store: best-effort append by reading existing bytes,
         // stripping the trailing header if present, and rewriting.
-        let existing = match self.store.get(&self.path).await {
-            Ok(result) => Some(
-                result
-                    .bytes()
-                    .await
-                    .map_err(|e| NexusError::Connector(format!("csv append read body failed: {e}")))?,
-            ),
-            Err(object_store::Error::NotFound { .. }) => None,
-            Err(e) => return Err(NexusError::Connector(format!("csv append get failed: {e}"))),
-        };
+        let existing =
+            match self.store.get(&self.path).await {
+                Ok(result) => Some(result.bytes().await.map_err(|e| {
+                    NexusError::Connector(format!("csv append read body failed: {e}"))
+                })?),
+                Err(object_store::Error::NotFound { .. }) => None,
+                Err(e) => return Err(NexusError::Connector(format!("csv append get failed: {e}"))),
+            };
 
         let mut payload = Vec::with_capacity(batch.num_rows() * 64);
         if let Some(bytes) = existing {

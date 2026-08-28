@@ -189,10 +189,7 @@ impl SqliteSink {
         .await
     }
 
-    fn execute_sql(
-        connection: &mut ManagedConnection,
-        sql: &str,
-    ) -> Result<(), NexusError> {
+    fn execute_sql(connection: &mut ManagedConnection, sql: &str) -> Result<(), NexusError> {
         let mut statement = connection
             .new_statement()
             .map_err(|e| NexusError::Connector(e.to_string()))?;

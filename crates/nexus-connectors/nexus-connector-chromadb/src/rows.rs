@@ -115,9 +115,12 @@ pub fn extract_ids(batch: &RecordBatch, column_name: &str) -> Result<Vec<String>
 
     match batch.schema().field(idx).data_type() {
         DataType::Int64 => {
-            let arr = column.as_any().downcast_ref::<Int64Array>().ok_or_else(|| {
-                NexusError::Schema(format!("column '{column_name}' is not Int64"))
-            })?;
+            let arr = column
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .ok_or_else(|| {
+                    NexusError::Schema(format!("column '{column_name}' is not Int64"))
+                })?;
             (0..arr.len())
                 .map(|i| {
                     if arr.is_null(i) {
@@ -131,9 +134,10 @@ pub fn extract_ids(batch: &RecordBatch, column_name: &str) -> Result<Vec<String>
                 .collect()
         }
         DataType::Utf8 => {
-            let arr = column.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
-                NexusError::Schema(format!("column '{column_name}' is not Utf8"))
-            })?;
+            let arr = column
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| NexusError::Schema(format!("column '{column_name}' is not Utf8")))?;
             (0..arr.len())
                 .map(|i| {
                     if arr.is_null(i) {

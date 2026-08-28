@@ -1,7 +1,7 @@
 use crate::config::{MySqlCdcFieldSpec, MySqlConnectorConfig};
 use crate::rows::{
-    batch_to_delete_params, batch_to_multi_upsert_params, build_create_table_sql,
-    build_delete_sql, build_multi_upsert_sql, build_upsert_sql, schema_to_fields,
+    batch_to_delete_params, batch_to_multi_upsert_params, build_create_table_sql, build_delete_sql,
+    build_multi_upsert_sql, build_upsert_sql, schema_to_fields,
 };
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
@@ -147,7 +147,9 @@ impl MySqlSink {
                         &self.fields,
                         rows_in_chunk,
                     )
-                    .map_err(|e| NexusError::Connector(format!("mysql build chunk sql failed: {e}")))?
+                    .map_err(|e| {
+                        NexusError::Connector(format!("mysql build chunk sql failed: {e}"))
+                    })?
                 }
             };
             with_timeout(self.timeout_seconds, "mysql upsert", async {

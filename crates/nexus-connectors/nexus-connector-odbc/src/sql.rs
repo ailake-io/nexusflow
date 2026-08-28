@@ -1,6 +1,6 @@
-use crate::config::OdbcFieldSpec;
 #[cfg(feature = "legacy")]
 use crate::config::OdbcDataType;
+use crate::config::OdbcFieldSpec;
 use nexus_core::{quote_identifier, NexusError};
 
 /// Connector-type -> SQL column type for `CREATE TABLE`, using SQL-92

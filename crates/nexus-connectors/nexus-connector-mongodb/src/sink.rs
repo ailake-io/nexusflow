@@ -183,7 +183,9 @@ impl Sink for MongoSink {
                         .insert_many(chunk)
                         .ordered(false)
                         .await
-                        .map_err(|e| NexusError::Connector(format!("mongo insert_many failed: {e}")))
+                        .map_err(|e| {
+                            NexusError::Connector(format!("mongo insert_many failed: {e}"))
+                        })
                 })
                 .await?;
             }

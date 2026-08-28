@@ -127,7 +127,11 @@ impl ClickHouseSource {
     }
 
     fn build_query(&self) -> Result<String, NexusError> {
-        build_select_query(&self.qualified_table, self.partition_column.as_deref(), self.range)
+        build_select_query(
+            &self.qualified_table,
+            self.partition_column.as_deref(),
+            self.range,
+        )
     }
 }
 

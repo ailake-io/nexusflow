@@ -221,11 +221,10 @@ impl IcebergSink {
             Some(name) => name,
         };
 
-        let scan = table
-            .scan()
-            .select_all()
-            .build()
-            .map_err(|e| NexusError::Connector(format!("iceberg dedup scan build failed: {e}")))?;
+        let scan =
+            table.scan().select_all().build().map_err(|e| {
+                NexusError::Connector(format!("iceberg dedup scan build failed: {e}"))
+            })?;
         let stream = with_timeout(
             self.cfg.timeout_seconds,
             "iceberg dedup scan to_arrow",
@@ -259,11 +258,9 @@ impl Sink for IcebergSink {
     async fn write_batch(&mut self, batch: RecordBatch) -> Result<(), NexusError> {
         match split_by_opcode(&batch)? {
             None => {
-                if let Some(flushed) = self
-                    .buffer
-                    .push(batch)
-                    .map_err(|e| NexusError::Serialization(format!("iceberg batch concat failed: {e}")))?
-                {
+                if let Some(flushed) = self.buffer.push(batch).map_err(|e| {
+                    NexusError::Serialization(format!("iceberg batch concat failed: {e}"))
+                })? {
                     self.append(flushed).await?;
                 }
                 Ok(())
