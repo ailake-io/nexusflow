@@ -241,6 +241,68 @@ Observações:
 2. **Recuperar o container `nexusflow-app`** com a nova imagem.
 3. **Re-executar os testes 100 k** para ChromaDB e ClickHouse e medir o novo tempo.
 4. **Executar teste de 1 milhão de linhas** CSV → Postgres para confirmar que o tempo está linear (não 71 min).
-5. **Testar localmente sem conta** MSSQL, Oracle, Pulsar, Excel, BigQuery emulator, LocalStack (Kinesis/Redshift) e Trino (Starburst).
+5. **Testar localmente sem conta** MSSQL, Oracle, Pulsar, Excel, BigQuery emulator, LocalStack (Kinesis/Redshift) e Trino (Starburst). — ✅ feito, ver §"Resultados da sessão seguinte" abaixo.
 6. **Criar contas trial** para Snowflake, Stripe, Salesforce, Shopify e contas de ads (Google/Meta/LinkedIn/TikTok/X) para benchmarks reais.
 7. **Abrir issues/tasks** para cada item do plano Enterprise acima.
+
+---
+
+## Resultados da sessão seguinte (2026-08-28) — item 5 acima
+
+### Achado real: bug de registro duplicado, não bug de config
+
+`nexus-connector-kinesis` e `nexus-connector-pulsar` tinham sido
+adicionados por engano diretamente em `crates/nexus-connectors/`
+(commit `b5260aa`, 2026-08-27) — violando a regra deste próprio repo
+("conectores enterprise nunca entram em `crates/nexus-connectors/`",
+`CLAUDE.md` §3) e duplicando crates que já existiam, corretamente, no
+repo privado `nexus-connectors-enterprise`. `nexus-server`'s
+`build_source`/`validate_source_config` tinham `match` arms fixos pra
+`"kinesis"`/`"pulsar"` que **sempre** venciam a cópia pública sobre o
+registro `SourceBuilder` do enterprise (`other => registry fallback`,
+nunca alcançado pra esses dois nomes) — todo fix aplicado no lado
+enterprise (timeout do pulsar, endpoint do kinesis) era código morto,
+nunca exercitado em runtime. Removido em `ecdb632`/`ba311eb` — a cópia
+pública nunca deveria ter existido.
+
+### Bug real corrigido: hang do Pulsar
+
+Com o registro duplicado fora do caminho, o `pulsar` do enterprise
+ainda travava pra sempre (`tokio::time::timeout` nunca disparava contra
+um broker real — nem no `connect()`, nem no loop de leitura). Causa:
+`tokio::time::timeout(dur, fut)` só funciona de forma confiável quando
+`fut` cede o controle de volta pro runtime nos próprios pontos de
+`.await` — o cliente `pulsar` (v6.9.0) aparentemente não fazia isso
+contra esse broker. Fix: isolar as chamadas ao broker (`connect`,
+`consumer build`, loop de leitura) numa task `tokio::spawn` própria e
+correr o `timeout` contra o `JoinHandle` dela, não contra a future
+direto — uma task travada só prende sua própria worker thread; a task
+que espera o `JoinHandle` continua respondendo ao timer normalmente.
+Confirmado contra broker real: pipeline termina em ~15-20s (antes
+travava indefinidamente) e lê dado corretamente.
+
+### Resultados por conector
+
+| Conector | Infra | Status | Observação |
+|---|---|---|---|
+| MSSQL | container local | ✅ sucesso | source+sink; auto-create-table implementado e testado (tabela dropada antes do teste, criada sozinha) |
+| Oracle | container local (`gvenzl/oracle-free`) | ✅ sucesso | sink; auto-create-table implementado e testado; precisou instalar `libaio1t64` (symlink pra `libaio.so.1`, nome antigo que o Instant Client espera no Ubuntu 24.04) e `unixodbc` (`libodbcinst.so.2`) na imagem |
+| Synapse | mesmo driver/protocolo do MSSQL, testado contra MSSQL local | ✅ wiring confirmado | não é teste do serviço Azure real; precisou de slug `synapse` próprio na license de teste (não herda de `mssql`) |
+| Pulsar | container local | ✅ sucesso (após fix) | ver "Bug real corrigido" acima |
+| Starburst | Trino local (`trinodb/trino`, catálogo `memory`) | ✅ sucesso | precisava de `ssl: false` (imagem de teste sem TLS) e da license de teste incluir o slug `starburst` (conector novo, adicionado depois da license anterior) |
+| Kinesis | kinesalite local | ✅ sucesso | confirmado com stream limpo (tentativa anterior falhou por registro malformado do próprio `aws-cli` de teste, não bug do conector) |
+| Weaviate, Elasticsearch | containers locais | ✅ já confirmados em sessão anterior | ver seção acima |
+| BigQuery | emulador `ghcr.io/goccy/bigquery-emulator` | ❌ bloqueado | **achado novo**: o driver ADBC (Go, `apache/arrow-adbc`) ignora a env `BIGQUERY_EMULATOR_HOST` — toda chamada bate direto em `bigquery.googleapis.com` real, mesmo setando essa env no processo. O emulador local **não é** alternativa viável pra este conector hoje (correção ao que este doc dizia antes). Só dá pra testar com conta GCP real. |
+| Redshift | Postgres local (mesmo driver ADBC, wire-compatible) | ⚠️ parcial | driver conecta, mas exige SSL sem opção de desligar no schema — Postgres de teste sem TLS não fecha o teste. Dá pra fechar configurando SSL no Postgres local (não feito, desproporcional só pra validar wiring). |
+| HANA | — | ❌ fora de escopo | driver ODBC (`HDBODBC`) exige registro/login SAP pra baixar — bloqueio do fabricante, não do NexusFlow. |
+
+### Feature nova: auto-create-table (Oracle, MSSQL/Synapse)
+
+Só `postgres`/`mysql` (OSS) tinham `CREATE TABLE IF NOT EXISTS`
+automático. Oracle e MSSQL exigiam criar a tabela na mão antes de
+testar — implementado seguindo o mesmo padrão do `postgres` (schema do
+primeiro batch escrito, DDL lazy no primeiro `write_batch`). MSSQL usa
+`IF OBJECT_ID(...) IS NULL CREATE TABLE ...` (idempotente numa
+instrução só); Oracle não tem `CREATE TABLE IF NOT EXISTS` antes da
+23c, então tenta o DDL e engole `ORA-00955` ("name is already used by
+an existing object").

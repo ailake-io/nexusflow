@@ -1,5 +1,18 @@
 # 🏪 Plano de Implementação — Store de Plugins / Conectores Enterprise
 
+> ⚠️ **Doc desatualizado (2026-08-28)** — este plano descreve **Mercado
+> Pago** como gateway de pagamento. A decisão de produto real, já
+> implementada, foi **Stripe** (cartão BRL/USD + Pix) — ver
+> `docs/ENTERPRISE_LICENSING.md`, que é a fonte de verdade atual sobre
+> o fluxo de cobrança/licenciamento. O serviço `nexus-licensing` (repo
+> privado) já existe com esse scaffold Stripe completo (checkout,
+> webhook, emissão de license, API admin), commitado, ainda não
+> deployado em produção. Mantido aqui só como histórico das decisões
+> de arquitetura de entrega de conector (feature flag vs dynamic
+> loading vs binário separado — §2.2, ainda válida) e das fases de
+> implementação (§4), que continuam corretas fora da escolha de
+> gateway de pagamento.
+
 > **Escopo:** catálogo, checkout, pagamento, emissão de license key e entrega/liberação de conectores enterprise no NexusFlow.
 > **Status (auditado, ver `docs/ENTERPRISE_LICENSING.md` §"Estado real" — fonte de verdade atual):** o gate técnico de licenciamento no `nexus-server`, o enforcement em runtime e a integração frontend (cadeado + aba Store) já estão implementados; o catálogo enterprise real já existe (24 crates / 51 entradas no repo privado). O que falta é só o lado de cobrança — o serviço `nexus-licensing` (catálogo/checkout/webhook) não existe ainda. As seções abaixo (decisões de checkout/pricing/store) continuam válidas como planejamento pra essa parte que falta.
 > **Repos envolvidos:**
