@@ -56,8 +56,6 @@ parquet = ["nexus-server/parquet"]
 ailake = ["nexus-server/ailake"]
 csv = ["nexus-server/csv"]
 clickhouse = ["nexus-server/clickhouse"]
-kinesis = ["nexus-server/kinesis"]
-pulsar = ["nexus-server/pulsar"]
 # Native CDC features (logical/binlog/change-data-feed) — forward to the
 # server crate's matching feature (ARCHITECTURE.md §7).
 postgres-cdc = ["nexus-server/postgres-cdc"]

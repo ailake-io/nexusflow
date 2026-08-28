@@ -26,12 +26,8 @@ use nexus_connector_iceberg::{IcebergCdcConfig, IcebergCdcSource};
 use nexus_connector_iceberg::{IcebergConnectorConfig, IcebergSink, IcebergSource};
 #[cfg(feature = "kafka")]
 use nexus_connector_kafka::{KafkaConnectorConfig, KafkaSource};
-#[cfg(feature = "kinesis")]
-use nexus_connector_kinesis::{KinesisConnectorConfig, KinesisSource};
 #[cfg(feature = "lancedb")]
 use nexus_connector_lancedb::{LanceDbConnectorConfig, LanceDbSink};
-#[cfg(feature = "pulsar")]
-use nexus_connector_pulsar::{PulsarConnectorConfig, PulsarSource};
 #[cfg(feature = "milvus")]
 use nexus_connector_milvus::{MilvusConnectorConfig, MilvusSink};
 #[cfg(feature = "mongodb")]
@@ -131,14 +127,6 @@ pub fn validate_source_config(
         "kafka" => {
             let _: KafkaConnectorConfig = serde_json::from_value(node.config.clone())?;
         }
-        #[cfg(feature = "kinesis")]
-        "kinesis" => {
-            let _: KinesisConnectorConfig = serde_json::from_value(node.config.clone())?;
-        }
-        #[cfg(feature = "pulsar")]
-        "pulsar" => {
-            let _: PulsarConnectorConfig = serde_json::from_value(node.config.clone())?;
-        }
         #[cfg(feature = "mqtt")]
         "mqtt" => {
             let _: MqttConnectorConfig = serde_json::from_value(node.config.clone())?;
@@ -237,16 +225,6 @@ pub async fn build_source(
         "kafka" => {
             let cfg: KafkaConnectorConfig = serde_json::from_value(node.config.clone())?;
             Box::new(KafkaSource::connect(&cfg).await?)
-        }
-        #[cfg(feature = "kinesis")]
-        "kinesis" => {
-            let cfg: KinesisConnectorConfig = serde_json::from_value(node.config.clone())?;
-            Box::new(KinesisSource::connect(&cfg).await?)
-        }
-        #[cfg(feature = "pulsar")]
-        "pulsar" => {
-            let cfg: PulsarConnectorConfig = serde_json::from_value(node.config.clone())?;
-            Box::new(PulsarSource::connect(&cfg).await?)
         }
         #[cfg(feature = "mqtt")]
         "mqtt" => {
