@@ -116,6 +116,11 @@ impl PostgresSink {
 }
 
 fn build_pg_config(cfg: &PostgresConnectorConfig) -> Result<tokio_postgres::Config, NexusError> {
+    if let Some(uri) = cfg.uri.as_deref().filter(|s| !s.is_empty()) {
+        return uri
+            .parse::<tokio_postgres::Config>()
+            .map_err(|e| NexusError::Connector(format!("invalid postgres uri: {e}")));
+    }
     let mut config = tokio_postgres::Config::new();
     config
         .host(&cfg.host)
