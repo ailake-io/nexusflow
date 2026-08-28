@@ -18,10 +18,13 @@ pub struct PostgresSink {
     upsert_statement: ManagedStatement,
     delete_statement: ManagedStatement,
     copy_client: Arc<Client>,
-    table: String,
     schema: SchemaRef,
     primary_key: String,
     timeout_seconds: u64,
+    /// `INSERT ... SELECT ... ON CONFLICT DO UPDATE` moving a batch from
+    /// `COPY_STAGING_TABLE` into `table` — see `execute_copy`'s doc comment
+    /// for why the plain-COPY fast path needs this at all.
+    copy_upsert_sql: String,
 }
 
 impl PostgresSink {
@@ -103,14 +106,30 @@ impl PostgresSink {
             })
             .await?;
 
+        // Session-scoped TEMP TABLE on `copy_client`'s own connection (which
+        // this sink holds for its entire lifetime) — no cross-run collision
+        // risk, no manual cleanup needed (Postgres drops it when the
+        // connection closes). `LIKE ... INCLUDING DEFAULTS` needs the real
+        // target table to already exist, which the ADBC block above just
+        // ensured.
+        let quoted_table_for_staging = quote_identifier(&table)?;
+        copy_client
+            .batch_execute(&format!(
+                "CREATE TEMP TABLE IF NOT EXISTS {COPY_STAGING_TABLE} (LIKE {quoted_table_for_staging} INCLUDING DEFAULTS)"
+            ))
+            .await
+            .map_err(|e| NexusError::Connector(format!("create staging table failed: {e}")))?;
+        let copy_upsert_sql =
+            build_copy_upsert_sql(&table, COPY_STAGING_TABLE, &cfg.primary_key, &schema)?;
+
         Ok(Self {
             upsert_statement,
             delete_statement,
             copy_client: Arc::new(copy_client),
-            table,
             schema,
             primary_key: cfg.primary_key.clone(),
             timeout_seconds: cfg.timeout_seconds,
+            copy_upsert_sql,
         })
     }
 }
@@ -212,6 +231,43 @@ fn build_upsert_sql(
     ))
 }
 
+/// Session-scoped (Postgres `TEMP TABLE`) staging table `execute_copy`
+/// bulk-loads into before upserting into the real target — see that
+/// method's doc comment.
+const COPY_STAGING_TABLE: &str = "_nexus_copy_staging";
+
+/// `INSERT ... SELECT ... ON CONFLICT DO UPDATE` moving a batch from
+/// `staging_table` into `table` — the upsert half of `execute_copy`'s
+/// staging-then-upsert idempotency fix. Same shape as `build_upsert_sql`
+/// above, just `SELECT`-from-staging instead of `VALUES` placeholders
+/// (COPY already put the data in staging; no per-row parameters needed).
+fn build_copy_upsert_sql(
+    table: &str,
+    staging_table: &str,
+    primary_key: &str,
+    schema: &SchemaRef,
+) -> Result<String, NexusError> {
+    let quoted_table = quote_identifier(table)?;
+    let quoted_staging = quote_identifier(staging_table)?;
+    let quoted_primary_key = quote_identifier(primary_key)?;
+    let columns: Vec<_> = schema.fields().iter().collect();
+    let quoted_columns: Vec<_> = columns
+        .iter()
+        .map(|f| quote_identifier(f.name()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let updates: Vec<String> = columns
+        .iter()
+        .zip(quoted_columns.iter())
+        .filter(|(f, _)| f.name().as_str() != primary_key)
+        .map(|(_, quoted)| format!("{quoted} = EXCLUDED.{quoted}"))
+        .collect();
+    let cols = quoted_columns.join(", ");
+    Ok(format!(
+        "INSERT INTO {quoted_table} ({cols}) SELECT {cols} FROM {quoted_staging} ON CONFLICT ({quoted_primary_key}) DO UPDATE SET {upd}",
+        upd = updates.join(", "),
+    ))
+}
+
 fn build_delete_sql(table: &str, primary_key: &str) -> Result<String, NexusError> {
     let quoted_table = quote_identifier(table)?;
     let quoted_primary_key = quote_identifier(primary_key)?;
@@ -272,13 +328,25 @@ fn batch_to_copy_text(batch: &RecordBatch) -> Result<Vec<u8>, NexusError> {
 }
 
 impl PostgresSink {
-    /// Bulk-loads a non-CDC batch using `COPY ... FROM STDIN`.
+    /// Bulk-loads a non-CDC batch via `COPY ... FROM STDIN` into a
+    /// session-scoped TEMP staging table, then moves it into the real
+    /// target with `INSERT ... SELECT ... ON CONFLICT DO UPDATE`.
+    ///
+    /// A plain `COPY` straight into the target isn't idempotent — a
+    /// partition re-run after a crash (checkpoint never committed, but the
+    /// data may already have landed) hits the target's `PRIMARY KEY` and
+    /// fails outright, breaking the "every sink write is an upsert, so
+    /// resume-after-crash never duplicates" guarantee this repo otherwise
+    /// holds (`ARCHITECTURE.md §5`) — confirmed the hard way via
+    /// `crates/nexus-server/tests/postgres_pipeline.rs`'s crash/resume test.
+    /// Routing through staging keeps `COPY`'s speed for the common
+    /// (non-crash) case and only adds one extra `INSERT ... SELECT` per
+    /// batch — cheap next to the `COPY` itself.
     async fn execute_copy(&self, batch: &RecordBatch) -> Result<(), NexusError> {
         if batch.num_rows() == 0 {
             return Ok(());
         }
 
-        let quoted_table = quote_identifier(&self.table)?;
         let quoted_columns: Vec<_> = self
             .schema
             .fields()
@@ -286,14 +354,20 @@ impl PostgresSink {
             .map(|f| quote_identifier(f.name()))
             .collect::<Result<Vec<_>, _>>()?;
         let copy_sql = format!(
-            "COPY {quoted_table} ({}) FROM STDIN WITH (FORMAT text)",
+            "COPY {COPY_STAGING_TABLE} ({}) FROM STDIN WITH (FORMAT text)",
             quoted_columns.join(", ")
         );
 
         let data = batch_to_copy_text(batch)?;
         let client = self.copy_client.clone();
+        let copy_upsert_sql = self.copy_upsert_sql.clone();
 
         with_timeout(self.timeout_seconds, "postgres copy", async move {
+            client
+                .execute(&format!("TRUNCATE TABLE {COPY_STAGING_TABLE}"), &[])
+                .await
+                .map_err(|e| NexusError::Connector(format!("truncate staging failed: {e}")))?;
+
             let sink = client
                 .copy_in(&copy_sql)
                 .await
@@ -305,6 +379,11 @@ impl PostgresSink {
             sink.finish()
                 .await
                 .map_err(|e| NexusError::Connector(format!("copy finish failed: {e}")))?;
+
+            client
+                .execute(&copy_upsert_sql, &[])
+                .await
+                .map_err(|e| NexusError::Connector(format!("copy upsert failed: {e}")))?;
             Ok::<(), NexusError>(())
         })
         .await
