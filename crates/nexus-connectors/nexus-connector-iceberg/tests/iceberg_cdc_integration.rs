@@ -16,7 +16,7 @@ use futures::StreamExt;
 use nexus_connector_iceberg::{
     IcebergCdcConfig, IcebergCdcSource, IcebergConnectorConfig, IcebergFormatVersion, IcebergSink,
 };
-use nexus_core::{Sink, Source, OPCODE_COLUMN};
+use nexus_core::{CheckpointCursor, Sink, Source, OPCODE_COLUMN};
 use std::sync::Arc;
 
 fn batch(ids: Vec<i64>, statuses: Vec<&str>) -> RecordBatch {
@@ -63,9 +63,18 @@ async fn cdc_source_replays_every_append_as_insert() {
     sink.write_batch(batch(vec![1, 2, 3], vec!["pending", "pending", "pending"]))
         .await
         .expect("writes first batch");
+    // Non-CDC batches are buffered and only committed as a real Iceberg
+    // snapshot on flush — without these, both writes would sit unflushed
+    // in memory and the CDC source below would find no table at all.
+    sink.commit_checkpoint(CheckpointCursor::new("p0"))
+        .await
+        .expect("flushes first batch");
     sink.write_batch(batch(vec![4], vec!["pending"]))
         .await
         .expect("writes second batch (separate snapshot)");
+    sink.commit_checkpoint(CheckpointCursor::new("p0"))
+        .await
+        .expect("flushes second batch");
 
     let cdc_cfg = IcebergCdcConfig {
         catalog_uri: batch_cfg.catalog_uri,
