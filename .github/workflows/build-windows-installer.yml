@@ -120,7 +120,11 @@ jobs:
         run: cargo build --release -p nexusflow --features embed-ui,connectors-all
 
       - name: cargo wix
-        run: cargo wix --input packaging\windows\main.wxs --nocapture
+        # cargo-wix dropped --input in favor of --include/-I for a custom
+        # .wxs source file (the old flag now errors: "unexpected argument
+        # '--input' found") — the positional INPUT argument now means the
+        # package manifest (Cargo.toml) to build, not the .wxs path.
+        run: cargo wix --include packaging\windows\main.wxs --nocapture
 
       - name: Locate the built .msi
         id: msi
