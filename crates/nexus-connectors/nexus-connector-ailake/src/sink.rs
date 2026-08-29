@@ -1,6 +1,6 @@
 use crate::bridge::to_old_batch;
 use crate::config::AilakeConnectorConfig;
-use crate::rows::{drop_column, extract_embeddings, extract_pk_strings};
+use crate::rows::{dedupe_keep_last_by_pk, drop_column, extract_embeddings, extract_pk_strings};
 use ailake_catalog::hadoop::HadoopCatalog;
 use ailake_catalog::provider::{CatalogProvider, TableIdent};
 use ailake_core::schema::VectorStoragePolicy;
@@ -72,6 +72,18 @@ impl AilakeSink {
     }
 
     async fn write_buffered_upsert(&self, batch: RecordBatch) -> Result<(), NexusError> {
+        if batch.num_rows() == 0 {
+            return Ok(());
+        }
+        // A key written twice while still inside the same buffer window
+        // (two write_batch calls, one flush) would otherwise reach the
+        // delete-then-append below as two rows for the same key — the
+        // delete only masks a row from an *earlier* flush, so both would
+        // survive as separate physical rows. Collapse to the last write per
+        // key first so "second write replaces the first" holds regardless
+        // of whether the two writes landed in the same flush or different
+        // ones.
+        let batch = dedupe_keep_last_by_pk(&batch, &self.primary_key)?;
         if batch.num_rows() == 0 {
             return Ok(());
         }
