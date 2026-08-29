@@ -2,7 +2,7 @@ use crate::config::{MongoConnectorConfig, MongoDataType, MongoFieldSpec};
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
-use futures::stream::{BoxStream, Stream};
+use futures::stream::{BoxStream, Stream, TryStreamExt};
 use mongodb::bson::Document;
 use mongodb::{Client, Collection, Cursor};
 use nexus_core::{with_timeout, NexusError, RecordBatchBuilder, Source};
@@ -36,13 +36,56 @@ impl MongoSource {
             .database(&config.database)
             .collection::<Document>(&config.collection);
 
+        let schema = if config.fields.is_empty() {
+            infer_schema(
+                &collection,
+                config.schema_sample_rows,
+                config.timeout_seconds,
+            )
+            .await?
+        } else {
+            build_schema(&config.fields)
+        };
+
         Ok(Self {
             collection,
-            schema: build_schema(&config.fields),
+            schema,
             batch_size: config.batch_size,
             timeout_seconds: config.timeout_seconds,
         })
     }
+}
+
+/// Samples up to `limit` documents and infers a schema — source-side
+/// fallback for when `fields` is left empty (see
+/// `MongoConnectorConfig::fields` doc comment).
+async fn infer_schema(
+    collection: &Collection<Document>,
+    limit: i64,
+    timeout_seconds: u64,
+) -> Result<SchemaRef, NexusError> {
+    let docs: Vec<Document> = with_timeout(timeout_seconds, "mongo schema sample find", async {
+        let cursor = collection
+            .find(Document::new())
+            .limit(limit)
+            .await
+            .map_err(|e| {
+                NexusError::Connector(format!("mongo find (schema sample) failed: {e}"))
+            })?;
+        cursor
+            .try_collect()
+            .await
+            .map_err(|e| NexusError::Connector(format!("mongo cursor (schema sample) failed: {e}")))
+    })
+    .await?;
+    let rows: Vec<Value> = docs
+        .iter()
+        .map(|doc| {
+            serde_json::to_value(doc)
+                .map_err(|e| NexusError::Serialization(format!("bson->json failed: {e}")))
+        })
+        .collect::<Result<_, _>>()?;
+    Ok(RecordBatchBuilder::infer_schema(&rows))
 }
 
 fn build_schema(fields: &[MongoFieldSpec]) -> SchemaRef {

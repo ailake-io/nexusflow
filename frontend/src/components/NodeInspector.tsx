@@ -16,6 +16,7 @@ import { useI18n } from '@/lib/i18n'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { SchemaForm } from '@/components/SchemaForm'
+import { NodePreview } from '@/components/NodePreview'
 import { Database, Code2, Layers, Sparkles, Terminal, Upload } from 'lucide-react'
 
 interface NodeInspectorProps {
@@ -183,6 +184,7 @@ export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps
                 />
               </div>
             )}
+            <NodePreview connector={data.connector} config={parseConfig(data.config)} />
           </div>
         </div>
       </aside>

@@ -431,3 +431,30 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             FEATURES=embed-ui,connectors-all
+
+  # Keeps `develop` from drifting behind `main` after a release —
+  # `determine-version` may have pushed a version-bump commit straight to
+  # `main` (see that job's step), which `develop` never gets otherwise. Runs
+  # once the release itself is confirmed published (needs github-release,
+  # not just build/smoke-test), so a failed release never touches `develop`.
+  # Force-push, not a merge: the intent is "develop == main exactly" after
+  # every release, not a best-effort fast-forward — a merge would either
+  # no-op (already a fast-forward) or fail/create a merge commit the moment
+  # develop has any commit main doesn't, which defeats the point. Anything
+  # unmerged on `develop` at release time is expected to already be in
+  # `main` via the PR that triggered this chain in the first place.
+  sync-develop:
+    if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') || github.event_name == 'workflow_dispatch'
+    needs: [determine-version, github-release]
+    runs-on: [self-hosted, Linux]
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.determine-version.outputs.sha }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Force-push main onto develop
+        run: git push origin ${{ needs.determine-version.outputs.sha }}:refs/heads/develop --force

@@ -75,11 +75,23 @@ pub struct AilakeConnectorConfig {
     /// deployments.
     #[serde(default)]
     pub storage_options: AilakeStorageOptions,
+    /// When true, the sink appends batches without issuing the equality delete
+    /// that masks pre-existing rows sharing the primary key. This avoids the
+    /// extra commit and delete scan for large append-only loads. CDC (`__opcode`)
+    /// batches still honor deletes.
+    #[serde(default)]
+    pub append_only: bool,
     /// Timeout in seconds for each catalog/store call — the warehouse is a
     /// local filesystem today, but this still guards against a locked
     /// catalog file or a slow disk stalling the pipeline indefinitely (C15).
     #[serde(default = "default_timeout_seconds")]
     pub timeout_seconds: u64,
+    /// Number of rows to accumulate before committing an AI-Lake write
+    /// session. Larger values reduce the number of create-or-open/write/commit
+    /// cycles; the remaining rows are flushed when the pipeline finishes
+    /// (`commit_checkpoint`).
+    #[serde(default = "default_flush_threshold_rows")]
+    pub flush_threshold_rows: usize,
 }
 
 impl AilakeConnectorConfig {
@@ -153,6 +165,10 @@ impl AilakeConnectorConfig {
 
 fn default_timeout_seconds() -> u64 {
     30
+}
+
+fn default_flush_threshold_rows() -> usize {
+    50_000
 }
 
 /// Native CDC source for AI-Lake — separate connector name
@@ -314,7 +330,9 @@ mod tests {
             embedding_column: "embedding".to_string(),
             dimension: 384,
             storage_options: AilakeStorageOptions::default(),
+            append_only: false,
             timeout_seconds: 30,
+            flush_threshold_rows: 50_000,
         }
     }
 

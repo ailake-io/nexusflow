@@ -94,6 +94,27 @@ export function listConnectors(token: string): Promise<ConnectorDescriptor[]> {
   return request<ConnectorDescriptor[]>('/connectors', {}, token)
 }
 
+/** Matches nexus-server::preview_adhoc_handler's response
+ * (POST /connectors/preview) — same shape GET /pipelines/{id}/preview
+ * returns, just for a bare connector/config pair instead of a saved
+ * pipeline's node. */
+export interface PreviewResult {
+  rows: Record<string, unknown>[]
+}
+
+export function previewConnector(
+  token: string,
+  connector: string,
+  config: Record<string, unknown>,
+  limit = 20,
+): Promise<PreviewResult> {
+  return request<PreviewResult>(
+    '/connectors/preview',
+    { method: 'POST', body: JSON.stringify({ connector, config, limit }) },
+    token,
+  )
+}
+
 /** Matches nexus-server::LicenseStatusResponse, as returned by both
  * GET /license and POST /license (Admin-only, see `docs/ENTERPRISE_LICENSING.md`). */
 export interface LicenseStatus {
@@ -113,6 +134,64 @@ export function installLicense(token: string, licenseKey: string): Promise<Licen
     { method: 'POST', body: JSON.stringify({ license_key: licenseKey }) },
     token,
   )
+}
+
+/**
+ * `nexus-licensing` — a separate, centrally-run service (never this
+ * `nexus-server` instance itself, see `docs/ENTERPRISE_LICENSING.md`), so
+ * these calls go to their own origin instead of through `request()` above.
+ * Configured via `VITE_LICENSING_API_URL`; the Store page hides the buy
+ * flow entirely when it's unset — the manual "cole a license key" flow
+ * (`installLicense` above) always works regardless.
+ */
+const LICENSING_API_URL = (import.meta.env.VITE_LICENSING_API_URL as string | undefined)?.replace(
+  /\/$/,
+  '',
+)
+
+export function isLicensingConfigured(): boolean {
+  return Boolean(LICENSING_API_URL)
+}
+
+async function licensingRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const headers = new Headers(init.headers)
+  if (init.body) headers.set('content-type', 'application/json')
+  const response = await fetch(`${LICENSING_API_URL}${path}`, { ...init, headers })
+  if (!response.ok) {
+    const body = await response.json().catch(() => null)
+    throw new ApiError(response.status, body?.error ?? response.statusText)
+  }
+  return response.json() as Promise<T>
+}
+
+/** Matches nexus-licensing::Product (its own catalog, separate from this
+ * server's `/connectors` — see `docs/ENTERPRISE_LICENSING.md §3`). */
+export interface LicensingProduct {
+  id: number
+  connector_slug: string
+  name: string
+  price_cents_brl: number
+  price_cents_usd: number
+  active: boolean
+}
+
+export function listLicensingProducts(): Promise<LicensingProduct[]> {
+  return licensingRequest<LicensingProduct[]>('/products')
+}
+
+export interface CheckoutResponse {
+  checkout_url: string
+}
+
+export function createCheckout(
+  productIds: number[],
+  email: string,
+  currency: 'brl' | 'usd',
+): Promise<CheckoutResponse> {
+  return licensingRequest<CheckoutResponse>('/checkout', {
+    method: 'POST',
+    body: JSON.stringify({ product_ids: productIds, email, currency }),
+  })
 }
 
 /** Matches nexus-core::ProgressEvent, as sent over the progress WebSocket. */
@@ -168,6 +247,15 @@ export interface DbtRunSummary {
   nodes_in_lineage: number | null
 }
 
+/** Matches nexus-core::pipeline::PartitionStats — one entry per partition/
+ *  sink written during a run, embedded in RunRecord.stats below. */
+export interface PartitionStats {
+  partition_id: string
+  batches_written: number
+  rows_written: number
+  resume_state: string | null
+}
+
 /** Matches nexus-server::pipeline_store::RunRecord, as returned by GET /pipelines/{id}/runs. */
 export interface RunRecord {
   id: number
@@ -176,7 +264,7 @@ export interface RunRecord {
   finished_at: string | null
   status: 'running' | 'success' | 'failed'
   error: string | null
-  stats: unknown
+  stats: PartitionStats[] | null
   dbt_summary: DbtRunSummary | null
 }
 
@@ -201,6 +289,118 @@ export function runPipeline(
 
 export function listRuns(token: string, pipelineId: string): Promise<RunRecord[]> {
   return request<RunRecord[]>(`/pipelines/${encodeURIComponent(pipelineId)}/runs`, {}, token)
+}
+
+/** Matches nexus-server::resource_stats::ResourceStatsBucket — one averaged
+ *  point returned by GET /system/resource-stats. `disk_*` are `null` when
+ *  the backend couldn't resolve the data directory's containing mount. */
+export interface ResourceStatsBucket {
+  bucket_start: string
+  cpu_percent: number
+  memory_used_bytes: number
+  memory_total_bytes: number
+  disk_used_bytes: number | null
+  disk_total_bytes: number | null
+}
+
+/**
+ * Historical CPU/memory/disk usage for the Resources tab. `range` is
+ * `<number><unit>` (`5m`/`45m`/`3h`/`12d`, unit ∈ m/h/d) — the same 5
+ * preset shortcuts the panel offers (`1h`/`6h`/`1d`/`7d`/`30d`) plus
+ * whatever custom value the user types. Defaults to `5m` server-side when
+ * omitted, matching the panel's own initial state.
+ */
+export function getResourceStats(token: string, range: string): Promise<ResourceStatsBucket[]> {
+  return request<ResourceStatsBucket[]>(
+    `/system/resource-stats?range=${encodeURIComponent(range)}`,
+    {},
+    token,
+  )
+}
+
+/** Matches nexus-server::dbt_test_result_store::DbtTestOutcome, as returned
+ *  by GET /pipelines/{id}/dbt-tests. One row per recorded test result —
+ *  history, not just the latest run (dbt's own CLI has no cross-run memory
+ *  of this; nexus-server persists it instead of discarding it after the
+ *  aggregate pass/fail count already on RunRecord.dbt_summary is derived). */
+export interface DbtTestOutcome {
+  unique_id: string
+  status: 'pass' | 'fail' | 'warn'
+  message: string | null
+  execution_time: number
+}
+
+export function getDbtTestResults(token: string, pipelineId: string): Promise<DbtTestOutcome[]> {
+  return request<DbtTestOutcome[]>(
+    `/pipelines/${encodeURIComponent(pipelineId)}/dbt-tests`,
+    {},
+    token,
+  )
+}
+
+/** Matches nexus-server::lineage::ResourceKind. */
+export type LineageResourceKind = 'table' | 'collection' | 'topic' | 'file'
+
+/** Matches nexus-server::lineage::LineageNode — a saved pipeline, a
+ *  resource one or more pipelines touch (identified by a connector-specific
+ *  allowlisted field only, e.g. `table`/`collection`/`topic`; never a raw
+ *  connection string), or a node from a pipeline's dbt project
+ *  (`resource_type` is dbt's own vocabulary — `model`/`source`/`seed`/
+ *  `snapshot`). Discriminated by `kind`. */
+export type LineageNode =
+  | { kind: 'pipeline'; id: string; label: string; has_schedule: boolean }
+  | { kind: 'resource'; id: string; label: string; connector: string; resource_kind: LineageResourceKind }
+  | { kind: 'dbt_node'; id: string; label: string; resource_type: string }
+
+/** Matches nexus-server::lineage::LineageEdge. */
+export interface LineageEdge {
+  from: string
+  to: string
+}
+
+/** Matches nexus-server::lineage::LineageGraph, as returned by GET /lineage.
+ *  Whole-catalog graph, computed fresh on every request — no polling
+ *  needed, saved pipelines change rarely compared to live resource usage. */
+export interface LineageGraph {
+  nodes: LineageNode[]
+  edges: LineageEdge[]
+}
+
+export function getLineage(token: string): Promise<LineageGraph> {
+  return request<LineageGraph>('/lineage', {}, token)
+}
+
+/** Matches nexus-server::pipeline_schema_store::ColumnInfo. */
+export interface LineageColumnInfo {
+  name: string
+  data_type: string
+}
+
+/** Matches nexus-server::pipeline_schema_store::ColumnLineageInfo —
+ *  `source_columns: null` means the backend's `LogicalPlan` walk couldn't
+ *  determine provenance for this output column (an unsupported query shape,
+ *  e.g. a `UNION`), not that it has none. */
+export interface LineageColumnLineageInfo {
+  output_column: string
+  source_columns: string[] | null
+}
+
+/** Matches nexus-server::pipeline_schema_store::PipelineSchema, returned by
+ *  `GET /lineage/{id}/schema`. `column_lineage` is only present when the
+ *  pipeline has a SQL transform stage. */
+export interface PipelineSchema {
+  pipeline_id: string
+  source_columns: LineageColumnInfo[]
+  output_columns: LineageColumnInfo[]
+  column_lineage: LineageColumnLineageInfo[] | null
+  captured_at: string
+}
+
+/** Fetched on demand — clicking a pipeline node in the Lineage tab, not
+ *  bundled into `GET /lineage`. Throws `ApiError` with `status: 404` when
+ *  the pipeline has never run (nothing captured yet). */
+export function getPipelineSchema(token: string, pipelineId: string): Promise<PipelineSchema> {
+  return request<PipelineSchema>(`/lineage/${encodeURIComponent(pipelineId)}/schema`, {}, token)
 }
 
 /**
@@ -301,6 +501,60 @@ export function updatePipeline(
  * canvas inspector. */
 export function getPipelineSpec(token: string, pipelineId: string): Promise<PipelineSpec> {
   return request<PipelineSpec>(`/pipelines/${encodeURIComponent(pipelineId)}/spec`, {}, token)
+}
+
+/** A resolved source/sink node's own name — `sink0`/`source0` for an
+ *  unnamed node, or its explicit `name` — same string
+ *  `NodeSpec::resolved_name` produces server-side and what `GET
+ *  /pipelines/{id}/preview`'s `node` query param expects. */
+export function resolvedNodeName(node: NodeSummary, index: number, prefix: 'source' | 'sink'): string {
+  return node.name ?? `${prefix}${index}`
+}
+
+/** GET /pipelines/{id}/preview — first `limit` rows (default 50, capped at
+ *  500 server-side) of one saved source/sink node, read live via the same
+ *  `build_source` path a real run uses. Only works for a connector that can
+ *  act as a `Source` — a sink-only connector (milvus/qdrant/lancedb/
+ *  pgvector/pinecone/chromadb/webhook) rejects with a 400 `ApiError`. Each
+ *  row is a plain JSON object keyed by column name; there is no separate
+ *  schema — infer types from the values themselves. */
+export function previewNode(
+  token: string,
+  pipelineId: string,
+  node: string,
+  limit?: number,
+): Promise<{ rows: Record<string, unknown>[] }> {
+  const params = new URLSearchParams({ node })
+  if (limit) params.set('limit', String(limit))
+  return request<{ rows: Record<string, unknown>[] }>(
+    `/pipelines/${encodeURIComponent(pipelineId)}/preview?${params.toString()}`,
+    {},
+    token,
+  )
+}
+
+/** One entry (file or subdirectory) returned by `browseFilesystem`. */
+export interface BrowseEntry {
+  name: string
+  is_dir: boolean
+  size: number | null
+}
+
+/** Matches nexus-server::browse::BrowseListing, as returned by
+ *  GET /system/browse-fs. */
+export interface BrowseListing {
+  path: string
+  entries: BrowseEntry[]
+}
+
+/** Lists a server-side directory's contents for the Canvas "browse path"
+ *  file picker (`FileBrowserDialog`) — backs any file-based connector's
+ *  `path`/`file_path` config field. `path` omitted/empty lists `/`. */
+export function browseFilesystem(token: string, path?: string): Promise<BrowseListing> {
+  const params = new URLSearchParams()
+  if (path) params.set('path', path)
+  const query = params.toString()
+  return request<BrowseListing>(`/system/browse-fs${query ? `?${query}` : ''}`, {}, token)
 }
 
 export function deletePipeline(token: string, pipelineId: string): Promise<void> {

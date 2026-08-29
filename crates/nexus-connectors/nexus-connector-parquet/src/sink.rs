@@ -13,6 +13,7 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 /// Pure Parquet sink (Marco 6 — `parquet` crate directly, no Delta/Iceberg
@@ -28,17 +29,33 @@ pub struct ParquetSink {
     primary_key: String,
     compression: parquet::basic::Compression,
     row_group_size: Option<usize>,
+    append_only: bool,
+    append_counter: AtomicU64,
 }
 
 impl ParquetSink {
     pub fn connect(cfg: &ParquetConnectorConfig) -> Result<Self, NexusError> {
-        let (store, path) = open_store(&cfg.uri()?, &cfg.storage_options())?;
+        let uri = cfg.uri()?;
+        // `open_store` reads a whole directory's worth of files for a
+        // source — a sink always writes exactly one file, so a `path` that
+        // already resolves to a directory is a config error.
+        if std::path::Path::new(&uri).is_dir() {
+            return Err(NexusError::Schema(
+                "parquet sink: path must be a file, not a directory".to_string(),
+            ));
+        }
+        let (store, mut paths) = open_store(&uri, &cfg.storage_options())?;
+        let path = paths.pop().ok_or_else(|| {
+            NexusError::Connector("parquet sink: open_store returned no path".to_string())
+        })?;
         Ok(Self {
             store,
             path,
             primary_key: cfg.primary_key.clone(),
             compression: cfg.compression(),
             row_group_size: cfg.row_group_size,
+            append_only: cfg.append_only,
+            append_counter: AtomicU64::new(0),
         })
     }
 
@@ -81,6 +98,7 @@ impl ParquetSink {
         &self,
         schema: SchemaRef,
         row_groups: &[RecordBatch],
+        target_path: &ObjectPath,
     ) -> Result<(), NexusError> {
         let mut props_builder = WriterProperties::builder().set_compression(self.compression);
         if let Some(size) = self.row_group_size {
@@ -110,7 +128,7 @@ impl ParquetSink {
         .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))??;
 
         self.store
-            .put(&self.path, PutPayload::from(Bytes::from(bytes)))
+            .put(target_path, PutPayload::from(Bytes::from(bytes)))
             .await
             .map_err(|e| NexusError::Connector(format!("parquet store put failed: {e}")))?;
         Ok(())
@@ -159,7 +177,25 @@ impl ParquetSink {
             row_groups.push(upserts);
         }
 
-        self.write_all(schema, &row_groups).await
+        self.write_all(schema, &row_groups, &self.path).await
+    }
+
+    /// Append-only path for plain (non-CDC) batches: writes a new numbered
+    /// Parquet file instead of rewriting the existing one.
+    async fn append(&self, batch: RecordBatch) -> Result<(), NexusError> {
+        if batch.num_rows() == 0 {
+            return Ok(());
+        }
+        let idx = self.append_counter.fetch_add(1, Ordering::Relaxed);
+        let file_name = format!("part-{idx:05}.parquet");
+        let path_str = self.path.as_ref();
+        let target_dir = path_str.rfind('/').map(|i| &path_str[..i]).unwrap_or("");
+        let target_path = if target_dir.is_empty() {
+            ObjectPath::from(file_name)
+        } else {
+            ObjectPath::from(format!("{target_dir}/{file_name}"))
+        };
+        self.write_all(batch.schema(), &[batch], &target_path).await
     }
 }
 
@@ -169,13 +205,18 @@ impl Sink for ParquetSink {
         // CDC batches carry an `__opcode` column (ARCHITECTURE.md §5) — split
         // it so deletes are issued as real row removals via the
         // read-filter-rewrite path instead of being silently kept. Plain
-        // (non-CDC) batches take the unchanged all-upsert path.
+        // (non-CDC) batches take the fast append path when `append_only` is
+        // enabled, falling back to read-filter-rewrite otherwise.
         match split_by_opcode(&batch)? {
             None => {
-                // Zero-row placeholder with the same schema — no deletes on
-                // the plain (non-CDC) path, but `apply` wants one code path.
-                let empty = batch.slice(0, 0);
-                self.apply(batch, &empty).await
+                if self.append_only {
+                    self.append(batch).await
+                } else {
+                    // Zero-row placeholder with the same schema — no deletes on
+                    // the plain (non-CDC) path, but `apply` wants one code path.
+                    let empty = batch.slice(0, 0);
+                    self.apply(batch, &empty).await
+                }
             }
             Some(split) => self.apply(split.upserts, &split.deletes).await,
         }

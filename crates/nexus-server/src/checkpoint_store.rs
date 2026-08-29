@@ -150,6 +150,7 @@ impl CheckpointStore {
             }
         }
 
+        crate::server_metrics::record_checkpoint_commit(pipeline_id, &cursor.partition_id);
         Ok(())
     }
 

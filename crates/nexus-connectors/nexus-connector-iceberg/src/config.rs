@@ -150,16 +150,31 @@ pub struct IcebergConnectorConfig {
     /// duplicate lines on retry/resume (A01). Leave unset for pure append.
     #[serde(default)]
     pub primary_key: Option<String>,
+    /// When true, the sink appends batches without scanning the current
+    /// snapshot for existing primary keys. This avoids the full-snapshot read
+    /// for large append-only loads. CDC (`__opcode`) batches still honor the
+    /// existing semantics.
+    #[serde(default)]
+    pub append_only: bool,
     /// Timeout in seconds for each catalog/table call — both the SQLite
     /// catalog and local warehouse are embedded today, but this still
     /// guards against a locked catalog file or a future remote storage
     /// backend stalling the pipeline indefinitely (C15).
     #[serde(default = "default_timeout_seconds")]
     pub timeout_seconds: u64,
+    /// Number of rows to accumulate before committing an Iceberg transaction.
+    /// Larger values reduce catalog-commit overhead; the remaining rows are
+    /// flushed when the pipeline finishes (`commit_checkpoint`).
+    #[serde(default = "default_flush_threshold_rows")]
+    pub flush_threshold_rows: usize,
 }
 
 fn default_timeout_seconds() -> u64 {
     30
+}
+
+pub(crate) fn default_flush_threshold_rows() -> usize {
+    50_000
 }
 
 impl IcebergConnectorConfig {
@@ -426,7 +441,9 @@ mod tests {
             storage_options: StorageOptions::default(),
             format_version: IcebergFormatVersion::V2,
             primary_key: None,
+            append_only: false,
             timeout_seconds: 30,
+            flush_threshold_rows: 50_000,
         }
     }
 
@@ -453,7 +470,9 @@ mod tests {
             storage_options: StorageOptions::default(),
             format_version: IcebergFormatVersion::V2,
             primary_key: None,
+            append_only: false,
             timeout_seconds: 30,
+            flush_threshold_rows: 50_000,
         };
         assert_eq!(cfg.catalog_uri(), "sqlite:///new/catalog.db?mode=rwc");
         assert_eq!(cfg.warehouse_location(), "file:///new/warehouse");
@@ -475,7 +494,9 @@ mod tests {
             storage_options: StorageOptions::default(),
             format_version: IcebergFormatVersion::V2,
             primary_key: None,
+            append_only: false,
             timeout_seconds: 30,
+            flush_threshold_rows: 50_000,
         };
         assert_eq!(cfg.warehouse_location(), "file:///data/warehouse");
     }
@@ -494,7 +515,9 @@ mod tests {
             storage_options: StorageOptions::default(),
             format_version: IcebergFormatVersion::V2,
             primary_key: None,
+            append_only: false,
             timeout_seconds: 30,
+            flush_threshold_rows: 50_000,
         };
         assert!(cfg.catalog_uri().is_empty());
         assert!(cfg.warehouse_location().is_empty());
@@ -522,7 +545,9 @@ mod tests {
             },
             format_version: IcebergFormatVersion::V2,
             primary_key: None,
+            append_only: false,
             timeout_seconds: 30,
+            flush_threshold_rows: 50_000,
         };
         let map = cfg.storage_options();
         assert_eq!(map.get("s3.bucket"), Some(&"bucket".to_string()));

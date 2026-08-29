@@ -1,8 +1,22 @@
+import { useState } from 'react'
+import { FolderOpen } from 'lucide-react'
 import { useI18n } from '@/lib/i18n'
 import type { JsonSchemaNode } from '@/lib/api'
 import { FieldHint } from '@/components/FieldHint'
+import { FileBrowserDialog } from '@/components/FileBrowserDialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Button } from '@/components/ui/button'
+
+// Field names recognized as a server-side filesystem path across every
+// file-based connector's config — csv/parquet's `path`, sqlite's
+// `file_path`, deltalake's `path`, lancedb's `path`. Purely name-based:
+// SchemaForm has no notion of which connector a schema belongs to (it's
+// generic over any of them), so this is the same pragmatic approach
+// `isLegacyUriOverride` below already uses for `uri`/`connection_string`.
+// `iceberg`/`ailake` address their table via `catalog_uri` +
+// namespace/table instead of a bare path, so they aren't covered here.
+const FILE_PATH_FIELD_NAMES = new Set(['path', 'file_path'])
 
 // Loosely typed on purpose: this renders arbitrary JSON Schema shapes from
 // 16 different connector Config structs, whose actual TS shape isn't known
@@ -41,6 +55,7 @@ export function SchemaForm({ schema, defs, value, onChange, idPrefix }: SchemaFo
   const { t } = useI18n()
   const properties = schema.properties ?? {}
   const required = new Set(schema.required ?? [])
+  const [browsingField, setBrowsingField] = useState<string | null>(null)
 
   const setField = (key: string, fieldValue: JsonValue) => {
     onChange({ ...value, [key]: fieldValue })
@@ -172,19 +187,44 @@ export function SchemaForm({ schema, defs, value, onChange, idPrefix }: SchemaFo
           )
         }
 
-        // Default: plain string field.
+        // Default: plain string field. File-path-shaped fields (see
+        // FILE_PATH_FIELD_NAMES above) get an extra "Browse…" button that
+        // opens a server-side directory picker instead of requiring the
+        // path to be typed blind.
+        const isFilePathField = FILE_PATH_FIELD_NAMES.has(key)
         return (
           <div key={key}>
             <div className="flex items-center gap-1.5">
               <Label htmlFor={fieldId}>{label}</Label>
               {fieldSchema.description && <FieldHint text={fieldSchema.description} />}
             </div>
-            <Input
-              id={fieldId}
-              value={(value[key] as string) ?? ''}
-              onChange={(e) => setField(key, e.target.value)}
-              className="mt-1.5"
-            />
+            <div className="mt-1.5 flex items-center gap-2">
+              <Input
+                id={fieldId}
+                value={(value[key] as string) ?? ''}
+                onChange={(e) => setField(key, e.target.value)}
+                className="flex-1"
+              />
+              {isFilePathField && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setBrowsingField(key)}
+                >
+                  <FolderOpen className="h-3.5 w-3.5" />
+                  {t('schemaForm.browse')}
+                </Button>
+              )}
+            </div>
+            {isFilePathField && (
+              <FileBrowserDialog
+                open={browsingField === key}
+                onOpenChange={(open) => setBrowsingField(open ? key : null)}
+                initialPath={typeof value[key] === 'string' ? (value[key] as string) : undefined}
+                onSelect={(picked) => setField(key, picked)}
+              />
+            )}
           </div>
         )
       })}

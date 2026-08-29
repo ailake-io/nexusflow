@@ -92,6 +92,7 @@ pub async fn login_rate_limit(
         .parse()
         .unwrap_or_else(|_| std::net::IpAddr::from([0, 0, 0, 0]));
     if !limiter.is_allowed(ip) {
+        crate::server_metrics::record_rate_limit_rejection();
         return Err(ApiError::too_many_requests(
             "too many login attempts, try again later",
         ));

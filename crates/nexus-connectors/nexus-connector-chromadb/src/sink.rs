@@ -2,10 +2,15 @@ use crate::config::ChromaConnectorConfig;
 use crate::rows::{batch_to_metadata, extract_embeddings, extract_ids};
 use arrow_array::RecordBatch;
 use async_trait::async_trait;
+use futures::stream::{self, StreamExt};
 use nexus_core::{
     project_column, split_by_opcode, CheckpointCursor, NexusError, Sink, OPCODE_COLUMN,
 };
 use serde_json::{json, Value};
+
+/// Maximum items per ChromaDB upsert/delete request. ChromaDB's REST API
+/// can reject very large payloads; stay under ~1000 items per call.
+const CHROMA_CHUNK_SIZE: usize = 1000;
 
 /// AI Lakehouse sink #6 (last, most complex to operate — ROADMAP.md Fase 5).
 /// Talks to ChromaDB's v2 REST API directly (no official/stable Rust client
@@ -17,6 +22,7 @@ pub struct ChromaSink {
     primary_key: String,
     embedding_column: String,
     api_key: Option<String>,
+    max_concurrent_requests: usize,
 }
 
 impl ChromaSink {
@@ -64,6 +70,7 @@ impl ChromaSink {
             primary_key: cfg.primary_key.clone(),
             embedding_column: cfg.embedding_column.clone(),
             api_key: cfg.api_key.clone(),
+            max_concurrent_requests: cfg.max_concurrent_requests.max(1),
         })
     }
 
@@ -97,11 +104,27 @@ impl ChromaSink {
         let embeddings = extract_embeddings(batch, &self.embedding_column)?;
         let metadatas = batch_to_metadata(batch, &[self.embedding_column.as_str(), OPCODE_COLUMN])?;
 
-        self.post(
-            "upsert",
-            json!({ "ids": ids, "embeddings": embeddings, "metadatas": metadatas }),
-        )
-        .await
+        let total = ids.len();
+        let chunks: Vec<_> = (0..total)
+            .step_by(CHROMA_CHUNK_SIZE)
+            .map(|offset| {
+                let end = (offset + CHROMA_CHUNK_SIZE).min(total);
+                json!({
+                    "ids": &ids[offset..end],
+                    "embeddings": &embeddings[offset..end],
+                    "metadatas": &metadatas[offset..end],
+                })
+            })
+            .collect();
+
+        stream::iter(chunks)
+            .map(|body| async move { self.post("upsert", body).await })
+            .buffer_unordered(self.max_concurrent_requests)
+            .collect::<Vec<Result<(), NexusError>>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(())
     }
 
     async fn delete(&self, batch: &RecordBatch) -> Result<(), NexusError> {
@@ -110,7 +133,20 @@ impl ChromaSink {
         }
         let keys = project_column(batch, &self.primary_key)?;
         let ids = extract_ids(&keys, &self.primary_key)?;
-        self.post("delete", json!({ "ids": ids })).await
+
+        let chunks: Vec<_> = ids
+            .chunks(CHROMA_CHUNK_SIZE)
+            .map(|chunk| json!({ "ids": chunk }))
+            .collect();
+
+        stream::iter(chunks)
+            .map(|body| async move { self.post("delete", body).await })
+            .buffer_unordered(self.max_concurrent_requests)
+            .collect::<Vec<Result<(), NexusError>>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(())
     }
 }
 

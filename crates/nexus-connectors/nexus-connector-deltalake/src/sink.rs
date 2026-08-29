@@ -1,5 +1,7 @@
 use crate::config::DeltaConnectorConfig;
-use crate::rows::{arrow_schema_to_delta_fields, extract_pk_strings, in_predicate};
+use crate::rows::{
+    arrow_schema_to_delta_fields, dedupe_keep_last_by_pk, extract_pk_strings, in_predicate,
+};
 use arrow_array::RecordBatch;
 use async_trait::async_trait;
 use deltalake::errors::DeltaTableError;
@@ -7,7 +9,14 @@ use deltalake::operations::create::CreateBuilder;
 use deltalake::table::builder::ensure_table_uri;
 use deltalake::writer::{DeltaWriter, RecordBatchWriter};
 use deltalake::{open_table, DeltaTable};
-use nexus_core::{split_by_opcode, with_timeout, CheckpointCursor, NexusError, Sink};
+use nexus_core::{
+    batch_buffer::RecordBatchBuffer, split_by_opcode, with_timeout, CheckpointCursor, NexusError,
+    Sink,
+};
+
+/// Default byte threshold for the buffered writer. 32 MiB keeps memory bounded
+/// while still amortizing transaction overhead across many rows.
+const FLUSH_THRESHOLD_BYTES: usize = 32 * 1024 * 1024;
 
 /// Delta Lake sink (Marco 6 — `deltalake` crate directly). Table creation
 /// and appends use the lower-level `CreateBuilder`/`RecordBatchWriter` (no
@@ -18,10 +27,16 @@ use nexus_core::{split_by_opcode, with_timeout, CheckpointCursor, NexusError, Si
 /// Upsert = delete-then-append on the primary key, same trade-off Milvus's
 /// upsert makes in Marco 5 (Delta's own `merge()` needs a `datafusion::DataFrame`
 /// source, which isn't worth the extra dependency surface for this).
+///
+/// Plain (non-CDC) batches are buffered and flushed only when the row or byte
+/// threshold is reached, or at `commit_checkpoint`. This dramatically reduces
+/// the number of Delta transactions for large historical loads.
 pub struct DeltaSink {
     table_uri: String,
     primary_key: String,
+    append_only: bool,
     timeout_seconds: u64,
+    buffer: RecordBatchBuffer,
 }
 
 impl DeltaSink {
@@ -29,7 +44,9 @@ impl DeltaSink {
         Ok(Self {
             table_uri: cfg.table_uri.clone(),
             primary_key: cfg.primary_key.clone(),
+            append_only: cfg.append_only,
             timeout_seconds: cfg.timeout_seconds,
+            buffer: RecordBatchBuffer::new(cfg.flush_threshold_rows, FLUSH_THRESHOLD_BYTES),
         })
     }
 
@@ -76,37 +93,56 @@ impl DeltaSink {
         .await
     }
 
+    /// Maximum number of primary-key values passed to a single Delta `DELETE`
+    /// predicate. DataFusion's SQL parser can overflow its stack on very large
+    /// `IN (...)` lists, so we chunk the keys and issue multiple deletes.
+    const DELETE_CHUNK_SIZE: usize = 1_000;
+
     async fn delete_by_pks(
         &self,
-        table: DeltaTable,
+        mut table: DeltaTable,
         batch_for_types: &RecordBatch,
         pks: &[String],
     ) -> Result<DeltaTable, NexusError> {
         if pks.is_empty() {
             return Ok(table);
         }
-        let predicate = in_predicate(batch_for_types, &self.primary_key, pks)?;
-        with_timeout(self.timeout_seconds, "delta delete", async {
-            let (table, _metrics) = table
-                .delete()
-                .with_predicate(predicate)
-                .await
-                .map_err(|e| NexusError::Connector(format!("delta delete failed: {e}")))?;
-            Ok(table)
-        })
-        .await
+        for chunk in pks.chunks(Self::DELETE_CHUNK_SIZE) {
+            let predicate = in_predicate(batch_for_types, &self.primary_key, chunk)?;
+            table = with_timeout(self.timeout_seconds, "delta delete", async {
+                let (table, _metrics) = table
+                    .delete()
+                    .with_predicate(predicate)
+                    .await
+                    .map_err(|e| NexusError::Connector(format!("delta delete failed: {e}")))?;
+                Ok::<_, NexusError>(table)
+            })
+            .await?;
+        }
+        Ok(table)
     }
 
-    async fn upsert(&self, batch: RecordBatch) -> Result<(), NexusError> {
+    async fn write_buffered_upsert(&self, batch: RecordBatch) -> Result<(), NexusError> {
+        if batch.num_rows() == 0 {
+            return Ok(());
+        }
+        // A key written twice within the same buffer window (two
+        // write_batch calls, one flush) would otherwise reach the
+        // delete-then-append below as two rows for the same key — see
+        // dedupe_keep_last_by_pk's doc comment.
+        let batch = dedupe_keep_last_by_pk(&batch, &self.primary_key)?;
         if batch.num_rows() == 0 {
             return Ok(());
         }
         let mut table = self.ensure_table(&batch).await?;
         // Dedup: drop any pre-existing rows sharing a primary key with this
         // batch before appending, so re-upserting a key updates it instead
-        // of leaving a stale duplicate row behind.
-        let pks = extract_pk_strings(&batch, &self.primary_key)?;
-        table = self.delete_by_pks(table, &batch, &pks).await?;
+        // of leaving a stale duplicate row behind. Skipped in append-only
+        // mode for large non-CDC loads where duplicates are acceptable.
+        if !self.append_only {
+            let pks = extract_pk_strings(&batch, &self.primary_key)?;
+            table = self.delete_by_pks(table, &batch, &pks).await?;
+        }
 
         with_timeout(self.timeout_seconds, "delta write", async {
             let mut writer = RecordBatchWriter::for_table(&table)
@@ -121,6 +157,17 @@ impl DeltaSink {
                 .map_err(|e| NexusError::Connector(format!("delta commit failed: {e}")))
         })
         .await?;
+        Ok(())
+    }
+
+    async fn flush_buffer(&mut self) -> Result<(), NexusError> {
+        if let Some(batch) = self
+            .buffer
+            .take()
+            .map_err(|e| NexusError::Serialization(format!("delta batch concat failed: {e}")))?
+        {
+            self.write_buffered_upsert(batch).await?;
+        }
         Ok(())
     }
 
@@ -142,12 +189,21 @@ impl Sink for DeltaSink {
     async fn write_batch(&mut self, batch: RecordBatch) -> Result<(), NexusError> {
         // CDC batches carry an `__opcode` column (ARCHITECTURE.md §5) — split
         // it so deletes are issued as real Delta deletes instead of being
-        // silently kept. Plain (non-CDC) batches take the unchanged
-        // all-upsert path.
+        // silently kept. CDC traffic is applied immediately to preserve
+        // ordering between upserts and deletes; plain historical loads are
+        // buffered and flushed in larger chunks.
         match split_by_opcode(&batch)? {
-            None => self.upsert(batch).await,
+            None => {
+                if let Some(flushed) = self.buffer.push(batch).map_err(|e| {
+                    NexusError::Serialization(format!("delta batch concat failed: {e}"))
+                })? {
+                    self.write_buffered_upsert(flushed).await?;
+                }
+                Ok(())
+            }
             Some(split) => {
-                self.upsert(split.upserts).await?;
+                self.flush_buffer().await?;
+                self.write_buffered_upsert(split.upserts).await?;
                 self.delete(&split.deletes).await?;
                 Ok(())
             }
@@ -155,6 +211,7 @@ impl Sink for DeltaSink {
     }
 
     async fn commit_checkpoint(&mut self, _cursor: CheckpointCursor) -> Result<(), NexusError> {
-        Ok(())
+        // Flush any remaining buffered rows before the pipeline run ends.
+        self.flush_buffer().await
     }
 }

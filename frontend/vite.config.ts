@@ -23,6 +23,8 @@ export default defineConfig({
       '/users': 'http://localhost:8080',
       '/license': 'http://localhost:8080',
       '/health': 'http://localhost:8080',
+      '/system': 'http://localhost:8080',
+      '/lineage': 'http://localhost:8080',
     },
   },
 })

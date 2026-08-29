@@ -7,6 +7,10 @@ use nexus_core::{
 };
 use serde_json::json;
 
+/// Maximum vectors per Pinecone upsert/delete request. Pinecone recommends
+/// staying under ~1000 vectors per call; larger batches are split.
+const PINECONE_CHUNK_SIZE: usize = 1000;
+
 /// AI Lakehouse sink #5. Pinecone has no self-hosted/Docker option — this
 /// talks to the real managed service's data-plane REST API
 /// (`/vectors/upsert`, `/vectors/delete`). See ARCHITECTURE.md §4.3,
@@ -53,25 +57,29 @@ impl PineconeSink {
             })
             .collect();
 
-        let mut body = json!({ "vectors": vectors });
-        if let Some(namespace) = &self.namespace {
-            body["namespace"] = json!(namespace);
-        }
+        for chunk in vectors.chunks(PINECONE_CHUNK_SIZE) {
+            let mut body = json!({ "vectors": chunk });
+            if let Some(namespace) = &self.namespace {
+                body["namespace"] = json!(namespace);
+            }
 
-        let response = self
-            .client
-            .post(format!("{}/vectors/upsert", self.host))
-            .header("Api-Key", &self.api_key)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| NexusError::Connector(format!("pinecone upsert request failed: {e}")))?;
-        if !response.status().is_success() {
-            let status = response.status();
-            let text = response.text().await.unwrap_or_default();
-            return Err(NexusError::Connector(format!(
-                "pinecone upsert failed ({status}): {text}"
-            )));
+            let response = self
+                .client
+                .post(format!("{}/vectors/upsert", self.host))
+                .header("Api-Key", &self.api_key)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| {
+                    NexusError::Connector(format!("pinecone upsert request failed: {e}"))
+                })?;
+            if !response.status().is_success() {
+                let status = response.status();
+                let text = response.text().await.unwrap_or_default();
+                return Err(NexusError::Connector(format!(
+                    "pinecone upsert failed ({status}): {text}"
+                )));
+            }
         }
         Ok(())
     }
@@ -83,25 +91,29 @@ impl PineconeSink {
         let keys = project_column(batch, &self.primary_key)?;
         let ids = extract_ids(&keys, &self.primary_key)?;
 
-        let mut body = json!({ "ids": ids });
-        if let Some(namespace) = &self.namespace {
-            body["namespace"] = json!(namespace);
-        }
+        for chunk in ids.chunks(PINECONE_CHUNK_SIZE) {
+            let mut body = json!({ "ids": chunk });
+            if let Some(namespace) = &self.namespace {
+                body["namespace"] = json!(namespace);
+            }
 
-        let response = self
-            .client
-            .post(format!("{}/vectors/delete", self.host))
-            .header("Api-Key", &self.api_key)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| NexusError::Connector(format!("pinecone delete request failed: {e}")))?;
-        if !response.status().is_success() {
-            let status = response.status();
-            let text = response.text().await.unwrap_or_default();
-            return Err(NexusError::Connector(format!(
-                "pinecone delete failed ({status}): {text}"
-            )));
+            let response = self
+                .client
+                .post(format!("{}/vectors/delete", self.host))
+                .header("Api-Key", &self.api_key)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| {
+                    NexusError::Connector(format!("pinecone delete request failed: {e}"))
+                })?;
+            if !response.status().is_success() {
+                let status = response.status();
+                let text = response.text().await.unwrap_or_default();
+                return Err(NexusError::Connector(format!(
+                    "pinecone delete failed ({status}): {text}"
+                )));
+            }
         }
         Ok(())
     }

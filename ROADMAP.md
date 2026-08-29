@@ -193,7 +193,7 @@ licenciamento e `docs/ENTERPRISE_CONNECTORS.md` pro catálogo/priorização.
   custom pra dado de cartão).
 
 ## Fase 13 — Todos os conectores linkados no binário (fora do plano original)
-- [x] Os conectores do workspace aninhado `crates/nexus-connectors` (19 batch + 6 CDC nativos = 25 nomes de catálogo) agora também são feature opcional em `nexus-server` (`connectors-all`), aparecendo de verdade no catálogo `GET /connectors` — antes só postgres/sqlite estavam linkados no binário servido pra UI.
+- [x] Os conectores do workspace aninhado `crates/nexus-connectors` (20 batch + 6 CDC nativos = 26 nomes de catálogo) agora também são feature opcional em `nexus-server` (`connectors-all`), aparecendo de verdade no catálogo `GET /connectors` — antes só postgres/sqlite estavam linkados no binário servido pra UI.
 
 ## Fase 14 — Formulário de config por schema real (fora do plano original)
 - [x] Cada Config struct de conector deriva `schemars::JsonSchema`; `GET /connectors` expõe esse schema (`config_schema`). Canvas renderiza um formulário real (`SchemaForm.tsx`, recursivo: texto/número/boolean/enum/array-de-objeto) em vez de pedir JSON escrito à mão — descrições vêm dos doc comments do Rust. Ver `ARCHITECTURE.md §3`.
@@ -265,6 +265,116 @@ Extensão da Fase 18 pros formatos de data lake que já tinham conector batch. V
 - [x] Nenhuma dependência nova em nenhum dos 3 — tudo via API já pública das dependências existentes de cada conector.
 
 **Critério de pronto:** teste de integração real por conector (escrever insert/update/delete via o sink batch já existente, ler de volta via a fonte CDC nova, validar opcode e valores) — sem testcontainers, os 3 formatos já são embarcados/locais. **Atingido.**
+
+---
+
+## Fase 22 — Conector MQTT (telemetria IoT/sensor)
+
+Protocolo padrão de telemetria IoT (AWS IoT Core, Azure IoT Hub, HiveMQ, Mosquitto falam todos MQTT nativamente) — mesmo critério de "protocolo aberto sem lock-in" que já justificava `kafka` como OSS, não enterprise.
+
+- [x] `nexus-connector-mqtt` (feature `mqtt` + `nexus-connector-mqtt/client`, dependência `rumqttc`) — mesmo padrão arquitetural do `kafka`: `read_batches` faz `tokio::time::timeout` sobre o eventloop assíncrono do broker, bufferizando até `max_messages`/`poll_timeout_ms`, transformando o modelo *push* do MQTT no modelo *pull* que o engine espera.
+- [x] `topic_filter` aceita wildcard MQTT (`+`, `#`) — uma subscription pode misturar vários sensores lógicos numa leitura só, então toda linha ganha a coluna extra `__mqtt_topic` com o tópico exato de onde veio (mesmo precedente do `__opcode` em CDC).
+- [x] **Resume é 100% server-side, achado real**: sessão persistente do MQTT (`clean_session: false` + `client_id` fixo, sempre ligado) faz o broker guardar mensagens QoS 1/2 publicadas offline e reentregar na reconexão — sem `Source::position_handle`/`CheckpointCursor` nenhum, mesmo padrão do `postgres-cdc` (replication slot) e do `kafka` (offset de consumer group).
+- [x] TLS com CA privada/mTLS (`ca_cert_path`/`client_cert_path`/`client_key_path`) — necessário pra brokers cloud que exigem client-cert (AWS IoT Core sempre exige).
+- [x] Testado com broker Mosquitto real via testcontainers (`testcontainers-modules` feature `mosquitto`) — publica em múltiplos tópicos sob wildcard, valida batch + coluna `__mqtt_topic`.
+- [ ] Fora de escopo v1: payload binário/CBOR (só JSON), MQTT 5 (usa `rumqttc` padrão = 3.1.1), sink MQTT (publicar em vez de assinar — sem caso de uso claro hoje).
+
+**Candidato relacionado, não implementado**: OPC-UA (protocolo industrial/SCADA) — comprador diferente (chão de fábrica, disposto a pagar, mesmo padrão de Oracle/SAP), complexidade de protocolo maior (modelo de informação tipado, não é só pub/sub). Registrado como candidato enterprise em `docs/ENTERPRISE_CONNECTORS.md`, decisão de implementar fica com o usuário.
+
+**Critério de pronto:** broker real (Mosquitto via testcontainers), publica telemetria fake em múltiplos tópicos sob um wildcard, `MqttSource` consome e devolve linhas com `__mqtt_topic` correto. **Atingido.**
+
+---
+
+## Fase 24 — Aba Infra: Canvas visual pra Terraform (AWS) — planejado, não implementado
+
+Usuário pediu uma aba nova: desenhar infraestrutura AWS num Canvas
+visual (caixinha por recurso, clicar traz a config necessária) e
+gerar Terraform. Pesquisado e planejado nesta sessão, execução fica
+pra um próximo passo — registrado aqui pra não perder o levantamento.
+
+**Achado que muda a estimativa de esforço pra baixo**: o mecanismo
+inteiro já existe, só nunca foi usado fora do domínio "conector de
+dado". `nexus_core::registry::submit_connector!` (macro `inventory` +
+`schemars::schema_for!`) já gera schema JSON automático de qualquer
+struct Rust com `Deserialize + JsonSchema` e expõe via catálogo — é
+exatamente "clicar na caixinha, trazer a config necessária", só que
+hoje só serve conector. `frontend/src/components/SchemaForm.tsx` já é
+100% genérico (renderiza formulário de qualquer JSON Schema desse
+formato, zero acoplamento a "conector"). `ConnectorPalette.tsx`/
+`DagCanvas.tsx` já têm o padrão de paleta arrastável + Canvas editável
++ salvar/carregar spec. Não precisa reinventar nenhum dos três — só
+aplicar o mesmo padrão a um domínio novo.
+
+**Decisão de escopo/segurança, já validada com o usuário**:
+- **Só desenho + `terraform plan`** — mostra o que mudaria, nunca
+  aplica. `apply`/`destroy` fica de fora, sem nenhum code path pra
+  isso (fronteira de código, não de UI — não é botão escondido, é
+  capacidade que não existe).
+- `terraform plan` precisa de credencial AWS real (chama a API pra
+  saber o estado atual e computar o diff), mas uma credencial
+  só-leitura (`Describe*`/`List*`/`Get*`) não cria nem destrói nada —
+  o `plan` em si é seguro mesmo com credencial real, desde que a
+  credencial tenha esse escopo.
+- Credencial AWS nunca passa pela API do NexusFlow nem é persistida
+  em spec — vem de env var do processo do `nexus-server`
+  (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_PROFILE`, o jeito
+  que o próprio Terraform já lê por padrão), mesmo princípio que
+  `DBT_PROFILES_DIR` já usa hoje pra dbt.
+- **Recursos**: as 3 categorias pedidas (dados/streaming, banco de
+  dados, VMs/compute). Fazer os ~10+ recursos AWS de uma vez é grande
+  demais pra um PR — proposto começar com 6 representativos que
+  cobrem as 3 categorias E provam os dois casos reais que existem:
+  recurso standalone (`aws_s3_bucket`, `aws_dynamodb_table`) e
+  recurso com referência cruzada (`aws_db_instance`/`aws_instance`
+  dependendo de `aws_vpc`/`aws_subnet`/`aws_security_group`).
+  Kinesis/Glue/MSK/Redshift ficam como expansão incremental depois,
+  mesmo mecanismo, baixo risco (mesmo padrão que a allowlist de
+  recurso da aba Linhagem desta sessão já estabeleceu).
+
+**Desenho técnico levantado** (detalhe completo ficou só no plano
+efêmero da sessão, resumo aqui):
+- Novo crate `crates/nexus-infra/` — um struct por recurso
+  (`Deserialize + Serialize + JsonSchema`), campo que referencia outro
+  nó do Canvas usa sufixo `_ref` (convenção pro frontend desenhar
+  select-de-nó em vez de texto livre, e pro backend resolver pro
+  endereço Terraform certo `aws_subnet.<node_name>.id`). `to_hcl()`
+  por recurso — função pura, testável sem terraform instalado, mesmo
+  padrão dos SQL builders de conector. Registro paralelo ao de
+  conector: `InfraResourceDescriptor` + `submit_infra_resource!`,
+  mesmíssimo mecanismo `inventory`/`schemars` de `registry.rs`.
+- `InfraSpec` — grafo genérico nó+aresta (mesma forma de
+  `lineage::LineageGraph`), não o par fixo source/sink do
+  `PipelineSpec`, porque dependência de infra não tem forma fixa.
+- Backend: `InfraStore` (mesmo padrão dual-dialeto de
+  `pipeline_store.rs`), `GET /infra/resources` (catálogo),
+  CRUD `/infra`, `POST /infra/{id}/plan` (monta HCL, roda
+  `terraform init -backend=false` + `terraform plan -no-color` como
+  subprocess — mesmíssimo padrão de `dbt::run()`).
+- Frontend: `InfraCanvas.tsx` (mesma estrutura de `DagCanvas.tsx`,
+  mas com `onConnect` de verdade — usuário desenha a aresta de
+  dependência arrastando, diferente da Linhagem read-only),
+  `ConnectorPalette`/`NodeInspector`/`SchemaForm` reaproveitados quase
+  sem alteração.
+- Terraform confirmado instalado no ambiente de dev (`v1.15.9`) —
+  verificação de ponta a ponta consegue chegar até `terraform init`/
+  `terraform validate` (não precisa de credencial AWS), só não chega
+  em `terraform plan` de verdade sem conta AWS real pra testar contra
+  — mesma ressalva de "sem conta real pra validar" que outros
+  conectores desta sessão já carregam.
+
+---
+
+## Fase 23 — Conector ClickHouse (ADBC nativo, repo público)
+
+Estava registrado como candidato enterprise em `docs/ENTERPRISE_CONNECTORS.md` sob a premissa "ADBC básico OSS, avançado pago" — investigação numa sessão anterior derrubou essa premissa: RBAC e cluster mode (`Distributed`/`Replicated`, ClickHouse Keeper) são recursos OSS do próprio ClickHouse self-hosted, não existe feature "avançada" genuína pra reservar como paga (diferente de Snowflake/Oracle/SAP, que têm licenciamento pago real). Driver ADBC também é oficial (ClickHouse, Inc.) e grátis. Decisão: vai pro repo público, mesma categoria de Postgres/SQLite.
+
+- [x] `nexus-connector-clickhouse` (feature `clickhouse`) — mesmo esqueleto ADBC do `nexus-connector-postgres` (`driver.rs`/`config.rs`/`source.rs`/`sink.rs`), única option key `uri` confirmada contra a doc real do driver (adbc-drivers.org/drivers/clickhouse/), não múltiplas chaves como Snowflake.
+- [x] Instalação de um comando só (`dbc install clickhouse`, ADBC Driver Foundry) — diferente de Postgres/SQLite, que exigem compilar `libadbc_driver_*.so` na mão.
+- [x] **Sink append-only, achado real**: ClickHouse não tem `ON CONFLICT`/upsert leve (`ALTER TABLE ... UPDATE/DELETE` são mutations assíncronas pesadas). `write_batch` rejeita explicitamente batches de CDC com `__opcode` de delete em vez de descartar silenciosamente — dedup fica a cargo do usuário via `ReplacingMergeTree`/`CollapsingMergeTree`, mecanismo idiomático do próprio ClickHouse.
+- [x] `partition_column` em vez de `primary_key` (nome do Postgres, implica unicidade que o ClickHouse não impõe) — qualquer coluna orderável usada só pra particionar leitura em paralelo.
+- [ ] Sem teste de integração real (mesma ressalva de todo conector ADBC do repo — nem `postgres` tem, `ADBC_DRIVER_POSTGRESQL_PATH` também não é setado em CI). Só unit tests dos SQL builders.
+
+**Critério de pronto:** `cargo test -p nexus-connector-clickhouse` cobrindo os SQL builders (incluindo rejeição de SQL injection), `cargo build --features connectors-all` linkando o conector, `GET /connectors` listando `clickhouse`. **Atingido** (sem validação contra instância ClickHouse real — mesma ressalva que Snowflake/BigQuery/Databricks já carregam).
 
 ---
 

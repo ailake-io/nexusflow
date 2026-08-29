@@ -62,6 +62,76 @@ async fn log_error(log: Option<&RunLogger>, message: impl Into<String>) {
     }
 }
 
+/// Arrow `Field`s -> the plain, serializable shape `PipelineSchemaStore`
+/// persists — filters out `__opcode` (CDC metadata, never a real column the
+/// Lineage tab's schema view should show, same exclusion every sink/column
+/// list in this file already applies).
+fn column_infos(schema: &arrow_schema::Schema) -> Vec<crate::pipeline_schema_store::ColumnInfo> {
+    schema
+        .fields()
+        .iter()
+        .filter(|f| f.name() != OPCODE_COLUMN)
+        .map(|f| crate::pipeline_schema_store::ColumnInfo {
+            name: f.name().clone(),
+            data_type: f.data_type().to_string(),
+        })
+        .collect()
+}
+
+/// `schema` minus `__opcode` (CDC metadata, never a real destination
+/// column) — same exclusion `column_infos` above applies, but returning a
+/// real `SchemaRef` instead of the Lineage tab's `ColumnInfo` shape, for
+/// `build_sink`'s `schema` argument (drives `CREATE TABLE IF NOT EXISTS`
+/// on the postgres/sqlite sinks — a `__opcode` column would otherwise get
+/// created alongside the real ones).
+fn schema_without_opcode(schema: &arrow_schema::SchemaRef) -> arrow_schema::SchemaRef {
+    std::sync::Arc::new(arrow_schema::Schema::new(
+        schema
+            .fields()
+            .iter()
+            .filter(|f| f.name() != OPCODE_COLUMN)
+            .cloned()
+            .collect::<Vec<_>>(),
+    ))
+}
+
+/// Persists a pipeline's captured schema (Fase "Linhagem — colunas e
+/// tipos"). Best-effort, same posture as dbt lineage/test-result
+/// persistence in `lib.rs::execute_pipeline_run`: a failure here is logged
+/// and never fails the run itself — this is observability, not pipeline
+/// correctness.
+async fn record_pipeline_schema(
+    schema_store: &crate::pipeline_schema_store::PipelineSchemaStore,
+    pipeline_id: &str,
+    source_columns: &[crate::pipeline_schema_store::ColumnInfo],
+    output_columns: &[crate::pipeline_schema_store::ColumnInfo],
+    column_lineage: Option<&[crate::pipeline_schema_store::ColumnLineageInfo]>,
+) {
+    if let Err(e) = schema_store
+        .record(pipeline_id, source_columns, output_columns, column_lineage)
+        .await
+    {
+        tracing::warn!(error = %e, "failed to persist pipeline schema");
+    }
+}
+
+/// Converts `nexus_core::transform::ColumnLineage` (borrowed `Expr` walk
+/// result, core-crate type) into the store's serializable
+/// `ColumnLineageInfo` — kept as a free function since both transform-based
+/// capture sites (`run_transform_pipeline`, `run_streaming_cdc_pipeline`)
+/// need it.
+fn to_lineage_infos(
+    lineage: Vec<nexus_core::transform::ColumnLineage>,
+) -> Vec<crate::pipeline_schema_store::ColumnLineageInfo> {
+    lineage
+        .into_iter()
+        .map(|l| crate::pipeline_schema_store::ColumnLineageInfo {
+            output_column: l.output_column,
+            source_columns: l.source_columns,
+        })
+        .collect()
+}
+
 /// Wraps a `ProgressSender` so the engine's progress events are still
 /// forwarded to live WebSocket subscribers while also driving user-facing
 /// percentage logs. `total_units` is the number of partitions/sinks that must
@@ -114,6 +184,7 @@ pub async fn run_pipeline(
     progress: Option<ProgressSender>,
     log: Option<&RunLogger>,
     active_license: Option<&LicenseClaims>,
+    schema_store: &crate::pipeline_schema_store::PipelineSchemaStore,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     // A `*-cdc` source with a plain SQL transform (the only documented CDC
     // shape — `SELECT * FROM source0`, required to preserve `__opcode` for
@@ -137,9 +208,25 @@ pub async fn run_pipeline(
         && spec.python.is_none()
         && spec.dbt.is_none()
     {
-        run_streaming_cdc_pipeline(spec, checkpoints, progress, log, active_license).await
+        run_streaming_cdc_pipeline(
+            spec,
+            checkpoints,
+            progress,
+            log,
+            active_license,
+            schema_store,
+        )
+        .await
     } else if spec.has_transform() || spec.python.is_some() {
-        run_transform_pipeline(spec, checkpoints, progress, log, active_license).await
+        run_transform_pipeline(
+            spec,
+            checkpoints,
+            progress,
+            log,
+            active_license,
+            schema_store,
+        )
+        .await
     } else {
         // The postgres→postgres branch below never builds through
         // connectors.rs's build_source/build_sink (uses PostgresSource/
@@ -149,7 +236,15 @@ pub async fn run_pipeline(
         // so it needs active_license threaded through too, or any
         // licensed connector would be usable unlicensed just by omitting
         // a Transform node.
-        run_linear_pipeline(spec, checkpoints, progress, log, active_license).await
+        run_linear_pipeline(
+            spec,
+            checkpoints,
+            progress,
+            log,
+            active_license,
+            schema_store,
+        )
+        .await
     }
 }
 
@@ -171,6 +266,7 @@ async fn run_linear_pipeline(
     progress: Option<ProgressSender>,
     log: Option<&RunLogger>,
     active_license: Option<&LicenseClaims>,
+    schema_store: &crate::pipeline_schema_store::PipelineSchemaStore,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     if spec.embedding.is_some() {
         anyhow::bail!(
@@ -183,14 +279,33 @@ async fn run_linear_pipeline(
     let sink_node = &spec.sinks[0];
 
     if source_node.connector != "postgres" || sink_node.connector != "postgres" {
-        return run_passthrough_pipeline(spec, checkpoints, progress, log, active_license).await;
+        return run_passthrough_pipeline(
+            spec,
+            checkpoints,
+            progress,
+            log,
+            active_license,
+            schema_store,
+        )
+        .await;
     }
 
     let source_cfg: PostgresConnectorConfig = serde_json::from_value(source_node.config.clone())?;
     let sink_cfg: PostgresConnectorConfig = serde_json::from_value(sink_node.config.clone())?;
 
     let schema = table_schema(&source_cfg).await?;
-    let columns: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
+
+    // No transform on this path — the sink receives exactly the source's
+    // own schema.
+    let source_columns = column_infos(&schema);
+    record_pipeline_schema(
+        schema_store,
+        &spec.pipeline_id,
+        &source_columns,
+        &source_columns,
+        None,
+    )
+    .await;
 
     let done = checkpoints.done_partitions(&spec.pipeline_id).await?;
     let mut handles = Vec::new();
@@ -208,7 +323,7 @@ async fn run_linear_pipeline(
                 let sink = log_on_err(
                     log,
                     "p0 sink connect failed",
-                    PostgresSink::connect(&sink_cfg, &columns).await,
+                    PostgresSink::connect(&sink_cfg, &schema).await,
                 )
                 .await?;
                 handles.push(PartitionHandle {
@@ -234,7 +349,7 @@ async fn run_linear_pipeline(
                 let sink = log_on_err(
                     log,
                     &format!("{partition_id} sink connect failed"),
-                    PostgresSink::connect(&sink_cfg, &columns).await,
+                    PostgresSink::connect(&sink_cfg, &schema).await,
                 )
                 .await?;
                 handles.push(PartitionHandle {
@@ -343,6 +458,22 @@ async fn inject_cdc_resume_state(
                         node.config["start_scn"] = serde_json::Value::from(scn);
                     }
                 }
+                // deltalake-cdc reports the highest `_commit_version` read
+                // as a decimal string; the connector expects `starting_version`
+                // as u64.
+                "deltalake-cdc" => {
+                    if let Ok(version) = resume_state.parse::<u64>() {
+                        node.config["starting_version"] = serde_json::Value::from(version);
+                    }
+                }
+                // iceberg-cdc / ailake-cdc report the newest snapshot id read
+                // as a decimal string; the connectors expect `starting_snapshot_id`
+                // as i64.
+                "iceberg-cdc" | "ailake-cdc" => {
+                    if let Ok(snapshot_id) = resume_state.parse::<i64>() {
+                        node.config["starting_snapshot_id"] = serde_json::Value::from(snapshot_id);
+                    }
+                }
                 // Any other *-cdc connector either manages its own
                 // server-side resume (postgres-cdc) or doesn't implement
                 // `position_handle` yet (no resume_state would ever be
@@ -382,6 +513,7 @@ async fn run_streaming_cdc_pipeline(
     progress: Option<ProgressSender>,
     log: Option<&RunLogger>,
     active_license: Option<&LicenseClaims>,
+    schema_store: &crate::pipeline_schema_store::PipelineSchemaStore,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     // Resume-state lookup is anchored on the first sink's resolved name
     // ("sink0" when unnamed) — every sink commits the same source position
@@ -424,12 +556,21 @@ async fn run_streaming_cdc_pipeline(
             .await,
     )
     .await?;
-    let columns: Vec<String> = output_schema
-        .fields()
-        .iter()
-        .map(|f| f.name().clone())
-        .filter(|name| name != OPCODE_COLUMN)
-        .collect();
+    let sink_schema = schema_without_opcode(&output_schema);
+
+    let column_lineage = transform
+        .column_lineage(vec![(source_name.clone(), source_schema.clone())])
+        .await
+        .ok()
+        .map(to_lineage_infos);
+    record_pipeline_schema(
+        schema_store,
+        &spec.pipeline_id,
+        &column_infos(&source_schema),
+        &column_infos(&output_schema),
+        column_lineage.as_deref(),
+    )
+    .await;
 
     let done = checkpoints.done_partitions(&spec.pipeline_id).await?;
     let mut sinks = Vec::with_capacity(spec.sinks.len());
@@ -437,7 +578,7 @@ async fn run_streaming_cdc_pipeline(
         let (name, sink) = log_on_err(
             log,
             &format!("sink {i} ({}) connect failed", node.connector),
-            build_sink(node, i, &columns, active_license).await,
+            build_sink(node, i, &sink_schema, active_license).await,
         )
         .await?;
         if done.contains(&name) {
@@ -562,6 +703,7 @@ async fn run_passthrough_pipeline(
     progress: Option<ProgressSender>,
     log: Option<&RunLogger>,
     active_license: Option<&LicenseClaims>,
+    schema_store: &crate::pipeline_schema_store::PipelineSchemaStore,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     if spec.embedding.is_some() {
         anyhow::bail!(
@@ -608,18 +750,25 @@ async fn run_passthrough_pipeline(
     // Same `__opcode` exclusion as `run_transform_pipeline` below — a CDC
     // source's own declared schema includes it (see e.g. postgres-cdc's
     // `build_schema`), and it's never a real destination column.
-    let columns: Vec<String> = source
-        .schema()
-        .fields()
-        .iter()
-        .map(|f| f.name().clone())
-        .filter(|name| name != OPCODE_COLUMN)
-        .collect();
+    let source_schema = source.schema();
+    let sink_schema = schema_without_opcode(&source_schema);
+
+    // No transform on this path — the sink receives exactly the source's
+    // own schema (minus `__opcode`, `column_infos` filters it the same way).
+    let source_columns = column_infos(&source_schema);
+    record_pipeline_schema(
+        schema_store,
+        &spec.pipeline_id,
+        &source_columns,
+        &source_columns,
+        None,
+    )
+    .await;
 
     let (_name, sink) = log_on_err(
         log,
         &format!("sink 0 ({}) connect failed", sink_node.connector),
-        build_sink(sink_node, 0, &columns, active_license).await,
+        build_sink(sink_node, 0, &sink_schema, active_license).await,
     )
     .await?;
 
@@ -700,6 +849,7 @@ async fn run_transform_pipeline(
     progress: Option<ProgressSender>,
     log: Option<&RunLogger>,
     active_license: Option<&LicenseClaims>,
+    schema_store: &crate::pipeline_schema_store::PipelineSchemaStore,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     // Same reasoning as `run_passthrough_pipeline`'s `is_cdc` check: a `-cdc`
     // source is meant to run again every scheduler tick, using
@@ -744,8 +894,32 @@ async fn run_transform_pipeline(
         );
     }
 
+    // Captured before `inputs` is consumed below — flattens every source's
+    // schema into one column list (a fan-in transform reads all of them;
+    // dedup by name since a join's key columns legitimately show up on more
+    // than one side).
+    let mut source_columns = Vec::new();
+    let mut seen_source_columns = std::collections::HashSet::new();
+    for (_, schema, _) in &inputs {
+        for col in column_infos(schema) {
+            if seen_source_columns.insert(col.name.clone()) {
+                source_columns.push(col);
+            }
+        }
+    }
+
+    let mut column_lineage = None;
     let output = if let Some(transform_spec) = &spec.transform {
         let transform = DataFusionTransform::new(&transform_spec.sql);
+        let input_schemas: Vec<_> = inputs
+            .iter()
+            .map(|(n, s, _)| (n.clone(), s.clone()))
+            .collect();
+        column_lineage = transform
+            .column_lineage(input_schemas)
+            .await
+            .ok()
+            .map(to_lineage_infos);
         transform.apply(inputs).await?
     } else {
         // No SQL transform — a python-only pipeline, validated as exactly
@@ -790,24 +964,30 @@ async fn run_transform_pipeline(
     // failed every single write with "column \"__opcode\" of relation ...
     // does not exist" — the SQL text and the bound values disagreed on the
     // column count.
-    let columns: Vec<String> = output
+    let sink_schema = output
         .first()
-        .map(|b| {
-            b.schema()
-                .fields()
-                .iter()
-                .map(|f| f.name().clone())
-                .filter(|name| name != OPCODE_COLUMN)
-                .collect()
-        })
+        .map(|b| schema_without_opcode(&b.schema()))
+        .unwrap_or_else(|| std::sync::Arc::new(arrow_schema::Schema::empty()));
+
+    let output_columns = output
+        .first()
+        .map(|b| column_infos(&b.schema()))
         .unwrap_or_default();
+    record_pipeline_schema(
+        schema_store,
+        &spec.pipeline_id,
+        &source_columns,
+        &output_columns,
+        column_lineage.as_deref(),
+    )
+    .await;
 
     let mut sinks = Vec::with_capacity(spec.sinks.len());
     for (i, node) in spec.sinks.iter().enumerate() {
         let (name, sink) = log_on_err(
             log,
             &format!("sink {i} ({}) connect failed", node.connector),
-            build_sink(node, i, &columns, active_license).await,
+            build_sink(node, i, &sink_schema, active_license).await,
         )
         .await?;
         if done.contains(&name) {
@@ -896,23 +1076,17 @@ pub async fn run_post_dbt_stage(
     let inputs = PipelineEngine::drain_sources(vec![source]).await?;
     let batches: Vec<_> = inputs.into_iter().flat_map(|(_, _, b)| b).collect();
 
-    let columns: Vec<String> = batches
+    let sink_schema = batches
         .first()
-        .map(|b| {
-            b.schema()
-                .fields()
-                .iter()
-                .map(|f| f.name().clone())
-                .collect()
-        })
-        .unwrap_or_default();
+        .map(|b| schema_without_opcode(&b.schema()))
+        .unwrap_or_else(|| std::sync::Arc::new(arrow_schema::Schema::empty()));
 
     let mut sinks = Vec::with_capacity(spec.post_dbt_sinks.len());
     for (i, node) in spec.post_dbt_sinks.iter().enumerate() {
         let (raw_name, sink) = log_on_err(
             log,
             &format!("post-dbt sink {i} ({}) connect failed", node.connector),
-            build_sink(node, i, &columns, active_license).await,
+            build_sink(node, i, &sink_schema, active_license).await,
         )
         .await?;
         let name = format!("post_dbt_{raw_name}");

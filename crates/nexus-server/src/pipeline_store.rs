@@ -381,6 +381,33 @@ impl PipelineStore {
         decode_spec(&ciphertext, cipher)
     }
 
+    /// Every saved `PipelineSpec`, decrypted — for internal use only, same
+    /// warning as `get_spec` (never expose this over the API; extract only
+    /// what's safe first, as `lineage.rs` does). Used to build the lineage
+    /// graph, which needs every source/sink's connector config, not just
+    /// the connector *names* `PipelineSummary` exposes.
+    pub async fn list_all_specs(
+        &self,
+        cipher: &SecretCipher,
+    ) -> Result<Vec<PipelineSpec>, PipelineStoreError> {
+        let sql = self.q("SELECT spec_ciphertext FROM pipelines ORDER BY created_at");
+        let rows: Vec<(String,)> = match &self.pool {
+            MetadataPool::Sqlite(p) => {
+                sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .fetch_all(p)
+                    .await?
+            }
+            MetadataPool::Postgres(p) => {
+                sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .fetch_all(p)
+                    .await?
+            }
+        };
+        rows.into_iter()
+            .map(|(ciphertext,)| decode_spec(&ciphertext, cipher))
+            .collect()
+    }
+
     pub async fn list_summaries(
         &self,
         cipher: &SecretCipher,
@@ -726,6 +753,7 @@ mod tests {
             dbt: None,
             post_dbt_sinks: Vec::new(),
             schedule: None,
+            alerts: None,
             draft: false,
         }
     }
@@ -770,6 +798,35 @@ mod tests {
         let list = store.list_summaries(&cipher, 100, 0).await.unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].pipeline_id, "p1");
+    }
+
+    #[tokio::test]
+    async fn summary_never_contains_alerts() {
+        let store = PipelineStore::connect("sqlite::memory:").await.unwrap();
+        let cipher = cipher();
+        let mut spec = sample_spec("p1");
+        spec.alerts = Some(nexus_core::AlertsConfig {
+            slack: Some(nexus_core::WebhookAlertChannel {
+                url: "https://hooks.slack.com/services/T00000000/SUPER-SECRET-PATH".to_string(),
+                on_success: true,
+                on_failure: true,
+            }),
+            teams: None,
+            webhook: None,
+            pagerduty: None,
+            email: None,
+        });
+        store.create(&spec, &cipher).await.unwrap();
+
+        let summary = store.get_summary("p1", &cipher).await.unwrap();
+        // Structural: `PipelineSummary` has no `alerts` field at all, so
+        // this wouldn't compile if one were ever added directly — this
+        // test instead guards the JSON actually sent over the wire, the
+        // same way `summary_never_contains_config` does for connector
+        // secrets.
+        let json = serde_json::to_string(&summary).unwrap();
+        assert!(!json.contains("SUPER-SECRET-PATH"));
+        assert!(!json.contains("alerts"));
     }
 
     #[tokio::test]

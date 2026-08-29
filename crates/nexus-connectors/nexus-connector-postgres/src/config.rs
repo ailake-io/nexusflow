@@ -231,7 +231,12 @@ pub struct PostgresCdcConfig {
     pub slot_name: String,
     /// Target schema for each change event's row — same 4-primitive-type
     /// ceiling as every other bridging connector (Kafka/MongoDB); Postgres
-    /// column types beyond these aren't supported yet.
+    /// column types beyond these aren't supported yet. Left empty, the
+    /// connector introspects `table`'s real Arrow schema via the same ADBC
+    /// path the batch `postgres` connector uses (`introspect::cdc_fields`)
+    /// and narrows it to these 4 types — real catalog metadata, not a
+    /// sample.
+    #[serde(default)]
     pub fields: Vec<PostgresCdcFieldSpec>,
     /// Timeout in seconds for each replication connection call (connect,
     /// read slot, drop slot) — a stalled connection would otherwise block the

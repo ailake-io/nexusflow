@@ -8,7 +8,7 @@ Escolha uma das opções abaixo. Todas sobem o mesmo binário: um único process
 
 ### Docker (mais simples)
 
-Imagem publicada no GHCR (já com todos os 25 conectores):
+Imagem publicada no GHCR (já com todos os 27 conectores):
 
 ```bash
 # volume nomeado nasce root-owned; o container roda como uid 1001 (não-root) —
@@ -63,7 +63,7 @@ docker run --gpus all -d -p 8080:8080 \
 curl -fsSL https://raw.githubusercontent.com/ailake-io/nexusflow/develop/scripts/install.sh | sh
 ```
 
-Baixa o binário + drivers ADBC pra `~/.local/share/nexusflow` e cria `~/.local/bin/nexusflow`. Precisa de um [release](https://github.com/ailake-io/nexusflow/releases) publicado — ver `.github/workflows/release.yml`. O binário do release já vem com **todos** os 25 conectores linkados (`embed-ui,connectors-all`, não só postgres/sqlite — ver seção 2 abaixo); pra `odbc`/`kafka` funcionarem, precisa de `unixodbc`/`libsasl2` no sistema (o instalador avisa no final se faltar).
+Baixa o binário + drivers ADBC pra `~/.local/share/nexusflow` e cria `~/.local/bin/nexusflow`. Precisa de um [release](https://github.com/ailake-io/nexusflow/releases) publicado — ver `.github/workflows/release.yml`. O binário do release já vem com **todos** os 27 conectores linkados (`embed-ui,connectors-all`, não só postgres/sqlite — ver seção 2 abaixo); pra `odbc`/`kafka` funcionarem, precisa de `unixodbc`/`libsasl2` no sistema (o instalador avisa no final se faltar).
 
 ### Pacotes nativos (Linux)
 
@@ -101,7 +101,7 @@ export NEXUS_ADMIN_PASSWORD="troque-isto"
 
 Isso só se aplica a quem builda a partir do source (seção 1, "Build a partir do source") — os binários pré-buildados (script de instalação, `.deb`/AppImage/rpm) e a imagem Docker publicada no GHCR já vêm com `connectors-all` ligado, ver seção 1.
 
-Por padrão um `cargo build` sem flags só liga `postgres` e `sqlite`. A feature `connectors-all` habilita as outras **23 entradas de conector** no catálogo (25 nomes no total, pois a feature `rest` registra tanto `rest` quanto `webhook`): mongodb, mysql (batch, via `mysql_async`), kafka, rest, webhook, odbc, milvus, qdrant, lancedb, pgvector, pinecone, chromadb, deltalake, iceberg, parquet, ailake, csv e os 6 CDCs nativos (postgres-cdc, mongodb-cdc, mysql-cdc, deltalake-cdc, iceberg-cdc, ailake-cdc). Cada um só entra no binário se sua feature for pedida:
+Por padrão um `cargo build` sem flags só liga `postgres` e `sqlite`. A feature `connectors-all` habilita as outras **24 entradas de conector** no catálogo (26 nomes no total, pois a feature `rest` registra tanto `rest` quanto `webhook`): mongodb, mysql (batch, via `mysql_async`), kafka, mqtt, rest, webhook, odbc, milvus, qdrant, lancedb, pgvector, pinecone, chromadb, deltalake, iceberg, parquet, ailake, csv e os 6 CDCs nativos (postgres-cdc, mongodb-cdc, mysql-cdc, deltalake-cdc, iceberg-cdc, ailake-cdc). Cada um só entra no binário se sua feature for pedida:
 
 ```bash
 # um conector específico
@@ -302,7 +302,7 @@ Se `dbt.output` estiver setado no spec (aponta pro model/tabela que o dbt acabou
 
 | Arquivo | Conteúdo |
 |---|---|
-| [`USER_GUIDE.md`](./USER_GUIDE.md) | Referência completa: config exata de cada um dos 25 conectores, transform SQL, embeddings, dbt ELT/ETL, preview, agendamento |
+| [`USER_GUIDE.md`](./USER_GUIDE.md) | Referência completa: config exata de cada um dos 27 conectores, transform SQL, embeddings, dbt ELT/ETL, preview, agendamento |
 | [`ARCHITECTURE.md`](../ARCHITECTURE.md) | Roteador de conectores, streaming/backpressure, checkpointing |
 | [`ROADMAP.md`](../ROADMAP.md) | Fases e critério de "pronto" |
 | [`CONTRIBUTING.md`](../CONTRIBUTING.md) | Como contribuir |

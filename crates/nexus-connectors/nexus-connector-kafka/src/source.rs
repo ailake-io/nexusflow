@@ -36,7 +36,13 @@ pub struct KafkaSource {
 }
 
 impl KafkaSource {
-    pub fn connect(config: &KafkaConnectorConfig) -> Result<Self, NexusError> {
+    pub async fn connect(config: &KafkaConnectorConfig) -> Result<Self, NexusError> {
+        let schema = if config.fields.is_empty() {
+            infer_schema(config).await?
+        } else {
+            build_schema(&config.fields)
+        };
+
         // Manual offset commit: the engine's checkpoint is the source of
         // truth, not a background heartbeat. `read_batches` commits once
         // the returned batches have been successfully produced, matching
@@ -69,7 +75,7 @@ impl KafkaSource {
         Ok(Self {
             consumer,
             topic: config.topic.clone(),
-            schema: build_schema(&config.fields),
+            schema,
             batch_size: config.batch_size,
             poll_timeout: Duration::from_millis(config.poll_timeout_ms),
             max_messages: config.max_messages,
@@ -103,6 +109,50 @@ impl KafkaSource {
             .map_err(|e| NexusError::Connector(format!("kafka offset commit failed: {e}")))?;
         Ok(())
     }
+}
+
+/// Samples up to `config.schema_sample_rows` messages and infers a schema
+/// — source-side fallback for when `fields` is left empty (see
+/// `KafkaConnectorConfig::fields` doc comment). Uses its own throwaway
+/// consumer group (`{group_id}-schema-sample-{pid}`, unique enough to
+/// never collide with a real run) instead of `config.group_id` — this
+/// consumer never commits (dropped at the end of the function), so if it
+/// *did* share the real group, a rebalance mid-sample could steal
+/// partitions from — or hand stale state to — the actual read that
+/// follows in `connect`. A dedicated group sidesteps that entirely rather
+/// than trying to coordinate the two.
+async fn infer_schema(config: &KafkaConnectorConfig) -> Result<SchemaRef, NexusError> {
+    let mut sample_config = config.client_config();
+    sample_config.set(
+        "group.id",
+        format!("{}-schema-sample-{}", config.group_id, std::process::id()),
+    );
+    let consumer: StreamConsumer = sample_config.create().map_err(|e| {
+        NexusError::Connector(format!("kafka schema-sample consumer create failed: {e}"))
+    })?;
+    consumer
+        .subscribe(&[config.topic.as_str()])
+        .map_err(|e| NexusError::Connector(format!("kafka schema-sample subscribe failed: {e}")))?;
+
+    let poll_timeout = Duration::from_millis(config.poll_timeout_ms);
+    let mut message_stream = consumer.stream();
+    let mut rows = Vec::new();
+    while rows.len() < config.schema_sample_rows {
+        match tokio::time::timeout(poll_timeout, message_stream.next()).await {
+            Ok(Some(Ok(message))) => {
+                if let Some(bytes) = message.payload() {
+                    if let Ok(row) = parse_payload(bytes) {
+                        rows.push(row);
+                    }
+                }
+            }
+            // Idle cutoff, stream closed, or a poll error — treat the
+            // sample as complete with whatever was collected so far
+            // rather than failing the whole connect over it.
+            _ => break,
+        }
+    }
+    Ok(RecordBatchBuilder::infer_schema(&rows))
 }
 
 #[async_trait]

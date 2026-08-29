@@ -12,6 +12,8 @@ use nexus_connector_ailake::{AilakeCdcConfig, AilakeCdcSource};
 use nexus_connector_ailake::{AilakeConnectorConfig, AilakeSink, AilakeSource};
 #[cfg(feature = "chromadb")]
 use nexus_connector_chromadb::{ChromaConnectorConfig, ChromaSink};
+#[cfg(feature = "clickhouse")]
+use nexus_connector_clickhouse::{ClickHouseConnectorConfig, ClickHouseSink, ClickHouseSource};
 #[cfg(feature = "csv")]
 use nexus_connector_csv::{CsvConnectorConfig, CsvSink, CsvSource};
 #[cfg(feature = "deltalake-cdc")]
@@ -32,6 +34,8 @@ use nexus_connector_milvus::{MilvusConnectorConfig, MilvusSink};
 use nexus_connector_mongodb::{
     MongoCdcConfig, MongoCdcSource, MongoConnectorConfig, MongoSink, MongoSource,
 };
+#[cfg(feature = "mqtt")]
+use nexus_connector_mqtt::{MqttConnectorConfig, MqttSource};
 #[cfg(feature = "mysql-cdc")]
 use nexus_connector_mysql::{MySqlCdcConfig, MySqlCdcSource};
 #[cfg(feature = "mysql")]
@@ -123,6 +127,10 @@ pub fn validate_source_config(
         "kafka" => {
             let _: KafkaConnectorConfig = serde_json::from_value(node.config.clone())?;
         }
+        #[cfg(feature = "mqtt")]
+        "mqtt" => {
+            let _: MqttConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
         #[cfg(feature = "rest")]
         "rest" => {
             let _: RestConnectorConfig = serde_json::from_value(node.config.clone())?;
@@ -150,6 +158,10 @@ pub fn validate_source_config(
         #[cfg(feature = "csv")]
         "csv" => {
             let _: CsvConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "clickhouse")]
+        "clickhouse" => {
+            let _: ClickHouseConnectorConfig = serde_json::from_value(node.config.clone())?;
         }
         #[cfg(feature = "postgres-cdc")]
         "postgres-cdc" => {
@@ -212,12 +224,17 @@ pub async fn build_source(
         #[cfg(feature = "kafka")]
         "kafka" => {
             let cfg: KafkaConnectorConfig = serde_json::from_value(node.config.clone())?;
-            Box::new(KafkaSource::connect(&cfg)?)
+            Box::new(KafkaSource::connect(&cfg).await?)
+        }
+        #[cfg(feature = "mqtt")]
+        "mqtt" => {
+            let cfg: MqttConnectorConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(MqttSource::connect(&cfg).await?)
         }
         #[cfg(feature = "rest")]
         "rest" => {
             let cfg: RestConnectorConfig = serde_json::from_value(node.config.clone())?;
-            Box::new(RestSource::connect(&cfg)?)
+            Box::new(RestSource::connect(&cfg).await?)
         }
         #[cfg(feature = "odbc")]
         "odbc" => {
@@ -247,7 +264,12 @@ pub async fn build_source(
         #[cfg(feature = "csv")]
         "csv" => {
             let cfg: CsvConnectorConfig = serde_json::from_value(node.config.clone())?;
-            Box::new(CsvSource::connect(&cfg)?)
+            Box::new(CsvSource::connect(&cfg).await?)
+        }
+        #[cfg(feature = "clickhouse")]
+        "clickhouse" => {
+            let cfg: ClickHouseConnectorConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(ClickHouseSource::connect(&cfg, None).await?)
         }
         #[cfg(feature = "postgres-cdc")]
         "postgres-cdc" => {
@@ -361,6 +383,10 @@ pub fn validate_sink_config(
         "csv" => {
             let _: CsvConnectorConfig = serde_json::from_value(node.config.clone())?;
         }
+        #[cfg(feature = "clickhouse")]
+        "clickhouse" => {
+            let _: ClickHouseConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
         other => match ConnectorRegistry::find_sink_builder(other) {
             Some(builder) => (builder.validate)(&node.config)?,
             None => anyhow::bail!("unsupported sink connector: {other:?}"),
@@ -400,19 +426,25 @@ pub fn validate_pipeline_configs(
 pub async fn build_sink(
     node: &NodeSpec,
     index: usize,
-    columns: &[String],
+    schema: &arrow_schema::SchemaRef,
     active_license: Option<&LicenseClaims>,
 ) -> anyhow::Result<(String, Box<dyn Sink>)> {
     check_connector_license(&node.connector, active_license)?;
     let name = node.resolved_name(index, "sink")?;
+    // Most connectors below only ever needed the column *names* — kept as
+    // `columns` so their call sites don't change. postgres/sqlite now take
+    // `schema` directly (types included) to drive `CREATE TABLE IF NOT
+    // EXISTS`; see their own `connect()` doc comments for why.
+    #[cfg(any(feature = "pgvector", feature = "clickhouse"))]
+    let columns: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
     let sink: Box<dyn Sink> = match node.connector.as_str() {
         "postgres" => {
             let cfg: PostgresConnectorConfig = serde_json::from_value(node.config.clone())?;
-            Box::new(PostgresSink::connect(&cfg, columns).await?)
+            Box::new(PostgresSink::connect(&cfg, schema).await?)
         }
         "sqlite" => {
             let cfg: SqliteConnectorConfig = serde_json::from_value(node.config.clone())?;
-            Box::new(SqliteSink::connect(&cfg, columns).await?)
+            Box::new(SqliteSink::connect(&cfg, schema).await?)
         }
         #[cfg(feature = "mongodb")]
         "mongodb" => {
@@ -422,7 +454,7 @@ pub async fn build_sink(
         #[cfg(feature = "mysql")]
         "mysql" => {
             let cfg: MySqlConnectorConfig = serde_json::from_value(node.config.clone())?;
-            Box::new(MySqlSink::connect(&cfg).await?)
+            Box::new(MySqlSink::connect(&cfg, schema).await?)
         }
         #[cfg(feature = "odbc")]
         "odbc" => {
@@ -503,6 +535,11 @@ pub async fn build_sink(
         "csv" => {
             let cfg: CsvConnectorConfig = serde_json::from_value(node.config.clone())?;
             Box::new(CsvSink::connect(&cfg)?)
+        }
+        #[cfg(feature = "clickhouse")]
+        "clickhouse" => {
+            let cfg: ClickHouseConnectorConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(ClickHouseSink::connect(&cfg, &columns).await?)
         }
         other => match ConnectorRegistry::find_sink_builder(other) {
             Some(builder) => (builder.build)(node.config.clone()).await?,
@@ -716,13 +753,17 @@ mod tests {
 
     #[tokio::test]
     async fn build_sink_falls_back_to_a_registered_plugin_builder() {
+        use arrow_schema::Schema;
+        use std::sync::Arc;
+
         let node = NodeSpec {
             name: None,
             connector: "test-plugin-connector".to_string(),
             config: serde_json::json!({"value": "x"}),
         };
         let license = claims(vec!["test-plugin-connector"]);
-        build_sink(&node, 0, &[], Some(&license))
+        let schema = Arc::new(Schema::empty());
+        build_sink(&node, 0, &schema, Some(&license))
             .await
             .expect("builds via plugin");
     }

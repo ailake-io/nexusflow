@@ -1,0 +1,19 @@
+[package]
+name = "nexus-connector-clickhouse"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+adbc_core = "0.23.0"
+adbc_driver_manager = "0.23.0"
+arrow-array = "58.4.0"
+arrow-cast = "58.4.0"
+arrow-schema = "58.4.0"
+async-trait = "0.1.91"
+futures = "0.3.33"
+nexus-core = { version = "0.1.0", path = "../../nexus-core" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+schemars = "1.2.2"
+tokio = { version = "1.53.1", features = ["rt", "time"] }

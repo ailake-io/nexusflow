@@ -74,6 +74,12 @@ jobs:
             ./rustup-init.exe -y --default-toolchain stable --no-modify-path
             Remove-Item rustup-init.exe
           }
+          # rustup-init doesn't put cargoBin on PATH for *this* running
+          # process (only future ones, and only if --no-modify-path were
+          # dropped) — the $GITHUB_PATH appends below only take effect in
+          # later steps. Without this, a first-ever run on a fresh runner
+          # fails right here: "rustup: command not found".
+          $env:Path = "$cargoBin;$env:Path"
           rustup default stable
           "$cargoBin" | Out-File -FilePath $env:GITHUB_PATH -Append
           "C:\Program Files\Git\usr\bin" | Out-File -FilePath $env:GITHUB_PATH -Append

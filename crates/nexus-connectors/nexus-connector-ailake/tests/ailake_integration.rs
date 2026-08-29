@@ -11,7 +11,7 @@ use nexus_ai::embedding::{
     append_embedding_column, EmbeddingModel, EmbeddingModelConfig, ModelConfig,
 };
 use nexus_connector_ailake::{AilakeConnectorConfig, AilakeSink, AilakeSource};
-use nexus_core::{Sink, Source};
+use nexus_core::{CheckpointCursor, Sink, Source};
 use std::sync::Arc;
 
 #[tokio::test]
@@ -80,10 +80,20 @@ async fn text_chunk_embed_ailake_end_to_end() {
         embedding_column: "embedding".to_string(),
         dimension: 384,
         storage_options: nexus_connector_ailake::AilakeStorageOptions::default(),
+        append_only: false,
         timeout_seconds: 30,
+        flush_threshold_rows: 50_000,
     };
     let mut sink = AilakeSink::connect(&sink_cfg).expect("sink connects");
     sink.write_batch(batch).await.expect("writes batch");
+    // Non-CDC batches are buffered (flush_threshold_rows) and only land on
+    // disk once commit_checkpoint flushes them — same contract the real
+    // pipeline engine relies on (it always commits a checkpoint after a
+    // partition finishes). Without this, the source below hits an empty/
+    // nonexistent warehouse dir.
+    sink.commit_checkpoint(CheckpointCursor::new("p0"))
+        .await
+        .expect("flushes buffered batch");
 
     // --- read back via the source and validate schema/data ---
     let mut source = AilakeSource::connect(&sink_cfg)
@@ -194,7 +204,9 @@ async fn upsert_replaces_prior_row_instead_of_duplicating_it() {
         embedding_column: "embedding".to_string(),
         dimension: DIMENSION as u32,
         storage_options: nexus_connector_ailake::AilakeStorageOptions::default(),
+        append_only: false,
         timeout_seconds: 30,
+        flush_threshold_rows: 50_000,
     };
     let mut sink = AilakeSink::connect(&cfg).expect("sink connects");
 
@@ -204,6 +216,9 @@ async fn upsert_replaces_prior_row_instead_of_duplicating_it() {
     sink.write_batch(batch_with_status(1, "version-b"))
         .await
         .expect("writes second version");
+    sink.commit_checkpoint(CheckpointCursor::new("p0"))
+        .await
+        .expect("flushes buffered batches");
 
     let mut source = AilakeSource::connect(&cfg).await.expect("source connects");
     let mut stream = source.read_batches().await.expect("reads batches");

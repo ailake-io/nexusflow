@@ -52,7 +52,9 @@ async fn cdc_source_replays_inserts_and_a_real_delete() {
         embedding_column: "embedding".to_string(),
         dimension: DIMENSION as u32,
         storage_options: nexus_connector_ailake::AilakeStorageOptions::default(),
+        append_only: false,
         timeout_seconds: 30,
+        flush_threshold_rows: 50_000,
     };
     let mut sink = AilakeSink::connect(&batch_cfg).expect("sink connects");
 

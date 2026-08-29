@@ -91,9 +91,52 @@ export interface PipelineSpec {
    * the server's scheduler. Unset means the pipeline only runs when
    * explicitly triggered. */
   schedule?: string
+  /** Per-pipeline alert channels, additive to the global env-var-configured
+   * ones. Unset means no per-pipeline channels. */
+  alerts?: AlertsConfig
   /** When true, the spec is saved as a draft and the server skips validation
    * of connector configs/embedding/dbt. Drafts cannot be executed. */
   draft?: boolean
+}
+
+/** Matches nexus-core::WebhookAlertChannel exactly — Slack/Teams/generic
+ * Webhook all share this shape (POST a JSON payload built server-side to
+ * `url`). `on_failure` defaults to `true` server-side when omitted; the UI
+ * always sends both explicitly. */
+export interface WebhookAlertChannel {
+  url: string
+  on_success: boolean
+  on_failure: boolean
+}
+
+/** Matches nexus-core::PagerDutyAlertChannel exactly. */
+export interface PagerDutyAlertChannel {
+  routing_key: string
+  on_success: boolean
+  on_failure: boolean
+}
+
+/** Matches nexus-core::EmailAlertChannel exactly. */
+export interface EmailAlertChannel {
+  smtp_host: string
+  smtp_port: number
+  username?: string
+  password?: string
+  from: string
+  to: string[]
+  on_success: boolean
+  on_failure: boolean
+}
+
+/** Matches nexus-core::AlertsConfig exactly — per-pipeline alert channels,
+ * additive to nexus-server's global env-var-configured channels (which stay
+ * failure-only). */
+export interface AlertsConfig {
+  slack?: WebhookAlertChannel
+  teams?: WebhookAlertChannel
+  webhook?: WebhookAlertChannel
+  pagerduty?: PagerDutyAlertChannel
+  email?: EmailAlertChannel
 }
 
 export type ConnectorRole = 'source' | 'sink'
@@ -206,6 +249,7 @@ export interface PipelineMeta {
   channelCapacity?: number
   partitions?: number
   schedule?: string
+  alerts?: AlertsConfig
 }
 
 /**
@@ -319,6 +363,7 @@ export function toPipelineSpec(
   if (meta.channelCapacity !== undefined) spec.channel_capacity = meta.channelCapacity
   if (meta.partitions !== undefined) spec.partitions = meta.partitions
   if (meta.schedule?.trim()) spec.schedule = meta.schedule.trim()
+  if (meta.alerts) spec.alerts = meta.alerts
   if (allowDraft) spec.draft = true
   return spec
 }

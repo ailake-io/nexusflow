@@ -835,6 +835,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-tungstenite"
+version = "0.34.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8447f02eaa65412035e2d3eeaa3fc82bbb8d7137c84c5976b4af685136012ee9"
+dependencies = [
+ "atomic-waker",
+ "futures-core",
+ "futures-io",
+ "futures-task",
+ "futures-util",
+ "log",
+ "pin-project-lite",
+ "rustls-native-certs 0.8.4",
+ "rustls-pki-types",
+ "tokio",
+ "tokio-rustls 0.26.4",
+ "tungstenite",
+]
+
+[[package]]
 name = "async_cell"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3817,6 +3837,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4443176a9f2c162692bd3d352d745ef9413eec5782a80d8fd6f8a1ac692a07f7"
 
 [[package]]
+name = "fallible-iterator"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2acce4a10f12dc2fb14a218589d4f1f62ef011b2d0cc4b3cb1bba8e94da14649"
+
+[[package]]
+name = "fallible-streaming-iterator"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
+
+[[package]]
 name = "fast-float2"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3911,6 +3943,17 @@ name = "flume"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da0e4dd2a88388a1f4ccc7c9ce104604dab68d9f408dc34cd45823d5a9069095"
+dependencies = [
+ "futures-core",
+ "futures-sink",
+ "spin 0.9.9",
+]
+
+[[package]]
+name = "flume"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e139bc46ca777eb5efaf62df0ab8cc5fd400866427e56c68b22e414e53bd3be"
 dependencies = [
  "futures-core",
  "futures-sink",
@@ -4256,6 +4299,9 @@ name = "hashbrown"
 version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
+dependencies = [
+ "ahash",
+]
 
 [[package]]
 name = "hashbrown"
@@ -4288,6 +4334,15 @@ dependencies = [
  "allocator-api2",
  "equivalent",
  "foldhash 0.2.0",
+]
+
+[[package]]
+name = "hashlink"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ba4ff7128dee98c7dc9794b6a411377e1404dba1c97deb8d1a55297bd25d8af"
+dependencies = [
+ "hashbrown 0.14.5",
 ]
 
 [[package]]
@@ -6693,6 +6748,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mqttbytes-core-next"
+version = "0.34.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "366b6ba2b4209ca4bc5ac731ccddf570d09831981eed07e5fbd63564cf0cf1aa"
+dependencies = [
+ "bytes",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "multimap"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6864,7 +6929,7 @@ checksum = "27b02d87554356db9e9a873add8782d4ea6e3e58ea071a9adb9a2e8ddb884a8b"
 
 [[package]]
 name = "nexus-ai"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-schema 58.4.0",
@@ -6880,7 +6945,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-connector-ailake"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "ailake-catalog",
  "ailake-core",
@@ -6906,11 +6971,12 @@ dependencies = [
 
 [[package]]
 name = "nexus-connector-chromadb"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-schema 58.4.0",
  "async-trait",
+ "futures",
  "nexus-ai",
  "nexus-core",
  "reqwest 0.12.28",
@@ -6922,8 +6988,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexus-connector-clickhouse"
+version = "0.1.3"
+dependencies = [
+ "adbc_core",
+ "adbc_driver_manager",
+ "arrow-array 58.4.0",
+ "arrow-cast 58.4.0",
+ "arrow-schema 58.4.0",
+ "async-trait",
+ "futures",
+ "nexus-core",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "nexus-connector-csv"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-csv",
@@ -6942,7 +7026,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-connector-deltalake"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-cast 58.4.0",
@@ -6960,7 +7044,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-connector-iceberg"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-schema 58.4.0",
@@ -6980,7 +7064,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-connector-kafka"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-schema 58.4.0",
@@ -7000,7 +7084,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-connector-lancedb"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-schema 58.4.0",
@@ -7018,7 +7102,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-connector-milvus"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-schema 58.4.0",
@@ -7035,7 +7119,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-connector-mongodb"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-schema 58.4.0",
@@ -7049,11 +7133,32 @@ dependencies = [
  "testcontainers",
  "testcontainers-modules",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "nexus-connector-mqtt"
+version = "0.1.3"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-schema 58.4.0",
+ "async-trait",
+ "futures",
+ "nexus-core",
+ "rumqttc-v4-next",
+ "rustls-native-certs 0.8.4",
+ "rustls-pemfile 2.2.0",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "testcontainers",
+ "testcontainers-modules",
+ "tokio",
 ]
 
 [[package]]
 name = "nexus-connector-mysql"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-schema 58.4.0",
@@ -7068,11 +7173,12 @@ dependencies = [
  "testcontainers",
  "testcontainers-modules",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
 name = "nexus-connector-odbc"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-schema 58.4.0",
@@ -7080,16 +7186,18 @@ dependencies = [
  "futures",
  "nexus-core",
  "odbc-api",
+ "rusqlite",
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
 ]
 
 [[package]]
 name = "nexus-connector-parquet"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-schema 58.4.0",
@@ -7109,7 +7217,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-connector-pgvector"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-schema 58.4.0",
@@ -7128,7 +7236,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-connector-pinecone"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-schema 58.4.0",
@@ -7144,13 +7252,16 @@ dependencies = [
 
 [[package]]
 name = "nexus-connector-postgres"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "adbc_core",
  "adbc_driver_manager",
  "arrow-array 58.4.0",
+ "arrow-buffer 58.4.0",
+ "arrow-cast 58.4.0",
  "arrow-schema 58.4.0",
  "async-trait",
+ "bytes",
  "futures",
  "nexus-core",
  "pg_walstream",
@@ -7160,11 +7271,12 @@ dependencies = [
  "testcontainers",
  "tokio",
  "tokio-postgres",
+ "tracing",
 ]
 
 [[package]]
 name = "nexus-connector-qdrant"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-schema 58.4.0",
@@ -7181,7 +7293,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-connector-rest"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-schema 58.4.0",
@@ -7200,7 +7312,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-connector-sqlite"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "adbc_core",
  "adbc_driver_manager",
@@ -7216,7 +7328,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-schema 58.4.0",
@@ -8147,7 +8259,7 @@ dependencies = [
  "base64 0.22.1",
  "byteorder",
  "bytes",
- "fallible-iterator",
+ "fallible-iterator 0.2.0",
  "hmac 0.13.0",
  "md-5 0.11.0",
  "memchr",
@@ -8163,7 +8275,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "851ca9db4932932d69f3ea811b1abe63087a0f740a47692619dd40d4899b68be"
 dependencies = [
  "bytes",
- "fallible-iterator",
+ "fallible-iterator 0.2.0",
  "postgres-protocol",
 ]
 
@@ -9060,6 +9172,58 @@ dependencies = [
 ]
 
 [[package]]
+name = "rumqttc-core-next"
+version = "0.34.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "249896ab27ed630590971738264baa8f722f18965d2e387c706c40a3c2a572cc"
+dependencies = [
+ "async-tungstenite",
+ "rustls-native-certs 0.8.4",
+ "rustls-pki-types",
+ "rustls-webpki",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-rustls 0.26.4",
+]
+
+[[package]]
+name = "rumqttc-v4-next"
+version = "0.34.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b3767dde22a804ea806107d0f4331e33cb794d1b8468b11c86fb0c1366f07054"
+dependencies = [
+ "async-tungstenite",
+ "bytes",
+ "fixedbitset 0.5.7",
+ "flume 0.12.0",
+ "futures-util",
+ "log",
+ "mqttbytes-core-next",
+ "rumqttc-core-next",
+ "rustls-native-certs 0.8.4",
+ "rustls-pki-types",
+ "rustls-webpki",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-rustls 0.26.4",
+ "tokio-util",
+]
+
+[[package]]
+name = "rusqlite"
+version = "0.32.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7753b721174eb8ff87a9a0e799e2d7bc3749323e773db92e0984debb00019d6e"
+dependencies = [
+ "bitflags 2.13.1",
+ "fallible-iterator 0.3.0",
+ "fallible-streaming-iterator",
+ "hashlink 0.9.1",
+ "libsqlite3-sys",
+ "smallvec",
+]
+
+[[package]]
 name = "rust-stemmers"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9877,7 +10041,7 @@ dependencies = [
  "futures-io",
  "futures-util",
  "hashbrown 0.15.5",
- "hashlink",
+ "hashlink 0.10.0",
  "indexmap 2.14.0",
  "log",
  "memchr",
@@ -10017,7 +10181,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2d12fe70b2c1b4401038055f90f151b78208de1f9f89a7dbfd41587a10c3eea"
 dependencies = [
  "atoi 2.0.0",
- "flume",
+ "flume 0.11.1",
  "futures-channel",
  "futures-core",
  "futures-executor",
@@ -10744,7 +10908,7 @@ dependencies = [
  "async-trait",
  "byteorder",
  "bytes",
- "fallible-iterator",
+ "fallible-iterator 0.2.0",
  "futures-channel",
  "futures-util",
  "log",
@@ -11101,6 +11265,24 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
+name = "tungstenite"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c01152af293afb9c7c2a57e4b559c5620b421f6d133261c60dd2d0cdb38e6b8"
+dependencies = [
+ "bytes",
+ "data-encoding",
+ "http 1.5.0",
+ "httparse",
+ "log",
+ "rand 0.9.5",
+ "rustls 0.23.43",
+ "rustls-pki-types",
+ "sha1 0.10.7",
+ "thiserror 2.0.20",
+]
 
 [[package]]
 name = "twox-hash"

@@ -7,6 +7,69 @@ use nexus_core::quote_identifier;
 use nexus_core::{with_timeout, NexusError};
 use std::sync::Arc;
 
+/// Reads `table`'s real Arrow schema via the same ADBC path `table_schema`
+/// uses for the batch connector, then narrows it to `postgres-cdc`'s
+/// 4-primitive-type ceiling — source-side fallback for when `PostgresCdcConfig::fields`
+/// is left empty. Takes a bare connection string/table/timeout instead of a
+/// `PostgresConnectorConfig` so `postgres-cdc` (a separate config struct,
+/// only sharing "how to reach Postgres" with the batch connector) can call
+/// it without constructing one.
+#[cfg(feature = "cdc")]
+pub(crate) async fn cdc_fields(
+    connection_string: &str,
+    table: &str,
+    timeout_seconds: u64,
+) -> Result<Vec<crate::config::PostgresCdcFieldSpec>, NexusError> {
+    use crate::config::{PostgresCdcDataType, PostgresCdcFieldSpec};
+
+    let connection_string = connection_string.to_string();
+    let table = table.to_string();
+    with_timeout(
+        timeout_seconds,
+        "postgres-cdc schema discovery",
+        async move {
+            tokio::task::spawn_blocking(move || {
+                quote_identifier(&table)?;
+                let connection = open_connection(&connection_string)?;
+                let schema = connection
+                    .get_table_schema(None, None, &table)
+                    .map_err(|e| NexusError::Schema(e.to_string()))?;
+                Ok(schema
+                    .fields()
+                    .iter()
+                    .map(|f| {
+                        let data_type = match f.data_type() {
+                            DataType::Int8
+                            | DataType::Int16
+                            | DataType::Int32
+                            | DataType::Int64
+                            | DataType::UInt8
+                            | DataType::UInt16
+                            | DataType::UInt32
+                            | DataType::UInt64 => PostgresCdcDataType::Int64,
+                            DataType::Float16
+                            | DataType::Float32
+                            | DataType::Float64
+                            | DataType::Decimal128(_, _)
+                            | DataType::Decimal256(_, _) => PostgresCdcDataType::Float64,
+                            DataType::Boolean => PostgresCdcDataType::Boolean,
+                            _ => PostgresCdcDataType::Utf8,
+                        };
+                        PostgresCdcFieldSpec {
+                            name: f.name().clone(),
+                            data_type,
+                            nullable: f.is_nullable(),
+                        }
+                    })
+                    .collect())
+            })
+            .await
+            .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))?
+        },
+    )
+    .await
+}
+
 /// Introspects the table's Arrow schema, in source-column order — used by
 /// `nexus-server` to build the Sink's parameterized upsert (column order must
 /// match `SELECT *`'s order, since ADBC binds parameters positionally).

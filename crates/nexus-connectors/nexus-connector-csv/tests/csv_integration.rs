@@ -43,9 +43,11 @@ fn test_cfg(uri: String, delimiter: char) -> CsvConnectorConfig {
             },
         ],
         primary_key: Some("id".to_string()),
+        append_only: false,
         batch_size: 1000,
         storage_options: HashMap::new(),
         timeout_seconds: 30,
+        schema_sample_rows: 1000,
     }
 }
 
@@ -78,7 +80,7 @@ async fn writes_reads_back_and_deletes_via_rewrite() {
         "header must use the configured ';' delimiter: {raw:?}"
     );
 
-    let mut source = CsvSource::connect(&cfg).expect("source connects");
+    let mut source = CsvSource::connect(&cfg).await.expect("source connects");
     let mut stream = source.read_batches().await.expect("reads batches");
     let mut ids = Vec::new();
     while let Some(batch) = stream.next().await {
@@ -132,7 +134,7 @@ async fn writes_reads_back_and_deletes_via_rewrite() {
         .expect("writes delete batch");
 
     // --- re-read: id=1 gone, id=2 updated, id=3 unchanged ---
-    let mut source = CsvSource::connect(&cfg).expect("source reconnects");
+    let mut source = CsvSource::connect(&cfg).await.expect("source reconnects");
     let mut stream = source.read_batches().await.expect("reads batches");
     let mut rows: Vec<(i64, String)> = Vec::new();
     while let Some(batch) = stream.next().await {
@@ -159,6 +161,45 @@ async fn writes_reads_back_and_deletes_via_rewrite() {
         vec![(2, "paid".to_string()), (3, "pending".to_string()),],
         "id=1 must have been deleted, id=2 updated, id=3 unchanged: {rows:?}"
     );
+}
+
+/// `fields: vec![]` on the source side must infer a schema from the file
+/// itself instead of erroring — the whole point of the feature (see
+/// `CsvConnectorConfig::fields` doc comment): no need to hand-declare a
+/// schema just to read a CSV.
+#[tokio::test]
+async fn infers_schema_when_fields_left_empty() {
+    let dir = tempfile::tempdir().expect("tempdir creates");
+    let path = dir.path().join("orders.csv");
+    std::fs::write(&path, "id,status,amount\n1,pending,9.5\n2,paid,12.25\n")
+        .expect("writes fixture file");
+
+    let mut cfg = test_cfg(path.to_str().unwrap().to_string(), ',');
+    cfg.fields = Vec::new();
+
+    let mut source = CsvSource::connect(&cfg)
+        .await
+        .expect("source connects and infers a schema");
+    let schema = source.schema();
+    assert_eq!(
+        schema.field_with_name("id").unwrap().data_type(),
+        &DataType::Int64
+    );
+    assert_eq!(
+        schema.field_with_name("status").unwrap().data_type(),
+        &DataType::Utf8
+    );
+    assert_eq!(
+        schema.field_with_name("amount").unwrap().data_type(),
+        &DataType::Float64
+    );
+
+    let mut stream = source.read_batches().await.expect("reads batches");
+    let mut row_count = 0;
+    while let Some(batch) = stream.next().await {
+        row_count += batch.expect("batch reads ok").num_rows();
+    }
+    assert_eq!(row_count, 2);
 }
 
 #[tokio::test]
@@ -197,9 +238,11 @@ fn cfg_with(
             nullable: false,
         }],
         primary_key: Some("id".to_string()),
+        append_only: false,
         batch_size: 1000,
         storage_options: HashMap::new(),
         timeout_seconds: 30,
+        schema_sample_rows: 1000,
     }
 }
 

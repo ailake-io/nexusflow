@@ -39,7 +39,13 @@ pub struct MySqlConnectorConfig {
     /// `mysql-cdc`'s positional matching — a plain `SELECT`/`INSERT` here
     /// names its columns explicitly, so there's no binlog ambiguity to work
     /// around). Same 4-primitive-type ceiling as every other bridging
-    /// connector.
+    /// connector. Left empty **on the source side**, the connector runs
+    /// `SHOW COLUMNS FROM table` and maps each MySQL type onto the closest
+    /// of the 4 (see `source::mysql_type_to_data_type`) instead of erroring
+    /// — real column metadata from MySQL's own catalog, not a sample, so
+    /// this one isn't best-effort the way CSV/Mongo/Kafka/REST inference
+    /// is.
+    #[serde(default)]
     pub fields: Vec<MySqlCdcFieldSpec>,
     /// How many rows to fold into a single `RecordBatch` while scanning, and
     /// the batch size for `exec_batch` writes on the sink side.

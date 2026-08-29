@@ -5,16 +5,28 @@ use arrow_schema::DataType;
 use async_trait::async_trait;
 use futures::stream::{self, StreamExt, TryStreamExt};
 use mongodb::bson::{doc, Bson, Document};
-use mongodb::options::{DeleteOneModel, ReplaceOneModel, WriteModel};
-use mongodb::{Client, Collection, Namespace};
+use mongodb::error::ErrorKind;
+use mongodb::options::{DeleteOneModel, IndexOptions, ReplaceOneModel, WriteModel};
+use mongodb::{Client, Collection, IndexModel, Namespace};
 use nexus_core::{with_timeout, CheckpointCursor, NexusError, Opcode, Sink, OPCODE_COLUMN};
+
+/// MongoDB's duplicate-key error code (`E11000`).
+const DUPLICATE_KEY_ERROR_CODE: i32 = 11000;
 
 /// Number of MongoDB write operations to keep in flight at once. The driver's
 /// `bulk_write` API requires MongoDB 8.0+; while we target older servers, a
 /// bounded concurrent fan-out replaces the previous strictly serial
 /// replace_one/delete_one loop and removes the per-row network latency as the
 /// dominant bottleneck.
-const WRITE_CONCURRENCY: usize = 16;
+const WRITE_CONCURRENCY: usize = 32;
+/// Max operations per `bulk_write` call. MongoDB accepts up to 100k, but
+/// splitting into smaller chunks keeps memory bounded and avoids huge
+/// server-side sort/buffer costs that can stall a large batch.
+const BULK_WRITE_CHUNK_SIZE: usize = 1000;
+/// Plain inserts are much cheaper than upserts, so we can use larger chunks.
+/// `ordered(false)` lets the server continue on duplicate-key errors and
+/// removes the per-document acknowledgement latency of ordered inserts.
+const INSERT_MANY_CHUNK_SIZE: usize = 5000;
 
 /// Idempotent by construction: every row is a `replace_one` upsert keyed on
 /// `primary_key`, matching the `Sink` contract in ARCHITECTURE.md §5
@@ -43,6 +55,26 @@ impl MongoSink {
         let use_bulk_write =
             detect_bulk_write_support(&client, &config.database, config.timeout_seconds).await?;
 
+        // A unique index on primary_key is what makes the insert_many fast
+        // path (below) idempotent: without it, replaying a plain batch after
+        // a crash would silently duplicate every row instead of erroring
+        // with a tolerated duplicate-key (E11000), which is what lets the
+        // Sink contract in ARCHITECTURE.md §5 (retry-safe writes) hold for
+        // the fast path too. Creating an index that already exists with the
+        // same spec is a no-op.
+        with_timeout(config.timeout_seconds, "mongo create_index", async {
+            collection
+                .create_index(
+                    IndexModel::builder()
+                        .keys(doc! { &config.primary_key: 1 })
+                        .options(IndexOptions::builder().unique(true).build())
+                        .build(),
+                )
+                .await
+                .map_err(|e| NexusError::Connector(format!("mongo create_index failed: {e}")))
+        })
+        .await?;
+
         Ok(Self {
             client,
             namespace,
@@ -50,6 +82,22 @@ impl MongoSink {
             use_bulk_write,
             timeout_seconds: config.timeout_seconds,
         })
+    }
+}
+
+/// True if every write error in an `insert_many` failure is a duplicate-key
+/// error (E11000) — i.e. the batch (or part of it) was already applied by an
+/// earlier attempt, and this replay can be treated as a no-op success. Any
+/// other error kind, or a mix that includes a non-duplicate-key error, is
+/// still propagated.
+fn is_only_duplicate_key_errors(err: &mongodb::error::Error) -> bool {
+    match err.kind.as_ref() {
+        ErrorKind::InsertMany(insert_err) => {
+            insert_err.write_errors.as_ref().is_some_and(|errors| {
+                !errors.is_empty() && errors.iter().all(|we| we.code == DUPLICATE_KEY_ERROR_CODE)
+            })
+        }
+        _ => false,
     }
 }
 
@@ -157,6 +205,39 @@ impl Sink for MongoSink {
             ops.push((opcodes[i], key_bson, document));
         }
 
+        // Fast path for plain (non-CDC) batches: `insert_many` is orders of
+        // magnitude faster than `replace_one` upserts because it skips the
+        // index probe and conflict resolution for every document.
+        let is_plain_insert = ops.iter().all(|(opcode, _, _)| opcode.is_none());
+
+        if is_plain_insert {
+            let collection: Collection<Document> = self
+                .client
+                .database(&namespace.db)
+                .collection(&namespace.coll);
+            let docs: Vec<Document> = ops.into_iter().map(|(_, _, doc)| doc).collect();
+            for chunk in docs.chunks(INSERT_MANY_CHUNK_SIZE) {
+                let chunk = chunk.to_vec();
+                with_timeout(self.timeout_seconds, "mongo insert_many", async {
+                    match collection.insert_many(chunk).ordered(false).await {
+                        Ok(_) => Ok(()),
+                        // A replayed batch after a crash re-inserts rows
+                        // already committed by the earlier attempt — the
+                        // unique index on primary_key (created in `connect`)
+                        // turns those into duplicate-key errors instead of
+                        // silent duplicates. Tolerate that specific case;
+                        // anything else is a real failure.
+                        Err(e) if is_only_duplicate_key_errors(&e) => Ok(()),
+                        Err(e) => Err(NexusError::Connector(format!(
+                            "mongo insert_many failed: {e}"
+                        ))),
+                    }
+                })
+                .await?;
+            }
+            return Ok(());
+        }
+
         if self.use_bulk_write {
             let models: Vec<WriteModel> = ops
                 .into_iter()
@@ -181,14 +262,19 @@ impl Sink for MongoSink {
                 })
                 .collect();
 
-            with_timeout(self.timeout_seconds, "mongo bulk_write", async {
-                self.client
-                    .bulk_write(models)
-                    .ordered(false)
-                    .await
-                    .map_err(|e| NexusError::Connector(format!("mongo bulk_write failed: {e}")))
-            })
-            .await?;
+            // Chunk the batch so a single huge bulk_write doesn't hold server
+            // resources for an unbounded time; timeout is per chunk.
+            for chunk in models.chunks(BULK_WRITE_CHUNK_SIZE) {
+                let chunk = chunk.to_vec();
+                with_timeout(self.timeout_seconds, "mongo bulk_write", async {
+                    self.client
+                        .bulk_write(chunk)
+                        .ordered(false)
+                        .await
+                        .map_err(|e| NexusError::Connector(format!("mongo bulk_write failed: {e}")))
+                })
+                .await?;
+            }
         } else {
             let collection: Collection<Document> = self
                 .client

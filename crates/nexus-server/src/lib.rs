@@ -1,25 +1,32 @@
 mod alerts;
 mod auth;
 mod auth_store;
+mod browse;
 mod checkpoint_store;
 mod connectors;
 mod crypto;
 mod db;
 mod dbt;
+mod dbt_lineage_store;
+mod dbt_test_result_store;
 #[cfg(feature = "embed-ui")]
 mod embedded_ui;
 mod error;
 mod hardware_stats;
 mod license;
 mod license_store;
+mod lineage;
 pub mod migrate;
+mod pipeline_schema_store;
 mod pipeline_store;
 mod progress;
 mod python_transform;
 mod rate_limit;
+mod resource_stats;
 mod run_log_store;
 mod runner;
 mod scheduler;
+mod server_metrics;
 pub mod telemetry;
 
 use alerts::{AlertConfig, AlertNotifier};
@@ -82,6 +89,14 @@ struct AppState {
     pipelines: PipelineStore,
     run_logs: RunLogStore,
     license_store: LicenseStore,
+    resource_stats: resource_stats::ResourceStatsStore,
+    dbt_lineage: dbt_lineage_store::DbtLineageStore,
+    pipeline_schemas: pipeline_schema_store::PipelineSchemaStore,
+    // Only read from `execute_pipeline_run`'s `#[cfg(feature = "dbt")]`
+    // block — kept on `AppState` unconditionally so build_state/test_state
+    // don't need their own feature-gated construction path.
+    #[allow(dead_code)]
+    dbt_test_results: dbt_test_result_store::DbtTestResultStore,
     progress: ProgressHub,
     alerts: AlertNotifier,
     login_rate_limiter: std::sync::Arc<rate_limit::LoginRateLimiter>,
@@ -145,6 +160,12 @@ fn router(state: AppState) -> Router {
         // Same role as running the pipeline: a real, live connection to an
         // external system with a decrypted credential, same trust bar.
         .route("/pipelines/{id}/preview", get(preview_node_handler))
+        // Same trust bar as the saved-pipeline preview above — a bare
+        // connector config isn't backed by validate_security_with() at
+        // save time the way a persisted node is, so the handler itself
+        // runs that check before connecting (see its doc comment). Read
+        // alone isn't enough for "make an arbitrary outbound connection".
+        .route("/connectors/preview", post(preview_adhoc_handler))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_role::<AppState>,
@@ -167,6 +188,12 @@ fn router(state: AppState) -> Router {
         // them back. `get_pipeline_handler` above stays masked for anyone
         // with only `Read` (Marco 8 task #17).
         .route("/pipelines/{id}/spec", get(get_pipeline_spec_handler))
+        // Backs the Canvas "browse path" button (frontend/SchemaForm.tsx)
+        // for local-path connector fields (csv/parquet/sqlite/...). Same
+        // role as editing a node's config in the first place — see
+        // `browse_fs_handler`'s doc comment for why no extra sandbox is
+        // layered underneath this.
+        .route("/system/browse-fs", get(browse_fs_handler))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_role::<AppState>,
@@ -185,6 +212,18 @@ fn router(state: AppState) -> Router {
             "/pipelines/{id}/runs/{run_id}/logs",
             get(list_run_logs_handler),
         )
+        // Observability data, not an action — same tier as /connectors and
+        // /pipelines above (see resource_stats.rs).
+        .route("/system/resource-stats", get(resource_stats_handler))
+        .route(
+            "/pipelines/{id}/dbt-tests",
+            get(list_dbt_test_results_handler),
+        )
+        // Whole-catalog graph, not a per-pipeline secret — the handler
+        // below only ever hands back connector names + allowlisted
+        // resource identifiers, never raw config (see lineage.rs).
+        .route("/lineage", get(lineage_handler))
+        .route("/lineage/{id}/schema", get(pipeline_schema_handler))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_role::<AppState>,
@@ -363,6 +402,11 @@ async fn login_handler(
         Ok(None) => (false, "invalid username or password"),
         Err(_) => (false, "login verification error"),
     };
+    server_metrics::record_login_attempt(match &result {
+        Ok(Some(_)) => "success",
+        Ok(None) => "invalid_credentials",
+        Err(_) => "error",
+    });
     // Log to stdout/tracing and to the durable audit table. Do not block the
     // response on audit persistence, but surface failures in server logs.
     tracing::info!(
@@ -523,6 +567,7 @@ async fn execute_pipeline_run(
     progress_tx: ProgressSender,
     logger: RunLogger,
 ) {
+    let started = std::time::Instant::now();
     let mode = if spec.has_transform() {
         if spec.dbt.is_some() {
             "transform+dbt"
@@ -554,6 +599,7 @@ async fn execute_pipeline_run(
         Some(progress_tx.clone()),
         Some(&logger),
         active_license.as_ref(),
+        &state.pipeline_schemas,
     )
     .await;
     state.progress.finish(run_id).await;
@@ -572,10 +618,65 @@ async fn execute_pipeline_run(
                     Ok(outcome) => {
                         outcome.log_summary();
                         logger.info("dbt finished").await;
+                        // Persist what dbt already computes (parent_map,
+                        // per-test detail) instead of letting it vanish
+                        // once `outcome` goes out of scope below — feeds
+                        // the Lineage tab's dbt sub-graph and (later) the
+                        // Quality tab's test history. A failure here logs
+                        // and moves on: observability must never fail an
+                        // otherwise-successful run (same posture as
+                        // `resource_stats`'s background sampler).
+                        #[cfg(feature = "dbt")]
+                        {
+                            if let Some(lineage) = &outcome.lineage {
+                                if let Err(e) = state
+                                    .dbt_lineage
+                                    .record(&spec.pipeline_id, &lineage.parent_map)
+                                    .await
+                                {
+                                    tracing::warn!(error = %e, "failed to persist dbt lineage");
+                                }
+                            }
+                            if let Some(rr) = &outcome.run_results {
+                                let test_results: Vec<dbt_test_result_store::DbtTestOutcome> = rr
+                                    .results
+                                    .iter()
+                                    .filter(|r| r.unique_id.split('.').next() == Some("test"))
+                                    .map(|r| dbt_test_result_store::DbtTestOutcome {
+                                        unique_id: r.unique_id.clone(),
+                                        status: r.status.clone(),
+                                        message: r.message.clone(),
+                                        execution_time: r.execution_time,
+                                    })
+                                    .collect();
+                                if !test_results.is_empty() {
+                                    if let Err(e) = state
+                                        .dbt_test_results
+                                        .record_all(&spec.pipeline_id, run_id, &test_results)
+                                        .await
+                                    {
+                                        tracing::warn!(error = %e, "failed to persist dbt test results");
+                                    }
+                                    server_metrics::record_dbt_test_results(
+                                        &spec.pipeline_id,
+                                        &test_results,
+                                    );
+                                }
+                            }
+                        }
                         dbt_summary = outcome.summary_json();
                     }
                     Err(e) => {
-                        record_run_failure(&state, run_id, &spec.pipeline_id, &e, &logger).await;
+                        record_run_failure(
+                            &state,
+                            run_id,
+                            &spec.pipeline_id,
+                            &e,
+                            &logger,
+                            started,
+                            spec.alerts.as_ref(),
+                        )
+                        .await;
                         return;
                     }
                 }
@@ -598,8 +699,16 @@ async fn execute_pipeline_run(
                         {
                             Ok(post_dbt_stats) => stats.extend(post_dbt_stats),
                             Err(e) => {
-                                record_run_failure(&state, run_id, &spec.pipeline_id, &e, &logger)
-                                    .await;
+                                record_run_failure(
+                                    &state,
+                                    run_id,
+                                    &spec.pipeline_id,
+                                    &e,
+                                    &logger,
+                                    started,
+                                    spec.alerts.as_ref(),
+                                )
+                                .await;
                                 return;
                             }
                         }
@@ -620,8 +729,30 @@ async fn execute_pipeline_run(
             {
                 tracing::warn!(error = %e, "failed to record successful pipeline run");
             }
+            server_metrics::record_run_outcome(&spec.pipeline_id, "success", started.elapsed());
+            state.alerts.notify_pipeline_run(
+                spec.alerts.as_ref(),
+                &spec.pipeline_id,
+                run_id,
+                true,
+                &format!(
+                    "{total_rows} row(s) across {} partition(s)/sink(s)",
+                    stats.len()
+                ),
+            );
         }
-        Err(e) => record_run_failure(&state, run_id, &spec.pipeline_id, &e, &logger).await,
+        Err(e) => {
+            record_run_failure(
+                &state,
+                run_id,
+                &spec.pipeline_id,
+                &e,
+                &logger,
+                started,
+                spec.alerts.as_ref(),
+            )
+            .await
+        }
     }
 }
 
@@ -631,6 +762,8 @@ async fn record_run_failure(
     pipeline_id: &str,
     error: &anyhow::Error,
     logger: &RunLogger,
+    started: std::time::Instant,
+    alerts: Option<&nexus_core::AlertsConfig>,
 ) {
     let error_debug = format!("{error:?}");
     // Full detail (cause chain included) stays in the server log, but the
@@ -645,9 +778,13 @@ async fn record_run_failure(
     if let Err(record_err) = state.pipelines.finish_run_failure(run_id, &sanitized).await {
         tracing::warn!(error = %record_err, "failed to record failed pipeline run");
     }
+    server_metrics::record_run_outcome(pipeline_id, "failed", started.elapsed());
     state
         .alerts
         .notify_pipeline_failed(pipeline_id, run_id, &sanitized);
+    state
+        .alerts
+        .notify_pipeline_run(alerts, pipeline_id, run_id, false, &sanitized);
 }
 
 async fn create_pipeline_handler(
@@ -740,10 +877,26 @@ async fn preview_node_handler(
     })?;
 
     let active_license = state.license_store.active().await.unwrap_or(None);
-    let (_, mut source) = crate::connectors::build_source(node, 0, active_license.as_ref())
+    let (_, source) = crate::connectors::build_source(node, 0, active_license.as_ref())
         .await
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
 
+    let rows = read_preview_rows(source, limit).await?;
+    Ok(Json(serde_json::json!({ "rows": rows })))
+}
+
+/// Pulls the first `limit` rows off a freshly-connected `Source` and
+/// renders them as JSON — shared by `preview_node_handler` (saved
+/// pipeline, node looked up by name) and `preview_adhoc_handler` (a bare
+/// connector/config pair, no pipeline needed). The trimming logic exists
+/// because a connector's batch size rarely divides `limit` evenly — the
+/// last batch pulled is sliced back down instead of just capping the
+/// batch count, so the row count in the response always matches `limit`
+/// exactly (when the source has that many rows to give).
+async fn read_preview_rows(
+    mut source: Box<dyn nexus_core::Source>,
+    limit: usize,
+) -> Result<Vec<serde_json::Value>, ApiError> {
     let mut stream = source.read_batches().await.map_err(ApiError::internal)?;
     let mut collected = Vec::new();
     let mut row_count = 0usize;
@@ -768,20 +921,84 @@ async fn preview_node_handler(
         }
     }
 
-    let rows: Vec<serde_json::Value> = if collected.is_empty() {
-        Vec::new()
-    } else {
-        let mut buf = Vec::new();
-        {
-            let mut writer = arrow_json::writer::ArrayWriter::new(&mut buf);
-            for batch in &collected {
-                writer.write(batch).map_err(ApiError::internal)?;
-            }
-            writer.finish().map_err(ApiError::internal)?;
+    if collected.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut buf = Vec::new();
+    {
+        let mut writer = arrow_json::writer::ArrayWriter::new(&mut buf);
+        for batch in &collected {
+            writer.write(batch).map_err(ApiError::internal)?;
         }
-        serde_json::from_slice(&buf).map_err(ApiError::internal)?
-    };
+        writer.finish().map_err(ApiError::internal)?;
+    }
+    serde_json::from_slice(&buf).map_err(ApiError::internal)
+}
 
+/// Body for `POST /connectors/preview`.
+#[derive(Debug, Deserialize)]
+struct AdhocPreviewRequest {
+    /// A single source or sink node — same shape as an entry in
+    /// `PipelineSpec::sources`/`sinks`. `name` is ignored (nothing to
+    /// resolve against, there's no pipeline).
+    #[serde(flatten)]
+    node: NodeSpec,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// Previews a connector's data directly from its config — no saved
+/// pipeline required, unlike `GET /pipelines/{id}/preview`. Lets the
+/// Canvas show a data sample the moment a source *or* sink node's config
+/// is filled in, before the pipeline is ever saved. Same underlying
+/// mechanism as the saved-pipeline preview (`build_source` +
+/// `read_preview_rows`): works for any connector that can act as a
+/// `Source` on either side, same "sink-only connectors are rejected"
+/// behavior via `build_source`'s own error for those.
+///
+/// Unlike a saved pipeline's node — already checked by
+/// `validate_security_with` in `create_pipeline_handler`/
+/// `update_pipeline_handler` before it was ever persisted — this config
+/// arrives fresh on every call and was never validated by anything. Run
+/// the same SSRF/path-traversal check here, for the same reason
+/// `run_pipeline_handler` requires `Write`/`Admin` for an unsaved spec:
+/// a bare config is an arbitrary caller-controlled outbound connection
+/// (REST URL, Mongo/Kafka/MQTT/Postgres/MySQL/ODBC host, csv/parquet
+/// object-store URI) until proven otherwise.
+async fn preview_adhoc_handler(
+    State(state): State<AppState>,
+    Json(req): Json<AdhocPreviewRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let limit = req
+        .limit
+        .unwrap_or(DEFAULT_PREVIEW_LIMIT)
+        .min(MAX_PREVIEW_LIMIT);
+
+    let probe_spec = PipelineSpec {
+        pipeline_id: "adhoc-preview".to_string(),
+        sources: vec![req.node.clone()],
+        transform: None,
+        sinks: Vec::new(),
+        embedding: None,
+        python: None,
+        channel_capacity: 100,
+        partitions: 1,
+        dbt: None,
+        post_dbt_sinks: Vec::new(),
+        schedule: None,
+        alerts: None,
+        draft: false,
+    };
+    probe_spec
+        .validate_security_with(state.allow_internal_hosts)
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+
+    let active_license = state.license_store.active().await.unwrap_or(None);
+    let (_, source) = crate::connectors::build_source(&req.node, 0, active_license.as_ref())
+        .await
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+
+    let rows = read_preview_rows(source, limit).await?;
     Ok(Json(serde_json::json!({ "rows": rows })))
 }
 
@@ -845,6 +1062,24 @@ async fn list_runs_handler(
     Ok(Json(state.pipelines.list_runs(&id, limit, offset).await?))
 }
 
+/// Every recorded dbt test result for this pipeline, grouped by test —
+/// what the Quality tab renders as a per-test pass/fail history. The
+/// aggregate counts (`tests_total`/`tests_passed`) already ride along on
+/// each `RunRecord.dbt_summary` from `GET /pipelines/{id}/runs`; this is
+/// the detail behind them (`dbt_test_result_store.rs`).
+async fn list_dbt_test_results_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<dbt_test_result_store::DbtTestOutcome>>, ApiError> {
+    Ok(Json(
+        state
+            .dbt_test_results
+            .list_for_pipeline(&id)
+            .await
+            .map_err(ApiError::internal)?,
+    ))
+}
+
 /// Historical/replayable view of a run's execution log — works for a run
 /// still in progress, one that already finished, and (the whole point) one
 /// nobody had the live WebSocket open for, e.g. a scheduler-triggered run
@@ -862,6 +1097,115 @@ async fn list_run_logs_handler(
             .await
             .map_err(ApiError::internal)?,
     ))
+}
+
+/// Whole-catalog, pipeline-level lineage graph — every saved pipeline plus
+/// the resources its sources/sinks touch, computed fresh on every request
+/// (no persistence, no background task; same cost `list_summaries` already
+/// pays to decrypt every saved spec). See `lineage.rs`'s module doc for the
+/// allowlist that keeps connector secrets out of the response.
+async fn lineage_handler(
+    State(state): State<AppState>,
+) -> Result<Json<lineage::LineageGraph>, ApiError> {
+    let specs: Vec<_> = state
+        .pipelines
+        .list_all_specs(&state.secrets)
+        .await
+        .map_err(ApiError::internal)?
+        .into_iter()
+        // Drafts only have `pipeline_id` validated (dag.rs's own doc
+        // comment on `draft`) — connector configs may be incomplete or
+        // garbage, so they'd pollute the graph rather than inform it.
+        .filter(|spec| !spec.draft)
+        .collect();
+    let dbt_lineages = state
+        .dbt_lineage
+        .get_all()
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(lineage::build_graph(&specs, &dbt_lineages)))
+}
+
+/// Column-level detail for one pipeline's Lineage node — source/output
+/// columns and (when the pipeline has a SQL transform) column-to-column
+/// provenance. Fetched on demand (clicking the node in the Lineage tab),
+/// not bundled into `GET /lineage` — most pipelines are never inspected at
+/// this level, no reason to decrypt+compute it for every node on every
+/// tab load. 404 when the pipeline has never run (`PipelineSchemaStore`
+/// only ever holds a captured run's schema, see `runner.rs`).
+async fn pipeline_schema_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<pipeline_schema_store::PipelineSchema>, ApiError> {
+    state
+        .pipeline_schemas
+        .get(&id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::not_found(format!("no schema captured yet for pipeline {id:?}")))
+        .map(Json)
+}
+
+#[derive(Deserialize)]
+struct ResourceStatsQuery {
+    /// `<number><unit>` (`5m`/`45m`/`3h`/`12d`, ...) — free-form, not just
+    /// the 5 preset shortcuts the frontend also offers. Defaults to `5m`,
+    /// same default the frontend applies when the tab first opens.
+    range: Option<String>,
+}
+
+/// Historical CPU/memory/disk usage for the "resources" tab, bucketed to
+/// ~120 points regardless of range (see `resource_stats::bucket_samples`).
+/// Sampling itself runs continuously in the background
+/// (`resource_stats::spawn`), independent of any pipeline run — unlike the
+/// per-run `hardware_stats` frame on the progress WebSocket.
+async fn resource_stats_handler(
+    State(state): State<AppState>,
+    Query(query): Query<ResourceStatsQuery>,
+) -> Result<Json<Vec<resource_stats::ResourceStatsBucket>>, ApiError> {
+    let range_str = query.range.as_deref().unwrap_or("5m");
+    let lookback = resource_stats::parse_range(range_str)
+        .map_err(|e| ApiError::bad_request(format!("invalid range {range_str:?}: {e}")))?;
+    let cutoff =
+        chrono::Utc::now() - chrono::Duration::from_std(lookback).expect("bounded by parse_range");
+    let samples = state
+        .resource_stats
+        .range(cutoff)
+        .await
+        .map_err(ApiError::internal)?;
+    let bucket_width = resource_stats::bucket_width_for(lookback);
+    Ok(Json(resource_stats::bucket_samples(&samples, bucket_width)))
+}
+
+#[derive(Deserialize)]
+struct BrowseQuery {
+    /// Absolute path to list. Empty/absent lists `/`.
+    path: Option<String>,
+}
+
+/// Lists a directory's contents for the Canvas "browse path" file picker.
+///
+/// Deliberately **no extra sandbox root** on top of whatever the server
+/// process can read: a local-path connector (`csv`/`parquet`/`sqlite`/...)
+/// already reads/writes any absolute path the process can access the moment
+/// it's typed into a node's config (`nexus_core::
+/// submit_local_path_connector!` is the existing opt-out from the SSRF path
+/// guard in `dag.rs`). This endpoint grants no new capability — it only
+/// makes that same space visually discoverable instead of requiring the
+/// caller to already know the path blind. Gated at `Write`, the same role
+/// already required to edit a Canvas node's config.
+async fn browse_fs_handler(
+    Query(query): Query<BrowseQuery>,
+) -> Result<Json<browse::BrowseListing>, ApiError> {
+    let path = query
+        .path
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| "/".to_string());
+    tokio::task::spawn_blocking(move || browse::list_directory(std::path::Path::new(&path)))
+        .await
+        .map_err(ApiError::internal)?
+        .map(Json)
+        .map_err(|e| ApiError::bad_request(format!("could not list path: {e}")))
 }
 
 #[derive(Deserialize)]
@@ -1224,6 +1568,19 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
     // operate — a license is a single-row table, not worth its own
     // connection pool/URL to configure.
     let license_store = LicenseStore::connect(&config.auth_database_url).await?;
+    // Same database as checkpoints, not a 5th env var — same reasoning as
+    // `run_logs`/`license_store` above, one small table doesn't need its
+    // own connection pool/URL.
+    let resource_stats =
+        resource_stats::ResourceStatsStore::connect(&config.checkpoint_database_url).await?;
+    // Same database as pipelines/run_logs — dbt lineage/test results are
+    // intrinsically tied to a pipeline's own runs, not worth a 6th env var.
+    let dbt_lineage =
+        dbt_lineage_store::DbtLineageStore::connect(&config.pipelines_database_url).await?;
+    let dbt_test_results =
+        dbt_test_result_store::DbtTestResultStore::connect(&config.pipelines_database_url).await?;
+    let pipeline_schemas =
+        pipeline_schema_store::PipelineSchemaStore::connect(&config.pipelines_database_url).await?;
     if let Some((username, password)) = &config.bootstrap_admin {
         auth_store.seed_admin_if_empty(username, password).await?;
     }
@@ -1243,6 +1600,10 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         pipelines,
         run_logs,
         license_store,
+        resource_stats,
+        dbt_lineage,
+        dbt_test_results,
+        pipeline_schemas,
         progress: ProgressHub::default(),
         alerts: AlertNotifier::new(AlertConfig {
             slack_webhook_url: config.slack_webhook_url.clone(),
@@ -1417,6 +1778,11 @@ pub async fn run() -> anyhow::Result<()> {
     // it racing their own assertions).
     scheduler::spawn(state.clone());
 
+    // CPU/memory/disk sampler for the "resources" tab (see
+    // resource_stats.rs) — same "only the real boot path" rule as the
+    // scheduler above.
+    resource_stats::spawn(state.clone());
+
     let app = router(state);
 
     let port: u16 = std::env::var("NEXUS_PORT")
@@ -1488,6 +1854,20 @@ mod tests {
             pipelines: PipelineStore::connect("sqlite::memory:").await.unwrap(),
             run_logs: RunLogStore::connect("sqlite::memory:").await.unwrap(),
             license_store: LicenseStore::connect("sqlite::memory:").await.unwrap(),
+            resource_stats: resource_stats::ResourceStatsStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
+            dbt_lineage: dbt_lineage_store::DbtLineageStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
+            dbt_test_results: dbt_test_result_store::DbtTestResultStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
+            pipeline_schemas: pipeline_schema_store::PipelineSchemaStore::connect(
+                "sqlite::memory:",
+            )
+            .await
+            .unwrap(),
             progress: ProgressHub::default(),
             alerts: AlertNotifier::new(AlertConfig::default()),
             login_rate_limiter: std::sync::Arc::new(rate_limit::LoginRateLimiter::new(
@@ -2014,6 +2394,69 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("connect failed"));
+    }
+
+    #[tokio::test]
+    async fn dbt_test_results_endpoint_returns_what_was_recorded() {
+        let state = test_state().await;
+        let read_token = bearer(&state, Role::Read);
+        // Seeded directly (not via a real dbt run) — this endpoint's own
+        // job is just serving back what `DbtTestResultStore` already has,
+        // same scope as `dbt_lineage_store.rs`'s own store-level tests.
+        state
+            .dbt_test_results
+            .record_all(
+                "p1",
+                1,
+                &[dbt_test_result_store::DbtTestOutcome {
+                    unique_id: "test.proj.not_null_orders_id".to_string(),
+                    status: "fail".to_string(),
+                    message: Some("3 rows failed".to_string()),
+                    execution_time: 0.01,
+                }],
+            )
+            .await
+            .unwrap();
+        let app = router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/pipelines/p1/dbt-tests")
+                    .header("authorization", &read_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let results = body_json(response).await;
+        let results = results.as_array().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["unique_id"], "test.proj.not_null_orders_id");
+        assert_eq!(results[0]["status"], "fail");
+        assert_eq!(results[0]["message"], "3 rows failed");
+    }
+
+    #[tokio::test]
+    async fn dbt_test_results_endpoint_is_empty_for_a_pipeline_that_never_ran_dbt() {
+        let state = test_state().await;
+        let read_token = bearer(&state, Role::Read);
+        let app = router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/pipelines/no-such-pipeline/dbt-tests")
+                    .header("authorization", &read_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_json(response).await.as_array().unwrap().len(), 0);
     }
 
     #[tokio::test]
@@ -2645,7 +3088,16 @@ mod tests {
         );
         let (_progress_tx, log_tx) = state.progress.start(run_id).await;
         let logger = RunLogger::new(run_id, log_tx, state.run_logs.clone());
-        record_run_failure(&state, run_id, "p1", &err, &logger).await;
+        record_run_failure(
+            &state,
+            run_id,
+            "p1",
+            &err,
+            &logger,
+            std::time::Instant::now(),
+            None,
+        )
+        .await;
 
         let runs = state.pipelines.list_runs("p1", 100, 0).await.unwrap();
         let stored = runs[0].error.as_deref().unwrap();
@@ -2805,6 +3257,20 @@ mod tests {
             pipelines: PipelineStore::connect("sqlite::memory:").await.unwrap(),
             run_logs: RunLogStore::connect("sqlite::memory:").await.unwrap(),
             license_store: LicenseStore::connect("sqlite::memory:").await.unwrap(),
+            resource_stats: resource_stats::ResourceStatsStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
+            dbt_lineage: dbt_lineage_store::DbtLineageStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
+            dbt_test_results: dbt_test_result_store::DbtTestResultStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
+            pipeline_schemas: pipeline_schema_store::PipelineSchemaStore::connect(
+                "sqlite::memory:",
+            )
+            .await
+            .unwrap(),
             progress: ProgressHub::default(),
             alerts: AlertNotifier::new(AlertConfig::default()),
             login_rate_limiter: limiter,

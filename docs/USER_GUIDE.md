@@ -1,6 +1,6 @@
 # Guia de uso do NexusFlow — instalação a conector por conector
 
-Referência completa e prática: da instalação até a configuração exata de cada um dos 25 conectores, transformações (SQL, embeddings, dbt) e recursos de execução (preview, agendamento). Para o passo a passo mínimo de "primeiro pipeline", ver [`GETTING_STARTED.md`](./GETTING_STARTED.md); para arquitetura interna, [`ARCHITECTURE.md`](../ARCHITECTURE.md).
+Referência completa e prática: da instalação até a configuração exata de cada um dos 27 conectores, transformações (SQL, embeddings, dbt) e recursos de execução (preview, agendamento). Para o passo a passo mínimo de "primeiro pipeline", ver [`GETTING_STARTED.md`](./GETTING_STARTED.md); para arquitetura interna, [`ARCHITECTURE.md`](../ARCHITECTURE.md).
 
 ## Índice
 
@@ -39,7 +39,7 @@ docker run -d --name nexusflow -p 8080:8080 \
 
 Variáveis de ambiente completas: ver [`GETTING_STARTED.md` §3](./GETTING_STARTED.md#3-variáveis-de-ambiente). As duas obrigatórias são `NEXUS_JWT_SECRET` e `NEXUS_ENCRYPTION_KEY` — sem elas o processo não sobe.
 
-**Conectores linkados no binário**: binários pré-buildados (release, `.deb`, AppImage, rpm) e a imagem Docker publicada no GHCR já vêm com os 25 conectores ligados (`embed-ui,connectors-all`: 19 batch + 6 CDC nativos; a feature `rest` registra `rest` e `webhook` como nomes separados no catálogo). Buildando a partir do source, cada conector é uma feature Cargo opcional (`cargo build --features embed-ui,connectors-all` liga todos de uma vez) — ver [`GETTING_STARTED.md` §2](./GETTING_STARTED.md#2-habilitando-conectores). O catálogo em `GET /connectors` sempre reflete exatamente o que foi compilado; a UI nunca mostra um conector que não está no binário.
+**Conectores linkados no binário**: binários pré-buildados (release, `.deb`, AppImage, rpm) e a imagem Docker publicada no GHCR já vêm com os 27 conectores ligados (`embed-ui,connectors-all`: 21 batch + 6 CDC nativos; a feature `rest` registra `rest` e `webhook` como nomes separados no catálogo). Buildando a partir do source, cada conector é uma feature Cargo opcional (`cargo build --features embed-ui,connectors-all` liga todos de uma vez) — ver [`GETTING_STARTED.md` §2](./GETTING_STARTED.md#2-habilitando-conectores). O catálogo em `GET /connectors` sempre reflete exatamente o que foi compilado; a UI nunca mostra um conector que não está no binário.
 
 ---
 
@@ -128,6 +128,8 @@ curl -s -X POST http://localhost:8080/pipelines/meu-pipeline/run -H "authorizati
 
 Todos os campos abaixo são os nomes **exatos** dos structs de config em Rust (`serde` sem `rename`, exceto onde indicado). Campos sem `default` são obrigatórios. Convenção comum: quase todo conector de rede tem `timeout_seconds` (default `30`); conectores "bridging" sem schema próprio (mongodb, kafka, rest, odbc, csv) exigem `fields: [{"name", "data_type", "nullable"}]` explícito, com `data_type` em `int64|float64|boolean|utf8`.
 
+No Canvas, todo campo `path`/`file_path` (csv, parquet, sqlite, deltalake, lancedb) tem um botão **"Procurar…"** que abre um navegador de arquivos do servidor (`GET /system/browse-fs`, papel `Write`) — evita digitar o path absoluto às cegas. Não abre capacidade nova: um conector de path local já lê/escreve qualquer arquivo que o processo do servidor acesse assim que o path é digitado no config; o botão só torna essa navegação visual.
+
 ### 4.1 Fast-path ADBC (nativo, binário, sem overhead de serialização)
 
 #### `postgres` — source + sink
@@ -151,6 +153,36 @@ Requer `ADBC_DRIVER_POSTGRESQL_PATH` apontando pro `.so` (build com `scripts/bui
 }}
 ```
 Requer `ADBC_DRIVER_SQLITE_PATH`. `uri` aceita `:memory:`. Tabela criada automaticamente no sink se não existir.
+
+#### `clickhouse` — source + sink (sink append-only)
+```json
+{"connector": "clickhouse", "config": {
+  "host": "localhost", "port": 8123, "database": "default",
+  "username": "default", "password": "",
+  "table": "events", "partition_column": "id",
+  "timeout_seconds": 30
+}}
+```
+Driver **oficial** (ClickHouse, Inc.), instalação de um comando só —
+`dbc install clickhouse` (ADBC Driver Foundry), aponte
+`ADBC_DRIVER_CLICKHOUSE_PATH` pro binário instalado. Diferente de
+Postgres/SQLite, não precisa compilar nada na mão. Aceita `uri`
+completo (`http://user:pass@host:8123/db`) como alternativa aos campos
+individuais — a interface HTTP do ClickHouse fala esse formato
+nativamente.
+
+`partition_column` é opcional e usado só pra dividir a leitura em
+partições paralelas — qualquer coluna orderável, não precisa ser
+única (ClickHouse não impõe PK como o Postgres). `None` lê a tabela
+inteira sem `WHERE`.
+
+**Sink é append-only**: ClickHouse não tem `ON CONFLICT`/upsert leve —
+`ALTER TABLE ... UPDATE/DELETE` são mutations assíncronas pesadas, não
+servem pra escrita por batch. Um batch de CDC com `__opcode` de delete
+é **rejeitado com erro explícito**, nunca descartado silenciosamente.
+Se precisar de dedup, use `ReplacingMergeTree`/`CollapsingMergeTree`
+no próprio ClickHouse — mecanismo idiomático da ferramenta, não
+responsabilidade deste conector.
 
 ### 4.2 SQL sem driver ADBC, NoSQL e filas (bridging — convertidos para Arrow via schema explícito)
 
@@ -200,6 +232,23 @@ Sem driver ADBC oficial pro MySQL — bridging via `mysql_async` (mesmo padrão 
 }}
 ```
 Payload de cada mensagem é decodificado como JSON e projetado sobre `fields` — fonte genérica de Kafka, sem semântica de CDC (CDC é nativo por banco: `postgres-cdc`/`mongodb-cdc`/`mysql-cdc`, ver `ARCHITECTURE.md §7`). Offsets são commitados manualmente ao final de cada leitura, alinhado com o checkpoint do pipeline (`enable.auto.commit` desligado).
+
+#### `mqtt` — **source apenas** (feature `mqtt` + `nexus-connector-mqtt/client`, protocolo padrão de telemetria IoT/sensor)
+```json
+{"connector": "mqtt", "config": {
+  "broker_url": "mqtts://broker.example.com:8883",
+  "client_id": "nexusflow-sensores",
+  "topic_filter": "sensores/+/temperatura",
+  "qos": "at_least_once",
+  "username": "device",
+  "password": "...",
+  "fields": [{"name": "valor", "data_type": "float64"}],
+  "batch_size": 500,
+  "poll_timeout_ms": 2000,
+  "max_messages": 100000
+}}
+```
+`topic_filter` aceita wildcard MQTT (`+` um nível, `#` os níveis restantes) — uma subscription pode misturar vários sensores lógicos numa leitura só, então toda linha de saída ganha a coluna extra `__mqtt_topic` com o tópico exato de onde veio (mesmo precedente do `__opcode` em CDC). Payload de cada mensagem decodificado como JSON e projetado sobre `fields`, igual ao `kafka`. `client_id` **não é opcional** — reutilizar o mesmo id entre runs, junto com sessão persistente (`clean_session: false`, sempre ligado), é o que faz o broker guardar mensagens QoS 1/2 publicadas enquanto o NexusFlow tava offline e reentregar na reconexão: resume é 100% server-side, sem checkpoint nenhum do lado do NexusFlow (mesmo padrão do `postgres-cdc`). TLS com CA privada/certificado de cliente (mTLS, exigido por ex. pelo AWS IoT Core): campos opcionais `ca_cert_path`/`client_cert_path`/`client_key_path` (caminhos pra arquivo PEM). Payload binário/CBOR fora de escopo — só JSON.
 
 ### 4.3 APIs REST/SaaS (bridging genérico)
 
@@ -330,6 +379,8 @@ Totalmente embarcado (catálogo SQLite + warehouse local, sem metastore externo)
 ```
 Config mais simples de todas (sem `timeout_seconds` — é I/O de arquivo local, não rede). Upsert/delete são feitos via read-filter-rewrite (arquivo temporário + rename atômico) — correto, mas custo `O(tamanho do arquivo)` por batch.
 
+**`path` pode ser uma pasta** (source, storage local): lê todo arquivo regular dentro dela (não-recursivo, sem entrar em subpastas, dotfiles ignorados), em ordem alfabética, concatenando tudo contra o schema do primeiro arquivo — erro claro (citando o arquivo) se algum divergir. O sink continua exigindo um arquivo — apontar pra uma pasta existente é rejeitado na conexão.
+
 #### `ailake` — formato Parquet + índice HNSW nativo para vetores
 ```json
 {"connector": "ailake", "config": {
@@ -355,6 +406,7 @@ Config mais simples de todas (sem `timeout_seconds` — é I/O de arquivo local,
 ```
 - `delimiter`: qualquer caractere único — `,` (CSV, default), `\t` (TSV), `;`/`|` (TXT customizado).
 - `primary_key`: opcional na source, mas **obrigatório de fato no sink** (usado pra upsert/delete).
+- `path`/`uri` **pode ser uma pasta** (source, storage local): lê todo arquivo regular dentro dela (não-recursivo, sem entrar em subpastas, dotfiles ignorados), em ordem alfabética — mesmo `delimiter`/`has_header`/`quote`/`escape`/`fields` aplicados a todos, concatenados num stream só. O sink continua exigindo um arquivo — apontar pra uma pasta existente é rejeitado na conexão com erro claro.
 - `uri` aceita path local **ou** URL de nuvem — `s3://bucket/key`, `gs://bucket/key`, `az://container/key`:
 
 ```json
@@ -382,9 +434,11 @@ Chaves de `storage_options` por provedor:
 |---|:---:|:---:|---|
 | `postgres` | ✅ | ✅ | ADBC nativo |
 | `sqlite` | ✅ | ✅ | ADBC nativo |
+| `clickhouse` | ✅ | ✅ | ADBC nativo, sink append-only (sem upsert) |
 | `mysql` | ✅ | ✅ | bridging (`mysql_async`), schema por nome |
 | `mongodb` | ✅ | ✅ | schema explícito |
 | `kafka` | ✅ | — | só leitura, genérico (sem CDC) |
+| `mqtt` | ✅ | — | telemetria IoT/sensor, resume via sessão persistente |
 | `rest` | ✅ | — | genérico, paginação offset/cursor |
 | `webhook` | — | ✅ | mesmo crate do `rest` |
 | `odbc` | ✅ | ✅ | legado, driver nativo |
@@ -396,9 +450,9 @@ Chaves de `storage_options` por provedor:
 | `chromadb` | — | ✅ | vetorial |
 | `deltalake` | ✅ | ✅ | data lake |
 | `iceberg` | ✅ | ✅ | data lake, append-only |
-| `parquet` | ✅ | ✅ | data lake, arquivo único |
+| `parquet` | ✅ | ✅ | data lake, `path` aceita pasta na source (local) |
 | `ailake` | ✅ | ✅ | data lake + vetorial (HNSW) |
-| `csv` | ✅ | ✅ | local ou S3/GCS/Azure |
+| `csv` | ✅ | ✅ | local ou S3/GCS/Azure, `path` aceita pasta na source (local) |
 
 > `lancedb` não tem config listada acima por brevidade — segue o mesmo padrão vetorial de `pgvector`/`milvus`: `{"uri": "/dados/vectors", "table": "docs", "primary_key": "id", "embedding_column": "embedding", "dimension": 384, "timeout_seconds": 30}`, path local embarcado (sem servidor), criado automaticamente no primeiro write.
 
@@ -406,16 +460,16 @@ Chaves de `storage_options` por provedor:
 
 Os 6 conectores abaixo operam em **micro-batch** (`max_batch_events` default 1000): cada run lê até esse limite de eventos, grava no sink e termina; o scheduler inicia o próximo batch.
 
-**Resume automático real** (`postgres-cdc`/`mysql-cdc`/`mongodb-cdc`, ver `ARCHITECTURE.md §4.2`): `postgres-cdc` agora confirma cada LSN processado ao servidor (`update_applied_lsn`) — o próprio slot de replicação rastreia a posição, restart não reprocessa desde a criação do slot. `mysql-cdc` e `mongodb-cdc` persistem a posição final de cada micro-batch (`binlog_filename`+`binlog_position` / `resume_token`) num checkpoint e o `nexus-server` reinjeta automaticamente na config do próximo run — não precisa mais digitar essas posições manualmente, os campos abaixo continuam existindo só como override manual (replay a partir de um ponto específico). `deltalake-cdc`/`iceberg-cdc`/`ailake-cdc` ainda dependem do cursor estático na config (`starting_version`/`starting_snapshot_id`) — sem resume automático.
+**Resume automático real** (ver `ARCHITECTURE.md §4.2`): `postgres-cdc` confirma cada LSN processado ao servidor (`update_applied_lsn`) — o próprio slot de replicação rastreia a posição, restart não reprocessa desde a criação do slot. `mysql-cdc`, `mongodb-cdc`, `deltalake-cdc`, `iceberg-cdc` e `ailake-cdc` persistem a posição final de cada micro-batch (`binlog_filename`+`binlog_position` / `resume_token` / `starting_version` / `starting_snapshot_id`) num checkpoint e o `nexus-server` reinjeta automaticamente na config do próximo run — não precisa mais digitar essas posições manualmente, os campos abaixo continuam existindo só como override manual (replay a partir de um ponto específico).
 
 | Conector | Nome no catálogo | Mecanismo | Resume por | Pré-requisitos |
 |---|---|---|---|---|
 | PostgreSQL | `postgres-cdc` | logical replication slot | automático (slot no servidor) | `CREATE PUBLICATION <publication_name> FOR TABLE <table>` |
 | MySQL | `mysql-cdc` | binlog (fake replica) | automático (checkpoint) — `binlog_filename`+`binlog_position` só pra override manual | Usuário com `REPLICATION SLAVE/CLIENT`; `binlog_row_image=FULL` recomendado |
 | MongoDB | `mongodb-cdc` | Change Streams | automático (checkpoint) — `resume_token` só pra override manual | Replica set (mesmo single-node) |
-| Delta Lake | `deltalake-cdc` | Delta change feed | manual — `starting_version` | `delta.enableChangeDataFeed = true` na tabela |
-| Iceberg | `iceberg-cdc` | diff de snapshots | manual — `starting_snapshot_id` | Catálogo SQLite + warehouse local; **insert-only** |
-| AI-Lake | `ailake-cdc` | diff de snapshots | manual — `starting_snapshot_id` | Warehouse local HNSW; emite `I` para upserts também |
+| Delta Lake | `deltalake-cdc` | Delta change feed | automático (checkpoint) — `starting_version` só pra override manual | `delta.enableChangeDataFeed = true` na tabela |
+| Iceberg | `iceberg-cdc` | diff de snapshots | automático (checkpoint) — `starting_snapshot_id` só pra override manual | Catálogo SQLite + warehouse local; **insert-only** |
+| AI-Lake | `ailake-cdc` | diff de snapshots | automático (checkpoint) — `starting_snapshot_id` só pra override manual | Warehouse local HNSW; emite `I` para upserts também |
 
 Exemplo mínimo (`postgres-cdc` → `mongodb`):
 
