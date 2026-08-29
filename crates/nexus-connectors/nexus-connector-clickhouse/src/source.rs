@@ -136,9 +136,9 @@ impl ClickHouseSource {
 }
 
 /// Pure query-string builder, kept free of any connection state so it's
-/// testable without a live driver. `table`/`partition_column` are validated
-/// and quoted here — this is the only place allowed to splice them into SQL
-/// text.
+/// testable without a live driver. `qualified_table` must already be
+/// validated/quoted by the caller (`qualified_table_name`); only
+/// `partition_column` is validated and quoted here.
 fn build_select_query(
     qualified_table: &str,
     partition_column: Option<&str>,
@@ -208,10 +208,16 @@ impl Source for ClickHouseSource {
 mod tests {
     use super::*;
 
+    // `build_select_query`'s first argument is the already-qualified,
+    // already-quoted table identifier (built by `qualified_table_name`,
+    // whose own injection-rejection is covered by
+    // `sink::tests::rejects_sql_injection_in_qualified_table_name`) — it is
+    // spliced verbatim, not re-validated here. Only `partition_column` is
+    // quoted/validated inside this function.
     #[test]
     fn build_query_bounded_partition() {
         let query = build_select_query(
-            "events",
+            "\"events\"",
             Some("id"),
             Some(PartitionRange {
                 lower_inclusive: 0,
@@ -228,7 +234,7 @@ mod tests {
     #[test]
     fn build_query_last_partition_is_unbounded_above() {
         let query = build_select_query(
-            "events",
+            "\"events\"",
             Some("id"),
             Some(PartitionRange {
                 lower_inclusive: 9000,
@@ -241,22 +247,8 @@ mod tests {
 
     #[test]
     fn build_query_no_partition_column_reads_whole_table_unconditionally() {
-        let query = build_select_query("regions", None, None).unwrap();
+        let query = build_select_query("\"regions\"", None, None).unwrap();
         assert_eq!(query, "SELECT * FROM \"regions\"");
-    }
-
-    #[test]
-    fn build_query_rejects_sql_injection_in_table_name() {
-        let err = build_select_query(
-            "events; DROP TABLE users; --",
-            Some("id"),
-            Some(PartitionRange {
-                lower_inclusive: 0,
-                upper_exclusive: None,
-            }),
-        )
-        .expect_err("malicious table name must be rejected");
-        assert!(matches!(err, NexusError::Schema(_)));
     }
 
     #[test]
