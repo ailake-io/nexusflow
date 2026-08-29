@@ -13,7 +13,7 @@ use futures::StreamExt;
 use nexus_connector_iceberg::{
     IcebergConnectorConfig, IcebergFormatVersion, IcebergSink, IcebergSource,
 };
-use nexus_core::{Sink, Source};
+use nexus_core::{CheckpointCursor, Sink, Source};
 use std::sync::Arc;
 
 fn test_cfg(dir: &std::path::Path, format_version: IcebergFormatVersion) -> IcebergConnectorConfig {
@@ -70,6 +70,15 @@ async fn writes_and_reads_back(format_version: IcebergFormatVersion) {
 
     let mut sink = IcebergSink::connect(&cfg).expect("sink connects");
     sink.write_batch(batch).await.expect("writes batch");
+    // Non-CDC batches are buffered (flush_threshold_rows) and only land on
+    // disk once commit_checkpoint flushes them. Flushing here (instead of
+    // letting both batches accumulate in one buffer) is also what actually
+    // exercises the "table already exists" branch of ensure_table below —
+    // without it, the second write below would just extend the same
+    // unflushed buffer instead of hitting a real second append.
+    sink.commit_checkpoint(CheckpointCursor::new("p0"))
+        .await
+        .expect("flushes first batch");
 
     // A second batch on the same table exercises the "table already
     // exists" branch of ensure_table, not just first-write create.
@@ -86,6 +95,9 @@ async fn writes_and_reads_back(format_version: IcebergFormatVersion) {
     )
     .unwrap();
     sink.write_batch(batch2).await.expect("writes second batch");
+    sink.commit_checkpoint(CheckpointCursor::new("p0"))
+        .await
+        .expect("flushes second batch");
 
     let mut source = IcebergSource::connect(&cfg).await.expect("source connects");
     let schema = source.schema();
@@ -175,6 +187,13 @@ async fn primary_key_dedup_prevents_duplicates_on_retry() {
 
     let mut sink = IcebergSink::connect(&cfg).expect("sink connects");
     sink.write_batch(batch).await.expect("writes first batch");
+    // Flush before the "retry" write below — otherwise both writes just
+    // accumulate in the same unflushed buffer and this never exercises
+    // dedup_against_existing's snapshot scan (it would only exercise the
+    // separate intra-batch dedupe, which isn't what this test is about).
+    sink.commit_checkpoint(CheckpointCursor::new("p0"))
+        .await
+        .expect("flushes first batch");
 
     // Retry with overlapping keys plus one new row: only row 4 should be
     // appended because 1/2/3 already exist.
@@ -187,6 +206,9 @@ async fn primary_key_dedup_prevents_duplicates_on_retry() {
     )
     .unwrap();
     sink.write_batch(retry).await.expect("writes retry batch");
+    sink.commit_checkpoint(CheckpointCursor::new("p0"))
+        .await
+        .expect("flushes retry batch");
 
     let mut source = IcebergSource::connect(&cfg).await.expect("source connects");
     let mut stream = source.read_batches().await.expect("reads batches");

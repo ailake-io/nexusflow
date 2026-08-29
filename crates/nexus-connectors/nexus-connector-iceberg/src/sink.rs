@@ -221,6 +221,15 @@ impl IcebergSink {
             Some(name) => name,
         };
 
+        // A key written twice within the same buffer window (two
+        // write_batch calls flushed together) would otherwise reach the
+        // snapshot-scan filter below as two rows for the same key — that
+        // filter only drops rows already committed in an *earlier* flush,
+        // it does nothing for duplicates that only exist within this one
+        // incoming batch. Collapse to the last write per key first (same
+        // fix as `nexus-connector-ailake`/`nexus-connector-deltalake`).
+        let batch = dedupe_keep_last_by_pk(batch, pk_name)?;
+
         let scan =
             table.scan().select_all().build().map_err(|e| {
                 NexusError::Connector(format!("iceberg dedup scan build failed: {e}"))
@@ -328,6 +337,33 @@ fn string_values(array: &dyn Array) -> Vec<String> {
     } else {
         vec![]
     }
+}
+
+/// Keeps only the last row for each primary-key value, dropping earlier
+/// duplicates within `batch` itself — see `dedup_against_existing`'s call
+/// site for why this is needed in addition to the existing-snapshot filter.
+fn dedupe_keep_last_by_pk(batch: RecordBatch, pk_name: &str) -> Result<RecordBatch, NexusError> {
+    let pk_col = batch
+        .column_by_name(pk_name)
+        .ok_or_else(|| NexusError::Schema(format!("primary_key column '{pk_name}' not found")))?;
+    let keys = string_values(pk_col.as_ref());
+    let mut seen = HashSet::with_capacity(keys.len());
+    let mut keep = vec![false; keys.len()];
+    for (i, key) in keys.iter().enumerate().rev() {
+        if seen.insert(key.clone()) {
+            keep[i] = true;
+        }
+    }
+    let mask = BooleanArray::from(keep);
+    let filtered_columns: Vec<arrow_array::ArrayRef> = batch
+        .columns()
+        .iter()
+        .map(|col| {
+            filter(col, &mask).map_err(|e| NexusError::Schema(format!("dedupe filter failed: {e}")))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    RecordBatch::try_new(batch.schema(), filtered_columns)
+        .map_err(|e| NexusError::Schema(format!("dedupe batch rebuild failed: {e}")))
 }
 
 /// Keep only rows whose primary-key value is **not** already in `existing`.
