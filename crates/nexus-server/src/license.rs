@@ -14,15 +14,23 @@
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 
-/// Placeholder key for the pre-launch phase of the enterprise licensing
-/// program: `nexus-licensing` does not exist yet, so there is no real
-/// signing key in production use anywhere. Replace this constant with the
-/// public half of `nexus-licensing`'s real signing key before the first
-/// paid license is ever issued — every license verified against the old
-/// key would otherwise keep validating under the new one too.
+/// Public half of `nexus-licensing`'s real Ed25519 signing key — the
+/// matching private key lives only in that service's
+/// `LICENSE_SIGNING_PRIVATE_KEY_PEM` env var (never committed anywhere).
+/// Rotating this constant invalidates every license signed under the old
+/// key, so treat a change here as a breaking event for existing customers.
+///
+/// Swapped out for `test_support::TEST_PUBLIC_KEY_PEM` under `#[cfg(test)]`
+/// (below) so every test in this crate that signs a license with
+/// `test_support::sign` — a key whose private half is deliberately public,
+/// see that module's doc comment — verifies against a key it actually
+/// matches, without ever needing the real private key in this repo.
+#[cfg(not(test))]
 const LICENSE_PUBLIC_KEY_PEM: &str = "-----BEGIN PUBLIC KEY-----\n\
-MCowBQYDK2VwAyEAG4CuT0Rpk474C57eMF+CfZ57VDtFORdcDtc7c64eBTM=\n\
+MCowBQYDK2VwAyEApAng7Ch5LpOWjGWRO3+cUGtypkLWChoDFTE9eVaS4kY=\n\
 -----END PUBLIC KEY-----\n";
+#[cfg(test)]
+const LICENSE_PUBLIC_KEY_PEM: &str = test_support::TEST_PUBLIC_KEY_PEM;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LicenseClaims {
@@ -81,6 +89,13 @@ pub(crate) mod test_support {
     const TEST_PRIVATE_KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----\n\
 MC4CAQAwBQYDK2VwBCIEIPByldYeti11Ln8Z2hkQXRrST+PoTsO/sycPsIAI24gm\n\
 -----END PRIVATE KEY-----\n";
+    /// Public half of `TEST_PRIVATE_KEY_PEM` above — this is what
+    /// `LICENSE_PUBLIC_KEY_PEM` resolves to under `#[cfg(test)]`, so
+    /// `verify()` accepts licenses signed by `sign()` in every test in
+    /// this crate.
+    pub(crate) const TEST_PUBLIC_KEY_PEM: &str = "-----BEGIN PUBLIC KEY-----\n\
+MCowBQYDK2VwAyEAG4CuT0Rpk474C57eMF+CfZ57VDtFORdcDtc7c64eBTM=\n\
+-----END PUBLIC KEY-----\n";
 
     pub fn sign(claims: &LicenseClaims) -> String {
         let key =
