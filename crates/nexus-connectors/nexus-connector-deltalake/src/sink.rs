@@ -1,5 +1,7 @@
 use crate::config::DeltaConnectorConfig;
-use crate::rows::{arrow_schema_to_delta_fields, extract_pk_strings, in_predicate};
+use crate::rows::{
+    arrow_schema_to_delta_fields, dedupe_keep_last_by_pk, extract_pk_strings, in_predicate,
+};
 use arrow_array::RecordBatch;
 use async_trait::async_trait;
 use deltalake::errors::DeltaTableError;
@@ -121,6 +123,14 @@ impl DeltaSink {
     }
 
     async fn write_buffered_upsert(&self, batch: RecordBatch) -> Result<(), NexusError> {
+        if batch.num_rows() == 0 {
+            return Ok(());
+        }
+        // A key written twice within the same buffer window (two
+        // write_batch calls, one flush) would otherwise reach the
+        // delete-then-append below as two rows for the same key — see
+        // dedupe_keep_last_by_pk's doc comment.
+        let batch = dedupe_keep_last_by_pk(&batch, &self.primary_key)?;
         if batch.num_rows() == 0 {
             return Ok(());
         }

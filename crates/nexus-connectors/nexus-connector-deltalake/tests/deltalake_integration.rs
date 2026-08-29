@@ -8,7 +8,7 @@ use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use futures::StreamExt;
 use nexus_connector_deltalake::{DeltaConnectorConfig, DeltaSink, DeltaSource};
-use nexus_core::{Sink, Source};
+use nexus_core::{CheckpointCursor, Sink, Source};
 use std::sync::Arc;
 
 #[tokio::test]
@@ -42,6 +42,13 @@ async fn writes_reads_back_and_deletes_via_delta_ops() {
 
     let mut sink = DeltaSink::connect(&cfg).expect("sink connects");
     sink.write_batch(batch).await.expect("writes batch");
+    // Non-CDC batches are buffered (flush_threshold_rows) and only land on
+    // disk once commit_checkpoint flushes them — same contract the real
+    // pipeline engine relies on (it always commits a checkpoint after a
+    // partition finishes).
+    sink.commit_checkpoint(CheckpointCursor::new("p0"))
+        .await
+        .expect("flushes buffered batch");
 
     // --- read back and validate schema/data ---
     let mut source = DeltaSource::connect(&cfg).await.expect("source connects");

@@ -1,4 +1,4 @@
-use arrow_array::{Array, ArrayRef, Int64Array, RecordBatch, StringArray};
+use arrow_array::{Array, ArrayRef, BooleanArray, Int64Array, RecordBatch, StringArray};
 use arrow_cast::cast::cast;
 use arrow_schema::{
     DataType as ArrowDataType, Field as ArrowField, Schema as ArrowSchema,
@@ -31,6 +31,32 @@ pub fn extract_pk_strings(
     Err(NexusError::Schema(format!(
         "primary key column '{column_name}' must be Int64 or Utf8"
     )))
+}
+
+/// Keeps only the last row for each primary-key value, dropping earlier
+/// duplicates. Needed because non-CDC writes are buffered across multiple
+/// `write_batch` calls before a single flush (`DeltaSink::write_buffered_upsert`)
+/// — that flush's own delete-then-append only masks a row already committed
+/// in an *earlier* flush, not a duplicate key arriving twice within the
+/// *same* buffered batch, so a second write of the same key landing in the
+/// same buffer window would otherwise produce two physical rows instead of
+/// replacing the first (same fix as `nexus-connector-ailake`'s
+/// `dedupe_keep_last_by_pk`).
+pub fn dedupe_keep_last_by_pk(
+    batch: &RecordBatch,
+    primary_key: &str,
+) -> Result<RecordBatch, NexusError> {
+    let pks = extract_pk_strings(batch, primary_key)?;
+    let mut seen = std::collections::HashSet::with_capacity(pks.len());
+    let mut keep = vec![false; pks.len()];
+    for (i, pk) in pks.iter().enumerate().rev() {
+        if seen.insert(pk.clone()) {
+            keep[i] = true;
+        }
+    }
+    let mask = BooleanArray::from(keep);
+    arrow_select::filter::filter_record_batch(batch, &mask)
+        .map_err(|e| NexusError::Schema(format!("dedupe filter failed: {e}")))
 }
 
 /// Builds a `col IN (v1, v2, ...)` SQL predicate for `delete().with_predicate(...)`,
