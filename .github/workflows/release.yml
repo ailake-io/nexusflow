@@ -263,10 +263,18 @@ jobs:
           cp target/adbc/libadbc_driver_sqlite.so "$stage/"
           tar -czf "nexusflow-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" -C "$stage" .
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.2.0
-        with:
-          name: nexusflow-${{ matrix.os }}-${{ matrix.arch }}
-          path: nexusflow-${{ matrix.os }}-${{ matrix.arch }}.tar.gz
+      # Every job below runs on the same single self-hosted Linux runner
+      # (see each job's runs-on), so a plain shared directory on that
+      # machine's disk hands artifacts between jobs without going through
+      # GitHub's own Actions artifact storage — which has a hard quota that
+      # doesn't recalculate for 6-12h after deleting old artifacts, and
+      # blocked this exact chain once already. Scoped by run_id so
+      # concurrent runs (or a re-run) don't collide.
+      - name: Stage tarball for downstream jobs (bypasses Actions artifact storage)
+        run: |
+          mkdir -p "/tmp/nexusflow-release-artifacts/${{ github.run_id }}"
+          cp "nexusflow-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" \
+            "/tmp/nexusflow-release-artifacts/${{ github.run_id }}/"
 
       # scripts/package-{deb,rpm,appimage}.sh existed but were never wired into
       # CI — only the raw tarball above was actually produced/released. Each
@@ -298,11 +306,11 @@ jobs:
           APPIMAGETOOL="${APPIMAGETOOL:-appimagetool --appimage-extract-and-run}" \
             ./scripts/package-appimage.sh target/package
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.2.0
+      - name: Stage native packages for downstream jobs (bypasses Actions artifact storage)
         if: matrix.os == 'linux' && matrix.arch == 'x86_64'
-        with:
-          name: nexusflow-linux-packages
-          path: target/package/*
+        run: |
+          mkdir -p "/tmp/nexusflow-release-artifacts/${{ github.run_id }}"
+          cp target/package/* "/tmp/nexusflow-release-artifacts/${{ github.run_id }}/"
 
   # build-windows removed for now — cargo build --features connectors-all
   # failed for real on the self-hosted windows-connectors-heavy runner:
@@ -320,10 +328,12 @@ jobs:
     runs-on: [self-hosted, Linux]
     timeout-minutes: 10
     steps:
-      - uses: actions/download-artifact@65a9edc5881444af0b9093a5e628f2fe47ea3b2e # v4.1.7
-        with:
-          name: nexusflow-linux-x86_64
-          path: dist
+      # Same-machine shared directory instead of actions/download-artifact —
+      # see the matching "Stage tarball" step in `build` for why.
+      - name: Fetch staged tarball
+        run: |
+          mkdir -p dist
+          cp "/tmp/nexusflow-release-artifacts/${{ github.run_id }}/nexusflow-linux-x86_64.tar.gz" dist/
       - name: Smoke test tarball
         run: |
           cd dist
@@ -345,12 +355,18 @@ jobs:
     steps:
       # No checkout here — version comes from `determine-version`'s output
       # now (that job already did the only thing this one used to need a
-      # working tree for), and everything else below just downloads
-      # artifacts and shells out to `gh`.
-      - uses: actions/download-artifact@65a9edc5881444af0b9093a5e628f2fe47ea3b2e # v4.1.7
-        with:
-          path: dist
-          merge-multiple: true
+      # working tree for), and everything else below just copies staged
+      # files and shells out to `gh`.
+      #
+      # Same-machine shared directory instead of actions/download-artifact
+      # — see the matching "Stage tarball"/"Stage native packages" steps in
+      # `build`. This is also the last job that reads the run's staged
+      # directory, so it cleans it up after (always(), so a failed release
+      # doesn't leak the staged files across runs indefinitely).
+      - name: Fetch staged build artifacts
+        run: |
+          mkdir -p dist
+          cp "/tmp/nexusflow-release-artifacts/${{ github.run_id }}"/* dist/
       - name: Generate SHA256SUMS
         run: |
           cd dist
@@ -386,6 +402,10 @@ jobs:
           for f in dist/*.tar.gz dist/*.deb dist/*.rpm dist/*.AppImage dist/SHA256SUMS; do
             gh release upload "$tag" "$f" --clobber
           done
+
+      - name: Clean up staged build artifacts
+        if: always()
+        run: rm -rf "/tmp/nexusflow-release-artifacts/${{ github.run_id }}"
 
   docker-publish:
     if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') || github.event_name == 'workflow_dispatch'
