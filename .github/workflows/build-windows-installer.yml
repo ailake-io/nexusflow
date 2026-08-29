@@ -124,7 +124,10 @@ jobs:
         # .wxs source file (the old flag now errors: "unexpected argument
         # '--input' found") — the positional INPUT argument now means the
         # package manifest (Cargo.toml) to build, not the .wxs path.
-        run: cargo wix --include packaging\windows\main.wxs --nocapture
+        # --package is required in a workspace (this repo is one) — without
+        # it cargo-wix errors "Workspace detected. Please pass a package
+        # name." instead of guessing which member to build.
+        run: cargo wix --package nexusflow --include packaging\windows\main.wxs --nocapture
 
       - name: Locate the built .msi
         id: msi
