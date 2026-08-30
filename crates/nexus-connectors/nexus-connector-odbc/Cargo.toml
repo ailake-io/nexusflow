@@ -18,15 +18,30 @@ arrow-schema = "58.4.0"
 async-trait = "0.1.91"
 futures = "0.3.33"
 nexus-core = { version = "0.1.0", path = "../../nexus-core" }
-odbc-api = { version = "29.0.0", optional = true, default-features = false, features = [
-    "odbc_version_3_5",
-    "vendored-unix-odbc",
-] }
 serde = { version = "1.0.229", features = ["derive"] }
 schemars = "1.2.2"
 serde_json = "1.0.151"
 tokio = { version = "1.53.1", features = ["rt", "sync", "time"], optional = true }
 tracing = "0.1.41"
+
+# `vendored-unix-odbc` builds unixODBC from source (static-linked) so the
+# workspace default build never depends on a host ODBC install — see
+# CLAUDE.md §8.5. Windows has no unixODBC/driver-manager concept (it uses
+# the OS's own built-in ODBC driver manager, odbc32.dll) and odbc-sys's
+# build.rs hard-panics if the `static` feature it implies is enabled while
+# targeting windows ("odbc-sys does not currently support static linking
+# on windows") — so the vendored feature is only pulled in off-Windows;
+# Windows links dynamically against the system driver manager instead.
+[target.'cfg(not(windows))'.dependencies]
+odbc-api = { version = "29.0.0", optional = true, default-features = false, features = [
+    "odbc_version_3_5",
+    "vendored-unix-odbc",
+] }
+
+[target.'cfg(windows)'.dependencies]
+odbc-api = { version = "29.0.0", optional = true, default-features = false, features = [
+    "odbc_version_3_5",
+] }
 
 [dev-dependencies]
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time"] }

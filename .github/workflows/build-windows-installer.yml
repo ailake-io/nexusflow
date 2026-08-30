@@ -120,7 +120,14 @@ jobs:
         run: cargo build --release -p nexusflow --features embed-ui,connectors-all
 
       - name: cargo wix
-        run: cargo wix --input packaging\windows\main.wxs --nocapture
+        # cargo-wix dropped --input in favor of --include/-I for a custom
+        # .wxs source file (the old flag now errors: "unexpected argument
+        # '--input' found") — the positional INPUT argument now means the
+        # package manifest (Cargo.toml) to build, not the .wxs path.
+        # --package is required in a workspace (this repo is one) — without
+        # it cargo-wix errors "Workspace detected. Please pass a package
+        # name." instead of guessing which member to build.
+        run: cargo wix --package nexusflow --include packaging\windows\main.wxs --nocapture
 
       - name: Locate the built .msi
         id: msi
@@ -133,10 +140,43 @@ jobs:
           "path=$($msi.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "name=$($msi.Name)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
+      # Only needed when no `version` was given — the artifact is the
+      # whole output then, a human downloads and publishes it by hand.
+      # When `version` is given, "Attach to release" below uploads
+      # straight from disk instead, so skip this — GitHub's Actions
+      # artifact storage has a hard quota that (per its own docs) doesn't
+      # recalculate for 6-12h even after deleting old artifacts, and this
+      # step failing outright once already blocked an otherwise-successful
+      # build from finishing.
       - uses: actions/upload-artifact@834a144ee995460fba8ed112a2fc961b36a5ec5a # v4.4.3
+        if: inputs.version == ''
         with:
           name: nexusflow-windows-installer
           path: ${{ steps.msi.outputs.path }}
+
+      # The GitHub CLI isn't preinstalled on this self-hosted runner (unlike
+      # GitHub-hosted runners, which ship it by default) — install it once.
+      # `winget install` hangs indefinitely here: it needs an interactive
+      # session (Microsoft Store/App Installer prompts) that a runner
+      # service running non-interactively never provides. Extract the
+      # official release zip directly instead — same "pinned version +
+      # sha256 check" pattern as the appimagetool download in ci.yml.
+      - name: Install GitHub CLI
+        if: inputs.version != ''
+        run: |
+          if (!(Get-Command gh.exe -ErrorAction SilentlyContinue)) {
+            $ghVersion = "2.98.0"
+            $ghSha256 = "c28c7b3b584967a05b74d9eaf7481bff24ddc34930bf2d6e442c148236561eb1"
+            $zipPath = "$env:TEMP\gh.zip"
+            Invoke-WebRequest -Uri "https://github.com/cli/cli/releases/download/v$ghVersion/gh_${ghVersion}_windows_amd64.zip" -OutFile $zipPath
+            $actualSha256 = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLower()
+            if ($actualSha256 -ne $ghSha256) {
+              Write-Error "gh CLI zip checksum mismatch: expected $ghSha256, got $actualSha256"
+              exit 1
+            }
+            Expand-Archive -Path $zipPath -DestinationPath "$env:TEMP\gh-cli" -Force
+            "$env:TEMP\gh-cli\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          }
 
       # Only attaches to an existing GitHub Release when `version` was
       # given — otherwise the artifact above is the whole output, a human
