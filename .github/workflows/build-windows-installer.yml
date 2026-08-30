@@ -155,14 +155,27 @@ jobs:
           path: ${{ steps.msi.outputs.path }}
 
       # The GitHub CLI isn't preinstalled on this self-hosted runner (unlike
-      # GitHub-hosted runners, which ship it by default) — install it once,
-      # same idempotent pattern as the cargo-wix step above.
+      # GitHub-hosted runners, which ship it by default) — install it once.
+      # `winget install` hangs indefinitely here: it needs an interactive
+      # session (Microsoft Store/App Installer prompts) that a runner
+      # service running non-interactively never provides. Extract the
+      # official release zip directly instead — same "pinned version +
+      # sha256 check" pattern as the appimagetool download in ci.yml.
       - name: Install GitHub CLI
         if: inputs.version != ''
         run: |
           if (!(Get-Command gh.exe -ErrorAction SilentlyContinue)) {
-            winget install --id GitHub.cli --silent --accept-package-agreements --accept-source-agreements
-            "$env:ProgramFiles\GitHub CLI" | Out-File -FilePath $env:GITHUB_PATH -Append
+            $ghVersion = "2.98.0"
+            $ghSha256 = "c28c7b3b584967a05b74d9eaf7481bff24ddc34930bf2d6e442c148236561eb1"
+            $zipPath = "$env:TEMP\gh.zip"
+            Invoke-WebRequest -Uri "https://github.com/cli/cli/releases/download/v$ghVersion/gh_${ghVersion}_windows_amd64.zip" -OutFile $zipPath
+            $actualSha256 = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLower()
+            if ($actualSha256 -ne $ghSha256) {
+              Write-Error "gh CLI zip checksum mismatch: expected $ghSha256, got $actualSha256"
+              exit 1
+            }
+            Expand-Archive -Path $zipPath -DestinationPath "$env:TEMP\gh-cli" -Force
+            "$env:TEMP\gh-cli\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
           }
 
       # Only attaches to an existing GitHub Release when `version` was
