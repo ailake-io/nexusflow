@@ -154,6 +154,17 @@ jobs:
           name: nexusflow-windows-installer
           path: ${{ steps.msi.outputs.path }}
 
+      # The GitHub CLI isn't preinstalled on this self-hosted runner (unlike
+      # GitHub-hosted runners, which ship it by default) — install it once,
+      # same idempotent pattern as the cargo-wix step above.
+      - name: Install GitHub CLI
+        if: inputs.version != ''
+        run: |
+          if (!(Get-Command gh.exe -ErrorAction SilentlyContinue)) {
+            winget install --id GitHub.cli --silent --accept-package-agreements --accept-source-agreements
+            "$env:ProgramFiles\GitHub CLI" | Out-File -FilePath $env:GITHUB_PATH -Append
+          }
+
       # Only attaches to an existing GitHub Release when `version` was
       # given — otherwise the artifact above is the whole output, a human
       # downloads and publishes it by hand whenever ready.
