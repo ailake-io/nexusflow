@@ -1,16 +1,20 @@
 <?xml version='1.0' encoding='windows-1252'?>
 <!--
-  WiX Toolset v3 source for nexusflow.msi. Built automatically in CI
-  (.github/workflows/release.yml's build-windows job, windows-latest
-  hosted runner) via `cargo wix --input packaging\windows\main.wxs` on every
-  push/PR to main — but the resulting .msi has NOT been installed/run on a
-  real Windows machine by a human yet (see ROADMAP.md's Pendências ativas
-  item 5). To build locally instead: install cargo-wix (see volks73/cargo-wix
-  on GitHub) from a Windows host, install the frontend's npm dependencies,
-  run its production build, then a release cargo build with the
-  embed-ui,connectors-all features enabled (see the root Cargo.toml's
-  [features] section) — same feature set as release.yml's Linux/macOS
-  builds, so GET /connectors matches across platforms.
+  WiX Toolset v3 source for nexusflow.msi. Built by the standalone
+  build-windows-installer.yml workflow (self-hosted windows-connectors-heavy
+  runner, workflow_dispatch only — never part of the CI/Release chain, see
+  that workflow's header comment) via cargo-wix's include flag pointing at
+  this file. To build locally instead: install cargo-wix (see
+  volks73/cargo-wix on GitHub) and the WiX Toolset v3 (candle/light) from a
+  Windows host, install the frontend's npm dependencies, run its production
+  build, then a release cargo build with the embed-ui,connectors-all
+  features enabled (see the root Cargo.toml's [features] section) — same
+  feature set as release.yml's Linux build, so GET /connectors matches
+  across platforms.
+
+  A literal double hyphen breaks XML comments (candle.exe errors with
+  CNDL0104) — avoid two consecutive hyphens anywhere in this comment
+  block, including inside command-line flag names.
 
   Regenerate the two Product/Package Ids below (uuidgen, or WiX's own
   candle preprocessor with the WixUtilExtension) before a real release;
