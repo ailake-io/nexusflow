@@ -140,7 +140,16 @@ jobs:
           "path=$($msi.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "name=$($msi.Name)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
+      # Only needed when no `version` was given — the artifact is the
+      # whole output then, a human downloads and publishes it by hand.
+      # When `version` is given, "Attach to release" below uploads
+      # straight from disk instead, so skip this — GitHub's Actions
+      # artifact storage has a hard quota that (per its own docs) doesn't
+      # recalculate for 6-12h even after deleting old artifacts, and this
+      # step failing outright once already blocked an otherwise-successful
+      # build from finishing.
       - uses: actions/upload-artifact@834a144ee995460fba8ed112a2fc961b36a5ec5a # v4.4.3
+        if: inputs.version == ''
         with:
           name: nexusflow-windows-installer
           path: ${{ steps.msi.outputs.path }}
