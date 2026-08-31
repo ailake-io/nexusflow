@@ -18,6 +18,8 @@ use nexus_connector_clickhouse::{ClickHouseConnectorConfig, ClickHouseSink, Clic
 use nexus_connector_csv::{CsvConnectorConfig, CsvSink, CsvSource};
 #[cfg(feature = "deltalake-cdc")]
 use nexus_connector_deltalake::{DeltaCdcConfig, DeltaCdcSource};
+#[cfg(feature = "duckdb")]
+use nexus_connector_duckdb::{DuckdbConnectorConfig, DuckdbSink, DuckdbSource};
 #[cfg(feature = "deltalake")]
 use nexus_connector_deltalake::{DeltaConnectorConfig, DeltaSink, DeltaSource};
 #[cfg(feature = "iceberg-cdc")]
@@ -25,7 +27,7 @@ use nexus_connector_iceberg::{IcebergCdcConfig, IcebergCdcSource};
 #[cfg(feature = "iceberg")]
 use nexus_connector_iceberg::{IcebergConnectorConfig, IcebergSink, IcebergSource};
 #[cfg(feature = "kafka")]
-use nexus_connector_kafka::{KafkaConnectorConfig, KafkaSource};
+use nexus_connector_kafka::{KafkaConnectorConfig, KafkaSink, KafkaSource};
 #[cfg(feature = "lancedb")]
 use nexus_connector_lancedb::{LanceDbConnectorConfig, LanceDbSink};
 #[cfg(feature = "milvus")]
@@ -163,6 +165,10 @@ pub fn validate_source_config(
         "clickhouse" => {
             let _: ClickHouseConnectorConfig = serde_json::from_value(node.config.clone())?;
         }
+        #[cfg(feature = "duckdb")]
+        "duckdb" => {
+            let _: DuckdbConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
         #[cfg(feature = "postgres-cdc")]
         "postgres-cdc" => {
             let _: PostgresCdcConfig = serde_json::from_value(node.config.clone())?;
@@ -270,6 +276,11 @@ pub async fn build_source(
         "clickhouse" => {
             let cfg: ClickHouseConnectorConfig = serde_json::from_value(node.config.clone())?;
             Box::new(ClickHouseSource::connect(&cfg, None).await?)
+        }
+        #[cfg(feature = "duckdb")]
+        "duckdb" => {
+            let cfg: DuckdbConnectorConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(DuckdbSource::connect(&cfg).await?)
         }
         #[cfg(feature = "postgres-cdc")]
         "postgres-cdc" => {
@@ -386,6 +397,14 @@ pub fn validate_sink_config(
         #[cfg(feature = "clickhouse")]
         "clickhouse" => {
             let _: ClickHouseConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "duckdb")]
+        "duckdb" => {
+            let _: DuckdbConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "kafka")]
+        "kafka" => {
+            let _: KafkaConnectorConfig = serde_json::from_value(node.config.clone())?;
         }
         other => match ConnectorRegistry::find_sink_builder(other) {
             Some(builder) => (builder.validate)(&node.config)?,
@@ -540,6 +559,16 @@ pub async fn build_sink(
         "clickhouse" => {
             let cfg: ClickHouseConnectorConfig = serde_json::from_value(node.config.clone())?;
             Box::new(ClickHouseSink::connect(&cfg, &columns).await?)
+        }
+        #[cfg(feature = "duckdb")]
+        "duckdb" => {
+            let cfg: DuckdbConnectorConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(DuckdbSink::connect(&cfg, schema).await?)
+        }
+        #[cfg(feature = "kafka")]
+        "kafka" => {
+            let cfg: KafkaConnectorConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(KafkaSink::connect(&cfg)?)
         }
         other => match ConnectorRegistry::find_sink_builder(other) {
             Some(builder) => (builder.build)(node.config.clone()).await?,

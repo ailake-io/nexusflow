@@ -21,6 +21,7 @@ members = [
     "nexus-connector-iceberg",
     "nexus-connector-csv",
     "nexus-connector-clickhouse",
+    "nexus-connector-duckdb",
 ]
 
 [workspace.package]

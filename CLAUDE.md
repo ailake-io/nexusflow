@@ -81,7 +81,7 @@ nexusflow/
 - Postgres ✅                   - (nenhum implementado)             - REST / SaaS ✅ (reqwest)
 - SQLite ✅                                                         - MongoDB ✅
 - MySQL (batch, ADBC) ❌ não impl.                                  - MySQL (batch, bridging) ✅
-- DuckDB ❌ não impl.                                               - Kafka ✅ (genérico, sem CDC)
+- DuckDB ADBC ✅ (upsert real, `ON CONFLICT`)                       - Kafka ✅ (genérico, sem CDC, source+sink)
 - Snowflake ❌ não impl.                                            - ODBC ✅
 - BigQuery ❌ não impl.                                             - CSV ✅
 - ClickHouse ADBC ✅ (sink append-only, sem upsert)                 - Webhook ✅ (sink)

@@ -70,9 +70,9 @@ Ponto de partida do usuário: Excel, Oracle, Snowflake, ClickHouse, BigQuery, Re
 | Conector | Por quê é pago |
 |---|---|
 | **Confluent Cloud** | Kafka gerenciado com Schema Registry + RBAC — não virou conector separado; `docs/KAFKA_MANAGED_SERVICES.md` documenta como conectar o `kafka` OSS existente a Confluent Cloud/Azure Event Hubs via config (SASL/TLS), sem crate novo |
-| **Amazon Kinesis** ✅ implementado | Streaming nativo AWS |
+| **Amazon Kinesis** ✅ implementado (source+sink) | Streaming nativo AWS |
 | **Azure Event Hubs** | Sem crate próprio — protocolo compatível com Kafka, coberto pelo `kafka` OSS + `docs/KAFKA_MANAGED_SERVICES.md`, mesmo caso do Confluent Cloud acima |
-| **Apache Pulsar** ✅ implementado | Alternativa enterprise ao Kafka em alguns setores (telco/financeiro) |
+| **Apache Pulsar** ✅ implementado (source+sink) | Alternativa enterprise ao Kafka em alguns setores (telco/financeiro) |
 
 ## 7. CDC avançado (já citado em `LICENSING.md §2`)
 

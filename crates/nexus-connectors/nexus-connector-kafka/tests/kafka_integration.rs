@@ -10,6 +10,17 @@ use std::time::Duration;
 use testcontainers_modules::kafka::apache::{Kafka, KAFKA_PORT};
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 
+#[cfg(feature = "producer")]
+use arrow_array::{Int64Array, RecordBatch, StringArray};
+#[cfg(feature = "producer")]
+use arrow_schema::{DataType, Field, Schema};
+#[cfg(feature = "producer")]
+use nexus_connector_kafka::KafkaSink;
+#[cfg(feature = "producer")]
+use nexus_core::{CheckpointCursor, Sink};
+#[cfg(feature = "producer")]
+use std::sync::Arc;
+
 #[tokio::test]
 async fn consumes_json_messages_as_record_batches() {
     let kafka_node = Kafka::default().start().await.expect("kafka starts");
@@ -177,4 +188,83 @@ async fn resumes_from_explicit_start_offset() {
         second_rows, 2,
         "must consume only the remaining messages, not replay"
     );
+}
+
+/// A batch written by `KafkaSink` must be readable back by `KafkaSource` —
+/// same payload shape both ends agree on (see `sink.rs`/`payload.rs`).
+#[cfg(feature = "producer")]
+#[tokio::test]
+async fn sink_writes_are_readable_by_source() {
+    let kafka_node = Kafka::default().start().await.expect("kafka starts");
+    let bootstrap_servers = format!(
+        "127.0.0.1:{}",
+        kafka_node
+            .get_host_port_ipv4(KAFKA_PORT)
+            .await
+            .expect("container port")
+    );
+
+    let topic = "sink-roundtrip";
+    let config = KafkaConnectorConfig {
+        bootstrap_servers: Some(bootstrap_servers),
+        brokers: Vec::new(),
+        port: 9092,
+        topic: topic.to_string(),
+        group_id: "nexus-sink-test".to_string(),
+        client_id: None,
+        security_protocol: None,
+        sasl_mechanism: None,
+        sasl_username: None,
+        sasl_password: None,
+        fields: vec![
+            KafkaFieldSpec {
+                name: "id".into(),
+                data_type: KafkaDataType::Int64,
+                nullable: false,
+            },
+            KafkaFieldSpec {
+                name: "name".into(),
+                data_type: KafkaDataType::Utf8,
+                nullable: true,
+            },
+        ],
+        schema_sample_rows: 1000,
+        batch_size: 500,
+        poll_timeout_ms: 15000,
+        max_messages: 100,
+        start_offsets: HashMap::new(),
+    };
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("name", DataType::Utf8, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int64Array::from(vec![1, 2, 3])),
+            Arc::new(StringArray::from(vec![
+                Some("alice"),
+                Some("bob"),
+                Some("carol"),
+            ])),
+        ],
+    )
+    .expect("batch builds");
+
+    let mut sink = KafkaSink::connect(&config).expect("sink connects");
+    sink.write_batch(batch).await.expect("write_batch");
+    sink.commit_checkpoint(CheckpointCursor::new("p0"))
+        .await
+        .expect("flush");
+
+    let mut source = KafkaSource::connect(&config)
+        .await
+        .expect("source connects");
+    let mut stream = source.read_batches().await.expect("read_batches");
+    let mut total_rows = 0;
+    while let Some(batch) = stream.next().await {
+        total_rows += batch.unwrap().num_rows();
+    }
+    assert_eq!(total_rows, 3);
 }
