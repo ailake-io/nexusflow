@@ -18,10 +18,10 @@ use nexus_connector_clickhouse::{ClickHouseConnectorConfig, ClickHouseSink, Clic
 use nexus_connector_csv::{CsvConnectorConfig, CsvSink, CsvSource};
 #[cfg(feature = "deltalake-cdc")]
 use nexus_connector_deltalake::{DeltaCdcConfig, DeltaCdcSource};
-#[cfg(feature = "duckdb")]
-use nexus_connector_duckdb::{DuckdbConnectorConfig, DuckdbSink, DuckdbSource};
 #[cfg(feature = "deltalake")]
 use nexus_connector_deltalake::{DeltaConnectorConfig, DeltaSink, DeltaSource};
+#[cfg(feature = "duckdb")]
+use nexus_connector_duckdb::{DuckdbConnectorConfig, DuckdbSink, DuckdbSource};
 #[cfg(feature = "iceberg-cdc")]
 use nexus_connector_iceberg::{IcebergCdcConfig, IcebergCdcSource};
 #[cfg(feature = "iceberg")]
@@ -38,16 +38,12 @@ use nexus_connector_mongodb::{
 };
 #[cfg(feature = "mqtt")]
 use nexus_connector_mqtt::{MqttConnectorConfig, MqttSource};
-#[cfg(feature = "nats")]
-use nexus_connector_nats::{NatsConnectorConfig, NatsSink, NatsSource};
-#[cfg(feature = "rabbitmq")]
-use nexus_connector_rabbitmq::{RabbitmqConnectorConfig, RabbitmqSink, RabbitmqSource};
-#[cfg(feature = "redis")]
-use nexus_connector_redis::{RedisConnectorConfig, RedisSink, RedisSource};
 #[cfg(feature = "mysql-cdc")]
 use nexus_connector_mysql::{MySqlCdcConfig, MySqlCdcSource};
 #[cfg(feature = "mysql")]
 use nexus_connector_mysql::{MySqlConnectorConfig, MySqlSink, MySqlSource};
+#[cfg(feature = "nats")]
+use nexus_connector_nats::{NatsConnectorConfig, NatsSink, NatsSource};
 #[cfg(feature = "odbc")]
 use nexus_connector_odbc::{OdbcConnectorConfig, OdbcSink, OdbcSource};
 #[cfg(feature = "parquet")]
@@ -58,6 +54,10 @@ use nexus_connector_pgvector::{PgVectorConnectorConfig, PgVectorSink};
 use nexus_connector_pinecone::{PineconeConnectorConfig, PineconeSink};
 #[cfg(feature = "qdrant")]
 use nexus_connector_qdrant::{QdrantConnectorConfig, QdrantSink};
+#[cfg(feature = "rabbitmq")]
+use nexus_connector_rabbitmq::{RabbitmqConnectorConfig, RabbitmqSink, RabbitmqSource};
+#[cfg(feature = "redis")]
+use nexus_connector_redis::{RedisConnectorConfig, RedisSink, RedisSource};
 #[cfg(feature = "rest")]
 use nexus_connector_rest::{RestConnectorConfig, RestSource, WebhookSink, WebhookSinkConfig};
 

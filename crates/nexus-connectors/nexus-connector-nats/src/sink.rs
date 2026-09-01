@@ -31,7 +31,11 @@ impl NatsSink {
     }
 }
 
-fn cell_to_json(batch: &RecordBatch, row: usize, col: usize) -> Result<serde_json::Value, NexusError> {
+fn cell_to_json(
+    batch: &RecordBatch,
+    row: usize,
+    col: usize,
+) -> Result<serde_json::Value, NexusError> {
     let column = batch.column(col);
     Ok(match column.data_type() {
         DataType::Int64 => {
