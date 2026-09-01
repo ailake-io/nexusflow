@@ -75,10 +75,50 @@ jobs:
       #     *out* to a Milvus server as an HTTP/2 client — the DoS is a
       #     server-side resource-exhaustion vector, and we never terminate
       #     inbound HTTP/2 through this dependency chain.
+      #
+      # Batch added together (2026-09-01, connector-expansion PR #69) — the
+      # RustSec DB simply gained these entries since cargo-audit last ran
+      # clean; traced every one with `cargo tree -i --all-features` and
+      # confirmed none come from that PR's 4 new connector crates
+      # (duckdb/redis/nats/rabbitmq) or the Kafka sink — all are pre-existing
+      # transitive deps of connectors that were already in the tree. Deferred
+      # rather than upgraded in that PR to not block it; a real upgrade pass
+      # (especially rustls-webpki, which has real advisories with fixes) is
+      # tracked as follow-up, not resolved here:
+      #   RUSTSEC-2026-0099 / -0098 / -0049 / -0104 (rustls-webpki 0.102.8,
+      #     via milvus-sdk-rust's pinned tonic 0.8.3 -> rustls-native-certs
+      #     0.6.3, same frozen chain as RUSTSEC-2026-0258 above) — real
+      #     advisories with fixes ("Upgrade to >=0.103.x"), but the fix isn't
+      #     reachable without breaking the same tonic 0.8.3 pin already
+      #     documented above. Low risk here for the same reason as -0258:
+      #     outbound-only TLS client to a Milvus server, not an inbound
+      #     endpoint parsing attacker-supplied certs/CRLs.
+      #   RUSTSEC-2025-0134 (rustls-pemfile 1.0.4 via milvus's tonic chain,
+      #     and 2.2.0 via mysql_async/mqtt/object_store/async-nats) —
+      #     "unmaintained", no CVE; the crate still does one job (PEM
+      #     parsing) correctly, replacement means a rustls-stack bump on
+      #     several unrelated connectors at once.
+      #   RUSTSEC-2025-0010 (ring 0.16.20, same milvus tonic 0.8.3 chain) —
+      #     "unmaintained" (pre-0.17), same "no upgrade without breaking the
+      #     tonic 0.8.3 pin" story as the entries above it.
+      #   RUSTSEC-2023-0086 (lexical-core 0.8.5, via arrow-cast -> arrow ->
+      #     datafusion -> nexus-core) — "unsound", core Arrow/DataFusion
+      #     dependency; no override without breaking the datafusion 54.1.0
+      #     pin (same one RUSTSEC-2026-0194/-0195 above already accept).
+      #   RUSTSEC-2026-0002 / -0253 (lru 0.12.5 via tantivy -> ailake-fts,
+      #     and 0.16.4 via mysql_async -> nexus-connector-mysql) — "unsound"
+      #     internal-iterator/panic-safety issues; two independent trees each
+      #     pin their own lru major version transitively, no single `cargo
+      #     update` reaches both.
+      #   RUSTSEC-2025-0141 / -2024-0384 / -2025-0119 / -2024-0436 / -2026-0173
+      #     (bincode 1.3.3, instant 0.1.13, number_prefix 0.4.0, paste
+      #     1.0.15, proc-macro-error2 2.0.1) — all "unmaintained", no CVE;
+      #     small leaf deps of the ailake/tantivy and indicatif chains with
+      #     no drop-in replacement pinned yet.
       - name: Audit root workspace
-        run: cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195 --ignore RUSTSEC-2025-0009 --ignore RUSTSEC-2024-0336 --ignore RUSTSEC-2026-0258
+        run: cargo audit --no-yanked --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195 --ignore RUSTSEC-2025-0009 --ignore RUSTSEC-2024-0336 --ignore RUSTSEC-2026-0258 --ignore RUSTSEC-2026-0099 --ignore RUSTSEC-2026-0098 --ignore RUSTSEC-2026-0049 --ignore RUSTSEC-2026-0104 --ignore RUSTSEC-2025-0134 --ignore RUSTSEC-2025-0010 --ignore RUSTSEC-2023-0086 --ignore RUSTSEC-2026-0002 --ignore RUSTSEC-2026-0253 --ignore RUSTSEC-2025-0141 --ignore RUSTSEC-2024-0384 --ignore RUSTSEC-2025-0119 --ignore RUSTSEC-2024-0436 --ignore RUSTSEC-2026-0173
       - name: Audit crates/nexus-connectors workspace
-        run: cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195 --ignore RUSTSEC-2025-0009 --ignore RUSTSEC-2024-0336 --ignore RUSTSEC-2026-0258
+        run: cargo audit --no-yanked --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195 --ignore RUSTSEC-2025-0009 --ignore RUSTSEC-2024-0336 --ignore RUSTSEC-2026-0258 --ignore RUSTSEC-2026-0099 --ignore RUSTSEC-2026-0098 --ignore RUSTSEC-2026-0049 --ignore RUSTSEC-2026-0104 --ignore RUSTSEC-2025-0134 --ignore RUSTSEC-2025-0010 --ignore RUSTSEC-2023-0086 --ignore RUSTSEC-2026-0002 --ignore RUSTSEC-2026-0253 --ignore RUSTSEC-2025-0141 --ignore RUSTSEC-2024-0384 --ignore RUSTSEC-2025-0119 --ignore RUSTSEC-2024-0436 --ignore RUSTSEC-2026-0173
         working-directory: crates/nexus-connectors
 
   # Self-hosted, first in the chain (no `needs:`) — see the workflow-level
