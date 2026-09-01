@@ -119,6 +119,78 @@ jobs:
       - name: cargo build --release
         run: cargo build --release -p nexusflow --features embed-ui,connectors-all
 
+      # Every distributed artifact now ships every enterprise connector
+      # compiled in and license-gated, not just OSS's own connectors-all —
+      # same reasoning as release.yml's Linux `build`/`docker-publish` jobs'
+      # matching steps (see those comments for the full rationale and the
+      # manual Docker Hub validation this was based on). Windows can't reuse
+      # that Docker recipe (native msvc target, not a Linux container), so
+      # this clones the enterprise repo directly and builds
+      # `nexusflow-enterprise` from it with a `[patch]` redirecting its
+      # nexus-core/nexus-server git dependency at this job's own
+      # already-checked-out+frontend-built OSS tree (same trick the
+      # enterprise Dockerfile itself uses, just against a local checkout
+      # instead of a fresh clone) — the OSS `nexusflow` binary above can't
+      # be patched into including enterprise connectors itself, since
+      # nothing in this workspace depends on itself via the git URL a patch
+      # could intercept.
+      #
+      # UNTESTED on a real Windows runner as of this comment (no Windows
+      # machine available to validate locally) — `cargo wix`'s `--no-build`
+      # flag below is assumed, not confirmed, to skip its own internal
+      # `cargo build` (which would otherwise silently overwrite
+      # target\release\nexusflow.exe with the plain-OSS binary right before
+      # packaging, undoing the copy two steps down). If `--no-build` turns
+      # out not to be the right flag name, `cargo wix` should fail loudly
+      # (unrecognized argument) rather than silently ship the wrong binary —
+      # confirm via a real `workflow_dispatch` run before trusting this path.
+      - name: Clone nexus-connectors-enterprise (read-only deploy key)
+        shell: pwsh
+        env:
+          DEPLOY_KEY: ${{ secrets.ENTERPRISE_REPO_DEPLOY_KEY }}
+        run: |
+          $sshDir = "$env:USERPROFILE\.ssh"
+          New-Item -ItemType Directory -Force -Path $sshDir | Out-Null
+          $keyPath = "$sshDir\enterprise_deploy_key"
+          [System.IO.File]::WriteAllText($keyPath, $env:DEPLOY_KEY)
+          icacls $keyPath /inheritance:r /grant:r "$($env:USERNAME):(R)" | Out-Null
+          ssh-keyscan.exe github.com 2>$null | Out-File -Append -Encoding ascii "$sshDir\known_hosts"
+          $env:GIT_SSH_COMMAND = "ssh -i `"$keyPath`" -o IdentitiesOnly=yes"
+          git clone --depth 1 ssh://git@github.com/ailake-io/nexus-connectors-enterprise.git enterprise-src
+          Remove-Item $keyPath -Force
+
+      - name: Build enterprise binary (all OSS + enterprise connectors)
+        shell: pwsh
+        run: |
+          # Same overlay the enterprise Dockerfile does: this repo's own
+          # nexus-connector-kinesis crate is a placeholder/early version —
+          # the enterprise repo's copy is authoritative, and nexus-server's
+          # connectors-all feature resolves the *path* dependency at
+          # crates/nexus-connectors/nexus-connector-kinesis, so it has to be
+          # replaced there before the patch below redirects nexus-server
+          # itself at this checkout.
+          Remove-Item -Recurse -Force crates\nexus-connectors\nexus-connector-kinesis
+          Copy-Item -Recurse enterprise-src\crates\nexus-connector-kinesis crates\nexus-connectors\nexus-connector-kinesis
+
+          New-Item -ItemType Directory -Force -Path enterprise-src\.cargo | Out-Null
+          $repoRoot = (Get-Location).Path -replace '\\', '/'
+          @"
+          [patch."ssh://git@github.com/ailake-io/nexusflow.git"]
+          nexus-core = { path = "$repoRoot/crates/nexus-core" }
+          nexus-server = { path = "$repoRoot/crates/nexus-server" }
+          "@ | Out-File -Encoding utf8 enterprise-src\.cargo\config.toml
+
+          Push-Location enterprise-src
+          # Forces the lockfile to re-resolve against the patch above —
+          # same reasoning as the enterprise Dockerfile's matching step
+          # (its own comment explains the silent-stale-patch failure mode
+          # this avoids).
+          Remove-Item -Force -ErrorAction SilentlyContinue Cargo.lock
+          cargo generate-lockfile
+          cargo build --release -p nexusflow-enterprise --features connectors-all-no-embeddings,dbt,python-transform,embed-ui,connectors-all
+          Pop-Location
+          Copy-Item enterprise-src\target\release\nexusflow-enterprise.exe target\release\nexusflow.exe -Force
+
       - name: cargo wix
         # cargo-wix dropped --input in favor of --include/-I for a custom
         # .wxs source file (the old flag now errors: "unexpected argument
@@ -126,8 +198,12 @@ jobs:
         # package manifest (Cargo.toml) to build, not the .wxs path.
         # --package is required in a workspace (this repo is one) — without
         # it cargo-wix errors "Workspace detected. Please pass a package
-        # name." instead of guessing which member to build.
-        run: cargo wix --package nexusflow --include packaging\windows\main.wxs --nocapture
+        # name." instead of guessing which member to build. --no-build
+        # skips cargo-wix's own internal build (see the "UNTESTED" comment
+        # above) so it packages the enterprise binary just copied into
+        # target\release\nexusflow.exe instead of silently rebuilding the
+        # plain-OSS one over it.
+        run: cargo wix --package nexusflow --include packaging\windows\main.wxs --no-build --nocapture
 
       - name: Locate the built .msi
         id: msi

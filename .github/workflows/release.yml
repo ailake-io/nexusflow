@@ -2,14 +2,19 @@ name: Release
 
 # Builds nexusflow-linux-x86_64.tar.gz and publishes it as a GitHub Release
 # asset — what scripts/install.sh downloads. The tarball is: the release
-# binary (--features embed-ui,connectors-all — every connector linked in,
-# not just the two always-on ones, so GET /connectors lists the full
-# catalog out of the box) plus the two ADBC driver libraries
-# nexus-connector-postgres/-sqlite dlopen at runtime (no crates.io
-# distribution of those exists — see nexus-connector-postgres/src/driver.rs,
-# ARCHITECTURE.md §3). Also produces real native installers (.deb/.rpm/
-# AppImage — scripts/package-{deb,rpm,appimage}.sh, staged from the same
-# release binary+ADBC build as the tarball).
+# binary, built from the private nexus-connectors-enterprise repo's
+# Dockerfile (`build` job's "Build enterprise binary" step, below) so every
+# OSS *and* every enterprise connector is linked in and license-gated — not
+# just OSS's own connectors-all — so GET /connectors lists the full catalog
+# and the Store always has enterprise connectors to sell, regardless of
+# which install path (this tarball/.deb/.rpm/AppImage, docker-publish's
+# image, or build-windows-installer.yml's .msi) someone picked. Plus the two
+# ADBC driver libraries nexus-connector-postgres/-sqlite dlopen at runtime
+# (no crates.io distribution of those exists — see
+# nexus-connector-postgres/src/driver.rs, ARCHITECTURE.md §3). Also produces
+# real native installers (.deb/.rpm/AppImage —
+# scripts/package-{deb,rpm,appimage}.sh, staged from the same release
+# binary+ADBC build as the tarball).
 #
 # arm64, Windows, and macOS are all out of scope for now (no installer, no
 # CI build in this workflow):
@@ -253,7 +258,63 @@ jobs:
       - run: ./scripts/build-adbc-postgresql-driver.sh target/adbc
       - run: ./scripts/build-adbc-sqlite-driver.sh target/adbc
 
-      - run: cargo build --release -p nexusflow --features embed-ui,connectors-all
+      # Every distributed artifact (this tarball, the .deb/.rpm/AppImage
+      # below, docker-publish's image, and build-windows-installer.yml's
+      # .msi) now ships every enterprise connector compiled in and
+      # license-gated (LICENSING.md §2/§3, docs/ENTERPRISE_LICENSING.md),
+      # not just the OSS ones — so the Store always has something to sell
+      # regardless of which install path a user picked, instead of only the
+      # people who happened to pull the separate Docker Hub enterprise image.
+      # Source of the private nexus-connectors-enterprise repo never enters
+      # this one; only the compiled binary does, via a read-only deploy key
+      # (`ENTERPRISE_REPO_DEPLOY_KEY` secret — GitHub org policy required
+      # deploy keys to be explicitly enabled for that repo before this could
+      # be added). Validated manually first (2026-09-01,
+      # `thiagolange/nexusflow:latest` Docker Hub build+push+compose smoke
+      # test — 71 connectors in the catalog, 41 unlocked once a license was
+      # installed) before wiring it in here.
+      #
+      # Builds via the enterprise repo's own Dockerfile (`--target builder`,
+      # stopping before its final slim runtime stage) rather than
+      # re-deriving the cargo/frontend/ADBC steps a third time (this repo's
+      # `build` job, the enterprise repo's Dockerfile, and
+      # build-windows-installer.yml's native build already make two) — that
+      # Dockerfile is the proven recipe, and it clones its own pinned
+      # `nexusflow` checkout independently rather than reusing this job's,
+      # so there's no risk of it seeing an inconsistent tree. `--ssh
+      # default` forwards this runner's own ssh-agent for that internal
+      # clone of the (also-private) `nexusflow` repo itself — the same
+      # agent this self-hosted machine already needs for its own git
+      # operations, not a new credential.
+      - name: Clone nexus-connectors-enterprise (read-only deploy key)
+        env:
+          DEPLOY_KEY: ${{ secrets.ENTERPRISE_REPO_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p -m 0700 ~/.ssh
+          printf '%s' "$DEPLOY_KEY" > ~/.ssh/enterprise_deploy_key
+          chmod 600 ~/.ssh/enterprise_deploy_key
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/enterprise_deploy_key -o IdentitiesOnly=yes" \
+            git clone --depth 1 ssh://git@github.com/ailake-io/nexus-connectors-enterprise.git \
+            enterprise-src
+          rm -f ~/.ssh/enterprise_deploy_key
+
+      - name: Build enterprise binary (all OSS + enterprise connectors)
+        run: |
+          set -euo pipefail
+          DOCKER_BUILDKIT=1 docker build --ssh default --target builder \
+            --build-arg NEXUSFLOW_REV=${{ needs.determine-version.outputs.sha }} \
+            --build-arg ENTERPRISE_FEATURES=connectors-all \
+            -t nexusflow-enterprise-builder-${{ github.run_id }} \
+            enterprise-src
+          cid="$(docker create nexusflow-enterprise-builder-${{ github.run_id }})"
+          mkdir -p target/release
+          docker cp "$cid:/tmp/nexusflow-enterprise-bin" target/release/nexusflow
+          docker cp "$cid:/out/libadbc_driver_postgresql.so" target/adbc/libadbc_driver_postgresql.so
+          docker cp "$cid:/out/libadbc_driver_sqlite.so" target/adbc/libadbc_driver_sqlite.so
+          docker rm "$cid" >/dev/null
+          docker rmi nexusflow-enterprise-builder-${{ github.run_id }} >/dev/null
 
       - name: Package tarball
         run: |
@@ -419,12 +480,30 @@ jobs:
       REGISTRY: ghcr.io
       IMAGE_NAME: ${{ github.repository }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          # Same pinned-to-the-bumped-commit reasoning as `build`'s checkout
-          # above — the image must be built from the same commit whose
-          # Cargo.toml says this version, not a possibly-earlier one.
-          ref: ${{ needs.determine-version.outputs.sha }}
+      # Builds from the private nexus-connectors-enterprise repo's own
+      # Dockerfile now, not this repo's — same reasoning as `build`'s
+      # equivalent step above: every published artifact ships every
+      # enterprise connector, license-gated, so the Store always has
+      # something to sell no matter which install path a user picked.
+      # `enterprise-src`'s Dockerfile clones its own pinned `nexusflow`
+      # checkout internally, so no checkout of *this* repo is needed here at
+      # all — only its Cargo.toml version (already resolved into
+      # `determine-version`'s output) and its commit sha (passed as
+      # NEXUSFLOW_REV below, so the image matches the exact commit being
+      # released) are used.
+      - name: Clone nexus-connectors-enterprise (read-only deploy key)
+        env:
+          DEPLOY_KEY: ${{ secrets.ENTERPRISE_REPO_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p -m 0700 ~/.ssh
+          printf '%s' "$DEPLOY_KEY" > ~/.ssh/enterprise_deploy_key
+          chmod 600 ~/.ssh/enterprise_deploy_key
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/enterprise_deploy_key -o IdentitiesOnly=yes" \
+            git clone --depth 1 ssh://git@github.com/ailake-io/nexus-connectors-enterprise.git \
+            enterprise-src
+          rm -f ~/.ssh/enterprise_deploy_key
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
@@ -445,12 +524,14 @@ jobs:
       - name: Build and push Docker image (full)
         uses: docker/build-push-action@5cd11c3a4ced054e52742c5fd54dca954e0edd85 # v6.7.0
         with:
-          context: .
+          context: enterprise-src
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          ssh: default
           build-args: |
-            FEATURES=embed-ui,connectors-all
+            NEXUSFLOW_REV=${{ needs.determine-version.outputs.sha }}
+            ENTERPRISE_FEATURES=connectors-all
 
   # Keeps `develop` from drifting behind `main` after a release —
   # `determine-version` may have pushed a version-bump commit straight to
