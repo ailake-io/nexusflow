@@ -1,0 +1,27 @@
+[package]
+name = "nexus-connector-nats"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# async-nats is a real async network dependency — kept behind a feature so
+# the workspace default build never requires it, per CLAUDE.md §8.5. Same
+# pattern as kafka's `consumer`/`producer` and mqtt's `client`.
+[features]
+default = []
+client = ["dep:async-nats", "dep:tokio"]
+
+[dependencies]
+arrow-array = "58.4.0"
+arrow-schema = "58.4.0"
+async-trait = "0.1.91"
+futures = "0.3.33"
+async-nats = { version = "0.38", optional = true }
+nexus-core = { version = "0.1.0", path = "../../nexus-core" }
+serde = { version = "1.0.229", features = ["derive"] }
+schemars = "1.2.2"
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["time"], optional = true }
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time"] }

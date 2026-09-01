@@ -38,6 +38,12 @@ use nexus_connector_mongodb::{
 };
 #[cfg(feature = "mqtt")]
 use nexus_connector_mqtt::{MqttConnectorConfig, MqttSource};
+#[cfg(feature = "nats")]
+use nexus_connector_nats::{NatsConnectorConfig, NatsSink, NatsSource};
+#[cfg(feature = "rabbitmq")]
+use nexus_connector_rabbitmq::{RabbitmqConnectorConfig, RabbitmqSink, RabbitmqSource};
+#[cfg(feature = "redis")]
+use nexus_connector_redis::{RedisConnectorConfig, RedisSink, RedisSource};
 #[cfg(feature = "mysql-cdc")]
 use nexus_connector_mysql::{MySqlCdcConfig, MySqlCdcSource};
 #[cfg(feature = "mysql")]
@@ -169,6 +175,21 @@ pub fn validate_source_config(
         "duckdb" => {
             let _: DuckdbConnectorConfig = serde_json::from_value(node.config.clone())?;
         }
+        #[cfg(feature = "redis")]
+        "redis" => {
+            let cfg: RedisConnectorConfig = serde_json::from_value(node.config.clone())?;
+            cfg.validate()?;
+        }
+        #[cfg(feature = "nats")]
+        "nats" => {
+            let cfg: NatsConnectorConfig = serde_json::from_value(node.config.clone())?;
+            cfg.validate()?;
+        }
+        #[cfg(feature = "rabbitmq")]
+        "rabbitmq" => {
+            let cfg: RabbitmqConnectorConfig = serde_json::from_value(node.config.clone())?;
+            cfg.validate()?;
+        }
         #[cfg(feature = "postgres-cdc")]
         "postgres-cdc" => {
             let _: PostgresCdcConfig = serde_json::from_value(node.config.clone())?;
@@ -281,6 +302,21 @@ pub async fn build_source(
         "duckdb" => {
             let cfg: DuckdbConnectorConfig = serde_json::from_value(node.config.clone())?;
             Box::new(DuckdbSource::connect(&cfg).await?)
+        }
+        #[cfg(feature = "redis")]
+        "redis" => {
+            let cfg: RedisConnectorConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(RedisSource::connect(&cfg).await?)
+        }
+        #[cfg(feature = "nats")]
+        "nats" => {
+            let cfg: NatsConnectorConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(NatsSource::connect(&cfg).await?)
+        }
+        #[cfg(feature = "rabbitmq")]
+        "rabbitmq" => {
+            let cfg: RabbitmqConnectorConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(RabbitmqSource::connect(&cfg).await?)
         }
         #[cfg(feature = "postgres-cdc")]
         "postgres-cdc" => {
@@ -405,6 +441,21 @@ pub fn validate_sink_config(
         #[cfg(feature = "kafka")]
         "kafka" => {
             let _: KafkaConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "redis")]
+        "redis" => {
+            let cfg: RedisConnectorConfig = serde_json::from_value(node.config.clone())?;
+            cfg.validate()?;
+        }
+        #[cfg(feature = "nats")]
+        "nats" => {
+            let cfg: NatsConnectorConfig = serde_json::from_value(node.config.clone())?;
+            cfg.validate()?;
+        }
+        #[cfg(feature = "rabbitmq")]
+        "rabbitmq" => {
+            let cfg: RabbitmqConnectorConfig = serde_json::from_value(node.config.clone())?;
+            cfg.validate()?;
         }
         other => match ConnectorRegistry::find_sink_builder(other) {
             Some(builder) => (builder.validate)(&node.config)?,
@@ -569,6 +620,21 @@ pub async fn build_sink(
         "kafka" => {
             let cfg: KafkaConnectorConfig = serde_json::from_value(node.config.clone())?;
             Box::new(KafkaSink::connect(&cfg)?)
+        }
+        #[cfg(feature = "redis")]
+        "redis" => {
+            let cfg: RedisConnectorConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(RedisSink::connect(&cfg).await?)
+        }
+        #[cfg(feature = "nats")]
+        "nats" => {
+            let cfg: NatsConnectorConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(NatsSink::connect(&cfg).await?)
+        }
+        #[cfg(feature = "rabbitmq")]
+        "rabbitmq" => {
+            let cfg: RabbitmqConnectorConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(RabbitmqSink::connect(&cfg).await?)
         }
         other => match ConnectorRegistry::find_sink_builder(other) {
             Some(builder) => (builder.build)(node.config.clone()).await?,

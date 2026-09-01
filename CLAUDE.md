@@ -86,6 +86,9 @@ nexusflow/
 - BigQuery ❌ não impl.                                             - CSV ✅
 - ClickHouse ADBC ✅ (sink append-only, sem upsert)                 - Webhook ✅ (sink)
                                                                     - MQTT ✅ (telemetria IoT/sensor, source apenas)
+                                                                    - Redis Streams ✅ (source+sink, sem consumer group)
+                                                                    - NATS ✅ (core, sem JetStream, source+sink)
+                                                                    - RabbitMQ ✅ (AMQP 0-9-1, auto-ack, source+sink)
 
 [ CDC NATIVO — sem Debezium/Kafka ]
 - Postgres WAL (`postgres-cdc`) ✅
