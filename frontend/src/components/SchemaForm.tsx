@@ -18,6 +18,14 @@ import { Button } from '@/components/ui/button'
 // namespace/table instead of a bare path, so they aren't covered here.
 const FILE_PATH_FIELD_NAMES = new Set(['path', 'file_path'])
 
+// Field names recognized as a credential across every connector's config
+// (password/secret_access_key/session_token/access_token/client_secret/
+// private_key/refresh_token/developer_token/...) — matched by segment, not
+// substring, so `primary_key`/`partition_key_column`/`id_property` don't
+// false-positive on a bare "key". Purely name-based, same pragmatic
+// approach FILE_PATH_FIELD_NAMES above uses.
+const SECRET_FIELD_NAME_RE = /(^|_)(password|secret|token|private_key)($|_)/i
+
 // Loosely typed on purpose: this renders arbitrary JSON Schema shapes from
 // 16 different connector Config structs, whose actual TS shape isn't known
 // statically — the schema itself (not a TS type) drives what's valid here.
@@ -192,6 +200,7 @@ export function SchemaForm({ schema, defs, value, onChange, idPrefix }: SchemaFo
         // opens a server-side directory picker instead of requiring the
         // path to be typed blind.
         const isFilePathField = FILE_PATH_FIELD_NAMES.has(key)
+        const isSecretField = SECRET_FIELD_NAME_RE.test(key)
         return (
           <div key={key}>
             <div className="flex items-center gap-1.5">
@@ -201,6 +210,8 @@ export function SchemaForm({ schema, defs, value, onChange, idPrefix }: SchemaFo
             <div className="mt-1.5 flex items-center gap-2">
               <Input
                 id={fieldId}
+                type={isSecretField ? 'password' : 'text'}
+                autoComplete={isSecretField ? 'new-password' : 'off'}
                 value={(value[key] as string) ?? ''}
                 onChange={(e) => setField(key, e.target.value)}
                 className="flex-1"

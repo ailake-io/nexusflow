@@ -1,0 +1,28 @@
+[package]
+name = "nexus-connector-redis"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# redis-rs (the `redis` crate) is a real async network dependency — kept
+# behind a feature so the workspace default build never requires it, per
+# CLAUDE.md §8.5. Same pattern as kafka's `consumer`/`producer` and mqtt's
+# `client`.
+[features]
+default = []
+client = ["dep:redis", "dep:tokio"]
+
+[dependencies]
+arrow-array = "58.4.0"
+arrow-schema = "58.4.0"
+async-trait = "0.1.91"
+futures = "0.3.33"
+nexus-core = { version = "0.1.0", path = "../../nexus-core" }
+redis = { version = "0.27", optional = true, features = ["tokio-comp", "aio"] }
+serde = { version = "1.0.229", features = ["derive"] }
+schemars = "1.2.2"
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["time"], optional = true }
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time"] }

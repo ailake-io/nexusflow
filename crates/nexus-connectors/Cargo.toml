@@ -21,6 +21,10 @@ members = [
     "nexus-connector-iceberg",
     "nexus-connector-csv",
     "nexus-connector-clickhouse",
+    "nexus-connector-duckdb",
+    "nexus-connector-redis",
+    "nexus-connector-nats",
+    "nexus-connector-rabbitmq",
 ]
 
 [workspace.package]

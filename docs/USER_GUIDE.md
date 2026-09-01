@@ -1,6 +1,6 @@
 # Guia de uso do NexusFlow — instalação a conector por conector
 
-Referência completa e prática: da instalação até a configuração exata de cada um dos 27 conectores, transformações (SQL, embeddings, dbt) e recursos de execução (preview, agendamento). Para o passo a passo mínimo de "primeiro pipeline", ver [`GETTING_STARTED.md`](./GETTING_STARTED.md); para arquitetura interna, [`ARCHITECTURE.md`](../ARCHITECTURE.md).
+Referência completa e prática: da instalação até a configuração exata de cada um dos 31 conectores, transformações (SQL, embeddings, dbt) e recursos de execução (preview, agendamento). Para o passo a passo mínimo de "primeiro pipeline", ver [`GETTING_STARTED.md`](./GETTING_STARTED.md); para arquitetura interna, [`ARCHITECTURE.md`](../ARCHITECTURE.md).
 
 ## Índice
 
@@ -39,7 +39,7 @@ docker run -d --name nexusflow -p 8080:8080 \
 
 Variáveis de ambiente completas: ver [`GETTING_STARTED.md` §3](./GETTING_STARTED.md#3-variáveis-de-ambiente). As duas obrigatórias são `NEXUS_JWT_SECRET` e `NEXUS_ENCRYPTION_KEY` — sem elas o processo não sobe.
 
-**Conectores linkados no binário**: binários pré-buildados (release, `.deb`, AppImage, rpm) e a imagem Docker publicada no GHCR já vêm com os 27 conectores ligados (`embed-ui,connectors-all`: 21 batch + 6 CDC nativos; a feature `rest` registra `rest` e `webhook` como nomes separados no catálogo). Buildando a partir do source, cada conector é uma feature Cargo opcional (`cargo build --features embed-ui,connectors-all` liga todos de uma vez) — ver [`GETTING_STARTED.md` §2](./GETTING_STARTED.md#2-habilitando-conectores). O catálogo em `GET /connectors` sempre reflete exatamente o que foi compilado; a UI nunca mostra um conector que não está no binário.
+**Conectores linkados no binário**: binários pré-buildados (release, `.deb`, AppImage, rpm) e a imagem Docker publicada no GHCR já vêm com os 31 conectores ligados (`embed-ui,connectors-all`: 25 batch + 6 CDC nativos; a feature `rest` registra `rest` e `webhook` como nomes separados no catálogo, e a feature `mongodb` registra `mongodb` e `mongodb-cdc`). Buildando a partir do source, cada conector é uma feature Cargo opcional (`cargo build --features embed-ui,connectors-all` liga todos de uma vez) — ver [`GETTING_STARTED.md` §2](./GETTING_STARTED.md#2-habilitando-conectores). O catálogo em `GET /connectors` sempre reflete exatamente o que foi compilado; a UI nunca mostra um conector que não está no binário.
 
 ---
 
@@ -184,6 +184,17 @@ Se precisar de dedup, use `ReplacingMergeTree`/`CollapsingMergeTree`
 no próprio ClickHouse — mecanismo idiomático da ferramenta, não
 responsabilidade deste conector.
 
+#### `duckdb` — source + sink (upsert real)
+```json
+{"connector": "duckdb", "config": {
+  "path": "/caminho/para/arquivo.duckdb",
+  "table": "events",
+  "primary_key": "id",
+  "timeout_seconds": 30
+}}
+```
+Requer `ADBC_DRIVER_DUCKDB_PATH` — driver oficial instalado via `dbc install duckdb` (ADBC Driver Foundry), sem build manual, mesmo caminho do `clickhouse`. `path` aceita `:memory:`. Diferente do ClickHouse, suporta `INSERT ... ON CONFLICT DO UPDATE` de verdade — sink faz upsert real por `primary_key`, não append-only. Sem `partition_column`: arquivo embarcado único, mesmo racional do `sqlite`.
+
 ### 4.2 SQL sem driver ADBC, NoSQL e filas (bridging — convertidos para Arrow via schema explícito)
 
 #### `mysql` — source + sink (batch — para CDC via binlog, ver `mysql-cdc` em §4.9)
@@ -218,7 +229,7 @@ Sem driver ADBC oficial pro MySQL — bridging via `mysql_async` (mesmo padrão 
 ```
 `fields[].name` aceita dot-notation pra campos aninhados (ex. `"address.city"`). MongoDB não tem schema fixo — por isso o schema é sempre explícito aqui.
 
-#### `kafka` — **source apenas** (feature `kafka` + `nexus-connector-kafka/consumer`, dependência nativa `librdkafka`)
+#### `kafka` — source + sink (feature `kafka` + `nexus-connector-kafka/consumer` e `/producer`, dependência nativa `librdkafka`)
 ```json
 {"connector": "kafka", "config": {
   "bootstrap_servers": "broker1:9092,broker2:9092",
@@ -232,6 +243,8 @@ Sem driver ADBC oficial pro MySQL — bridging via `mysql_async` (mesmo padrão 
 }}
 ```
 Payload de cada mensagem é decodificado como JSON e projetado sobre `fields` — fonte genérica de Kafka, sem semântica de CDC (CDC é nativo por banco: `postgres-cdc`/`mongodb-cdc`/`mysql-cdc`, ver `ARCHITECTURE.md §7`). Offsets são commitados manualmente ao final de cada leitura, alinhado com o checkpoint do pipeline (`enable.auto.commit` desligado).
+
+**Sink**: usa a mesma config (`topic`/`bootstrap_servers`) — cada linha do batch vira uma mensagem JSON publicada sem chave (unkeyed), payload no mesmo formato que o source consome, então um sink Kafka round-tripa por um source Kafka de outro pipeline. Sem semântica de `__opcode`/CDC no lado do sink — toda linha sai verbatim, mesmo racional do `webhook`.
 
 #### `mqtt` — **source apenas** (feature `mqtt` + `nexus-connector-mqtt/client`, protocolo padrão de telemetria IoT/sensor)
 ```json
@@ -249,6 +262,48 @@ Payload de cada mensagem é decodificado como JSON e projetado sobre `fields` �
 }}
 ```
 `topic_filter` aceita wildcard MQTT (`+` um nível, `#` os níveis restantes) — uma subscription pode misturar vários sensores lógicos numa leitura só, então toda linha de saída ganha a coluna extra `__mqtt_topic` com o tópico exato de onde veio (mesmo precedente do `__opcode` em CDC). Payload de cada mensagem decodificado como JSON e projetado sobre `fields`, igual ao `kafka`. `client_id` **não é opcional** — reutilizar o mesmo id entre runs, junto com sessão persistente (`clean_session: false`, sempre ligado), é o que faz o broker guardar mensagens QoS 1/2 publicadas enquanto o NexusFlow tava offline e reentregar na reconexão: resume é 100% server-side, sem checkpoint nenhum do lado do NexusFlow (mesmo padrão do `postgres-cdc`). TLS com CA privada/certificado de cliente (mTLS, exigido por ex. pelo AWS IoT Core): campos opcionais `ca_cert_path`/`client_cert_path`/`client_key_path` (caminhos pra arquivo PEM). Payload binário/CBOR fora de escopo — só JSON.
+
+#### `redis` — source + sink (Redis Streams, feature `redis`)
+```json
+{"connector": "redis", "config": {
+  "url": "redis://user:pass@host:6379",
+  "stream_key": "events",
+  "starting_position": "latest",
+  "fields": [{"name": "id", "type": "int64"}, {"name": "payload", "type": "utf8"}],
+  "batch_size": 500,
+  "idle_timeout_ms": 2000,
+  "timeout_seconds": 30
+}}
+```
+Usa `XADD`/`XREAD` do Redis Streams — não é o KV genérico do Redis (`GET`/`SET`), nem PubSub (`PUBLISH`/`SUBSCRIBE`, sem replay). Sem consumer group em v1 (`XREADGROUP`), então sem ack/redelivery coordenado entre múltiplas instâncias lendo o mesmo stream.
+
+#### `nats` — source + sink (core pub/sub, feature `nats`)
+```json
+{"connector": "nats", "config": {
+  "server_url": "nats://host:4222",
+  "subject": "events.>",
+  "queue_group": "nexusflow-consumers",
+  "fields": [{"name": "id", "data_type": "int64"}, {"name": "payload", "data_type": "utf8"}],
+  "batch_size": 500,
+  "idle_timeout_ms": 2000,
+  "timeout_seconds": 30
+}}
+```
+Core NATS (pub/sub simples), não JetStream — sem persistência/replay: uma mensagem publicada antes do NexusFlow se inscrever nunca chega. `queue_group` distribui mensagens entre instâncias concorrentes do mesmo subject (mesma semântica de queue group nativa do NATS).
+
+#### `rabbitmq` — source + sink (AMQP 0-9-1, feature `rabbitmq`)
+```json
+{"connector": "rabbitmq", "config": {
+  "url": "amqp://user:pass@host:5672/%2f",
+  "queue": "events",
+  "exchange": "",
+  "fields": [{"name": "id", "data_type": "int64"}, {"name": "payload", "data_type": "utf8"}],
+  "batch_size": 500,
+  "idle_timeout_ms": 2000,
+  "timeout_seconds": 30
+}}
+```
+Protocolo AMQP 0-9-1 (RabbitMQ nativo, não o plugin MQTT dele). Source sempre com auto-ack — sem redelivery manual em v1, então uma mensagem lida e perdida antes de chegar no sink (crash do NexusFlow) não volta pra fila. `exchange`/`routing_key` opcionais no sink para publicar num exchange existente em vez de direto na fila padrão.
 
 ### 4.3 APIs REST/SaaS (bridging genérico)
 
@@ -435,9 +490,13 @@ Chaves de `storage_options` por provedor:
 | `postgres` | ✅ | ✅ | ADBC nativo |
 | `sqlite` | ✅ | ✅ | ADBC nativo |
 | `clickhouse` | ✅ | ✅ | ADBC nativo, sink append-only (sem upsert) |
+| `duckdb` | ✅ | ✅ | ADBC nativo, upsert real (`ON CONFLICT`) |
 | `mysql` | ✅ | ✅ | bridging (`mysql_async`), schema por nome |
 | `mongodb` | ✅ | ✅ | schema explícito |
-| `kafka` | ✅ | — | só leitura, genérico (sem CDC) |
+| `kafka` | ✅ | ✅ | genérico (sem CDC), sink sem semântica de opcode |
+| `redis` | ✅ | ✅ | Streams (`XADD`/`XREAD`), sem consumer group |
+| `nats` | ✅ | ✅ | core pub/sub, sem JetStream (sem replay) |
+| `rabbitmq` | ✅ | ✅ | AMQP 0-9-1, source sempre auto-ack |
 | `mqtt` | ✅ | — | telemetria IoT/sensor, resume via sessão persistente |
 | `rest` | ✅ | — | genérico, paginação offset/cursor |
 | `webhook` | — | ✅ | mesmo crate do `rest` |

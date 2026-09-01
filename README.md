@@ -2,7 +2,7 @@
 
 **Universal Rust Data & Vector Framework** — movimentação, transformação, vetorização e orquestração de dados (ETL/ELT/Streaming) de altíssima performance.
 
-> Status: ✅ MVP completo e além — 20 crates de conector (27 nomes no catálogo com as variantes CDC: Postgres/SQLite/ClickHouse fast-path, MySQL/MongoDB/Kafka/MQTT/REST/ODBC/CSV bridging, sinks vetoriais, data lake formats, AI Lake e webhook) linkáveis via feature flag, API + UI + observabilidade + distribuição Linux funcionando end-to-end. Windows tem build de release removido do CI (gap real de dependência, ver nota abaixo); macOS tem specs mas ainda não foi validado em máquina real.
+> Status: ✅ MVP completo e além — 24 crates de conector (31 nomes no catálogo com as variantes CDC: Postgres/SQLite/ClickHouse/DuckDB fast-path, MySQL/MongoDB/Kafka/Redis/NATS/RabbitMQ/MQTT/REST/ODBC/CSV bridging, sinks vetoriais, data lake formats, AI Lake e webhook — Kafka já com source+sink) linkáveis via feature flag, API + UI + observabilidade + distribuição Linux funcionando end-to-end. Windows já produziu um `.msi` real via workflow manual (ver nota abaixo), mas o job `build-windows` do CI de release automático segue removido; macOS tem specs mas ainda não foi validado em máquina real.
 
 ## O que é
 
@@ -53,7 +53,7 @@ Mais opções (curl|sh, .deb/AppImage, build from source, habilitar conectores e
 | [`CONTRIBUTING.md`](./CONTRIBUTING.md) | Como contribuir, convenções de código, processo de PR |
 | [`LICENSING.md`](./LICENSING.md) | Modelo open-core: o que é OSS vs. o que é pago |
 | [`docs/ENTERPRISE_CONNECTORS.md`](./docs/ENTERPRISE_CONNECTORS.md) | Candidatos a conector enterprise e lógica de priorização (Excel já implementado no repo privado; os demais são trabalho futuro) |
-| [`docs/ENTERPRISE_LICENSING.md`](./docs/ENTERPRISE_LICENSING.md) | Design do sistema de licenciamento enterprise (trabalho futuro) |
+| [`docs/ENTERPRISE_LICENSING.md`](./docs/ENTERPRISE_LICENSING.md) | Design do sistema de licenciamento enterprise (verificação JWT/Ed25519 já implementada e funcionando; checkout Stripe/`nexus-licensing` em produção é trabalho futuro) |
 | [`LICENSE`](./LICENSE) | Apache License 2.0 (community edition) |
 
 ## Licença
@@ -64,6 +64,6 @@ Community Edition sob **Apache-2.0**. Conectores enterprise são distribuídos s
 
 Rust (Edition 2021) · Apache Arrow / DataFusion · ADBC · Tokio · Axum · React Flow (frontend).
 
-> **Nota sobre validação de plataforma:** Linux (binário nativo, `.deb`, AppImage, `.rpm`, Docker) é o único caminho validado de ponta a ponta em máquina real, e todos os 3 pacotes buildam automaticamente em CI a cada push/PR pra `main`. Windows (`.msi`) tem specs em `packaging/windows/` mas o job `build-windows` foi **removido do CI de release** — `cargo build --features connectors-all` falha no runner self-hosted disponível (`nexus-connector-mysql`'s `mysql_cdc` só suporta OpenSSL nativo, sem rustls, e essa máquina não tem OpenSSL/vcpkg instalado); `winget` também não está configurado. macOS (Homebrew/`.dmg`) tem specs em `packaging/macos/` mas nem builda em CI nem foi testado em máquina real (sem runner self-hosted de macOS, e os runners hospedados do GitHub estão bloqueados por billing da org). Contribuições ou relatórios de teste são bem-vindos.
+> **Nota sobre validação de plataforma:** Linux (binário nativo, `.deb`, AppImage, `.rpm`, Docker) é o único caminho validado de ponta a ponta em máquina real, e todos os 3 pacotes buildam automaticamente em CI a cada push/PR pra `main`. Windows: o bug que travava o build (`cargo build --features connectors-all` falhando porque `nexus-connector-mysql`'s `mysql_cdc` só suporta OpenSSL nativo, sem rustls, e o runner self-hosted não tinha OpenSSL/vcpkg) foi corrigido com setup manual na máquina — `.github/workflows/build-windows-installer.yml` (workflow separado, `workflow_dispatch` manual) já rodou com sucesso e anexou um `.msi` real (`nexusflow-0.1.3-x86_64.msi`) à release `v0.1.3`; ainda não instalado/testado numa máquina Windows real por um humano, e `winget` continua não configurado. O job `build-windows` original dentro do `release.yml` (matrix automático a cada push/PR) segue removido dessa chain por decisão, não por bloqueio técnico. macOS (Homebrew/`.dmg`) tem specs em `packaging/macos/` mas nem builda em CI nem foi testado em máquina real (sem runner self-hosted de macOS, e os runners hospedados do GitHub estão bloqueados por billing da org). Contribuições ou relatórios de teste são bem-vindos.
 
 Lista completa em [`CLAUDE.md` §2](./CLAUDE.md#%EF%B8%8F-2-tech-stack).
