@@ -19,6 +19,8 @@ nexus-connector-kafka/src/config.rs`):
 - `sasl_username` / `sasl_password`.
 - `topic`, `group_id`, `fields` — obrigatórios, mesmos de sempre.
 
+`kafka` agora tem sink além de source (mesma config, feature `producer` de `nexus-connector-kafka`) — os exemplos abaixo valem igual para **publicar** num tópico do Confluent Cloud/Event Hubs, só que como sink em vez de source (`group_id` é ignorado pelo producer, mas continua obrigatório no schema do config).
+
 ## Confluent Cloud
 
 Endpoint real: `pkc-xxxxx.<região>.aws.confluent.cloud:9092` (copiar

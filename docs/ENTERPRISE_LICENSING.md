@@ -4,7 +4,7 @@ Detalha a implementação técnica do modelo de licenciamento enterprise descrit
 
 > Versão anterior deste doc descrevia dois gateways (Mercado Pago + Stripe). Decisão de produto: só Stripe — cobre cartão nas duas moedas e Pix na mesma integração, sem manter dois webhook receivers/dois esquemas de preço.
 
-**Estado real (auditado):** `POST /license` e `GET /license` existem em `nexus-server` (`crates/nexus-server/src/license.rs` + `license_store.rs`) — validam assinatura Ed25519 + `exp` e persistem a JWT no metadata store. Enforcement real (`connectors.rs`) e UI (cadeado no `ConnectorPalette.tsx`, aba **Store**) já funcionam. O serviço `nexus-licensing` (repo privado novo, `ailake-io/nexus-licensing`) **existe** — scaffold Axum/Postgres/Stripe completo (checkout, webhook, emissão de license, API admin), commitado na `main`, ainda não deployado nem ligado a uma conta Stripe real. O que falta: rodar em produção com credenciais reais e o botão "Comprar" no `Store.tsx` (§5) chamando o serviço.
+**Estado real (auditado):** `POST /license` e `GET /license` existem em `nexus-server` (`crates/nexus-server/src/license.rs` + `license_store.rs`) — validam assinatura Ed25519 + `exp` e persistem a JWT no metadata store. Enforcement real (`connectors.rs`) e UI (cadeado no `ConnectorPalette.tsx`, aba **Store**) já funcionam. `LICENSE_PUBLIC_KEY_PEM` era um placeholder sem par privado em lugar nenhum até `3c49e57` — nenhuma license real teria verificado antes desse fix; confirmado end-to-end com um par Ed25519 real (§5). O serviço `nexus-licensing` (repo privado novo, `ailake-io/nexus-licensing`) **existe** — scaffold Axum/Postgres/Stripe completo (checkout, webhook, emissão de license, API admin), commitado na `main`, ainda não deployado nem ligado a uma conta Stripe real. O que falta: rodar em produção com credenciais reais e o botão "Comprar" no `Store.tsx` (§5) chamando o serviço.
 
 ## 1. Visão geral do fluxo
 
@@ -68,12 +68,12 @@ JWT assinado com **Ed25519** (mais rápido de verificar que RSA, chave menor):
 ## 5. Mudanças no `nexus-server` (OSS) e no frontend
 
 **Já implementado:**
+- `LICENSE_PUBLIC_KEY_PEM` em `license.rs` é o par Ed25519 real (não mais o placeholder que nunca teve chave privada correspondente em lugar nenhum — bug achado e corrigido em `3c49e57`: toda license emitida teria falhado verificação contra a constante antiga; confirmado gerando um par real, emitindo license via `/admin/licenses` e verificando local com `nexus-server`). Testes continuam usando `test_support::TEST_PUBLIC_KEY_PEM`/`TEST_PRIVATE_KEY_PEM` via `#[cfg(test)]`, sem precisar da chave privada real no repo.
 - `POST /license` / `GET /license` (Admin-only, RBAC) — valida assinatura + `exp`, persiste a JWT.
 - Enforcement real: `validate_source_config`/`validate_sink_config`/`build_source`/`build_sink` (`connectors.rs`) checam a license ativa antes de validar/salvar/rodar um pipeline com conector `requires_license`.
 - Frontend: cadeado no `ConnectorPalette.tsx`, aba **Store** (`frontend/src/components/Store.tsx`) com status de license instalada + form de instalação manual (colar a JWT).
 
 **Ainda falta:**
-- `LICENSE_PUBLIC_KEY_PEM` em `license.rs` ainda é a chave de teste documentada como placeholder — trocar pela chave pública real assim que o par Ed25519 de produção existir (gerado fora do repo, `nexus-licensing/README.md` "Key rotation").
 - Botão "Comprar" no `Store.tsx` pra cada conector bloqueado, com toggle BRL/USD, chamando `POST /checkout` do `nexus-licensing` (fetch cross-origin, URL configurável via `VITE_LICENSING_API_URL`) e redirecionando pro `checkout_url` retornado. O form de colar a license key manualmente continua existindo — o botão só adiciona o caminho automatizado até o Stripe.
 
 ## 6. Nota fiscal
@@ -99,7 +99,7 @@ JWT assinado com **Ed25519** (mais rápido de verificar que RSA, chave menor):
 
 ## Próximos passos
 
-1. Gerar o par Ed25519 de produção (fora do repo, fora de qualquer chat) e configurar `LICENSE_SIGNING_PRIVATE_KEY_PEM` no deploy do `nexus-licensing` + trocar `LICENSE_PUBLIC_KEY_PEM` aqui (§5).
+1. ~~Gerar o par Ed25519 de produção e trocar `LICENSE_PUBLIC_KEY_PEM`~~ — resolvido em `3c49e57` (§5). A chave privada real ainda precisa ser configurada como `LICENSE_SIGNING_PRIVATE_KEY_PEM` no deploy de produção do `nexus-licensing` quando este for de fato colocado no ar (item 3 abaixo) — hoje só foi validada localmente.
 2. Confirmar com jurídico/contabilidade a obrigação de NFe/NFSe antes de habilitar checkout BRL real (§6).
 3. Deployar `nexus-licensing` com credenciais Stripe reais (test mode primeiro, `stripe listen` pra validar o webhook localmente).
 4. Botão "Comprar" no `Store.tsx` (§5).
