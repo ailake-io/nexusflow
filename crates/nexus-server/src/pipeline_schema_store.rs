@@ -1,5 +1,6 @@
 use crate::db::{rewrite_placeholders, MetadataPool};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// One column's name and Arrow type (`DataType::to_string()`, e.g. `"Int64"`,
 /// `"Utf8"`) — plain/serializable, not `arrow_schema::Field` directly, so
@@ -33,6 +34,73 @@ pub struct PipelineSchema {
     pub output_columns: Vec<ColumnInfo>,
     pub column_lineage: Option<Vec<ColumnLineageInfo>>,
     pub captured_at: String,
+}
+
+/// Compares two column sets by name and reports what changed, in a
+/// stable (sorted) order so the resulting message is deterministic for
+/// tests and doesn't jitter between runs when column order alone
+/// changes. Returns an empty `Vec` when nothing changed.
+fn diff_columns(old: &[ColumnInfo], new: &[ColumnInfo]) -> Vec<String> {
+    let old_by_name: HashMap<&str, &str> = old
+        .iter()
+        .map(|c| (c.name.as_str(), c.data_type.as_str()))
+        .collect();
+    let new_by_name: HashMap<&str, &str> = new
+        .iter()
+        .map(|c| (c.name.as_str(), c.data_type.as_str()))
+        .collect();
+
+    let mut added: Vec<&str> = new_by_name
+        .keys()
+        .filter(|name| !old_by_name.contains_key(*name))
+        .copied()
+        .collect();
+    let mut removed: Vec<&str> = old_by_name
+        .keys()
+        .filter(|name| !new_by_name.contains_key(*name))
+        .copied()
+        .collect();
+    let mut retyped: Vec<(&str, &str, &str)> = old_by_name
+        .iter()
+        .filter_map(|(name, old_ty)| {
+            let new_ty = new_by_name.get(name)?;
+            (old_ty != new_ty).then_some((*name, *old_ty, *new_ty))
+        })
+        .collect();
+    added.sort_unstable();
+    removed.sort_unstable();
+    retyped.sort_unstable();
+
+    let mut changes = Vec::new();
+    changes.extend(added.into_iter().map(|n| format!("+{n}")));
+    changes.extend(removed.into_iter().map(|n| format!("-{n}")));
+    changes.extend(
+        retyped
+            .into_iter()
+            .map(|(n, old_ty, new_ty)| format!("{n}: {old_ty}→{new_ty}")),
+    );
+    changes
+}
+
+/// Human-readable drift summary between a pipeline's previous and current
+/// captured schema, suitable as an alert message — `None` when nothing
+/// changed (including when there's no previous schema to compare against,
+/// i.e. this is the pipeline's first run).
+fn drift_message(previous: &PipelineSchema, source: &[ColumnInfo], output: &[ColumnInfo]) -> Option<String> {
+    let mut parts = Vec::new();
+    let source_diff = diff_columns(&previous.source_columns, source);
+    if !source_diff.is_empty() {
+        parts.push(format!("fonte: {}", source_diff.join(", ")));
+    }
+    let output_diff = diff_columns(&previous.output_columns, output);
+    if !output_diff.is_empty() {
+        parts.push(format!("saída: {}", output_diff.join(", ")));
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(format!("schema mudou — {}", parts.join("; ")))
+    }
 }
 
 #[derive(Clone)]
@@ -72,7 +140,11 @@ impl PipelineSchemaStore {
     // Called from `runner.rs` after a successful schema/lineage capture —
     // fire-and-forget from the caller's perspective, doesn't fail the run
     // itself if this errors (same posture as dbt lineage/test-result
-    // persistence).
+    // persistence). Returns a human-readable drift message when this
+    // run's schema differs from the pipeline's previously captured one
+    // (`None` on the first-ever capture, or when nothing changed) — the
+    // caller decides what to do with it (today: fire an alert via the
+    // same channels a run success/failure already uses).
     #[allow(dead_code)]
     pub async fn record(
         &self,
@@ -80,7 +152,12 @@ impl PipelineSchemaStore {
         source_columns: &[ColumnInfo],
         output_columns: &[ColumnInfo],
         column_lineage: Option<&[ColumnLineageInfo]>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Option<String>> {
+        let previous = self.get(pipeline_id).await?;
+        let drift = previous
+            .as_ref()
+            .and_then(|prev| drift_message(prev, source_columns, output_columns));
+
         let source_columns_json = serde_json::to_string(source_columns)?;
         let output_columns_json = serde_json::to_string(output_columns)?;
         let column_lineage_json = column_lineage.map(serde_json::to_string).transpose()?;
@@ -118,7 +195,7 @@ impl PipelineSchemaStore {
                     .await?;
             }
         }
-        Ok(())
+        Ok(drift)
     }
 
     /// The Lineage tab's `GET /lineage/{pipeline_id}/schema` endpoint —
@@ -235,6 +312,71 @@ mod tests {
 
         let got = store.get("pipe-1").await.unwrap().expect("row exists");
         assert_eq!(got.source_columns, second);
+    }
+
+    #[tokio::test]
+    async fn record_returns_no_drift_on_first_capture() {
+        let store = PipelineSchemaStore::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let source = cols(&["id"], &["Int64"]);
+        let drift = store.record("pipe-1", &source, &source, None).await.unwrap();
+        assert_eq!(drift, None);
+    }
+
+    #[tokio::test]
+    async fn record_returns_no_drift_when_schema_is_unchanged() {
+        let store = PipelineSchemaStore::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let source = cols(&["id", "amount"], &["Int64", "Int64"]);
+        store.record("pipe-1", &source, &source, None).await.unwrap();
+        let drift = store.record("pipe-1", &source, &source, None).await.unwrap();
+        assert_eq!(drift, None);
+    }
+
+    #[tokio::test]
+    async fn record_reports_added_removed_and_retyped_columns() {
+        let store = PipelineSchemaStore::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let first = cols(&["id", "amount", "status"], &["Int64", "Int64", "Utf8"]);
+        store.record("pipe-1", &first, &first, None).await.unwrap();
+
+        let second = cols(&["id", "amount", "region"], &["Int64", "Utf8", "Utf8"]);
+        let drift = store
+            .record("pipe-1", &second, &second, None)
+            .await
+            .unwrap()
+            .expect("schema changed, drift expected");
+
+        assert!(drift.contains("+region"), "drift message: {drift}");
+        assert!(drift.contains("-status"), "drift message: {drift}");
+        assert!(drift.contains("amount: Int64→Utf8"), "drift message: {drift}");
+    }
+
+    #[tokio::test]
+    async fn record_diffs_source_and_output_independently() {
+        let store = PipelineSchemaStore::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let source1 = cols(&["id", "amount"], &["Int64", "Int64"]);
+        let output1 = cols(&["id", "total"], &["Int64", "Int64"]);
+        store
+            .record("pipe-1", &source1, &output1, None)
+            .await
+            .unwrap();
+
+        // Source gains a column, output is untouched.
+        let source2 = cols(&["id", "amount", "region"], &["Int64", "Int64", "Utf8"]);
+        let drift = store
+            .record("pipe-1", &source2, &output1, None)
+            .await
+            .unwrap()
+            .expect("source changed, drift expected");
+
+        assert!(drift.contains("fonte:"), "drift message: {drift}");
+        assert!(!drift.contains("saída:"), "drift message: {drift}");
     }
 
     #[tokio::test]

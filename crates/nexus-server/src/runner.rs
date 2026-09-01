@@ -100,18 +100,36 @@ fn schema_without_opcode(schema: &arrow_schema::SchemaRef) -> arrow_schema::Sche
 /// persistence in `lib.rs::execute_pipeline_run`: a failure here is logged
 /// and never fails the run itself — this is observability, not pipeline
 /// correctness.
+///
+/// When the captured schema differs from the pipeline's previously
+/// captured one (`PipelineSchemaStore::record`'s return value — `None` on
+/// the first-ever capture or when nothing changed), fires an alert through
+/// the same per-pipeline channels (`spec.alerts`) a run success/failure
+/// already uses (`AlertNotifier::notify_pipeline_run`) — schema drift is
+/// exactly the kind of thing a run can succeed at while still being worth
+/// a human's attention.
+#[allow(clippy::too_many_arguments)]
 async fn record_pipeline_schema(
     schema_store: &crate::pipeline_schema_store::PipelineSchemaStore,
+    alerts: &crate::alerts::AlertNotifier,
+    pipeline_alerts: Option<&nexus_core::AlertsConfig>,
+    run_id: i64,
     pipeline_id: &str,
     source_columns: &[crate::pipeline_schema_store::ColumnInfo],
     output_columns: &[crate::pipeline_schema_store::ColumnInfo],
     column_lineage: Option<&[crate::pipeline_schema_store::ColumnLineageInfo]>,
 ) {
-    if let Err(e) = schema_store
+    match schema_store
         .record(pipeline_id, source_columns, output_columns, column_lineage)
         .await
     {
-        tracing::warn!(error = %e, "failed to persist pipeline schema");
+        Ok(Some(drift)) => {
+            alerts.notify_pipeline_run(pipeline_alerts, pipeline_id, run_id, true, &drift);
+        }
+        Ok(None) => {}
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to persist pipeline schema");
+        }
     }
 }
 
@@ -178,6 +196,7 @@ fn log_progress(
 }
 
 #[tracing::instrument(skip_all, fields(pipeline_id = %spec.pipeline_id))]
+#[allow(clippy::too_many_arguments)]
 pub async fn run_pipeline(
     spec: &PipelineSpec,
     checkpoints: &CheckpointStore,
@@ -185,6 +204,8 @@ pub async fn run_pipeline(
     log: Option<&RunLogger>,
     active_license: Option<&LicenseClaims>,
     schema_store: &crate::pipeline_schema_store::PipelineSchemaStore,
+    alerts: &crate::alerts::AlertNotifier,
+    run_id: i64,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     // A `*-cdc` source with a plain SQL transform (the only documented CDC
     // shape — `SELECT * FROM source0`, required to preserve `__opcode` for
@@ -215,6 +236,8 @@ pub async fn run_pipeline(
             log,
             active_license,
             schema_store,
+            alerts,
+            run_id,
         )
         .await
     } else if spec.has_transform() || spec.python.is_some() {
@@ -225,6 +248,8 @@ pub async fn run_pipeline(
             log,
             active_license,
             schema_store,
+            alerts,
+            run_id,
         )
         .await
     } else {
@@ -243,6 +268,8 @@ pub async fn run_pipeline(
             log,
             active_license,
             schema_store,
+            alerts,
+            run_id,
         )
         .await
     }
@@ -260,6 +287,7 @@ pub async fn run_pipeline(
 ///   force adding a no-op Transform node merely to dodge this function's
 ///   old postgres-only restriction — see IMPLEMENTATION_PLAN.md Marco 1.
 #[tracing::instrument(skip_all, fields(pipeline_id = %spec.pipeline_id))]
+#[allow(clippy::too_many_arguments)]
 async fn run_linear_pipeline(
     spec: &PipelineSpec,
     checkpoints: &CheckpointStore,
@@ -267,6 +295,8 @@ async fn run_linear_pipeline(
     log: Option<&RunLogger>,
     active_license: Option<&LicenseClaims>,
     schema_store: &crate::pipeline_schema_store::PipelineSchemaStore,
+    alerts: &crate::alerts::AlertNotifier,
+    run_id: i64,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     if spec.embedding.is_some() {
         anyhow::bail!(
@@ -286,6 +316,8 @@ async fn run_linear_pipeline(
             log,
             active_license,
             schema_store,
+            alerts,
+            run_id,
         )
         .await;
     }
@@ -300,6 +332,9 @@ async fn run_linear_pipeline(
     let source_columns = column_infos(&schema);
     record_pipeline_schema(
         schema_store,
+        alerts,
+        spec.alerts.as_ref(),
+        run_id,
         &spec.pipeline_id,
         &source_columns,
         &source_columns,
@@ -507,6 +542,7 @@ async fn inject_cdc_resume_state(
 /// materializing path never actually produced any output for a realistic
 /// (sub-`max_batch_events`) CDC pipeline in the first place.
 #[tracing::instrument(skip_all, fields(pipeline_id = %spec.pipeline_id))]
+#[allow(clippy::too_many_arguments)]
 async fn run_streaming_cdc_pipeline(
     spec: &PipelineSpec,
     checkpoints: &CheckpointStore,
@@ -514,6 +550,8 @@ async fn run_streaming_cdc_pipeline(
     log: Option<&RunLogger>,
     active_license: Option<&LicenseClaims>,
     schema_store: &crate::pipeline_schema_store::PipelineSchemaStore,
+    alerts: &crate::alerts::AlertNotifier,
+    run_id: i64,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     // Resume-state lookup is anchored on the first sink's resolved name
     // ("sink0" when unnamed) — every sink commits the same source position
@@ -565,6 +603,9 @@ async fn run_streaming_cdc_pipeline(
         .map(to_lineage_infos);
     record_pipeline_schema(
         schema_store,
+        alerts,
+        spec.alerts.as_ref(),
+        run_id,
         &spec.pipeline_id,
         &column_infos(&source_schema),
         &column_infos(&output_schema),
@@ -697,6 +738,7 @@ async fn run_streaming_cdc_pipeline(
 /// path's `NonNumeric` case: if `p0` already committed in a prior run of
 /// this `pipeline_id`, this is a no-op.
 #[tracing::instrument(skip_all, fields(pipeline_id = %spec.pipeline_id))]
+#[allow(clippy::too_many_arguments)]
 async fn run_passthrough_pipeline(
     spec: &PipelineSpec,
     checkpoints: &CheckpointStore,
@@ -704,6 +746,8 @@ async fn run_passthrough_pipeline(
     log: Option<&RunLogger>,
     active_license: Option<&LicenseClaims>,
     schema_store: &crate::pipeline_schema_store::PipelineSchemaStore,
+    alerts: &crate::alerts::AlertNotifier,
+    run_id: i64,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     if spec.embedding.is_some() {
         anyhow::bail!(
@@ -758,6 +802,9 @@ async fn run_passthrough_pipeline(
     let source_columns = column_infos(&source_schema);
     record_pipeline_schema(
         schema_store,
+        alerts,
+        spec.alerts.as_ref(),
+        run_id,
         &spec.pipeline_id,
         &source_columns,
         &source_columns,
@@ -843,6 +890,7 @@ async fn run_passthrough_pipeline(
 /// operates on a single upstream table's batches. When both are set, the
 /// order is SQL transform, then python, over its output.
 #[tracing::instrument(skip_all, fields(pipeline_id = %spec.pipeline_id))]
+#[allow(clippy::too_many_arguments)]
 async fn run_transform_pipeline(
     spec: &PipelineSpec,
     checkpoints: &CheckpointStore,
@@ -850,6 +898,8 @@ async fn run_transform_pipeline(
     log: Option<&RunLogger>,
     active_license: Option<&LicenseClaims>,
     schema_store: &crate::pipeline_schema_store::PipelineSchemaStore,
+    alerts: &crate::alerts::AlertNotifier,
+    run_id: i64,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     // Same reasoning as `run_passthrough_pipeline`'s `is_cdc` check: a `-cdc`
     // source is meant to run again every scheduler tick, using
@@ -975,6 +1025,9 @@ async fn run_transform_pipeline(
         .unwrap_or_default();
     record_pipeline_schema(
         schema_store,
+        alerts,
+        spec.alerts.as_ref(),
+        run_id,
         &spec.pipeline_id,
         &source_columns,
         &output_columns,

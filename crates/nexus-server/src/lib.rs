@@ -600,6 +600,8 @@ async fn execute_pipeline_run(
         Some(&logger),
         active_license.as_ref(),
         &state.pipeline_schemas,
+        &state.alerts,
+        run_id,
     )
     .await;
     state.progress.finish(run_id).await;
