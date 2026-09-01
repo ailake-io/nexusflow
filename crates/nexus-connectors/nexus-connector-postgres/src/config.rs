@@ -104,7 +104,7 @@ impl PostgresConnectorConfig {
         );
 
         let mut params: Vec<String> = Vec::new();
-        if let Some(schema) = &self.schema {
+        if let Some(schema) = self.schema.as_deref().filter(|s| !s.is_empty()) {
             params.push(format!(
                 "options=-csearch_path%3D{}",
                 percent_encode(schema)
@@ -274,7 +274,7 @@ impl PostgresCdcConfig {
         );
 
         let mut params: Vec<String> = Vec::new();
-        if let Some(schema) = &self.schema {
+        if let Some(schema) = self.schema.as_deref().filter(|s| !s.is_empty()) {
             params.push(format!(
                 "options=-csearch_path%3D{}",
                 percent_encode(schema)
@@ -388,6 +388,29 @@ mod tests {
         assert!(cfg
             .connection_string()
             .starts_with("postgresql://nexus:s3cr%40t@db.example.com:5433/analytics"));
+    }
+
+    #[test]
+    fn connection_string_omits_search_path_when_schema_is_empty_string() {
+        // Same Canvas UI quirk as the `uri` test above, but for `schema`:
+        // an untouched-but-rendered field can arrive as `Some("")` instead
+        // of `None`. Before this fix that produced `options=-csearch_path=`
+        // (empty), which Postgres rejects with "no schema has been selected
+        // to create in" on every DDL statement.
+        let cfg = PostgresConnectorConfig {
+            uri: None,
+            host: "db.example.com".to_string(),
+            port: 5433,
+            username: "nexus".to_string(),
+            password: "nexus".to_string(),
+            database: "analytics".to_string(),
+            schema: Some(String::new()),
+            ssl_mode: PostgresSslMode::Prefer,
+            table: "events".to_string(),
+            primary_key: "id".to_string(),
+            timeout_seconds: 30,
+        };
+        assert!(!cfg.connection_string().contains("search_path"));
     }
 
     #[test]
