@@ -25,9 +25,14 @@ use serde::{Deserialize, Serialize};
 /// `test_support::sign` — a key whose private half is deliberately public,
 /// see that module's doc comment — verifies against a key it actually
 /// matches, without ever needing the real private key in this repo.
+// TEMPORARY local-test swap (2026-09-01) — real production key replaced with
+// a throwaway Ed25519 keypair generated just for a local Docker Hub test
+// image (thiagolange/nexusflow:latest), so a license can be minted without
+// touching nexus-licensing's real Fly.io-only private key. Reverted in the
+// very next commit — this state should never persist past that.
 #[cfg(not(test))]
 const LICENSE_PUBLIC_KEY_PEM: &str = "-----BEGIN PUBLIC KEY-----\n\
-MCowBQYDK2VwAyEApAng7Ch5LpOWjGWRO3+cUGtypkLWChoDFTE9eVaS4kY=\n\
+MCowBQYDK2VwAyEAt92KwHU2h5os9Qze58p+r+B9iN5zeEgoybUebBstJLo=\n\
 -----END PUBLIC KEY-----\n";
 #[cfg(test)]
 const LICENSE_PUBLIC_KEY_PEM: &str = test_support::TEST_PUBLIC_KEY_PEM;
