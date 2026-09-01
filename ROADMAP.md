@@ -379,6 +379,32 @@ Estava registrado como candidato enterprise em `docs/ENTERPRISE_CONNECTORS.md` s
 
 ---
 
+## Fase 24 — Expansão de conectores (gap analysis, OSS + enterprise)
+
+Motivada por uma análise de lacunas nesta sessão: conectores de streaming existiam só como source (nunca publicavam), e vários candidatos do `docs/ENTERPRISE_CONNECTORS.md` seguiam sem crate por falta de esforço, não por falta de demanda. Escopo: implementar tudo que fizesse sentido, exceto Db2 (exclusão explícita do usuário) e SAP BAPI/IDoc (achado durante a implementação: bloqueio legal, não técnico — SDK NetWeaver da SAP é proprietário e não redistribuível sem licença comercial direta, sem caminho Rust possível).
+
+**OSS (`crates/nexus-connectors/`):**
+- [x] Kafka ganhou sink (produtor via `rdkafka`, feature `producer`) — só tinha source antes.
+- [x] `duckdb` — fast-path ADBC oficial (`dbc install duckdb`), upsert real via `ON CONFLICT`, diferente do append-only do ClickHouse.
+- [x] `redis` — Streams (`XADD`/`XREAD`), não KV genérico; sem consumer group em v1.
+- [x] `nats` — pub/sub core, não JetStream (sem persistência/replay).
+- [x] `rabbitmq` — AMQP 0-9-1, sempre auto-ack no source (sem redelivery manual em v1).
+
+**Enterprise (`nexus-connectors-enterprise`, repo privado, 24 crates novos/alterados):**
+- [x] Kinesis e Pulsar ganharam sink (mesma lacuna do Kafka).
+- [x] Teradata, Vertica — mesmo esqueleto ODBC do HANA; Teradata usa `UPDATE ... ELSE INSERT` (sem `MERGE` nativo), Vertica usa `MERGE` real.
+- [x] HubSpot, Zendesk, Google Sheets — REST/JSON, testados com `wiremock`, mesmo padrão do Salesforce/Stripe.
+- [x] Dropbox, Google Drive — **acharam o próprio padrão** durante a implementação: em vez de listar metadado de arquivo como linha, reusam o parsing `arrow-csv` do `nexus-connector-csv` público contra uma pasta com CSV/TSV, já que `object_store` não tem backend pra essas duas nuvens.
+- [x] ServiceNow, Dynamics 365, SharePoint — REST/OAuth mais complexo (paginação OData v4 via `@odata.nextLink` em Dynamics/SharePoint, offset simples no ServiceNow).
+- [x] NetSuite — SuiteQL (não a SOAP SuiteTalk antiga) pra leitura, REST Record API pra escrita; schema inferido dinamicamente das colunas da query (sem `fields` fixo).
+- [x] Workday — **source-only, permanente**: RaaS (Report-as-a-Service) cobre leitura real, mas o write-path de verdade do Workday é SOAP (`Put_Worker` etc.), superfície de protocolo separada e muito maior, não uma simplificação de v1 — mesmo racional do Stripe ser read-only, só que por limitação técnica em vez de decisão de produto.
+
+**Achados reais durante a verificação** (não só desenvolvimento): um `| tail` mascarando exit code de pipe escondeu 3 bugs reais por um tempo (variant `redis::Value::Data` renomeado pra `BulkString` na 0.27; `hasMore` do NetSuite sem `#[serde(rename)]`, quebrando paginação silenciosamente; `needless_range_loop`/`if_same_then_else` do clippy em 3 crates) — todos recorrigidos após passar a rodar tudo com exit code real (redirecionado a arquivo, sem pipe). Dois bugs de clippy pré-existentes (não relacionados a este trabalho) em `mssql-cdc`/`oracle-cdc` também corrigidos a pedido do usuário.
+
+**Critério de pronto:** `cargo check`/`test`/`clippy -D warnings` limpos (exit code real, sem `| tail`) no workspace inteiro dos dois repos, `GET /connectors` listando cada conector novo. **Atingido** — 19 itens implementados e commitados (6 ondas), nenhum contra conta/tenant real (mesma ressalva de todo conector REST/ODBC deste repo — só `wiremock`/unit tests).
+
+---
+
 **Critério de "MVP pronto"**: Fases 0–3 + 7 (parcial: auth básica) + 8 (canvas mínimo) funcionando end-to-end — mover dados de Postgres pra Postgres via canvas visual, com checkpoint por partição, retry e escrita idempotente. **Atingido e superado** — Fases 0–11 e 13–17 completas, só falta Fase 12 (enterprise, repo separado) e os itens condicionais/parciais marcados acima.
 
 ## Débitos conhecidos (aceitos pro MVP, resolver antes de vender enterprise)
