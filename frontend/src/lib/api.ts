@@ -394,6 +394,10 @@ export interface PipelineSchema {
   output_columns: LineageColumnInfo[]
   column_lineage: LineageColumnLineageInfo[] | null
   captured_at: string
+  /** Human-readable diff against the *previous* capture (added/removed/
+   *  retyped columns) — `null` on the first-ever capture or when the last
+   *  run's schema matched the one before it. */
+  last_drift: string | null
 }
 
 /** Fetched on demand — clicking a pipeline node in the Lineage tab, not

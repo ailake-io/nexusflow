@@ -34,6 +34,13 @@ pub struct PipelineSchema {
     pub output_columns: Vec<ColumnInfo>,
     pub column_lineage: Option<Vec<ColumnLineageInfo>>,
     pub captured_at: String,
+    /// Human-readable drift summary between the *previous* capture and
+    /// this one (`diff_columns`/`drift_message`, computed in `record`) —
+    /// `None` on the first-ever capture or when the last run's schema
+    /// matched the one before it. Same message `runner.rs` already fires
+    /// as an alert; kept here too so the Lineage tab can show a
+    /// "changed since last run" badge without needing its own history.
+    pub last_drift: Option<String>,
 }
 
 /// Compares two column sets by name and reports what changed, in a
@@ -128,9 +135,20 @@ impl PipelineSchemaStore {
         match &pool {
             MetadataPool::Sqlite(p) => {
                 sqlx::query(create).execute(p).await?;
+                // Same additive-migration pattern as
+                // `checkpoint_store.rs`'s `resume_state` column — no
+                // `IF NOT EXISTS` support for `ADD COLUMN` on older
+                // SQLite, so this just runs it and ignores the error
+                // ("column already exists" on a second/later boot).
+                let _ = sqlx::query("ALTER TABLE pipeline_schemas ADD COLUMN last_drift TEXT")
+                    .execute(p)
+                    .await;
             }
             MetadataPool::Postgres(p) => {
                 sqlx::query(create).execute(p).await?;
+                sqlx::query("ALTER TABLE pipeline_schemas ADD COLUMN IF NOT EXISTS last_drift TEXT")
+                    .execute(p)
+                    .await?;
             }
         }
 
@@ -165,13 +183,14 @@ impl PipelineSchemaStore {
 
         let sql = self.q(
             "INSERT INTO pipeline_schemas \
-                (pipeline_id, source_columns_json, output_columns_json, column_lineage_json, captured_at) \
-             VALUES (?, ?, ?, ?, ?) \
+                (pipeline_id, source_columns_json, output_columns_json, column_lineage_json, captured_at, last_drift) \
+             VALUES (?, ?, ?, ?, ?, ?) \
              ON CONFLICT (pipeline_id) DO UPDATE SET \
                  source_columns_json = excluded.source_columns_json, \
                  output_columns_json = excluded.output_columns_json, \
                  column_lineage_json = excluded.column_lineage_json, \
-                 captured_at = excluded.captured_at",
+                 captured_at = excluded.captured_at, \
+                 last_drift = excluded.last_drift",
         );
         match &self.pool {
             MetadataPool::Sqlite(p) => {
@@ -181,6 +200,7 @@ impl PipelineSchemaStore {
                     .bind(&output_columns_json)
                     .bind(&column_lineage_json)
                     .bind(&captured_at)
+                    .bind(&drift)
                     .execute(p)
                     .await?;
             }
@@ -191,6 +211,7 @@ impl PipelineSchemaStore {
                     .bind(&output_columns_json)
                     .bind(&column_lineage_json)
                     .bind(&captured_at)
+                    .bind(&drift)
                     .execute(p)
                     .await?;
             }
@@ -204,26 +225,29 @@ impl PipelineSchemaStore {
     pub async fn get(&self, pipeline_id: &str) -> anyhow::Result<Option<PipelineSchema>> {
         let sql = self.q(
             "SELECT pipeline_id, source_columns_json, output_columns_json, \
-                    column_lineage_json, captured_at \
+                    column_lineage_json, captured_at, last_drift \
              FROM pipeline_schemas WHERE pipeline_id = ?",
         );
         #[allow(clippy::type_complexity)]
-        let row: Option<(String, String, String, Option<String>, String)> = match &self.pool {
-            MetadataPool::Sqlite(p) => {
-                sqlx::query_as(sqlx::AssertSqlSafe(sql))
-                    .bind(pipeline_id)
-                    .fetch_optional(p)
-                    .await?
-            }
-            MetadataPool::Postgres(p) => {
-                sqlx::query_as(sqlx::AssertSqlSafe(sql))
-                    .bind(pipeline_id)
-                    .fetch_optional(p)
-                    .await?
-            }
-        };
+        let row: Option<(String, String, String, Option<String>, String, Option<String>)> =
+            match &self.pool {
+                MetadataPool::Sqlite(p) => {
+                    sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                        .bind(pipeline_id)
+                        .fetch_optional(p)
+                        .await?
+                }
+                MetadataPool::Postgres(p) => {
+                    sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                        .bind(pipeline_id)
+                        .fetch_optional(p)
+                        .await?
+                }
+            };
 
-        let Some((pipeline_id, source_json, output_json, lineage_json, captured_at)) = row else {
+        let Some((pipeline_id, source_json, output_json, lineage_json, captured_at, last_drift)) =
+            row
+        else {
             return Ok(None);
         };
 
@@ -233,6 +257,7 @@ impl PipelineSchemaStore {
             output_columns: serde_json::from_str(&output_json)?,
             column_lineage: lineage_json.map(|j| serde_json::from_str(&j)).transpose()?,
             captured_at,
+            last_drift,
         }))
     }
 }
@@ -377,6 +402,33 @@ mod tests {
 
         assert!(drift.contains("fonte:"), "drift message: {drift}");
         assert!(!drift.contains("saída:"), "drift message: {drift}");
+    }
+
+    #[tokio::test]
+    async fn get_reflects_last_drift_after_a_changing_run() {
+        let store = PipelineSchemaStore::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let first = cols(&["id", "amount"], &["Int64", "Int64"]);
+        store.record("pipe-1", &first, &first, None).await.unwrap();
+        assert_eq!(store.get("pipe-1").await.unwrap().unwrap().last_drift, None);
+
+        let second = cols(&["id", "region"], &["Int64", "Utf8"]);
+        store
+            .record("pipe-1", &second, &second, None)
+            .await
+            .unwrap();
+        let last_drift = store.get("pipe-1").await.unwrap().unwrap().last_drift;
+        assert!(last_drift.is_some(), "expected last_drift to be set");
+
+        // A third run with no further change clears it back to None — the
+        // field reflects "did the *last* capture change anything", not a
+        // sticky flag.
+        store
+            .record("pipe-1", &second, &second, None)
+            .await
+            .unwrap();
+        assert_eq!(store.get("pipe-1").await.unwrap().unwrap().last_drift, None);
     }
 
     #[tokio::test]

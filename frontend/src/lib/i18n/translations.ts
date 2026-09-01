@@ -148,6 +148,7 @@ export const translations = {
         from: 'from',
         notDetermined: 'not determined',
         close: 'Close',
+        driftTitle: 'Changed since last run',
       },
     },
     quality: {
@@ -569,6 +570,7 @@ export const translations = {
         from: 'de',
         notDetermined: 'não determinado',
         close: 'Fechar',
+        driftTitle: 'Mudou desde o último run',
       },
     },
     quality: {
