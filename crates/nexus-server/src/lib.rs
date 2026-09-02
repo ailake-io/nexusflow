@@ -879,7 +879,7 @@ async fn preview_node_handler(
     let active_license = state.license_store.active().await.unwrap_or(None);
     let (_, source) = crate::connectors::build_source(node, 0, active_license.as_ref())
         .await
-        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+        .map_err(|e| ApiError::bad_request(crate::error::sanitize_error(&e.to_string())))?;
 
     let rows = read_preview_rows(source, limit).await?;
     Ok(Json(serde_json::json!({ "rows": rows })))
@@ -897,7 +897,19 @@ async fn read_preview_rows(
     mut source: Box<dyn nexus_core::Source>,
     limit: usize,
 ) -> Result<Vec<serde_json::Value>, ApiError> {
-    let mut stream = source.read_batches().await.map_err(ApiError::internal)?;
+    // A connect/read failure here is the caller actively testing their own
+    // connector config in the Preview tab, so the real (sanitized) reason
+    // is exactly what they need — not a flat "internal server error" that
+    // gives no clue whether the host, credentials, or something else is
+    // wrong. Deliberately `upstream_connector_failed` (502), not
+    // `bad_request` (400): the frontend's `DataPreviewPanel` treats a 400
+    // from this same endpoint as "connector can't be previewed at all"
+    // (from `build_source`'s "unsupported source connector" error a few
+    // lines up in both callers) — conflating the two would misreport a
+    // real connection failure as "not supported".
+    let mut stream = source.read_batches().await.map_err(|e| {
+        ApiError::upstream_connector_failed(crate::error::sanitize_error(&e.to_string()))
+    })?;
     let mut collected = Vec::new();
     let mut row_count = 0usize;
     while row_count < limit {
@@ -906,7 +918,11 @@ async fn read_preview_rows(
                 row_count += batch.num_rows();
                 collected.push(batch);
             }
-            Some(Err(e)) => return Err(ApiError::internal(e)),
+            Some(Err(e)) => {
+                return Err(ApiError::upstream_connector_failed(
+                    crate::error::sanitize_error(&e.to_string()),
+                ))
+            }
             None => break,
         }
     }
@@ -996,7 +1012,7 @@ async fn preview_adhoc_handler(
     let active_license = state.license_store.active().await.unwrap_or(None);
     let (_, source) = crate::connectors::build_source(&req.node, 0, active_license.as_ref())
         .await
-        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+        .map_err(|e| ApiError::bad_request(crate::error::sanitize_error(&e.to_string())))?;
 
     let rows = read_preview_rows(source, limit).await?;
     Ok(Json(serde_json::json!({ "rows": rows })))

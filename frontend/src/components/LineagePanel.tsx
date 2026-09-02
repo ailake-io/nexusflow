@@ -227,7 +227,7 @@ function PipelineSchemaPanel({ pipelineId, onClose }: { pipelineId: string; onCl
         if (err instanceof ApiError && err.status === 404) {
           setNotRun(true)
         } else {
-          setError(t('lineage.schema.error'))
+          setError(err instanceof Error ? err.message : t('lineage.schema.error'))
         }
       })
       .finally(() => {
@@ -338,8 +338,8 @@ function LineageGraphView() {
           setError(null)
         }
       })
-      .catch(() => {
-        if (!cancelled) setError(t('lineage.error'))
+      .catch((err: unknown) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : t('lineage.error'))
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
