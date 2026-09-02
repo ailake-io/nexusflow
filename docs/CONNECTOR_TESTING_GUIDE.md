@@ -102,10 +102,19 @@ nada.
 
 ## 1. Postgres, MySQL, MongoDB (batch + CDC)
 
-Guia dedicado e completo (100k linhas seedadas, docker-compose com/sem
-CDC, passo a passo de UI campo a campo) em `nexusflow-db-testbeds/README.md`
-— cobre `postgres`, `postgres-cdc`, `mysql`, `mysql-cdc`, `mongodb`,
-`mongodb-cdc`. Não repetido aqui.
+Quer um teste mais fundo (100k linhas seedadas, docker-compose pronto
+com/sem CDC, passo a passo de UI campo a campo)? Tem um guia dedicado em
+`nexusflow-db-testbeds/README.md`, fora deste repo de propósito. Pra um
+teste de fumaça rápido, os 6 conectores dessa família:
+
+| Conector | Subir | Config mínima | Verificar |
+|---|---|---|---|
+| `postgres` | `docker run -d --name pg -p 5432:5432 -e POSTGRES_PASSWORD=nexusflow -e POSTGRES_DB=nexusflow_test postgres:16` — crie a tabela: `docker exec pg psql -U postgres -d nexusflow_test -c "CREATE TABLE events (id bigint PRIMARY KEY, name text, amount numeric);"` e insira algumas linhas | `host=localhost`, `username=postgres`, `password=nexusflow`, `database=nexusflow_test`, `table=events`, `primary_key=id` | Preview do source retorna as linhas; sink: `psql` → `SELECT count(*) FROM events;` |
+| `postgres-cdc` | Mesmo container acima, mas precisa de `wal_level=logical` (a imagem oficial não vem com isso por padrão) — suba com `docker run -d --name pg-cdc -p 5432:5432 -e POSTGRES_PASSWORD=nexusflow -e POSTGRES_DB=nexusflow_test postgres:16 -c wal_level=logical`, depois `CREATE PUBLICATION nexus_pub FOR TABLE events;` | `host=localhost`, `username=postgres`, `password=nexusflow`, `database=nexusflow_test`, `table=events`, `publication_name=nexus_pub`, `slot_name=nexus_slot`, `fields` (4 tipos: int64/float64/boolean/utf8) | Run fica `running` (streaming). Gere `INSERT`/`UPDATE`/`DELETE` na fonte via `psql`, confirme no destino em segundos. |
+| `mysql` | `docker run -d --name mysql -p 3306:3306 -e MYSQL_ROOT_PASSWORD=nexusflow -e MYSQL_DATABASE=nexusflow_test mysql:8` — crie a tabela: `docker exec mysql mysql -uroot -pnexusflow nexusflow_test -e "CREATE TABLE events (id BIGINT PRIMARY KEY, name TEXT, amount DOUBLE);"` | `host=localhost`, `username=root`, `password=nexusflow`, `database=nexusflow_test`, `table=events`, `primary_key=id`, `fields` (source infere via `SHOW COLUMNS` se vazio; sink precisa preenchido) | `docker exec mysql mysql -uroot -pnexusflow nexusflow_test -e "SELECT count(*) FROM events;"` |
+| `mysql-cdc` | Mesmo container, mas precisa de binlog em modo `ROW` — suba com `--binlog-format=ROW --server-id=1` no final do `docker run` (após o nome da imagem) e crie um usuário com `REPLICATION SLAVE`/`REPLICATION CLIENT` (`root` já serve pra teste) | `host=localhost`, `username=root`, `password=nexusflow`, `database=nexusflow_test`, `table=events`, `server_id=65535`, `fields` (posicional, igual ordem das colunas da tabela) | Gere um `UPDATE` na fonte, confirme no destino. |
+| `mongodb` | `docker run -d --name mongo -p 27017:27017 mongo:7` | `hosts=["localhost:27017"]`, `database=nexusflow_test`, `collection=events`, `primary_key=id`, `fields` (source infere se vazio, sink precisa preenchido) | `docker exec mongo mongosh nexusflow_test --eval "db.events.countDocuments()"` |
+| `mongodb-cdc` | Change Streams exigem replica set — suba com `docker run -d --name mongo-rs -p 27017:27017 mongo:7 --replSet rs0`, depois `docker exec mongo-rs mongosh --eval "rs.initiate()"` | `hosts=["localhost:27017"]`, `database=nexusflow_test`, `collection=events`, `fields` (4 tipos) | Gere um `insertOne`/`updateOne`/`deleteOne` via `mongosh` na fonte, confirme no destino. |
 
 ---
 
@@ -151,12 +160,9 @@ gravável.
 | `deltalake` | `path=/data/warehouse`, `table_name=events`, `primary_key=id` | Reler via novo pipeline `deltalake` fonte → `csv` destino, ou `deltalake` Python (`DeltaTable(path).to_pandas()`). |
 | `iceberg` | `catalog_path=/data/warehouse/catalog.db`, `warehouse_path=/data/warehouse`, `namespace_name=default`, `table_name=events` | Mesma ideia — reler via pipeline reverso. |
 | `ailake` | `warehouse=/data/warehouse/ailake`, `namespace=default`, `table=events`, `primary_key=id`, `embedding_column=embedding`, `dimension=384` | Reler via pipeline reverso. |
-
-CDC dessas 3 (`deltalake-cdc`/`iceberg-cdc`/`ailake-cdc`): mesma
-infraestrutura acima; a fonte lê a partir de uma versão/snapshot
-(`starting_version`/`starting_snapshot_id`, vazio = desde o início).
-Gere uma segunda escrita na tabela (rode o pipeline batch de novo com
-dado diferente) e confirme que o CDC captura só o delta.
+| `deltalake-cdc` | Mesmo diretório `/data/warehouse` do `deltalake` acima, já com uma escrita batch feita antes | `path=/data/warehouse`, `table_name=events`, `starting_version` (vazio = desde a versão 0) | Rode o pipeline batch `deltalake` de novo com dado diferente (gera uma nova versão), depois rode o CDC e confirme que só o delta chega no destino. |
+| `iceberg-cdc` | Mesmo warehouse/catálogo do `iceberg` acima, já com uma escrita batch feita antes | `catalog_path=/data/warehouse/catalog.db`, `warehouse_path=/data/warehouse`, `namespace_name=default`, `table_name=events`, `starting_snapshot_id` (vazio = desde o início) | Mesma ideia — segunda escrita batch, depois CDC, confirme só o delta. |
+| `ailake-cdc` | Mesmo warehouse do `ailake` acima, já com uma escrita batch feita antes | `warehouse=/data/warehouse/ailake`, `namespace=default`, `table=events`, `primary_key=id`, `embedding_column=embedding`, `dimension=384`, `starting_snapshot_id` (vazio = desde o início) | Mesma ideia — segunda escrita batch, depois CDC, confirme só o delta. |
 
 ## 6. APIs genéricas — sem container dedicado
 
