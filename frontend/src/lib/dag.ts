@@ -12,6 +12,22 @@ export interface TransformSpec {
   sql: string
 }
 
+/** Matches nexus-core::QualityCheckKind exactly — `#[serde(tag = "kind",
+ * rename_all = "snake_case")]`, so each variant is `{ kind: "<name>", ...
+ * fields }` with no wrapper. */
+export type QualityCheckKind =
+  | { kind: 'not_null' }
+  | { kind: 'unique' }
+  | { kind: 'min'; min: number }
+  | { kind: 'max'; max: number }
+  | { kind: 'accepted_values'; values: string[] }
+
+/** Matches nexus-core::QualityCheckSpec exactly. */
+export interface QualityCheckSpec {
+  column: string
+  check: QualityCheckKind
+}
+
 /** Matches nexus-core::PythonTransformSpec exactly — a cleaning/
  * transformation stage run as an isolated `python3` subprocess (mirrors
  * `dbt` in isolation model, not in when it runs — chains after `transform`
@@ -94,6 +110,11 @@ export interface PipelineSpec {
   /** Per-pipeline alert channels, additive to the global env-var-configured
    * ones. Unset means no per-pipeline channels. */
   alerts?: AlertsConfig
+  /** Native (dbt-independent) quality checks, evaluated against the
+   * pipeline's materialized output — only takes effect on a pipeline with a
+   * Transform node (see nexus_core::quality's doc comment). Empty/unset
+   * means no checks configured. */
+  quality_checks?: QualityCheckSpec[]
   /** When true, the spec is saved as a draft and the server skips validation
    * of connector configs/embedding/dbt. Drafts cannot be executed. */
   draft?: boolean
@@ -250,6 +271,7 @@ export interface PipelineMeta {
   partitions?: number
   schedule?: string
   alerts?: AlertsConfig
+  qualityChecks?: QualityCheckSpec[]
 }
 
 /**
@@ -364,6 +386,9 @@ export function toPipelineSpec(
   if (meta.partitions !== undefined) spec.partitions = meta.partitions
   if (meta.schedule?.trim()) spec.schedule = meta.schedule.trim()
   if (meta.alerts) spec.alerts = meta.alerts
+  if (meta.qualityChecks && meta.qualityChecks.length > 0) {
+    spec.quality_checks = meta.qualityChecks
+  }
   if (allowDraft) spec.draft = true
   return spec
 }

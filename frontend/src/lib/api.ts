@@ -338,6 +338,29 @@ export function getDbtTestResults(token: string, pipelineId: string): Promise<Db
   )
 }
 
+/** Matches nexus-server::quality_check_store's `QualityCheckOutcome` (via
+ *  `nexus_core::QualityCheckOutcome`), as returned by
+ *  GET /pipelines/{id}/quality-checks. Native, dbt-independent checks
+ *  (not_null/unique/min/max/accepted_values) — always registered, never
+ *  blocking a run (see `PipelineSpec.quality_checks`'s doc comment). */
+export interface QualityCheckOutcome {
+  column: string
+  check: string
+  status: 'pass' | 'fail'
+  message: string | null
+}
+
+export function getQualityCheckResults(
+  token: string,
+  pipelineId: string,
+): Promise<QualityCheckOutcome[]> {
+  return request<QualityCheckOutcome[]>(
+    `/pipelines/${encodeURIComponent(pipelineId)}/quality-checks`,
+    {},
+    token,
+  )
+}
+
 /** Matches nexus-server::lineage::ResourceKind. */
 export type LineageResourceKind = 'table' | 'collection' | 'topic' | 'file'
 

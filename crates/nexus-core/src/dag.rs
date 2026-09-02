@@ -292,6 +292,14 @@ pub struct PipelineSpec {
     /// channels, same as before this field existed.
     #[serde(default)]
     pub alerts: Option<AlertsConfig>,
+    /// Native, dbt-independent data-quality checks (not_null/unique/min/
+    /// max/accepted_values) evaluated against this pipeline's fully
+    /// materialized output — see `quality::QualityCheckSpec`'s doc comment
+    /// for why this only takes effect on the `run_transform_pipeline` path
+    /// (any pipeline with a Transform node). `None`/empty means no checks,
+    /// same as before this field existed.
+    #[serde(default)]
+    pub quality_checks: Vec<crate::quality::QualityCheckSpec>,
     /// When true, the spec is saved as a draft: only `pipeline_id` is
     /// validated, and connector configs/embedding/dbt are not checked.
     /// Drafts cannot be executed; they must be completed and re-saved

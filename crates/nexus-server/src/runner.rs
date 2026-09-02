@@ -206,6 +206,7 @@ pub async fn run_pipeline(
     schema_store: &crate::pipeline_schema_store::PipelineSchemaStore,
     alerts: &crate::alerts::AlertNotifier,
     run_id: i64,
+    quality_store: &crate::quality_check_store::QualityCheckStore,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     // A `*-cdc` source with a plain SQL transform (the only documented CDC
     // shape — `SELECT * FROM source0`, required to preserve `__opcode` for
@@ -250,6 +251,7 @@ pub async fn run_pipeline(
             schema_store,
             alerts,
             run_id,
+            quality_store,
         )
         .await
     } else {
@@ -900,6 +902,7 @@ async fn run_transform_pipeline(
     schema_store: &crate::pipeline_schema_store::PipelineSchemaStore,
     alerts: &crate::alerts::AlertNotifier,
     run_id: i64,
+    quality_store: &crate::quality_check_store::QualityCheckStore,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     // Same reasoning as `run_passthrough_pipeline`'s `is_cdc` check: a `-cdc`
     // source is meant to run again every scheduler tick, using
@@ -1034,6 +1037,26 @@ async fn run_transform_pipeline(
         column_lineage.as_deref(),
     )
     .await;
+
+    // Native quality checks: only registered, never blocking (per product
+    // decision — a failing check must not stop a pipeline run, only be
+    // recorded for the Quality tab to surface). Evaluated here because this
+    // is the only path holding the fully materialized `output` in memory;
+    // see `nexus_core::quality`'s doc comment for why CDC/passthrough
+    // pipelines aren't covered in v1.
+    if !spec.quality_checks.is_empty() {
+        let outcomes = nexus_core::evaluate_quality_checks(&output, &spec.quality_checks);
+        if let Err(e) = quality_store
+            .record_all(&spec.pipeline_id, run_id, &outcomes)
+            .await
+        {
+            log_error(
+                log,
+                format!("failed to persist quality check results: {e}"),
+            )
+            .await;
+        }
+    }
 
     let mut sinks = Vec::with_capacity(spec.sinks.len());
     for (i, node) in spec.sinks.iter().enumerate() {

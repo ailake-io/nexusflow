@@ -12,6 +12,7 @@ import {
   FilePlus,
   Timer,
   Bell,
+  BadgeCheck,
 } from 'lucide-react'
 import { useI18n } from '@/lib/i18n'
 import { Button } from '@/components/ui/button'
@@ -19,6 +20,7 @@ import { FieldHint } from '@/components/FieldHint'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { AlertsConfigDialog } from '@/components/AlertsConfigDialog'
+import { QualityChecksDialog } from '@/components/QualityChecksDialog'
 import type { PipelineMeta } from '@/lib/dag'
 
 interface PipelineIoPanelProps {
@@ -63,6 +65,7 @@ export function PipelineIoPanel({
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
   const [alertsOpen, setAlertsOpen] = useState(false)
+  const [qualityChecksOpen, setQualityChecksOpen] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleExport = () => {
@@ -213,6 +216,15 @@ export function PipelineIoPanel({
           </Button>
           <Button
             type="button"
+            variant="outline"
+            onClick={() => setQualityChecksOpen(true)}
+            className="gap-1.5"
+          >
+            <BadgeCheck className="h-3.5 w-3.5" />
+            {t('ioPanel.qualityChecks')}
+          </Button>
+          <Button
+            type="button"
             variant={autoSaveEnabled ? 'default' : 'outline'}
             onClick={onToggleAutoSave}
             disabled={!meta.pipelineId.trim()}
@@ -306,6 +318,12 @@ export function PipelineIoPanel({
         onOpenChange={setAlertsOpen}
         alerts={meta.alerts}
         onChange={(alerts) => onMetaChange({ ...meta, alerts })}
+      />
+      <QualityChecksDialog
+        open={qualityChecksOpen}
+        onOpenChange={setQualityChecksOpen}
+        checks={meta.qualityChecks}
+        onChange={(qualityChecks) => onMetaChange({ ...meta, qualityChecks })}
       />
     </div>
   )
