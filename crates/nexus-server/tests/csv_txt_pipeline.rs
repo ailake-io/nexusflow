@@ -11,6 +11,7 @@
 //! Requires the real ADBC PostgreSQL driver — see postgres_pipeline.rs.
 
 use axum::body::Body;
+use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
 use axum::Router;
 use nexus_server::{build_app, ServerConfig};
@@ -28,12 +29,14 @@ fn require_env(var: &str) {
 
 async fn login(app: Router, username: &str, password: &str) -> String {
     let body = json!({"username": username, "password": password});
+    let peer: std::net::SocketAddr = "203.0.113.1:12345".parse().unwrap();
     let response = app
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri("/auth/login")
                 .header("content-type", "application/json")
+                .extension(ConnectInfo(peer))
                 .body(Body::from(body.to_string()))
                 .unwrap(),
         )
@@ -147,6 +150,7 @@ fn test_server_config() -> ServerConfig {
         email: None,
         webhook_url: None,
         allow_internal_hosts: true,
+        trust_proxy_headers: false,
     }
 }
 

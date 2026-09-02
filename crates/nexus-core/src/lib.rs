@@ -15,9 +15,9 @@ pub mod transform;
 pub use cdc::{project_column, split_by_opcode, CdcSplit};
 pub use checkpoint::{CheckpointCursor, Opcode, OPCODE_COLUMN};
 pub use dag::{
-    AlertsConfig, ChunkingSpec, DbtCommand, DbtConfig, EmailAlertChannel, EmbeddingModelSpec,
-    EmbeddingSpec, NodeSpec, PagerDutyAlertChannel, PipelineSpec, PythonTransformSpec,
-    TransformSpec, WebhookAlertChannel,
+    is_internal_ip, AlertsConfig, ChunkingSpec, DbtCommand, DbtConfig, EmailAlertChannel,
+    EmbeddingModelSpec, EmbeddingSpec, NodeSpec, PagerDutyAlertChannel, PipelineSpec,
+    PythonTransformSpec, TransformSpec, WebhookAlertChannel,
 };
 pub use error::{with_timeout, NexusError};
 pub use pipeline::{

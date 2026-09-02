@@ -9,6 +9,7 @@ mod db;
 mod dbt;
 mod dbt_lineage_store;
 mod dbt_test_result_store;
+mod dns_guard;
 #[cfg(feature = "embed-ui")]
 mod embedded_ui;
 mod error;
@@ -100,6 +101,9 @@ struct AppState {
     progress: ProgressHub,
     alerts: AlertNotifier,
     login_rate_limiter: std::sync::Arc<rate_limit::LoginRateLimiter>,
+    /// `NEXUS_TRUST_PROXY_HEADERS` — see `rate_limit::TrustProxyHeaders`'s doc
+    /// comment for why this defaults to `false`.
+    trust_proxy_headers: bool,
     /// `NEXUS_ALLOW_INTERNAL_HOSTS` — see `PipelineSpec::validate_security_with`.
     allow_internal_hosts: bool,
 }
@@ -257,6 +261,9 @@ fn router(state: AppState) -> Router {
     let login_routes = Router::new()
         .route("/auth/login", post(login_handler))
         .layer(middleware::from_fn(rate_limit::login_rate_limit))
+        .layer(Extension(rate_limit::TrustProxyHeaders(
+            state.trust_proxy_headers,
+        )))
         .layer(Extension(state.login_rate_limiter.clone()));
 
     // Logout requires any valid token; the token is revoked so it can't be
@@ -1555,6 +1562,11 @@ pub struct ServerConfig {
     /// documents an env var that degrades gracefully when unset (alerts just
     /// stay off); this one weakens SSRF protection, so it's opt-in only.
     pub allow_internal_hosts: bool,
+    /// `NEXUS_TRUST_PROXY_HEADERS` — see `rate_limit::TrustProxyHeaders`'s
+    /// doc comment. Same "opt-in only" reasoning as `allow_internal_hosts`
+    /// above: trusting `X-Forwarded-For` weakens the login rate limiter
+    /// unless a reverse proxy is confirmed to own that header.
+    pub trust_proxy_headers: bool,
 }
 
 async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
@@ -1605,15 +1617,19 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         dbt_test_results,
         pipeline_schemas,
         progress: ProgressHub::default(),
-        alerts: AlertNotifier::new(AlertConfig {
-            slack_webhook_url: config.slack_webhook_url.clone(),
-            teams_webhook_url: config.teams_webhook_url.clone(),
-            pagerduty_routing_key: config.pagerduty_routing_key.clone(),
-            email: config.email.clone(),
-            webhook_url: config.webhook_url.clone(),
-        }),
+        alerts: AlertNotifier::new(
+            AlertConfig {
+                slack_webhook_url: config.slack_webhook_url.clone(),
+                teams_webhook_url: config.teams_webhook_url.clone(),
+                pagerduty_routing_key: config.pagerduty_routing_key.clone(),
+                email: config.email.clone(),
+                webhook_url: config.webhook_url.clone(),
+            },
+            config.allow_internal_hosts,
+        ),
         login_rate_limiter: std::sync::Arc::new(rate_limit::LoginRateLimiter::default()),
         allow_internal_hosts: config.allow_internal_hosts,
+        trust_proxy_headers: config.trust_proxy_headers,
     })
 }
 
@@ -1740,6 +1756,16 @@ pub async fn run() -> anyhow::Result<()> {
              self-hosted deployments, never on a multi-tenant/shared instance."
         );
     }
+    let trust_proxy_headers = std::env::var("NEXUS_TRUST_PROXY_HEADERS")
+        .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+    if trust_proxy_headers {
+        tracing::warn!(
+            "NEXUS_TRUST_PROXY_HEADERS=true — the login rate limiter will trust the \
+             X-Forwarded-For header. Only set this when a reverse proxy in front of this \
+             process overwrites that header itself; otherwise any direct caller can spoof it \
+             and bypass per-IP login rate limiting entirely."
+        );
+    }
 
     let state = build_state(&ServerConfig {
         checkpoint_database_url: database_url,
@@ -1755,6 +1781,7 @@ pub async fn run() -> anyhow::Result<()> {
         email,
         webhook_url,
         allow_internal_hosts,
+        trust_proxy_headers,
     })
     .await?;
 
@@ -1836,6 +1863,7 @@ async fn shutdown_signal() {
 mod tests {
     use super::*;
     use axum::body::Body;
+    use axum::extract::ConnectInfo;
     use axum::http::{Request, StatusCode};
     use axum::response::IntoResponse;
     use tower::ServiceExt;
@@ -1869,12 +1897,13 @@ mod tests {
             .await
             .unwrap(),
             progress: ProgressHub::default(),
-            alerts: AlertNotifier::new(AlertConfig::default()),
+            alerts: AlertNotifier::new(AlertConfig::default(), false),
             login_rate_limiter: std::sync::Arc::new(rate_limit::LoginRateLimiter::new(
                 std::time::Duration::from_secs(60),
                 10_000,
             )),
             allow_internal_hosts: false,
+            trust_proxy_headers: false,
         }
     }
 
@@ -2076,16 +2105,9 @@ mod tests {
         let state = test_state().await;
         let app = router(state);
 
-        let body = serde_json::json!({"username": "admin", "password": "test-password"});
+        let peer: SocketAddr = "203.0.113.1:12345".parse().unwrap();
         let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/auth/login")
-                    .header("content-type", "application/json")
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
+            .oneshot(login_credentials_request(peer, "admin", "test-password"))
             .await
             .unwrap();
 
@@ -2096,16 +2118,9 @@ mod tests {
     async fn login_rejects_wrong_password() {
         let app = router(test_state().await);
 
-        let body = serde_json::json!({"username": "admin", "password": "wrong"});
+        let peer: SocketAddr = "203.0.113.1:12345".parse().unwrap();
         let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/auth/login")
-                    .header("content-type", "application/json")
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
+            .oneshot(login_credentials_request(peer, "admin", "wrong"))
             .await
             .unwrap();
 
@@ -3238,18 +3253,19 @@ mod tests {
         assert!(validate_jwt_secret(&"x".repeat(32)).is_ok());
     }
 
-    #[tokio::test]
-    async fn login_rate_limits_per_ip() {
+    /// `AppState` builder shared by the login-rate-limit tests below —
+    /// identical to `test_state()` except the caller picks the limiter and
+    /// `trust_proxy_headers`, both of which the base helper hardcodes.
+    async fn rate_limited_state(
+        limiter: std::sync::Arc<rate_limit::LoginRateLimiter>,
+        trust_proxy_headers: bool,
+    ) -> AppState {
         let auth_store = AuthStore::connect("sqlite::memory:").await.unwrap();
         auth_store
             .seed_admin_if_empty("admin", "test-password")
             .await
             .unwrap();
-        let limiter = std::sync::Arc::new(rate_limit::LoginRateLimiter::new(
-            std::time::Duration::from_secs(60),
-            2,
-        ));
-        let state = AppState {
+        AppState {
             checkpoints: CheckpointStore::connect("sqlite::memory:").await.unwrap(),
             auth_store,
             jwt: JwtCodec::new(b"test-secret", 3600),
@@ -3272,41 +3288,130 @@ mod tests {
             .await
             .unwrap(),
             progress: ProgressHub::default(),
-            alerts: AlertNotifier::new(AlertConfig::default()),
+            alerts: AlertNotifier::new(AlertConfig::default(), false),
             login_rate_limiter: limiter,
             allow_internal_hosts: false,
-        };
-        let app = router(state);
+            trust_proxy_headers,
+        }
+    }
 
+    /// A login POST with `peer` attached as the connection's `ConnectInfo`
+    /// — `oneshot` never opens a real socket, so this is how these tests
+    /// simulate "requests arriving from this real address" without one.
+    fn login_credentials_request(peer: SocketAddr, username: &str, password: &str) -> Request<Body> {
+        let body = serde_json::json!({"username": username, "password": password});
+        Request::builder()
+            .method("POST")
+            .uri("/auth/login")
+            .header("content-type", "application/json")
+            .extension(ConnectInfo(peer))
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    fn login_request(peer: SocketAddr, forwarded_for: Option<&str>) -> Request<Body> {
         let body = serde_json::json!({"username": "admin", "password": "wrong"});
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/auth/login")
+            .header("content-type", "application/json")
+            .extension(ConnectInfo(peer));
+        if let Some(xff) = forwarded_for {
+            builder = builder.header("x-forwarded-for", xff);
+        }
+        builder.body(Body::from(body.to_string())).unwrap()
+    }
+
+    #[tokio::test]
+    async fn login_rate_limits_per_ip() {
+        let limiter = std::sync::Arc::new(rate_limit::LoginRateLimiter::new(
+            std::time::Duration::from_secs(60),
+            2,
+        ));
+        let app = router(rate_limited_state(limiter, false).await);
+        let peer: SocketAddr = "203.0.113.1:12345".parse().unwrap();
+
         for _ in 0..2 {
             let response = app
                 .clone()
-                .oneshot(
-                    Request::builder()
-                        .method("POST")
-                        .uri("/auth/login")
-                        .header("content-type", "application/json")
-                        .body(Body::from(body.to_string()))
-                        .unwrap(),
-                )
+                .oneshot(login_request(peer, None))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+
+        let blocked = app.oneshot(login_request(peer, None)).await.unwrap();
+        assert_eq!(blocked.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    /// The actual security property from this session's audit finding: with
+    /// `trust_proxy_headers: false` (the default), a caller sending a
+    /// different `X-Forwarded-For` on every request must not be able to
+    /// evade the limit — the real peer address is what's counted.
+    #[tokio::test]
+    async fn spoofed_forwarded_for_does_not_bypass_the_limit_by_default() {
+        let limiter = std::sync::Arc::new(rate_limit::LoginRateLimiter::new(
+            std::time::Duration::from_secs(60),
+            2,
+        ));
+        let app = router(rate_limited_state(limiter, false).await);
+        let peer: SocketAddr = "203.0.113.1:12345".parse().unwrap();
+
+        for i in 0..2 {
+            let response = app
+                .clone()
+                .oneshot(login_request(peer, Some(&format!("10.0.0.{i}"))))
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         }
 
         let blocked = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/auth/login")
-                    .header("content-type", "application/json")
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
+            .oneshot(login_request(peer, Some("10.0.0.99")))
+            .await
+            .unwrap();
+        assert_eq!(
+            blocked.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "a fresh X-Forwarded-For value per request must not reset the limit \
+             when the real peer address is unchanged"
+        );
+    }
+
+    /// The opt-in path: an operator who has confirmed a trusted reverse
+    /// proxy owns `X-Forwarded-For` gets the pre-existing behavior back.
+    #[tokio::test]
+    async fn trusted_proxy_headers_are_honored_when_opted_in() {
+        let limiter = std::sync::Arc::new(rate_limit::LoginRateLimiter::new(
+            std::time::Duration::from_secs(60),
+            2,
+        ));
+        let app = router(rate_limited_state(limiter, true).await);
+        // Same peer (as the proxy itself would present to nexus-server) but
+        // distinct real clients behind it — each gets its own bucket.
+        let proxy_peer: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+
+        for _ in 0..2 {
+            let response = app
+                .clone()
+                .oneshot(login_request(proxy_peer, Some("198.51.100.1")))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+        let blocked = app
+            .clone()
+            .oneshot(login_request(proxy_peer, Some("198.51.100.1")))
             .await
             .unwrap();
         assert_eq!(blocked.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        // A different client IP behind the same proxy is unaffected.
+        let other_client = app
+            .oneshot(login_request(proxy_peer, Some("198.51.100.2")))
+            .await
+            .unwrap();
+        assert_eq!(other_client.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
