@@ -34,12 +34,24 @@ RUN npm run build
 # local dev and CI (.github/workflows/ci.yml's `test` job).
 FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241 AS adbc
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      git ca-certificates cmake make g++ pkg-config libpq-dev libsqlite3-dev libfmt-dev \
+      git ca-certificates cmake make g++ pkg-config libpq-dev libsqlite3-dev libfmt-dev unzip curl \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY scripts/build-adbc-postgresql-driver.sh scripts/build-adbc-sqlite-driver.sh scripts/
 RUN scripts/build-adbc-postgresql-driver.sh /out \
  && scripts/build-adbc-sqlite-driver.sh /out
+# DuckDB's ADBC interface ships inside the official libduckdb release
+# (src/common/adbc/adbc.cpp — exports `duckdb_adbc_init`, which
+# nexus-connector-duckdb falls back to when the standard `AdbcDriverInit`
+# symbol is absent, see its driver.rs). No separate driver build needed —
+# just fetch the pinned release and rename the library to the name the
+# wrapper's ADBC_DRIVER_DUCKDB_PATH points at.
+ARG DUCKDB_VERSION=1.5.5
+RUN curl -fsSL -o /tmp/libduckdb.zip \
+      "https://github.com/duckdb/duckdb/releases/download/v${DUCKDB_VERSION}/libduckdb-linux-amd64.zip" \
+ && unzip -p /tmp/libduckdb.zip libduckdb.so > /out/libadbc_driver_duckdb.so \
+ && chmod +x /out/libadbc_driver_duckdb.so \
+ && rm /tmp/libduckdb.zip
 
 FROM rust:1-slim-trixie@sha256:8e8cf8f7fd54a2d23d5a743b3a03f56e26b6c774276c33fa0595111704ebb15c AS clickhouse-adbc
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -98,7 +110,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && useradd -r -u 1001 -g nexusflow nexusflow
 
 COPY --from=builder /tmp/nexusflow-bin /usr/lib/nexusflow/nexusflow-bin
-COPY --from=adbc /out/libadbc_driver_postgresql.so /out/libadbc_driver_sqlite.so /usr/lib/nexusflow/
+COPY --from=adbc /out/libadbc_driver_postgresql.so /out/libadbc_driver_sqlite.so /out/libadbc_driver_duckdb.so /usr/lib/nexusflow/
 COPY --from=clickhouse-adbc /out/libadbc_clickhouse.so /usr/lib/nexusflow/
 COPY packaging/linux/nexusflow-wrapper.sh /usr/bin/nexusflow
 RUN chmod +x /usr/bin/nexusflow \

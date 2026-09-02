@@ -1164,7 +1164,18 @@ async fn apply_embedding_stage(
         for batch in &batches {
             embedded.push(nexus_ai::embedding::apply_embedding(batch, spec, &backend).await?);
         }
-        out.push((name, schema, embedded));
+        // `embedded`'s batches carry a real extra column (the embedding)
+        // that `schema` (captured before this loop, from the un-embedded
+        // input) doesn't know about — registering that stale schema
+        // against the new batches later (`DataFusionTransform`'s MemTable)
+        // fails with "Mismatch between schema and batches" for every
+        // pipeline combining an embedding stage with a SQL transform,
+        // which is every vector-sink pipeline that isn't pure passthrough.
+        // The first embedded batch's own schema is the source of truth;
+        // fall back to the original only when there were no batches at all
+        // (nothing to derive a schema from).
+        let updated_schema = embedded.first().map(|b| b.schema()).unwrap_or(schema);
+        out.push((name, updated_schema, embedded));
     }
     Ok(out)
 }

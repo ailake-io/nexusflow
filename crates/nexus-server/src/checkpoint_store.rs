@@ -165,8 +165,18 @@ impl CheckpointStore {
         pipeline_id: &str,
         partition_id: &str,
     ) -> anyhow::Result<Option<CheckpointCursor>> {
+        // `"offset"` quoted even in this single shared-dialect string (not
+        // routed through the two-arm match `commit`, just above, uses for
+        // its own `offset` references) — SQLite accepts a double-quoted
+        // identifier same as an unquoted one, but Postgres *requires* the
+        // quotes for this reserved word. Unquoted here silently broke every
+        // CDC resume (this is the only place `resume_state` is read back)
+        // against a Postgres metadata backend with "syntax error at or
+        // near offset" — found testing postgres-cdc end to end against
+        // this repo's own `nexus-test` compose, which points metadata at
+        // Postgres.
         let sql = self.q(
-            "SELECT last_updated_at, offset, resume_state FROM checkpoints \
+            "SELECT last_updated_at, \"offset\", resume_state FROM checkpoints \
              WHERE pipeline_id = ? AND partition_id = ?",
         );
         let row: Option<(Option<String>, Option<i64>, Option<String>)> = match &self.pool {
