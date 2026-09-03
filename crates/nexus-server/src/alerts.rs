@@ -61,11 +61,25 @@ pub struct AlertNotifier {
 }
 
 impl AlertNotifier {
-    pub fn new(config: AlertConfig) -> Self {
-        Self {
-            config,
-            client: reqwest::Client::new(),
-        }
+    /// `allow_internal_hosts` mirrors `PipelineSpec::validate_security_with`'s
+    /// flag of the same name (`NEXUS_ALLOW_INTERNAL_HOSTS`): when `false`
+    /// (the default), every request this client makes is checked against
+    /// the *resolved* address at connect time, not just a channel URL's
+    /// literal hostname at config-save time — see `dns_guard.rs`'s doc
+    /// comment for why the literal check alone isn't enough (DNS
+    /// rebinding). When an operator has explicitly opted into internal
+    /// hosts, the plain client is used instead, so a self-hosted alert
+    /// receiver on the private network keeps working.
+    pub fn new(config: AlertConfig, allow_internal_hosts: bool) -> Self {
+        let client = if allow_internal_hosts {
+            reqwest::Client::new()
+        } else {
+            reqwest::Client::builder()
+                .dns_resolver(std::sync::Arc::new(crate::dns_guard::SsrfSafeResolver))
+                .build()
+                .expect("reqwest client with a custom DNS resolver must build")
+        };
+        Self { config, client }
     }
 
     /// Spawns one task per configured channel and returns immediately — the
@@ -592,7 +606,7 @@ mod tests {
     async fn notify_without_configured_webhook_is_a_no_op() {
         // No channel configured — must not panic, spawn nothing that
         // observably does anything. Absence of a crash is the assertion.
-        let notifier = AlertNotifier::new(AlertConfig::default());
+        let notifier = AlertNotifier::new(AlertConfig::default(), true);
         notifier.notify_pipeline_failed("p1", 1, "boom");
     }
 
@@ -639,10 +653,13 @@ mod tests {
     async fn notify_posts_slack_block_kit_payload_to_configured_webhook() {
         let (addr, received) = capture_webhook().await;
 
-        let notifier = AlertNotifier::new(AlertConfig {
-            slack_webhook_url: Some(format!("http://{addr}/webhook")),
-            ..Default::default()
-        });
+        let notifier = AlertNotifier::new(
+            AlertConfig {
+                slack_webhook_url: Some(format!("http://{addr}/webhook")),
+                ..Default::default()
+            },
+            true,
+        );
         notifier.notify_pipeline_failed("p1", 42, "unsupported connector");
 
         let body = wait_for_capture(&received).await;
@@ -656,10 +673,13 @@ mod tests {
     async fn notify_posts_teams_adaptive_card_to_configured_webhook() {
         let (addr, received) = capture_webhook().await;
 
-        let notifier = AlertNotifier::new(AlertConfig {
-            teams_webhook_url: Some(format!("http://{addr}/webhook")),
-            ..Default::default()
-        });
+        let notifier = AlertNotifier::new(
+            AlertConfig {
+                teams_webhook_url: Some(format!("http://{addr}/webhook")),
+                ..Default::default()
+            },
+            true,
+        );
         notifier.notify_pipeline_failed("p2", 43, "timeout");
 
         let body = wait_for_capture(&received).await;
@@ -682,11 +702,14 @@ mod tests {
         let (slack_addr, slack_received) = capture_webhook().await;
         let (teams_addr, teams_received) = capture_webhook().await;
 
-        let notifier = AlertNotifier::new(AlertConfig {
-            slack_webhook_url: Some(format!("http://{slack_addr}/webhook")),
-            teams_webhook_url: Some(format!("http://{teams_addr}/webhook")),
-            ..Default::default()
-        });
+        let notifier = AlertNotifier::new(
+            AlertConfig {
+                slack_webhook_url: Some(format!("http://{slack_addr}/webhook")),
+                teams_webhook_url: Some(format!("http://{teams_addr}/webhook")),
+                ..Default::default()
+            },
+            true,
+        );
         notifier.notify_pipeline_failed("p3", 44, "both channels");
 
         let slack_body = wait_for_capture(&slack_received).await;
@@ -699,17 +722,20 @@ mod tests {
     async fn notify_with_email_config_is_fire_and_forget() {
         // Invalid SMTP host is fine here: the task is spawned, returns
         // immediately, and logs the failure — the run handler never waits.
-        let notifier = AlertNotifier::new(AlertConfig {
-            email: Some(EmailConfig {
-                smtp_host: "invalid.example".to_string(),
-                smtp_port: 587,
-                username: None,
-                password: None,
-                from: "nexus@example.com".to_string(),
-                to: vec!["ops@example.com".to_string()],
-            }),
-            ..Default::default()
-        });
+        let notifier = AlertNotifier::new(
+            AlertConfig {
+                email: Some(EmailConfig {
+                    smtp_host: "invalid.example".to_string(),
+                    smtp_port: 587,
+                    username: None,
+                    password: None,
+                    from: "nexus@example.com".to_string(),
+                    to: vec!["ops@example.com".to_string()],
+                }),
+                ..Default::default()
+            },
+            true,
+        );
         notifier.notify_pipeline_failed("p4", 45, "email channel");
     }
 
@@ -717,10 +743,13 @@ mod tests {
     async fn notify_posts_generic_webhook_payload_to_configured_url() {
         let (addr, received) = capture_webhook().await;
 
-        let notifier = AlertNotifier::new(AlertConfig {
-            webhook_url: Some(format!("http://{addr}/webhook")),
-            ..Default::default()
-        });
+        let notifier = AlertNotifier::new(
+            AlertConfig {
+                webhook_url: Some(format!("http://{addr}/webhook")),
+                ..Default::default()
+            },
+            true,
+        );
         notifier.notify_pipeline_failed("p5", 46, "generic webhook");
 
         let body = wait_for_capture(&received).await;
@@ -732,7 +761,7 @@ mod tests {
 
     #[tokio::test]
     async fn notify_pipeline_run_is_a_no_op_when_alerts_is_none() {
-        let notifier = AlertNotifier::new(AlertConfig::default());
+        let notifier = AlertNotifier::new(AlertConfig::default(), true);
         // Absence of a crash/hang is the assertion — no channel configured
         // anywhere means nothing should ever be spawned.
         notifier.notify_pipeline_run(None, "p1", 1, true, "ok");
@@ -741,7 +770,7 @@ mod tests {
     #[tokio::test]
     async fn notify_pipeline_run_fires_webhook_on_success_when_on_success_is_true() {
         let (addr, received) = capture_webhook().await;
-        let notifier = AlertNotifier::new(AlertConfig::default());
+        let notifier = AlertNotifier::new(AlertConfig::default(), true);
         let alerts = nexus_core::AlertsConfig {
             webhook: Some(nexus_core::WebhookAlertChannel {
                 url: format!("http://{addr}/webhook"),
@@ -762,7 +791,7 @@ mod tests {
     #[tokio::test]
     async fn notify_pipeline_run_skips_webhook_on_success_when_on_success_is_false() {
         let (addr, received) = capture_webhook().await;
-        let notifier = AlertNotifier::new(AlertConfig::default());
+        let notifier = AlertNotifier::new(AlertConfig::default(), true);
         let alerts = nexus_core::AlertsConfig {
             webhook: Some(nexus_core::WebhookAlertChannel {
                 url: format!("http://{addr}/webhook"),
@@ -786,7 +815,7 @@ mod tests {
     #[tokio::test]
     async fn notify_pipeline_run_fires_slack_on_failure_with_generalized_payload() {
         let (addr, received) = capture_webhook().await;
-        let notifier = AlertNotifier::new(AlertConfig::default());
+        let notifier = AlertNotifier::new(AlertConfig::default(), true);
         let alerts = nexus_core::AlertsConfig {
             slack: Some(nexus_core::WebhookAlertChannel {
                 url: format!("http://{addr}/webhook"),
@@ -826,7 +855,7 @@ mod tests {
         // `fires()` gating doesn't panic/block for the PagerDuty branch and
         // that a `false` toggle is a genuine no-op (same shape as the
         // webhook toggle test above, just without a capturable receiver).
-        let notifier = AlertNotifier::new(AlertConfig::default());
+        let notifier = AlertNotifier::new(AlertConfig::default(), true);
         let alerts = nexus_core::AlertsConfig {
             pagerduty: Some(nexus_core::PagerDutyAlertChannel {
                 routing_key: "rk-123".to_string(),

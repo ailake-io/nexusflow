@@ -813,7 +813,60 @@ fn http_host(s: &str) -> Option<String> {
     url.host_str().map(|h| h.to_lowercase())
 }
 
-fn is_internal_host(host: &str) -> bool {
+/// Checks a real (already-resolved) IP address against private/reserved
+/// ranges — the part of [`is_internal_host`]'s check that still applies
+/// *after* DNS resolution, when all that's left is a numeric address (no
+/// more named-host special cases like `localhost`/`.local` to match on).
+/// `pub` so `nexus-server`'s DNS-rebinding guard (`dns_guard.rs`) can run
+/// this same check against a hostname's *resolved* address, not just its
+/// literal spelling — `is_internal_host` alone only protects a pipeline
+/// spec that names an internal host directly; a public domain that later
+/// re-resolves to one of these ranges sails right through it.
+pub fn is_internal_ip(addr: &std::net::IpAddr) -> bool {
+    match addr {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            // 10.0.0.0/8
+            if o[0] == 10 {
+                return true;
+            }
+            // 172.16.0.0/12
+            if o[0] == 172 && (16..=31).contains(&o[1]) {
+                return true;
+            }
+            // 192.168.0.0/16
+            if o[0] == 192 && o[1] == 168 {
+                return true;
+            }
+            // 127.0.0.0/8 (localhost range)
+            if o[0] == 127 {
+                return true;
+            }
+            // 100.64.0.0/10 (CGNAT / shared address space)
+            if o[0] == 100 && (64..=127).contains(&o[1]) {
+                return true;
+            }
+            // 169.254.0.0/16 (link-local IPv4, also covers the cloud
+            // metadata endpoint 169.254.169.254)
+            if o[0] == 169 && o[1] == 254 {
+                return true;
+            }
+            // 0.0.0.0/8 ("this network" / unspecified)
+            if o[0] == 0 {
+                return true;
+            }
+            false
+        }
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.is_unique_local()
+                || v6.is_unspecified()
+                || (v6.segments()[0] & 0xffc0) == 0xfe80
+        }
+    }
+}
+
+pub fn is_internal_host(host: &str) -> bool {
     // Strip optional port.
     let host = host.split(':').next().unwrap_or(host);
 
@@ -840,44 +893,7 @@ fn is_internal_host(host: &str) -> bool {
 
     // Parse as IP and check private/reserved ranges.
     if let Ok(addr) = host.parse::<std::net::IpAddr>() {
-        match addr {
-            std::net::IpAddr::V4(v4) => {
-                let o = v4.octets();
-                // 10.0.0.0/8
-                if o[0] == 10 {
-                    return true;
-                }
-                // 172.16.0.0/12
-                if o[0] == 172 && (16..=31).contains(&o[1]) {
-                    return true;
-                }
-                // 192.168.0.0/16
-                if o[0] == 192 && o[1] == 168 {
-                    return true;
-                }
-                // 127.0.0.0/8 (localhost range)
-                if o[0] == 127 {
-                    return true;
-                }
-                // 100.64.0.0/10 (CGNAT / shared address space)
-                if o[0] == 100 && (64..=127).contains(&o[1]) {
-                    return true;
-                }
-                // 169.254.0.0/16 (link-local IPv4)
-                if o[0] == 169 && o[1] == 254 {
-                    return true;
-                }
-            }
-            std::net::IpAddr::V6(v6) => {
-                if v6.is_loopback()
-                    || v6.is_unique_local()
-                    || v6.is_unspecified()
-                    || (v6.segments()[0] & 0xffc0) == 0xfe80
-                {
-                    return true;
-                }
-            }
-        }
+        return is_internal_ip(&addr);
     }
     false
 }
