@@ -37,21 +37,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       git ca-certificates cmake make g++ pkg-config libpq-dev libsqlite3-dev libfmt-dev unzip curl \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
-COPY scripts/build-adbc-postgresql-driver.sh scripts/build-adbc-sqlite-driver.sh scripts/
-RUN scripts/build-adbc-postgresql-driver.sh /out \
- && scripts/build-adbc-sqlite-driver.sh /out
-# DuckDB's ADBC interface ships inside the official libduckdb release
-# (src/common/adbc/adbc.cpp — exports `duckdb_adbc_init`, which
-# nexus-connector-duckdb falls back to when the standard `AdbcDriverInit`
-# symbol is absent, see its driver.rs). No separate driver build needed —
-# just fetch the pinned release and rename the library to the name the
-# wrapper's ADBC_DRIVER_DUCKDB_PATH points at.
+COPY scripts/build-adbc-postgresql-driver.sh scripts/build-adbc-sqlite-driver.sh scripts/build-adbc-duckdb-driver.sh scripts/
 ARG DUCKDB_VERSION=1.5.5
-RUN curl -fsSL -o /tmp/libduckdb.zip \
-      "https://github.com/duckdb/duckdb/releases/download/v${DUCKDB_VERSION}/libduckdb-linux-amd64.zip" \
- && unzip -p /tmp/libduckdb.zip libduckdb.so > /out/libadbc_driver_duckdb.so \
- && chmod +x /out/libadbc_driver_duckdb.so \
- && rm /tmp/libduckdb.zip
+RUN scripts/build-adbc-postgresql-driver.sh /out \
+ && scripts/build-adbc-sqlite-driver.sh /out \
+ && DUCKDB_VERSION="${DUCKDB_VERSION}" scripts/build-adbc-duckdb-driver.sh /out
 
 FROM rust:1-slim-trixie@sha256:8e8cf8f7fd54a2d23d5a743b3a03f56e26b6c774276c33fa0595111704ebb15c AS clickhouse-adbc
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -101,8 +91,25 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cp /src/target/release/nexusflow /tmp/nexusflow-bin
 
 FROM ${RUNTIME_IMAGE} AS runtime
+# `unixodbc` here is NOT a runtime dependency of the binary itself — the
+# `odbc` connector statically vendors and links unixODBC's driver-manager
+# code in (odbc-api's `vendored-unix-odbc` feature, see
+# nexus-connector-odbc/Cargo.toml), so nexusflow-bin has no dynamic
+# dependency on libodbc.so.2. What's installed here is the package's
+# `/etc/odbcinst.ini` + `odbcinst` tooling, so an operator can
+# `apt-get install`/register a vendor ODBC driver (e.g. `odbc-postgresql`)
+# against a standard location instead of building that infrastructure
+# themselves. No vendor driver is bundled: the `odbc` connector is a
+# generic bridge for legacy/unsupported systems (SQL Server, Oracle, SAP
+# HANA, Teradata, ...) that have no native NexusFlow connector, so there's
+# no single "right" vendor driver to pick, and most require accepting a
+# vendor EULA (e.g. Microsoft's msodbcsql18) or aren't freely
+# redistributable (Oracle Instant Client, IBM DB2 CLI). Postgres/MySQL/
+# SQLite/DuckDB/ClickHouse already have a native ADBC or bridging connector
+# (see ARCHITECTURE.md §4.1) and don't go through ODBC at all, so their
+# ODBC drivers are deliberately not installed here either.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      libpq5 libsqlite3-0 ca-certificates curl python3 python3-pip \
+      libpq5 libsqlite3-0 ca-certificates curl python3 python3-pip unixodbc \
     && pip3 install --break-system-packages --no-cache-dir \
       pandas numpy pyarrow polars python-dateutil \
     && rm -rf /var/lib/apt/lists/* \

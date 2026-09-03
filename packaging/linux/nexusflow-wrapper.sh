@@ -8,9 +8,10 @@
 # already set (e.g. pointing at a newer driver build for testing).
 #
 # All four drivers ship in the Docker image (Dockerfile `adbc`/`clickhouse-adbc`
-# stages); the deb/rpm packages ship at least postgres/sqlite — the export is
-# harmless when the file is absent since the connector only loads the driver
-# when a pipeline actually uses it.
+# stages), the deb/rpm packages (package-deb.sh/package-rpm.sh), and the
+# AppImage (package-appimage.sh, via AppRun instead of this script) — the
+# export is harmless when the file is absent (e.g. an older package build)
+# since the connector only loads the driver when a pipeline actually uses it.
 export ADBC_DRIVER_POSTGRESQL_PATH="${ADBC_DRIVER_POSTGRESQL_PATH:-/usr/lib/nexusflow/libadbc_driver_postgresql.so}"
 export ADBC_DRIVER_SQLITE_PATH="${ADBC_DRIVER_SQLITE_PATH:-/usr/lib/nexusflow/libadbc_driver_sqlite.so}"
 export ADBC_DRIVER_CLICKHOUSE_PATH="${ADBC_DRIVER_CLICKHOUSE_PATH:-/usr/lib/nexusflow/libadbc_clickhouse.so}"
