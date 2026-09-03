@@ -107,7 +107,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       pandas numpy pyarrow polars python-dateutil \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -r -g 1001 nexusflow \
-    && useradd -r -u 1001 -g nexusflow nexusflow
+    && useradd -r -u 1001 -g nexusflow nexusflow \
+    # Embedding pipelines download the ONNX model to $HOME/.cache at
+    # runtime (nexus-ai via hf-hub) — `useradd -r` creates no home dir, so
+    # the cache creation fails with EACCES for the runtime user and every
+    # embedding pipeline errors on a fresh container ("hugging face hub
+    # error: I/O error Permission denied").
+    && mkdir -p /home/nexusflow && chown 1001:1001 /home/nexusflow
 
 COPY --from=builder /tmp/nexusflow-bin /usr/lib/nexusflow/nexusflow-bin
 COPY --from=adbc /out/libadbc_driver_postgresql.so /out/libadbc_driver_sqlite.so /out/libadbc_driver_duckdb.so /usr/lib/nexusflow/
