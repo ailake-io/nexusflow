@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Builds nexusflow_<version>_amd64.deb — single-binary deploy (Marco 11,
-# CLAUDE.md §7) plus the two ADBC driver .so's it dlopens at runtime (no
+# CLAUDE.md §7) plus the four ADBC driver .so's it dlopens at runtime (no
 # crates.io distribution of those exists — see
 # nexus-connector-postgres/src/driver.rs, ARCHITECTURE.md §3). This script
 # only stages and packages already-built artifacts, it doesn't build Rust,
 # C++ or the frontend itself:
 #   npm --prefix frontend ci && npm --prefix frontend run build
 #   cargo build --release -p nexusflow --features embed-ui,connectors-all
-#   ./scripts/build-adbc-postgresql-driver.sh && ./scripts/build-adbc-sqlite-driver.sh
+#   ./scripts/build-adbc-postgresql-driver.sh && ./scripts/build-adbc-sqlite-driver.sh \
+#     && ./scripts/build-adbc-duckdb-driver.sh && ./scripts/build-adbc-clickhouse-driver.sh
 #
 # Usage: ./scripts/package-deb.sh [OUT_DIR]
 
@@ -22,7 +23,8 @@ trap 'rm -rf "$STAGE"' EXIT
 
 BIN="$REPO_ROOT/target/release/nexusflow"
 ADBC_DIR="$REPO_ROOT/target/adbc"
-for f in "$BIN" "$ADBC_DIR/libadbc_driver_postgresql.so" "$ADBC_DIR/libadbc_driver_sqlite.so"; do
+for f in "$BIN" "$ADBC_DIR/libadbc_driver_postgresql.so" "$ADBC_DIR/libadbc_driver_sqlite.so" \
+         "$ADBC_DIR/libadbc_driver_duckdb.so" "$ADBC_DIR/libadbc_clickhouse.so"; do
   [ -f "$f" ] || { echo "missing $f — build it first (see this script's header)" >&2; exit 1; }
 done
 
@@ -34,6 +36,8 @@ mkdir -p "$STAGE/usr/lib/nexusflow" "$STAGE/usr/bin" \
 install -m 755 "$BIN" "$STAGE/usr/lib/nexusflow/nexusflow-bin"
 install -m 755 "$ADBC_DIR/libadbc_driver_postgresql.so" "$STAGE/usr/lib/nexusflow/"
 install -m 755 "$ADBC_DIR/libadbc_driver_sqlite.so" "$STAGE/usr/lib/nexusflow/"
+install -m 755 "$ADBC_DIR/libadbc_driver_duckdb.so" "$STAGE/usr/lib/nexusflow/"
+install -m 755 "$ADBC_DIR/libadbc_clickhouse.so" "$STAGE/usr/lib/nexusflow/"
 install -m 755 "$REPO_ROOT/packaging/linux/nexusflow-wrapper.sh" "$STAGE/usr/bin/nexusflow"
 install -m 644 "$REPO_ROOT/packaging/linux/nexusflow.desktop" "$STAGE/usr/share/applications/"
 install -m 644 "$REPO_ROOT/packaging/linux/nexusflow.service" "$STAGE/lib/systemd/system/"

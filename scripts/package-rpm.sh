@@ -14,7 +14,8 @@ OUT_DIR="${1:-$REPO_ROOT/target/package}"
 
 BIN="$REPO_ROOT/target/release/nexusflow"
 ADBC_DIR="$REPO_ROOT/target/adbc"
-for f in "$BIN" "$ADBC_DIR/libadbc_driver_postgresql.so" "$ADBC_DIR/libadbc_driver_sqlite.so"; do
+for f in "$BIN" "$ADBC_DIR/libadbc_driver_postgresql.so" "$ADBC_DIR/libadbc_driver_sqlite.so" \
+         "$ADBC_DIR/libadbc_driver_duckdb.so" "$ADBC_DIR/libadbc_clickhouse.so"; do
   [ -f "$f" ] || { echo "missing $f — build it first (see this script's header)" >&2; exit 1; }
 done
 command -v rpmbuild >/dev/null || { echo "rpmbuild not found (apt install rpm on Debian/Ubuntu)" >&2; exit 1; }
@@ -52,6 +53,8 @@ mkdir -p %{buildroot}/usr/lib/nexusflow %{buildroot}/usr/bin %{buildroot}/usr/sh
 install -m 755 $BIN %{buildroot}/usr/lib/nexusflow/nexusflow-bin
 install -m 755 $ADBC_DIR/libadbc_driver_postgresql.so %{buildroot}/usr/lib/nexusflow/
 install -m 755 $ADBC_DIR/libadbc_driver_sqlite.so %{buildroot}/usr/lib/nexusflow/
+install -m 755 $ADBC_DIR/libadbc_driver_duckdb.so %{buildroot}/usr/lib/nexusflow/
+install -m 755 $ADBC_DIR/libadbc_clickhouse.so %{buildroot}/usr/lib/nexusflow/
 install -m 755 $REPO_ROOT/packaging/linux/nexusflow-wrapper.sh %{buildroot}/usr/bin/nexusflow
 install -m 644 $REPO_ROOT/packaging/linux/nexusflow.desktop %{buildroot}/usr/share/applications/
 install -m 644 $REPO_ROOT/packaging/linux/nexusflow.service %{buildroot}/usr/lib/systemd/system/
@@ -81,6 +84,8 @@ fi
 %attr(755, root, root) /usr/lib/nexusflow/nexusflow-bin
 %attr(755, root, root) /usr/lib/nexusflow/libadbc_driver_postgresql.so
 %attr(755, root, root) /usr/lib/nexusflow/libadbc_driver_sqlite.so
+%attr(755, root, root) /usr/lib/nexusflow/libadbc_driver_duckdb.so
+%attr(755, root, root) /usr/lib/nexusflow/libadbc_clickhouse.so
 %attr(755, root, root) /usr/bin/nexusflow
 %attr(644, root, root) /usr/share/applications/nexusflow.desktop
 %attr(644, root, root) /usr/lib/systemd/system/nexusflow.service
