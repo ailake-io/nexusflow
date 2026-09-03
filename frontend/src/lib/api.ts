@@ -291,6 +291,17 @@ export function listRuns(token: string, pipelineId: string): Promise<RunRecord[]
   return request<RunRecord[]>(`/pipelines/${encodeURIComponent(pipelineId)}/runs`, {}, token)
 }
 
+/** A still-`running` run can't be deleted (backend returns 409) — the
+ * caller should only offer this for a run whose status is already
+ * `success`/`failed`. */
+export function deleteRun(token: string, pipelineId: string, runId: number): Promise<void> {
+  return request<void>(
+    `/pipelines/${encodeURIComponent(pipelineId)}/runs/${runId}`,
+    { method: 'DELETE' },
+    token,
+  )
+}
+
 /** Matches nexus-server::resource_stats::ResourceStatsBucket — one averaged
  *  point returned by GET /system/resource-stats. `disk_*` are `null` when
  *  the backend couldn't resolve the data directory's containing mount. */

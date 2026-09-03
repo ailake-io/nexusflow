@@ -295,7 +295,16 @@ impl PipelineStore {
         Ok(())
     }
 
-    pub async fn delete(&self, id: &str) -> Result<(), PipelineStoreError> {
+    /// Deletes the pipeline and its entire run history (`pipeline_runs` has
+    /// no FK to `pipelines` — see the table's `CREATE` above — so without
+    /// this, a deleted pipeline's runs stuck around forever, and
+    /// resurfaced as soon as anyone created a *new* pipeline reusing the
+    /// same `pipeline_id`: `GET .../runs` is scoped by `pipeline_id` alone,
+    /// it has no way to tell "the old teste1" from "the new teste1"
+    /// apart). Returns the deleted run ids so the caller can also clean up
+    /// their `pipeline_run_logs` (same no-FK situation, see
+    /// `run_log_store.rs`).
+    pub async fn delete(&self, id: &str) -> Result<Vec<i64>, PipelineStoreError> {
         let sql = self.q("DELETE FROM pipelines WHERE id = ?");
         let rows_affected = match &self.pool {
             MetadataPool::Sqlite(p) => sqlx::query(sqlx::AssertSqlSafe(sql))
@@ -312,7 +321,36 @@ impl PipelineStore {
         if rows_affected == 0 {
             return Err(PipelineStoreError::NotFound(id.to_string()));
         }
-        Ok(())
+
+        let sql = self.q("SELECT id FROM pipeline_runs WHERE pipeline_id = ?");
+        let run_ids: Vec<(i64,)> = match &self.pool {
+            MetadataPool::Sqlite(p) => sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                .bind(id)
+                .fetch_all(p)
+                .await?,
+            MetadataPool::Postgres(p) => sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                .bind(id)
+                .fetch_all(p)
+                .await?,
+        };
+
+        let sql = self.q("DELETE FROM pipeline_runs WHERE pipeline_id = ?");
+        match &self.pool {
+            MetadataPool::Sqlite(p) => {
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .bind(id)
+                    .execute(p)
+                    .await?;
+            }
+            MetadataPool::Postgres(p) => {
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .bind(id)
+                    .execute(p)
+                    .await?;
+            }
+        }
+
+        Ok(run_ids.into_iter().map(|(id,)| id).collect())
     }
 
     pub async fn get_summary(
@@ -682,6 +720,68 @@ impl PipelineStore {
             )
             .collect()
     }
+
+    /// Deletes one run from a pipeline's history (the row this method
+    /// targets never includes `status = 'running'` — a run still in
+    /// progress can't be deleted out from under the worker that's about to
+    /// `finish_run_success`/`finish_run_failure` it, that write would just
+    /// silently affect 0 rows instead of erroring). Scoped by
+    /// `pipeline_id` too, not just `id`, so the URL's pipeline id can't be
+    /// used to delete a run that actually belongs to a different pipeline.
+    pub async fn delete_run(
+        &self,
+        pipeline_id: &str,
+        run_id: i64,
+    ) -> Result<DeleteRunOutcome, PipelineStoreError> {
+        let sql = self.q(
+            "DELETE FROM pipeline_runs WHERE id = ? AND pipeline_id = ? AND status != 'running'",
+        );
+        let rows_affected = match &self.pool {
+            MetadataPool::Sqlite(p) => sqlx::query(sqlx::AssertSqlSafe(sql))
+                .bind(run_id)
+                .bind(pipeline_id)
+                .execute(p)
+                .await?
+                .rows_affected(),
+            MetadataPool::Postgres(p) => sqlx::query(sqlx::AssertSqlSafe(sql))
+                .bind(run_id)
+                .bind(pipeline_id)
+                .execute(p)
+                .await?
+                .rows_affected(),
+        };
+        if rows_affected > 0 {
+            return Ok(DeleteRunOutcome::Deleted);
+        }
+
+        // Nothing was deleted — find out whether that's because the run
+        // doesn't exist at all, or because it's still running, so the
+        // handler can return an accurate error instead of a blanket 404.
+        let sql = self.q("SELECT status FROM pipeline_runs WHERE id = ? AND pipeline_id = ?");
+        let row: Option<(String,)> = match &self.pool {
+            MetadataPool::Sqlite(p) => sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                .bind(run_id)
+                .bind(pipeline_id)
+                .fetch_optional(p)
+                .await?,
+            MetadataPool::Postgres(p) => sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                .bind(run_id)
+                .bind(pipeline_id)
+                .fetch_optional(p)
+                .await?,
+        };
+        Ok(match row {
+            Some((status,)) if status == "running" => DeleteRunOutcome::StillRunning,
+            _ => DeleteRunOutcome::NotFound,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteRunOutcome {
+    Deleted,
+    NotFound,
+    StillRunning,
 }
 
 fn encode_spec(spec: &PipelineSpec, cipher: &SecretCipher) -> String {
