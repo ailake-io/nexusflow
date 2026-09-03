@@ -70,6 +70,12 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
     return window.localStorage.getItem('nexusflow-autosave') === 'true'
   })
   const [autoSaveStatus, setAutoSaveStatus] = useState<string | null>(null)
+  const [inspectorWidth, setInspectorWidth] = useState(() => {
+    if (typeof window === 'undefined') return 320
+    const stored = Number(window.localStorage.getItem('nexusflow-inspector-width'))
+    return stored >= 260 && stored <= 640 ? stored : 320
+  })
+  const resizingInspectorRef = useRef(false)
 
   const onNodesChange: OnNodesChange<DagNode> = useCallback(
     (changes) => setNodes((current) => applyNodeChanges(changes, current)),
@@ -250,6 +256,41 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
     window.localStorage.setItem('nexusflow-autosave', String(autoSaveEnabled))
   }, [autoSaveEnabled])
 
+  // Drag-to-resize on the inspector panel's left edge — width persists across
+  // sessions the same way autoSaveEnabled does above. Min/max keep the form
+  // usable (SchemaForm's labels wrap badly below ~260px) and keep the canvas
+  // from being squeezed to nothing (~640px cap).
+  const handleInspectorResizeStart = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault()
+      resizingInspectorRef.current = true
+      const startX = e.clientX
+      const startWidth = inspectorWidth
+      document.body.style.cursor = 'col-resize'
+      document.body.style.userSelect = 'none'
+
+      const onMouseMove = (moveEvent: MouseEvent) => {
+        if (!resizingInspectorRef.current) return
+        const dx = moveEvent.clientX - startX
+        setInspectorWidth(Math.min(640, Math.max(260, startWidth - dx)))
+      }
+      const onMouseUp = () => {
+        resizingInspectorRef.current = false
+        document.body.style.cursor = ''
+        document.body.style.userSelect = ''
+        window.removeEventListener('mousemove', onMouseMove)
+        window.removeEventListener('mouseup', onMouseUp)
+        setInspectorWidth((w) => {
+          window.localStorage.setItem('nexusflow-inspector-width', String(w))
+          return w
+        })
+      }
+      window.addEventListener('mousemove', onMouseMove)
+      window.addEventListener('mouseup', onMouseUp)
+    },
+    [inspectorWidth],
+  )
+
   useEffect(() => {
     if (!autoSaveEnabled || !meta.pipelineId.trim()) {
       setAutoSaveStatus(null)
@@ -405,7 +446,13 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
           </div>
         </div>
         {selectedNode && (
-          <NodeInspector node={selectedNode} connectors={connectors} onChange={updateNodeData} />
+          <div className="relative flex shrink-0" style={{ width: inspectorWidth }}>
+            <div
+              onMouseDown={handleInspectorResizeStart}
+              className="absolute -left-1 top-0 z-10 h-full w-2 cursor-col-resize hover:bg-accent/40 active:bg-accent/60"
+            />
+            <NodeInspector node={selectedNode} connectors={connectors} onChange={updateNodeData} />
+          </div>
         )}
       </div>
       <ExecutionPanel
