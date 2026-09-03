@@ -82,8 +82,8 @@ export function QualityPanel() {
         setTestResults(testsResult)
         setError(null)
       })
-      .catch(() => {
-        if (!cancelled) setError(t('quality.error'))
+      .catch((err: unknown) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : t('quality.error'))
       })
       .finally(() => {
         if (!cancelled) setLoading(false)

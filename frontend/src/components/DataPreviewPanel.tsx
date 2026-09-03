@@ -91,7 +91,7 @@ export function DataPreviewPanel() {
         if (err instanceof ApiError && err.status === 400) {
           setUnsupported(true)
         } else {
-          setError(t('preview.error'))
+          setError(err instanceof Error ? err.message : t('preview.error'))
         }
         setRows([])
       })
