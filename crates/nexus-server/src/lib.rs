@@ -1081,7 +1081,14 @@ async fn delete_pipeline_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    state.pipelines.delete(&id).await?;
+    let run_ids = state.pipelines.delete(&id).await?;
+    // Best-effort, same as delete_run_handler: a failure here can't roll
+    // back the pipeline deletion above.
+    for run_id in run_ids {
+        if let Err(e) = state.run_logs.delete(run_id).await {
+            tracing::warn!(run_id, error = %e, "failed to delete logs for a deleted pipeline's run");
+        }
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -3098,6 +3105,77 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(get.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn recreating_a_deleted_pipelines_id_does_not_inherit_its_run_history() {
+        let state = test_state().await;
+        let write_token = bearer(&state, Role::Write);
+        let execute_token = bearer(&state, Role::Execute);
+
+        // First "p1": create it, give it a couple of runs.
+        state.pipelines.start_run("p1").await.unwrap();
+        let run2 = state.pipelines.start_run("p1").await.unwrap();
+        state
+            .pipelines
+            .finish_run_success(run2, &[], None)
+            .await
+            .unwrap();
+        let (_progress_tx, log_tx) = state.progress.start(run2).await;
+        let logger = RunLogger::new(run2, log_tx, state.run_logs.clone());
+        logger.info("first p1's log line").await;
+
+        let app = router(state);
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                "/pipelines",
+                &write_token,
+                sample_pipeline("p1"),
+            ))
+            .await
+            .unwrap();
+
+        let delete = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/pipelines/p1")
+                    .header("authorization", &write_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(delete.status(), StatusCode::NO_CONTENT);
+
+        // Second "p1": brand new pipeline reusing the same id.
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                "/pipelines",
+                &write_token,
+                sample_pipeline("p1"),
+            ))
+            .await
+            .unwrap();
+
+        let runs = app
+            .oneshot(
+                Request::builder()
+                    .uri("/pipelines/p1/runs")
+                    .header("authorization", execute_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let runs = body_json(runs).await;
+        assert!(
+            runs.as_array().unwrap().is_empty(),
+            "the new p1 must not inherit the deleted p1's run history: {runs:?}"
+        );
     }
 
     #[tokio::test]

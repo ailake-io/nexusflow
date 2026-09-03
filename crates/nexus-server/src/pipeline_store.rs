@@ -295,7 +295,16 @@ impl PipelineStore {
         Ok(())
     }
 
-    pub async fn delete(&self, id: &str) -> Result<(), PipelineStoreError> {
+    /// Deletes the pipeline and its entire run history (`pipeline_runs` has
+    /// no FK to `pipelines` — see the table's `CREATE` above — so without
+    /// this, a deleted pipeline's runs stuck around forever, and
+    /// resurfaced as soon as anyone created a *new* pipeline reusing the
+    /// same `pipeline_id`: `GET .../runs` is scoped by `pipeline_id` alone,
+    /// it has no way to tell "the old teste1" from "the new teste1"
+    /// apart). Returns the deleted run ids so the caller can also clean up
+    /// their `pipeline_run_logs` (same no-FK situation, see
+    /// `run_log_store.rs`).
+    pub async fn delete(&self, id: &str) -> Result<Vec<i64>, PipelineStoreError> {
         let sql = self.q("DELETE FROM pipelines WHERE id = ?");
         let rows_affected = match &self.pool {
             MetadataPool::Sqlite(p) => sqlx::query(sqlx::AssertSqlSafe(sql))
@@ -312,7 +321,36 @@ impl PipelineStore {
         if rows_affected == 0 {
             return Err(PipelineStoreError::NotFound(id.to_string()));
         }
-        Ok(())
+
+        let sql = self.q("SELECT id FROM pipeline_runs WHERE pipeline_id = ?");
+        let run_ids: Vec<(i64,)> = match &self.pool {
+            MetadataPool::Sqlite(p) => sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                .bind(id)
+                .fetch_all(p)
+                .await?,
+            MetadataPool::Postgres(p) => sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                .bind(id)
+                .fetch_all(p)
+                .await?,
+        };
+
+        let sql = self.q("DELETE FROM pipeline_runs WHERE pipeline_id = ?");
+        match &self.pool {
+            MetadataPool::Sqlite(p) => {
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .bind(id)
+                    .execute(p)
+                    .await?;
+            }
+            MetadataPool::Postgres(p) => {
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .bind(id)
+                    .execute(p)
+                    .await?;
+            }
+        }
+
+        Ok(run_ids.into_iter().map(|(id,)| id).collect())
     }
 
     pub async fn get_summary(
