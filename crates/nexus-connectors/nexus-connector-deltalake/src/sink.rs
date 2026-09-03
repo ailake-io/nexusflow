@@ -42,7 +42,14 @@ pub struct DeltaSink {
 impl DeltaSink {
     pub fn connect(cfg: &DeltaConnectorConfig) -> Result<Self, NexusError> {
         Ok(Self {
-            table_uri: cfg.table_uri.clone(),
+            // `cfg.table_uri` is the raw legacy field — empty on any spec
+            // using the preferred `path`+`table_name` pair, which the
+            // `table_uri()` *method* resolves via that fallback (see its
+            // doc comment in config.rs). Using the field directly here
+            // silently produced an empty URI for the documented-as-
+            // preferred config shape, failing with "Invalid table
+            // location: " (empty).
+            table_uri: cfg.table_uri(),
             primary_key: cfg.primary_key.clone(),
             append_only: cfg.append_only,
             timeout_seconds: cfg.timeout_seconds,
@@ -87,6 +94,11 @@ impl DeltaSink {
             CreateBuilder::new()
                 .with_location(&self.table_uri)
                 .with_columns(fields)
+                // CDF from birth: tables this sink creates must be readable
+                // by `deltalake-cdc` (scan_cdf requires
+                // `delta.enableChangeDataFeed=true` — without it the source
+                // errors on every table the sink itself produced).
+                .with_configuration([("delta.enableChangeDataFeed", Some("true"))])
                 .await
                 .map_err(|e| NexusError::Connector(format!("delta create table failed: {e}")))
         })

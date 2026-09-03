@@ -166,6 +166,14 @@ impl DuckdbSink {
             tokio::task::spawn_blocking(move || -> Result<(), NexusError> {
                 Self::execute_sql(&mut connection, "BEGIN TRANSACTION")?;
                 let result = (|| -> Result<(), NexusError> {
+                    // The DuckDB ADBC driver only supports binding one row per
+                    // execution ("Binding multiple rows at once is not
+                    // supported yet" in StatementExecuteQuery), unlike the
+                    // SQLite/Postgres drivers which accept a whole batch.
+                    // Bind and execute each row separately inside the
+                    // transaction above; each `bind` replaces the driver's
+                    // ingestion stream, so reusing one prepared statement is
+                    // safe.
                     let mut statement = connection
                         .new_statement()
                         .map_err(|e| NexusError::Connector(e.to_string()))?;
@@ -175,12 +183,14 @@ impl DuckdbSink {
                     statement
                         .prepare()
                         .map_err(|e| NexusError::Connector(e.to_string()))?;
-                    statement
-                        .bind(batch)
-                        .map_err(|e| NexusError::Connector(e.to_string()))?;
-                    statement
-                        .execute_update()
-                        .map_err(|e| NexusError::Connector(e.to_string()))?;
+                    for row in 0..batch.num_rows() {
+                        statement
+                            .bind(batch.slice(row, 1))
+                            .map_err(|e| NexusError::Connector(e.to_string()))?;
+                        statement
+                            .execute_update()
+                            .map_err(|e| NexusError::Connector(e.to_string()))?;
+                    }
                     Ok(())
                 })();
                 match result {
