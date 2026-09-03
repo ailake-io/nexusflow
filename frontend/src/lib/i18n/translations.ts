@@ -74,6 +74,11 @@ export const translations = {
         startedAt: 'Started {started}',
         rowsWritten: '{rows} rows written',
         dbtSummary: 'dbt: {succeeded}/{total} models',
+        delete: 'Delete',
+        deleting: 'Deleting…',
+        deleteConfirm: 'Delete run #{id}? This cannot be undone.',
+        confirmDelete: 'Yes, delete',
+        cancelDelete: 'Cancel',
       },
     },
     admin: {
@@ -495,6 +500,11 @@ export const translations = {
         startedAt: 'Iniciado {started}',
         rowsWritten: '{rows} linhas gravadas',
         dbtSummary: 'dbt: {succeeded}/{total} models',
+        delete: 'Excluir',
+        deleting: 'Excluindo…',
+        deleteConfirm: 'Excluir execução #{id}? Esta ação não pode ser desfeita.',
+        confirmDelete: 'Sim, excluir',
+        cancelDelete: 'Cancelar',
       },
     },
     admin: {

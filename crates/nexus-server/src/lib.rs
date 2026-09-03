@@ -38,7 +38,7 @@ use axum::extract::{Extension, FromRef, Path, Query, State};
 use axum::http::StatusCode;
 use axum::middleware;
 use axum::response::Response;
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use checkpoint_store::CheckpointStore;
 use crypto::SecretCipher;
@@ -46,7 +46,9 @@ use error::ApiError;
 use futures_util::StreamExt;
 use license_store::{LicenseStore, LicenseStoreError};
 use nexus_core::{ConnectorRegistry, NodeSpec, PipelineSpec, ProgressSender};
-use pipeline_store::{PipelineStore, PipelineStoreError, PipelineSummary, RunRecord};
+use pipeline_store::{
+    DeleteRunOutcome, PipelineStore, PipelineStoreError, PipelineSummary, RunRecord,
+};
 use progress::{ProgressHub, RunLogEvent, RunLogger};
 use run_log_store::RunLogStore;
 use serde::{Deserialize, Serialize};
@@ -184,6 +186,13 @@ fn router(state: AppState) -> Router {
         .route(
             "/pipelines/{id}",
             put(update_pipeline_handler).delete(delete_pipeline_handler),
+        )
+        // Deleting one run from the history is the same tier as deleting
+        // the pipeline itself — both are destructive, irreversible edits
+        // to state a `Read`/`Execute` caller shouldn't be able to make.
+        .route(
+            "/pipelines/{id}/runs/{run_id}",
+            delete(delete_run_handler),
         )
         // Full spec (connector configs, secrets included) for reloading a
         // saved pipeline back onto the canvas to edit it. Gated behind
@@ -1074,6 +1083,31 @@ async fn delete_pipeline_handler(
 ) -> Result<StatusCode, ApiError> {
     state.pipelines.delete(&id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn delete_run_handler(
+    State(state): State<AppState>,
+    Path((pipeline_id, run_id)): Path<(String, i64)>,
+) -> Result<StatusCode, ApiError> {
+    match state.pipelines.delete_run(&pipeline_id, run_id).await? {
+        DeleteRunOutcome::Deleted => {
+            // Best-effort: pipeline_run_logs has no FK to pipeline_runs
+            // (see run_log_store.rs), so a failure here can't roll back
+            // the run deletion above — just leaves orphaned log rows,
+            // same trade-off as everywhere else in this codebase that
+            // treats logging as best-effort.
+            if let Err(e) = state.run_logs.delete(run_id).await {
+                tracing::warn!(run_id, error = %e, "failed to delete logs for a deleted run");
+            }
+            Ok(StatusCode::NO_CONTENT)
+        }
+        DeleteRunOutcome::StillRunning => Err(ApiError::conflict(format!(
+            "run {run_id} is still running — wait for it to finish before deleting it"
+        ))),
+        DeleteRunOutcome::NotFound => Err(ApiError::not_found(format!(
+            "run {run_id} not found for pipeline {pipeline_id:?}"
+        ))),
+    }
 }
 
 async fn list_runs_handler(
@@ -3064,6 +3098,131 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(get.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn delete_run_removes_it_from_history() {
+        let state = test_state().await;
+        let write_token = bearer(&state, Role::Write);
+        let execute_token = bearer(&state, Role::Execute);
+        let app = router(state);
+
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                "/pipelines",
+                &write_token,
+                sample_pipeline("p1"),
+            ))
+            .await
+            .unwrap();
+
+        let body = serde_json::json!({
+            "pipeline_id": "p1",
+            "sources": [{"connector": "mongodb", "config": {}}],
+            "sinks": [{"connector": "postgres", "config": {}}]
+        });
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                "/pipelines/p1/run",
+                &execute_token,
+                body,
+            ))
+            .await
+            .unwrap();
+        let record = wait_for_terminal_run(&app, &execute_token, "p1").await;
+        let run_id = record["id"].as_i64().unwrap();
+
+        let delete = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/pipelines/p1/runs/{run_id}"))
+                    .header("authorization", &write_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(delete.status(), StatusCode::NO_CONTENT);
+
+        let runs = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/pipelines/p1/runs")
+                    .header("authorization", &write_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let runs = body_json(runs).await;
+        assert!(runs.as_array().unwrap().is_empty());
+
+        // Deleting again — already gone — is a 404, not a silent success.
+        let redelete = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/pipelines/p1/runs/{run_id}"))
+                    .header("authorization", write_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(redelete.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn delete_run_rejects_a_run_still_in_progress() {
+        let state = test_state().await;
+        let write_token = bearer(&state, Role::Write);
+        let run_id = state.pipelines.start_run("p1").await.unwrap();
+        let app = router(state);
+
+        let delete = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/pipelines/p1/runs/{run_id}"))
+                    .header("authorization", write_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(delete.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn delete_run_is_scoped_to_the_url_pipeline_id() {
+        let state = test_state().await;
+        let write_token = bearer(&state, Role::Write);
+        let run_id = state.pipelines.start_run("p1").await.unwrap();
+        state
+            .pipelines
+            .finish_run_success(run_id, &[], None)
+            .await
+            .unwrap();
+        let app = router(state);
+
+        // p1's run can't be deleted through p2's URL.
+        let delete = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/pipelines/p2/runs/{run_id}"))
+                    .header("authorization", write_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(delete.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
