@@ -115,6 +115,65 @@ async fn record_pipeline_schema(
     }
 }
 
+/// Evaluates `spec.quality_checks` (native, no-dbt quality — `nexus_core::
+/// quality`) against a run's final output batches and persists each result
+/// through the same `dbt_test_result_store` table a dbt test result lands
+/// in, distinguished only by a `native.<column>.<check>` `unique_id` prefix
+/// — so `GET /pipelines/{id}/dbt-tests` (the Quality tab) surfaces both
+/// origins without a second table/endpoint to keep in sync. Returns an
+/// error (failing the whole run, before any sink is built — same contract
+/// as any other pre-write validation failure in this file) when a failing
+/// check is configured `on_failure: block`; a `warn` failure is logged and
+/// persisted but never fails the run.
+async fn run_quality_checks(
+    spec: &PipelineSpec,
+    run_id: i64,
+    quality_results: &crate::dbt_test_result_store::DbtTestResultStore,
+    output: &[arrow_array::RecordBatch],
+    output_schema: arrow_schema::SchemaRef,
+    log: Option<&RunLogger>,
+) -> anyhow::Result<()> {
+    if spec.quality_checks.is_empty() || output.is_empty() {
+        return Ok(());
+    }
+
+    let outcomes = nexus_core::evaluate_checks(output_schema, output, &spec.quality_checks)
+        .await
+        .map_err(|e| anyhow::anyhow!("quality check evaluation failed: {e}"))?;
+
+    let mut blocking_failures = Vec::new();
+    let mut test_outcomes = Vec::with_capacity(outcomes.len());
+    for o in &outcomes {
+        if o.status == nexus_core::QualityCheckStatus::Fail {
+            log_error(log, format!("quality check failed: {}", o.message)).await;
+            if o.on_failure == nexus_core::QualityFailureAction::Block {
+                blocking_failures.push(o.message.clone());
+            }
+        }
+        test_outcomes.push(crate::dbt_test_result_store::DbtTestOutcome {
+            unique_id: format!("native.{}.{}", o.column, o.check),
+            status: o.status.as_str().to_string(),
+            message: Some(o.message.clone()),
+            execution_time: 0.0,
+        });
+    }
+
+    if let Err(e) = quality_results
+        .record_all(&spec.pipeline_id, run_id, &test_outcomes)
+        .await
+    {
+        tracing::warn!(error = %e, "failed to persist native quality check results");
+    }
+
+    if !blocking_failures.is_empty() {
+        anyhow::bail!(
+            "quality check(s) failed with on_failure=block: {}",
+            blocking_failures.join("; ")
+        );
+    }
+    Ok(())
+}
+
 /// Converts `nexus_core::transform::ColumnLineage` (borrowed `Expr` walk
 /// result, core-crate type) into the store's serializable
 /// `ColumnLineageInfo` — kept as a free function since both transform-based
@@ -185,6 +244,8 @@ pub async fn run_pipeline(
     log: Option<&RunLogger>,
     active_license: Option<&LicenseClaims>,
     schema_store: &crate::pipeline_schema_store::PipelineSchemaStore,
+    run_id: i64,
+    quality_results: &crate::dbt_test_result_store::DbtTestResultStore,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     // A `*-cdc` source with a plain SQL transform (the only documented CDC
     // shape — `SELECT * FROM source0`, required to preserve `__opcode` for
@@ -225,6 +286,8 @@ pub async fn run_pipeline(
             log,
             active_license,
             schema_store,
+            run_id,
+            quality_results,
         )
         .await
     } else {
@@ -850,6 +913,8 @@ async fn run_transform_pipeline(
     log: Option<&RunLogger>,
     active_license: Option<&LicenseClaims>,
     schema_store: &crate::pipeline_schema_store::PipelineSchemaStore,
+    run_id: i64,
+    quality_results: &crate::dbt_test_result_store::DbtTestResultStore,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     // Same reasoning as `run_passthrough_pipeline`'s `is_cdc` check: a `-cdc`
     // source is meant to run again every scheduler tick, using
@@ -981,6 +1046,10 @@ async fn run_transform_pipeline(
         column_lineage.as_deref(),
     )
     .await;
+
+    if let Some(first) = output.first() {
+        run_quality_checks(spec, run_id, quality_results, &output, first.schema(), log).await?;
+    }
 
     let mut sinks = Vec::with_capacity(spec.sinks.len());
     for (i, node) in spec.sinks.iter().enumerate() {

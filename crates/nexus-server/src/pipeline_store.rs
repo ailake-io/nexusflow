@@ -855,6 +855,7 @@ mod tests {
             schedule: None,
             alerts: None,
             draft: false,
+            quality_checks: Vec::new(),
         }
     }
 

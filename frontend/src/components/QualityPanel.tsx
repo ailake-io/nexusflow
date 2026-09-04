@@ -27,6 +27,14 @@ function badgeVariant(status: DbtTestOutcome['status']): 'success' | 'failed' | 
   return 'failed'
 }
 
+/** Both origins share the same `dbt_test_result_results` table/endpoint,
+ * distinguished only by a `unique_id` prefix — `native.<column>.<check>`
+ * for `PipelineSpec.quality_checks` (no dbt required), everything else is
+ * a real dbt test (`test.<pkg>.<name>`). See `runner::run_quality_checks`. */
+function originOf(uniqueId: string): 'native' | 'dbt' {
+  return uniqueId.startsWith('native.') ? 'native' : 'dbt'
+}
+
 /** One test's history, oldest-first (matches the API's own ordering —
  * `dbt_test_result_store.rs`'s `list_for_pipeline`). */
 interface TestGroup {
@@ -206,7 +214,19 @@ export function QualityPanel() {
                       className="rounded-md border border-white/5 bg-white/[0.02] p-3"
                     >
                       <div className="flex flex-wrap items-center justify-between gap-2">
-                        <span className="font-mono text-xs text-foreground">{group.uniqueId}</span>
+                        <div className="flex items-center gap-2">
+                          <span
+                            className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground"
+                            title={group.uniqueId}
+                          >
+                            {t(
+                              originOf(group.uniqueId) === 'native'
+                                ? 'quality.originNative'
+                                : 'quality.originDbt',
+                            )}
+                          </span>
+                          <span className="font-mono text-xs text-foreground">{group.uniqueId}</span>
+                        </div>
                         <div className="flex items-center gap-1.5">
                           {group.history.map((r, i) => (
                             <StatusBadge key={i} variant={badgeVariant(r.status)}>

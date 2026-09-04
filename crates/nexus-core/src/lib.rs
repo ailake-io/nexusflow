@@ -4,6 +4,7 @@ pub mod checkpoint;
 pub mod dag;
 pub mod error;
 pub mod pipeline;
+pub mod quality;
 pub mod record_batch_builder;
 pub mod registry;
 pub mod retry;
@@ -17,13 +18,15 @@ pub use checkpoint::{CheckpointCursor, Opcode, OPCODE_COLUMN};
 pub use dag::{
     is_internal_ip, AlertsConfig, ChunkingSpec, DbtCommand, DbtConfig, EmailAlertChannel,
     EmbeddingModelSpec, EmbeddingSpec, NodeSpec, PagerDutyAlertChannel, PipelineSpec,
-    PythonTransformSpec, TransformSpec, WebhookAlertChannel,
+    PythonTransformSpec, QualityCheckKind, QualityCheckSpec, QualityFailureAction, TransformSpec,
+    WebhookAlertChannel,
 };
 pub use error::{with_timeout, NexusError};
 pub use pipeline::{
     PartitionHandle, PartitionStats, PipelineEngine, ProgressEvent, ProgressSender,
     TransformPipeline,
 };
+pub use quality::{evaluate_checks, QualityCheckOutcome, QualityCheckStatus};
 pub use record_batch_builder::RecordBatchBuilder;
 pub use registry::{ConnectorDescriptor, ConnectorRegistry, SinkBuilder, SourceBuilder};
 pub use retry::{is_transient_error, retry_with_backoff, RetryConfig};
