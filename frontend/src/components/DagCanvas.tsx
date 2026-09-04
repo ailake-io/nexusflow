@@ -330,6 +330,7 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
       partitions: spec.partitions,
       schedule: spec.schedule,
       alerts: spec.alerts,
+      qualityChecks: spec.quality_checks,
     })
   }, [])
 

@@ -70,19 +70,6 @@ pub struct LineageGraph {
 /// graph (via `build_graph`), just without a resource to cross-link on.
 /// Expanding this list is incremental, low-risk work: a wrong or missing
 /// field just means a node stays unlinked, never a panic or a leak.
-///
-/// Covers every documented connector that has a genuinely stable resource
-/// identifier (`docs/CONNECTOR_FIELD_REFERENCE.md`, OSS + enterprise pair).
-/// A handful of REST-style connectors are deliberately left unmatched
-/// (falling through to `_ => None`) because they have no such field:
-/// `rest`/`webhook` (arbitrary endpoints), `linkedin-ads`/`youtube-analytics`
-/// (only array-valued account/channel identifiers, no single stable field).
-/// Two entries are a coarser approximation than the rest: `google-sheets`
-/// links on `spreadsheet_id` alone (ignoring `range`, so two ranges in the
-/// same spreadsheet collapse into one node) and `shopify` links on
-/// `shop_domain` alone (no single stable object-type field exists across its
-/// arbitrary GraphQL query/mutation) — both still useful groupings, just
-/// coarser than a real table/collection identifier.
 pub fn resource_identifier(connector: &str, config: &Value) -> Option<(ResourceKind, String)> {
     let field = |name: &str| -> Option<&str> {
         config
@@ -100,82 +87,124 @@ pub fn resource_identifier(connector: &str, config: &Value) -> Option<(ResourceK
             None => name.to_string(),
         })
     };
-    // Same idea, one level deeper — catalog.schema.table addressing for the
-    // warehouse connectors that need it (BigQuery/Databricks/Snowflake/
-    // Starburst). Either qualifier may be absent independently.
-    let triple = |a_field: &str, b_field: &str, name_field: &str| -> Option<String> {
-        let name = field(name_field)?;
-        Some(match (field(a_field), field(b_field)) {
-            (Some(a), Some(b)) => format!("{a}.{b}.{name}"),
-            (Some(a), None) => format!("{a}.{name}"),
-            (None, Some(b)) => format!("{b}.{name}"),
-            (None, None) => name.to_string(),
-        })
-    };
+
+    // Resolves whichever of a legacy/new field-name pair is set — several
+    // connectors (`qdrant`/`milvus`'s `collection`→`collection_name`,
+    // `deltalake`/`iceberg`/`ailake`'s `table`→`table_name`, etc.) kept the
+    // old field for backward compatibility but prefer the new one for new
+    // canvas nodes, per each connector's own config.rs doc comment.
+    let either = |legacy: &str, preferred: &str| field(legacy).or_else(|| field(preferred));
 
     match connector {
-        "postgres" | "postgres-cdc" | "sqlite" | "mysql" | "mysql-cdc" | "duckdb"
-        | "clickhouse" | "pgvector" | "odbc" | "mssql" | "mssql-cdc" | "hana" | "redshift"
-        | "synapse" | "teradata" | "vertica" => {
-            qualified("database", "table").map(|id| (ResourceKind::Table, id))
-        }
-        "oracle" | "oracle-cdc" => {
-            qualified("service_name", "table").map(|id| (ResourceKind::Table, id))
-        }
+        "postgres" | "postgres-cdc" | "sqlite" | "mysql" | "mysql-cdc" | "clickhouse"
+        | "pgvector" | "odbc" => qualified("database", "table").map(|id| (ResourceKind::Table, id)),
+        "duckdb" => field("table").map(|t| (ResourceKind::Table, t.to_string())),
         "ailake" | "ailake-cdc" | "iceberg" | "iceberg-cdc" => {
-            qualified("namespace", "table").map(|id| (ResourceKind::Table, id))
+            let ns = either("namespace", "namespace_name");
+            let name = either("table", "table_name");
+            name.map(|n| {
+                let id = match ns {
+                    Some(ns) => format!("{ns}.{n}"),
+                    None => n.to_string(),
+                };
+                (ResourceKind::Table, id)
+            })
         }
-        "bigquery" => {
-            triple("project_id", "dataset_id", "table").map(|id| (ResourceKind::Table, id))
-        }
-        "databricks" => triple("catalog", "schema", "table").map(|id| (ResourceKind::Table, id)),
-        "snowflake" => triple("database", "schema", "table").map(|id| (ResourceKind::Table, id)),
-        "starburst" => {
-            triple("catalog", "schema_name", "table_name").map(|id| (ResourceKind::Table, id))
-        }
-        "lancedb" => field("table").map(|t| (ResourceKind::Table, t.to_string())),
+        "deltalake" | "deltalake-cdc" => field("table_name")
+            .or_else(|| field("path"))
+            .map(|t| (ResourceKind::Table, t.to_string())),
+        "lancedb" => either("table", "table_name").map(|t| (ResourceKind::Table, t.to_string())),
         "mongodb" | "mongodb-cdc" | "chromadb" => {
             qualified("database", "collection").map(|id| (ResourceKind::Collection, id))
         }
         "qdrant" | "milvus" => {
-            field("collection").map(|c| (ResourceKind::Collection, c.to_string()))
+            either("collection", "collection_name").map(|c| (ResourceKind::Collection, c.to_string()))
         }
         "pinecone" => qualified("namespace", "index_name").map(|id| (ResourceKind::Collection, id)),
-        "azure-ai-search" => field("index_name").map(|c| (ResourceKind::Collection, c.to_string())),
-        "vertex-vector-search" => {
-            field("index_id").map(|c| (ResourceKind::Collection, c.to_string()))
-        }
-        "elasticsearch" | "opensearch" => {
-            field("index").map(|c| (ResourceKind::Collection, c.to_string()))
-        }
-        "weaviate" => field("class_name").map(|c| (ResourceKind::Collection, c.to_string())),
-        "hubspot" => field("object_type").map(|c| (ResourceKind::Collection, c.to_string())),
-        "zendesk" | "stripe" => field("resource").map(|c| (ResourceKind::Collection, c.to_string())),
-        "salesforce" => field("sobject").map(|c| (ResourceKind::Collection, c.to_string())),
-        "servicenow" => field("table").map(|c| (ResourceKind::Collection, c.to_string())),
-        "dynamics365" => field("entity_set").map(|c| (ResourceKind::Collection, c.to_string())),
-        "netsuite" => field("record_type").map(|c| (ResourceKind::Collection, c.to_string())),
-        "sharepoint" => field("list_id").map(|c| (ResourceKind::Collection, c.to_string())),
-        "shopify" => field("shop_domain").map(|c| (ResourceKind::Collection, c.to_string())),
-        "ga4" => field("property_id").map(|c| (ResourceKind::Collection, c.to_string())),
-        "google-ads" => field("customer_id").map(|c| (ResourceKind::Collection, c.to_string())),
-        "meta-ads" => field("ad_account_id").map(|c| (ResourceKind::Collection, c.to_string())),
-        "tiktok-ads" => field("advertiser_id").map(|c| (ResourceKind::Collection, c.to_string())),
-        "x-ads" => field("account_id").map(|c| (ResourceKind::Collection, c.to_string())),
-        "workday" => qualified("tenant", "report_name").map(|id| (ResourceKind::Collection, id)),
         "kafka" => field("topic").map(|t| (ResourceKind::Topic, t.to_string())),
         "mqtt" => field("topic_filter").map(|t| (ResourceKind::Topic, t.to_string())),
-        "pulsar" => field("topic").map(|t| (ResourceKind::Topic, t.to_string())),
-        "kinesis" => field("stream_name").map(|t| (ResourceKind::Topic, t.to_string())),
-        "redis" => field("stream_key").map(|t| (ResourceKind::Topic, t.to_string())),
-        "rabbitmq" => field("queue").map(|t| (ResourceKind::Topic, t.to_string())),
-        "nats" => field("subject").map(|t| (ResourceKind::Topic, t.to_string())),
-        "csv" | "parquet" | "deltalake" | "deltalake-cdc" | "excel" => {
-            field("path").map(|p| (ResourceKind::File, p.to_string()))
-        }
+        "nats" => field("subject").map(|s| (ResourceKind::Topic, s.to_string())),
+        "redis" => field("stream_key").map(|s| (ResourceKind::Topic, s.to_string())),
+        "rabbitmq" => field("queue").map(|q| (ResourceKind::Topic, q.to_string())),
+        "csv" | "parquet" => field("path").map(|p| (ResourceKind::File, p.to_string())),
+        // Enterprise connectors — ODBC batch (database+table, no CDC
+        // variant for any of these yet):
+        "teradata" | "vertica" => qualified("database", "table").map(|id| (ResourceKind::Table, id)),
+        // Enterprise REST/SaaS — one stable identifier per connector, no
+        // shared namespace concept:
+        "hubspot" => field("object_type").map(|o| (ResourceKind::Collection, o.to_string())),
+        "zendesk" => field("resource").map(|r| (ResourceKind::Collection, r.to_string())),
+        "google-sheets" => field("spreadsheet_id").map(|s| (ResourceKind::Table, s.to_string())),
         "dropbox" => field("folder_path").map(|p| (ResourceKind::File, p.to_string())),
-        "google-drive" => field("folder_id").map(|p| (ResourceKind::File, p.to_string())),
-        "google-sheets" => field("spreadsheet_id").map(|p| (ResourceKind::File, p.to_string())),
+        "google-drive" => field("folder_id").map(|f| (ResourceKind::File, f.to_string())),
+        "servicenow" => field("table").map(|t| (ResourceKind::Table, t.to_string())),
+        "dynamics365" => field("entity_set").map(|e| (ResourceKind::Table, e.to_string())),
+        "sharepoint" => qualified("site_id", "list_id").map(|id| (ResourceKind::Table, id)),
+        "netsuite" => field("record_type").map(|r| (ResourceKind::Table, r.to_string())),
+        "workday" => field("report_name").map(|r| (ResourceKind::Table, r.to_string())),
+        // Enterprise ODBC/ADBC batch (database+table, no CDC-specific
+        // fields needed beyond what the batch variant already has):
+        "hana" | "mssql" | "mssql-cdc" | "oracle" | "oracle-cdc" | "redshift" | "synapse" => {
+            qualified("database", "table").map(|id| (ResourceKind::Table, id))
+        }
+        // Three-part warehouse addressing — `qualified()` only joins two
+        // fields, so these are built inline instead of stretching that
+        // closure's signature for 3 call sites.
+        "snowflake" => {
+            let db = field("database")?;
+            let schema = field("schema")?;
+            let table = field("table")?;
+            Some((ResourceKind::Table, format!("{db}.{schema}.{table}")))
+        }
+        "bigquery" => {
+            let project = field("project_id")?;
+            let dataset = field("dataset_id")?;
+            let table = field("table")?;
+            Some((ResourceKind::Table, format!("{project}.{dataset}.{table}")))
+        }
+        "databricks" => {
+            let catalog = field("catalog")?;
+            let schema = field("schema")?;
+            let table = field("table")?;
+            Some((ResourceKind::Table, format!("{catalog}.{schema}.{table}")))
+        }
+        "starburst" => {
+            let catalog = field("catalog")?;
+            let schema = field("schema_name")?;
+            let table = field("table_name")?;
+            Some((ResourceKind::Table, format!("{catalog}.{schema}.{table}")))
+        }
+        // Enterprise vector/search sinks — same shape as qdrant/milvus
+        // above, one collection-like identifier field each:
+        "elasticsearch" | "opensearch" => {
+            field("index").map(|i| (ResourceKind::Collection, i.to_string()))
+        }
+        "azure-ai-search" => field("index_name").map(|i| (ResourceKind::Collection, i.to_string())),
+        "weaviate" => field("class_name").map(|c| (ResourceKind::Collection, c.to_string())),
+        "vertex-vector-search" => field("index_id").map(|i| (ResourceKind::Collection, i.to_string())),
+        // Enterprise streaming:
+        "kinesis" => field("stream_name").map(|s| (ResourceKind::Topic, s.to_string())),
+        "pulsar" => field("topic").map(|t| (ResourceKind::Topic, t.to_string())),
+        // Enterprise SaaS/CRM — one stable identifier per connector:
+        "salesforce" => field("sobject").map(|s| (ResourceKind::Table, s.to_string())),
+        "shopify" => field("shop_domain").map(|s| (ResourceKind::Table, s.to_string())),
+        "stripe" => field("resource").map(|r| (ResourceKind::Table, r.to_string())),
+        "excel" => field("path").map(|p| (ResourceKind::File, p.to_string())),
+        // Enterprise ads/analytics — the queried account/property is the
+        // closest thing to a stable "resource" (there's no destination
+        // table on this side, these are source-only reporting APIs):
+        "ga4" => field("property_id").map(|p| (ResourceKind::Table, p.to_string())),
+        "google-ads" => field("customer_id").map(|c| (ResourceKind::Table, c.to_string())),
+        "meta-ads" => field("ad_account_id").map(|a| (ResourceKind::Table, a.to_string())),
+        "tiktok-ads" => field("advertiser_id").map(|a| (ResourceKind::Table, a.to_string())),
+        "x-ads" => field("account_id").map(|a| (ResourceKind::Table, a.to_string())),
+        "youtube-analytics" => field("ids").map(|i| (ResourceKind::Table, i.to_string())),
+        "linkedin-ads" => config
+            .get("account_urns")
+            .and_then(|v| v.as_array())
+            .and_then(|a| a.first())
+            .and_then(|v| v.as_str())
+            .map(|urn| (ResourceKind::Table, urn.to_string())),
         _ => None,
     }
 }
@@ -371,8 +400,8 @@ mod tests {
             post_dbt_sinks: Vec::new(),
             schedule: None,
             alerts: None,
-            draft: false,
             quality_checks: Vec::new(),
+            draft: false,
         }
     }
 
@@ -443,202 +472,14 @@ mod tests {
                 serde_json::json!({"path": "/data/events.csv"}),
                 ResourceKind::File,
             ),
-            // Fase 1 additions (2026-09-04) — same table/collection/topic/file
-            // shape as the connectors above, just filling in the ~56
-            // connectors that had no arm yet.
             (
                 "duckdb",
-                serde_json::json!({"table": "events", "path": "/data/out.duckdb"}),
+                serde_json::json!({"table": "events"}),
                 ResourceKind::Table,
-            ),
-            (
-                "mysql-cdc",
-                serde_json::json!({"table": "events", "database": "app"}),
-                ResourceKind::Table,
-            ),
-            (
-                "mssql",
-                serde_json::json!({"table": "events", "database": "app"}),
-                ResourceKind::Table,
-            ),
-            (
-                "hana",
-                serde_json::json!({"table": "EVENTS", "database": "app"}),
-                ResourceKind::Table,
-            ),
-            (
-                "redshift",
-                serde_json::json!({"table": "events", "database": "analytics"}),
-                ResourceKind::Table,
-            ),
-            (
-                "teradata",
-                serde_json::json!({"table": "events", "database": "app"}),
-                ResourceKind::Table,
-            ),
-            (
-                "vertica",
-                serde_json::json!({"table": "events", "database": "app"}),
-                ResourceKind::Table,
-            ),
-            (
-                "oracle",
-                serde_json::json!({"table": "EVENTS", "service_name": "ORCLPDB1"}),
-                ResourceKind::Table,
-            ),
-            (
-                "bigquery",
-                serde_json::json!({"table": "events", "project_id": "proj", "dataset_id": "ds"}),
-                ResourceKind::Table,
-            ),
-            (
-                "databricks",
-                serde_json::json!({"table": "events", "catalog": "main", "schema": "default"}),
-                ResourceKind::Table,
-            ),
-            (
-                "snowflake",
-                serde_json::json!({"table": "events", "database": "db", "schema": "public"}),
-                ResourceKind::Table,
-            ),
-            (
-                "starburst",
-                serde_json::json!({"table_name": "events", "catalog": "hive", "schema_name": "default"}),
-                ResourceKind::Table,
-            ),
-            (
-                "ailake-cdc",
-                serde_json::json!({"table": "events", "namespace": "default"}),
-                ResourceKind::Table,
-            ),
-            (
-                "iceberg-cdc",
-                serde_json::json!({"table": "events", "namespace": "default"}),
-                ResourceKind::Table,
-            ),
-            (
-                "mongodb-cdc",
-                serde_json::json!({"collection": "docs", "database": "app"}),
-                ResourceKind::Collection,
-            ),
-            (
-                "weaviate",
-                serde_json::json!({"class_name": "Events"}),
-                ResourceKind::Collection,
-            ),
-            (
-                "elasticsearch",
-                serde_json::json!({"index": "events"}),
-                ResourceKind::Collection,
-            ),
-            (
-                "opensearch",
-                serde_json::json!({"index": "events"}),
-                ResourceKind::Collection,
-            ),
-            (
-                "azure-ai-search",
-                serde_json::json!({"index_name": "events"}),
-                ResourceKind::Collection,
-            ),
-            (
-                "vertex-vector-search",
-                serde_json::json!({"index_id": "events-idx"}),
-                ResourceKind::Collection,
-            ),
-            (
-                "hubspot",
-                serde_json::json!({"object_type": "contacts"}),
-                ResourceKind::Collection,
-            ),
-            (
-                "stripe",
-                serde_json::json!({"resource": "charges"}),
-                ResourceKind::Collection,
-            ),
-            (
-                "zendesk",
-                serde_json::json!({"resource": "tickets"}),
-                ResourceKind::Collection,
-            ),
-            (
-                "salesforce",
-                serde_json::json!({"sobject": "Account"}),
-                ResourceKind::Collection,
-            ),
-            (
-                "servicenow",
-                serde_json::json!({"table": "incident"}),
-                ResourceKind::Collection,
-            ),
-            (
-                "dynamics365",
-                serde_json::json!({"entity_set": "accounts"}),
-                ResourceKind::Collection,
-            ),
-            (
-                "netsuite",
-                serde_json::json!({"record_type": "customer"}),
-                ResourceKind::Collection,
-            ),
-            (
-                "sharepoint",
-                serde_json::json!({"list_id": "abc123"}),
-                ResourceKind::Collection,
-            ),
-            (
-                "shopify",
-                serde_json::json!({"shop_domain": "my-shop.myshopify.com"}),
-                ResourceKind::Collection,
-            ),
-            (
-                "ga4",
-                serde_json::json!({"property_id": "123456"}),
-                ResourceKind::Collection,
-            ),
-            (
-                "google-ads",
-                serde_json::json!({"customer_id": "1234567890"}),
-                ResourceKind::Collection,
-            ),
-            (
-                "meta-ads",
-                serde_json::json!({"ad_account_id": "act_1"}),
-                ResourceKind::Collection,
-            ),
-            (
-                "tiktok-ads",
-                serde_json::json!({"advertiser_id": "adv1"}),
-                ResourceKind::Collection,
-            ),
-            (
-                "x-ads",
-                serde_json::json!({"account_id": "1234567890"}),
-                ResourceKind::Collection,
-            ),
-            (
-                "workday",
-                serde_json::json!({"report_name": "Custom_Report", "tenant": "acme"}),
-                ResourceKind::Collection,
-            ),
-            (
-                "pulsar",
-                serde_json::json!({"topic": "events"}),
-                ResourceKind::Topic,
-            ),
-            (
-                "kinesis",
-                serde_json::json!({"stream_name": "events"}),
-                ResourceKind::Topic,
             ),
             (
                 "redis",
                 serde_json::json!({"stream_key": "events"}),
-                ResourceKind::Topic,
-            ),
-            (
-                "rabbitmq",
-                serde_json::json!({"queue": "events"}),
                 ResourceKind::Topic,
             ),
             (
@@ -647,29 +488,159 @@ mod tests {
                 ResourceKind::Topic,
             ),
             (
-                "deltalake-cdc",
-                serde_json::json!({"path": "/data/delta"}),
-                ResourceKind::File,
+                "rabbitmq",
+                serde_json::json!({"queue": "events"}),
+                ResourceKind::Topic,
             ),
             (
-                "excel",
-                serde_json::json!({"path": "/data/events.xlsx"}),
-                ResourceKind::File,
+                "odbc",
+                serde_json::json!({"table": "events", "database": "warehouse"}),
+                ResourceKind::Table,
+            ),
+            (
+                "mysql-cdc",
+                serde_json::json!({"table": "events", "database": "app"}),
+                ResourceKind::Table,
+            ),
+            (
+                "mongodb-cdc",
+                serde_json::json!({"collection": "docs", "database": "app"}),
+                ResourceKind::Collection,
+            ),
+            (
+                "hubspot",
+                serde_json::json!({"object_type": "contacts"}),
+                ResourceKind::Collection,
+            ),
+            (
+                "zendesk",
+                serde_json::json!({"resource": "tickets"}),
+                ResourceKind::Collection,
+            ),
+            (
+                "google-sheets",
+                serde_json::json!({"spreadsheet_id": "abc123"}),
+                ResourceKind::Table,
             ),
             (
                 "dropbox",
-                serde_json::json!({"folder_path": "/data/events"}),
+                serde_json::json!({"folder_path": "/data"}),
                 ResourceKind::File,
             ),
             (
                 "google-drive",
-                serde_json::json!({"folder_id": "1a2b3c"}),
+                serde_json::json!({"folder_id": "folder123"}),
                 ResourceKind::File,
             ),
             (
-                "google-sheets",
-                serde_json::json!({"spreadsheet_id": "1a2b3c", "range": "Sheet1!A1:Z10"}),
-                ResourceKind::File,
+                "servicenow",
+                serde_json::json!({"table": "incident"}),
+                ResourceKind::Table,
+            ),
+            (
+                "dynamics365",
+                serde_json::json!({"entity_set": "accounts"}),
+                ResourceKind::Table,
+            ),
+            (
+                "sharepoint",
+                serde_json::json!({"site_id": "site1", "list_id": "list1"}),
+                ResourceKind::Table,
+            ),
+            (
+                "netsuite",
+                serde_json::json!({"record_type": "customer"}),
+                ResourceKind::Table,
+            ),
+            (
+                "workday",
+                serde_json::json!({"report_name": "Custom_Worker_Report"}),
+                ResourceKind::Table,
+            ),
+            (
+                "teradata",
+                serde_json::json!({"table": "events", "database": "warehouse"}),
+                ResourceKind::Table,
+            ),
+            (
+                "vertica",
+                serde_json::json!({"table": "events", "database": "vmart"}),
+                ResourceKind::Table,
+            ),
+            (
+                "hana",
+                serde_json::json!({"table": "events", "database": "warehouse"}),
+                ResourceKind::Table,
+            ),
+            (
+                "mssql",
+                serde_json::json!({"table": "events", "database": "app"}),
+                ResourceKind::Table,
+            ),
+            (
+                "oracle-cdc",
+                serde_json::json!({"table": "events", "database": "app"}),
+                ResourceKind::Table,
+            ),
+            (
+                "snowflake",
+                serde_json::json!({"database": "db", "schema": "public", "table": "events"}),
+                ResourceKind::Table,
+            ),
+            (
+                "bigquery",
+                serde_json::json!({"project_id": "proj", "dataset_id": "ds", "table": "events"}),
+                ResourceKind::Table,
+            ),
+            (
+                "databricks",
+                serde_json::json!({"catalog": "main", "schema": "default", "table": "events"}),
+                ResourceKind::Table,
+            ),
+            (
+                "starburst",
+                serde_json::json!({"catalog": "hive", "schema_name": "default", "table_name": "events"}),
+                ResourceKind::Table,
+            ),
+            (
+                "elasticsearch",
+                serde_json::json!({"index": "events"}),
+                ResourceKind::Collection,
+            ),
+            (
+                "weaviate",
+                serde_json::json!({"class_name": "Events"}),
+                ResourceKind::Collection,
+            ),
+            (
+                "kinesis",
+                serde_json::json!({"stream_name": "events"}),
+                ResourceKind::Topic,
+            ),
+            (
+                "pulsar",
+                serde_json::json!({"topic": "events"}),
+                ResourceKind::Topic,
+            ),
+            (
+                "salesforce",
+                serde_json::json!({"sobject": "Account"}),
+                ResourceKind::Table,
+            ),
+            (
+                "stripe",
+                serde_json::json!({"resource": "charges"}),
+                ResourceKind::Table,
+            ),
+            (
+                "ga4",
+                serde_json::json!({"property_id": "123456"}),
+                ResourceKind::Table,
+            ),
+            (
+                "linkedin-ads",
+                serde_json::json!({"account_urns": ["urn:li:sponsoredAccount:123"]}),
+                ResourceKind::Table,
             ),
         ];
         for (connector, cfg, expected_kind) in cases {
@@ -681,18 +652,9 @@ mod tests {
 
     #[test]
     fn resource_identifier_returns_none_for_connectors_with_no_stable_identifier() {
-        // REST-style connectors with only arbitrary/array-valued
-        // identifiers — deliberately left unmatched (see the doc comment on
-        // `resource_identifier`), not a bug.
+        // REST-style connectors with only arbitrary identifiers — not a bug.
         assert_eq!(
             resource_identifier("rest", &serde_json::json!({"base_url": "https://x"})),
-            None
-        );
-        assert_eq!(
-            resource_identifier(
-                "linkedin-ads",
-                &serde_json::json!({"account_urns": ["urn:li:sponsoredAccount:1"]})
-            ),
             None
         );
     }

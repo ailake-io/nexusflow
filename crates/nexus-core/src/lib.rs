@@ -18,15 +18,14 @@ pub use checkpoint::{CheckpointCursor, Opcode, OPCODE_COLUMN};
 pub use dag::{
     is_internal_ip, AlertsConfig, ChunkingSpec, DbtCommand, DbtConfig, EmailAlertChannel,
     EmbeddingModelSpec, EmbeddingSpec, NodeSpec, PagerDutyAlertChannel, PipelineSpec,
-    PythonTransformSpec, QualityCheckKind, QualityCheckSpec, QualityFailureAction, TransformSpec,
-    WebhookAlertChannel,
+    PythonTransformSpec, TransformSpec, WebhookAlertChannel,
 };
 pub use error::{with_timeout, NexusError};
 pub use pipeline::{
     PartitionHandle, PartitionStats, PipelineEngine, ProgressEvent, ProgressSender,
     TransformPipeline,
 };
-pub use quality::{evaluate_checks, QualityCheckOutcome, QualityCheckStatus};
+pub use quality::{evaluate_quality_checks, QualityCheckKind, QualityCheckOutcome, QualityCheckSpec};
 pub use record_batch_builder::RecordBatchBuilder;
 pub use registry::{ConnectorDescriptor, ConnectorRegistry, SinkBuilder, SourceBuilder};
 pub use retry::{is_transient_error, retry_with_backoff, RetryConfig};

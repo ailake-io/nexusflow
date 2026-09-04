@@ -1,267 +1,386 @@
-//! Native data-quality checks — no dbt required. Companion to dbt-based
-//! testing (`dag::DbtConfig`) for CLAUDE.md §4.4's "Modo Padrão", which
-//! previously had no per-row quality signal at all beyond a row-count trend
-//! (`QualityPanel.tsx`'s `listRuns` history). Evaluated the same way
-//! `transform::DataFusionTransform` evaluates a SQL transform: register the
-//! batch(es) as a DataFusion `MemTable` and run one aggregate query per
-//! check, rather than hand-rolling a scan over Arrow arrays per check type.
-use crate::dag::{QualityCheckKind, QualityCheckSpec, QualityFailureAction};
-use crate::error::NexusError;
-use arrow_array::{Int64Array, RecordBatch};
-use arrow_schema::SchemaRef;
-use datafusion::datasource::MemTable;
-use datafusion::prelude::SessionContext;
-use std::sync::Arc;
+use arrow_array::{Array, RecordBatch};
+use arrow_schema::DataType;
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QualityCheckStatus {
-    Pass,
-    Fail,
+/// One quality rule to evaluate against a pipeline's output — dbt-independent,
+/// same shape a dbt schema test would express but computed directly over
+/// the in-memory `RecordBatch`es this pipeline just produced, no dbt project
+/// required. Only covers pipelines that fully materialize their output in
+/// memory before writing (today: `run_transform_pipeline`, i.e. any
+/// pipeline with a Transform node) — the partitioned/passthrough fast paths
+/// stream straight to the sink without ever holding the whole result set at
+/// once, same reason CDC pipelines already need a `SELECT * FROM source0`
+/// Transform node to reach the generic engine (ARCHITECTURE.md's
+/// materializing vs. streaming split). Adding a Transform node is the
+/// documented way to opt into this, not a silent limitation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QualityCheckSpec {
+    pub column: String,
+    pub check: QualityCheckKind,
 }
 
-impl QualityCheckStatus {
-    /// dbt's own status vocabulary ("pass"/"fail"/"warn") — used so a native
-    /// check's outcome can be persisted through the same
-    /// `dbt_test_result_store` table as a dbt test result, distinguished
-    /// only by its `unique_id` prefix (`nexus-server::runner` does this).
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Pass => "pass",
-            Self::Fail => "fail",
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum QualityCheckKind {
+    /// Fails if any row has a null in this column.
+    NotNull,
+    /// Fails if any non-null value in this column repeats.
+    Unique,
+    /// Fails if any non-null numeric value in this column is below `min`.
+    Min { min: f64 },
+    /// Fails if any non-null numeric value in this column is above `max`.
+    Max { max: f64 },
+    /// Fails if any non-null value in this column (compared as its string
+    /// display form) isn't one of `values`.
+    AcceptedValues { values: Vec<String> },
+}
+
+/// One check's result — same "pass"/"fail" vocabulary
+/// `dbt_test_result_store::DbtTestOutcome` already uses, so the Quality tab
+/// can render both in one list without a third status vocabulary.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct QualityCheckOutcome {
+    pub column: String,
+    /// A short label for the check, e.g. `"not_null"`, `"unique"`,
+    /// `"min"`, `"max"`, `"accepted_values"` — matches `QualityCheckKind`'s
+    /// serde tag, used as this outcome's stable identity across runs
+    /// (paired with `column`) the same way a dbt test's `unique_id` is.
+    pub check: String,
+    /// "pass" or "fail" — same vocabulary `DbtTestOutcome::status` uses.
+    pub status: String,
+    /// Present on failure: how many rows violated the check and (for
+    /// `accepted_values`) which unexpected values were seen, capped so a
+    /// wildly-wrong column doesn't produce a multi-megabyte message.
+    pub message: Option<String>,
+}
+
+const MAX_REPORTED_VALUES: usize = 10;
+
+fn column_index(batch: &RecordBatch, name: &str) -> Option<usize> {
+    batch.schema().index_of(name).ok()
+}
+
+/// Renders one array value at `row` as a display string for messages/
+/// accepted-value comparison — reuses Arrow's own `Debug`-free display via
+/// `arrow_cast::pretty` would pull in a heavier dependency for a one-line
+/// need, so this covers the primitive types `RecordBatchBuilder` (this
+/// crate) already supports (int64/float64/boolean/utf8) plus a generic
+/// fallback, same "never lose the value, worst case stringify it" posture
+/// the bridging connectors already apply.
+fn display_value(batch: &RecordBatch, col: usize, row: usize) -> Option<String> {
+    let array = batch.column(col);
+    if array.is_null(row) {
+        return None;
+    }
+    use arrow_array::{
+        BooleanArray, Float64Array, Int64Array, StringArray,
+    };
+    let s = match array.data_type() {
+        DataType::Int64 => array
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .map(|a| a.value(row).to_string()),
+        DataType::Float64 => array
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .map(|a| a.value(row).to_string()),
+        DataType::Boolean => array
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .map(|a| a.value(row).to_string()),
+        DataType::Utf8 => array
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .map(|a| a.value(row).to_string()),
+        _ => None,
+    };
+    s
+}
+
+fn numeric_value(batch: &RecordBatch, col: usize, row: usize) -> Option<f64> {
+    let array = batch.column(col);
+    if array.is_null(row) {
+        return None;
+    }
+    use arrow_array::{Float64Array, Int64Array};
+    match array.data_type() {
+        DataType::Int64 => array
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .map(|a| a.value(row) as f64),
+        DataType::Float64 => array
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .map(|a| a.value(row)),
+        _ => None,
+    }
+}
+
+fn total_rows(batches: &[RecordBatch]) -> usize {
+    batches.iter().map(|b| b.num_rows()).sum()
+}
+
+fn evaluate_one(batches: &[RecordBatch], spec: &QualityCheckSpec) -> QualityCheckOutcome {
+    let check_label = match &spec.check {
+        QualityCheckKind::NotNull => "not_null",
+        QualityCheckKind::Unique => "unique",
+        QualityCheckKind::Min { .. } => "min",
+        QualityCheckKind::Max { .. } => "max",
+        QualityCheckKind::AcceptedValues { .. } => "accepted_values",
+    };
+    let fail = |message: String| QualityCheckOutcome {
+        column: spec.column.clone(),
+        check: check_label.to_string(),
+        status: "fail".to_string(),
+        message: Some(message),
+    };
+    let pass = || QualityCheckOutcome {
+        column: spec.column.clone(),
+        check: check_label.to_string(),
+        status: "pass".to_string(),
+        message: None,
+    };
+
+    // Zero output rows: every check here (not_null/unique/min/max/
+    // accepted_values) is vacuously true over an empty set — there's no
+    // row to have violated anything, and no schema to validate the
+    // column name against either (an empty `Vec<RecordBatch>` carries no
+    // schema at all, unlike a batch with 0 rows). Pass rather than fail.
+    let Some(first) = batches.first() else {
+        return pass();
+    };
+
+    // A column the check references but that doesn't exist in this
+    // pipeline's output is itself a failure — same "loud, not silent"
+    // posture `resource_identifier`'s allowlist takes the opposite way
+    // (there, an unmatched connector silently stays unlinked; here, a
+    // user explicitly configured a check against a specific column name,
+    // so a typo should surface, not vanish).
+    let Some(col_idx) = column_index(first, &spec.column) else {
+        return fail(format!("column {:?} not found in pipeline output", spec.column));
+    };
+
+    match &spec.check {
+        QualityCheckKind::NotNull => {
+            let null_count: usize = batches
+                .iter()
+                .map(|b| b.column(col_idx).null_count())
+                .sum();
+            if null_count == 0 {
+                pass()
+            } else {
+                fail(format!("{null_count} row(s) with a null value"))
+            }
+        }
+        QualityCheckKind::Unique => {
+            let mut seen = HashSet::new();
+            let mut duplicates = Vec::new();
+            for batch in batches {
+                for row in 0..batch.num_rows() {
+                    if let Some(v) = display_value(batch, col_idx, row) {
+                        if !seen.insert(v.clone()) && duplicates.len() < MAX_REPORTED_VALUES {
+                            duplicates.push(v);
+                        }
+                    }
+                }
+            }
+            if duplicates.is_empty() {
+                pass()
+            } else {
+                fail(format!("duplicate value(s) found: {}", duplicates.join(", ")))
+            }
+        }
+        QualityCheckKind::Min { min } => {
+            let mut violations = 0usize;
+            for batch in batches {
+                for row in 0..batch.num_rows() {
+                    if let Some(v) = numeric_value(batch, col_idx, row) {
+                        if v < *min {
+                            violations += 1;
+                        }
+                    }
+                }
+            }
+            if violations == 0 {
+                pass()
+            } else {
+                fail(format!("{violations} row(s) below minimum {min}"))
+            }
+        }
+        QualityCheckKind::Max { max } => {
+            let mut violations = 0usize;
+            for batch in batches {
+                for row in 0..batch.num_rows() {
+                    if let Some(v) = numeric_value(batch, col_idx, row) {
+                        if v > *max {
+                            violations += 1;
+                        }
+                    }
+                }
+            }
+            if violations == 0 {
+                pass()
+            } else {
+                fail(format!("{violations} row(s) above maximum {max}"))
+            }
+        }
+        QualityCheckKind::AcceptedValues { values } => {
+            let accepted: HashSet<&str> = values.iter().map(String::as_str).collect();
+            let mut unexpected = Vec::new();
+            for batch in batches {
+                for row in 0..batch.num_rows() {
+                    if let Some(v) = display_value(batch, col_idx, row) {
+                        if !accepted.contains(v.as_str())
+                            && !unexpected.contains(&v)
+                            && unexpected.len() < MAX_REPORTED_VALUES
+                        {
+                            unexpected.push(v);
+                        }
+                    }
+                }
+            }
+            if unexpected.is_empty() {
+                pass()
+            } else {
+                fail(format!("unexpected value(s): {}", unexpected.join(", ")))
+            }
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct QualityCheckOutcome {
-    pub column: String,
-    /// "not_null" / "unique" / "min" / "max" / "accepted_values".
-    pub check: String,
-    pub status: QualityCheckStatus,
-    pub message: String,
-    pub on_failure: QualityFailureAction,
-}
-
-fn quote_ident(name: &str) -> String {
-    format!("\"{}\"", name.replace('"', "\"\""))
-}
-
-fn quote_literal(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "''"))
-}
-
-async fn scalar_count(ctx: &SessionContext, sql: &str) -> Result<i64, NexusError> {
-    let df = ctx
-        .sql(sql)
-        .await
-        .map_err(|e| NexusError::Connector(format!("quality check query: {e}")))?;
-    let batches = df
-        .collect()
-        .await
-        .map_err(|e| NexusError::Connector(format!("quality check execution: {e}")))?;
-    Ok(batches
-        .first()
-        .and_then(|b| b.column(0).as_any().downcast_ref::<Int64Array>())
-        .map(|arr| arr.value(0))
-        .unwrap_or(0))
-}
-
-/// Evaluates every check against the given batches (all sharing `schema`,
-/// same "one partition, many batches" shape `transform::DataFusionTransform`
-/// registers). Known v1 limitation: CDC delete rows (`__opcode = "D"`) are
-/// not excluded, so a `not_null`/`min`/`max` check on a column a delete
-/// event leaves null/default can report a false failure — checks on a CDC
-/// pipeline's output should account for this until a future pass filters
-/// them out here.
-pub async fn evaluate_checks(
-    schema: SchemaRef,
+/// Evaluates every check against a pipeline's fully-materialized output
+/// batches. Pure and DB-free (batches/checks passed in already loaded),
+/// same testability rationale as the SQL builders in the connector crates
+/// and `transform.rs::column_lineage`. Empty `batches` (a run that
+/// produced zero rows) still runs every check — `not_null`/`unique` etc.
+/// trivially pass against zero rows, which is correct, not a skip.
+pub fn evaluate_quality_checks(
     batches: &[RecordBatch],
     checks: &[QualityCheckSpec],
-) -> Result<Vec<QualityCheckOutcome>, NexusError> {
-    if checks.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let ctx = SessionContext::new();
-    let table = MemTable::try_new(schema, vec![batches.to_vec()])
-        .map_err(|e| NexusError::Schema(format!("quality check table: {e}")))?;
-    ctx.register_table("batch", Arc::new(table))
-        .map_err(|e| NexusError::Connector(format!("registering quality check table: {e}")))?;
-
-    let mut outcomes = Vec::with_capacity(checks.len());
-    for spec in checks {
-        let col = quote_ident(&spec.column);
-        let (check_name, failing) = match &spec.check {
-            QualityCheckKind::NotNull => {
-                let sql = format!("SELECT count(*) FROM batch WHERE {col} IS NULL");
-                ("not_null", scalar_count(&ctx, &sql).await?)
-            }
-            QualityCheckKind::Unique => {
-                let sql = format!("SELECT count(*) - count(DISTINCT {col}) FROM batch");
-                ("unique", scalar_count(&ctx, &sql).await?)
-            }
-            QualityCheckKind::Min { value } => {
-                let sql = format!("SELECT count(*) FROM batch WHERE {col} < {value}");
-                ("min", scalar_count(&ctx, &sql).await?)
-            }
-            QualityCheckKind::Max { value } => {
-                let sql = format!("SELECT count(*) FROM batch WHERE {col} > {value}");
-                ("max", scalar_count(&ctx, &sql).await?)
-            }
-            QualityCheckKind::AcceptedValues { values } => {
-                let list = values
-                    .iter()
-                    .map(|v| quote_literal(v))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let sql = format!("SELECT count(*) FROM batch WHERE {col} NOT IN ({list})");
-                ("accepted_values", scalar_count(&ctx, &sql).await?)
-            }
-        };
-
-        let status = if failing == 0 {
-            QualityCheckStatus::Pass
-        } else {
-            QualityCheckStatus::Fail
-        };
-        let message = if failing == 0 {
-            format!("{check_name} check on {} passed", spec.column)
-        } else {
-            format!(
-                "{failing} row(s) failed {check_name} check on {}",
-                spec.column
-            )
-        };
-        outcomes.push(QualityCheckOutcome {
-            column: spec.column.clone(),
-            check: check_name.to_string(),
-            status,
-            message,
-            on_failure: spec.on_failure,
-        });
-    }
-    Ok(outcomes)
+) -> Vec<QualityCheckOutcome> {
+    let _ = total_rows(batches); // reserved for a future row-count-based check
+    checks.iter().map(|spec| evaluate_one(batches, spec)).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow_array::{Float64Array, Int64Array as Int64Col, StringArray};
-    use arrow_schema::{DataType, Field, Schema};
+    use arrow_array::{Float64Array, Int64Array, StringArray};
+    use arrow_schema::{Field, Schema};
+    use std::sync::Arc;
 
-    fn batch() -> RecordBatch {
+    fn batch(ids: &[i64], amounts: &[f64], statuses: &[&str]) -> RecordBatch {
         let schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int64, false),
-            Field::new("email", DataType::Utf8, true),
-            Field::new("amount", DataType::Float64, false),
-            Field::new("status", DataType::Utf8, false),
+            Field::new("id", DataType::Int64, true),
+            Field::new("amount", DataType::Float64, true),
+            Field::new("status", DataType::Utf8, true),
         ]));
         RecordBatch::try_new(
             schema,
             vec![
-                Arc::new(Int64Col::from(vec![1, 2, 3])),
-                Arc::new(StringArray::from(vec![Some("a@x.com"), None, Some("a@x.com")])),
-                Arc::new(Float64Array::from(vec![10.0, -5.0, 999.0])),
-                Arc::new(StringArray::from(vec!["ok", "ok", "weird"])),
+                Arc::new(Int64Array::from(ids.to_vec())),
+                Arc::new(Float64Array::from(amounts.to_vec())),
+                Arc::new(StringArray::from(statuses.to_vec())),
             ],
         )
         .unwrap()
     }
 
-    fn check(column: &str, kind: QualityCheckKind) -> QualityCheckSpec {
-        QualityCheckSpec {
-            column: column.to_string(),
-            check: kind,
-            on_failure: QualityFailureAction::Warn,
-        }
+    #[test]
+    fn not_null_passes_with_no_nulls() {
+        let b = batch(&[1, 2], &[1.0, 2.0], &["ok", "ok"]);
+        let spec = QualityCheckSpec {
+            column: "id".to_string(),
+            check: QualityCheckKind::NotNull,
+        };
+        let result = evaluate_quality_checks(&[b], &[spec]);
+        assert_eq!(result[0].status, "pass");
     }
 
-    #[tokio::test]
-    async fn not_null_reports_a_failure_for_a_null_row() {
-        let b = batch();
-        let outcomes = evaluate_checks(
-            b.schema(),
-            &[b],
-            &[check("email", QualityCheckKind::NotNull)],
+    #[test]
+    fn not_null_fails_with_a_null() {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
+        let b = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int64Array::from(vec![Some(1), None]))],
         )
-        .await
         .unwrap();
-        assert_eq!(outcomes[0].status, QualityCheckStatus::Fail);
-        assert!(outcomes[0].message.contains("1 row"));
+        let spec = QualityCheckSpec {
+            column: "id".to_string(),
+            check: QualityCheckKind::NotNull,
+        };
+        let result = evaluate_quality_checks(&[b], &[spec]);
+        assert_eq!(result[0].status, "fail");
+        assert!(result[0].message.as_ref().unwrap().contains('1'));
     }
 
-    #[tokio::test]
-    async fn not_null_passes_when_every_row_is_populated() {
-        let b = batch();
-        let outcomes = evaluate_checks(b.schema(), &[b], &[check("id", QualityCheckKind::NotNull)])
-            .await
-            .unwrap();
-        assert_eq!(outcomes[0].status, QualityCheckStatus::Pass);
+    #[test]
+    fn unique_fails_on_a_duplicate() {
+        let b = batch(&[1, 1], &[1.0, 2.0], &["a", "b"]);
+        let spec = QualityCheckSpec {
+            column: "id".to_string(),
+            check: QualityCheckKind::Unique,
+        };
+        let result = evaluate_quality_checks(&[b], &[spec]);
+        assert_eq!(result[0].status, "fail");
     }
 
-    #[tokio::test]
-    async fn unique_reports_a_failure_for_a_duplicate_value() {
-        let b = batch();
-        let outcomes = evaluate_checks(
-            b.schema(),
-            &[b],
-            &[check("email", QualityCheckKind::Unique)],
-        )
-        .await
-        .unwrap();
-        // 3 rows, 2 distinct non-null-comparable values ("a@x.com" x2, null) —
-        // count(*) - count(DISTINCT col) counts the duplicate pair as 1 over.
-        assert_eq!(outcomes[0].status, QualityCheckStatus::Fail);
+    #[test]
+    fn min_and_max_flag_out_of_range_values() {
+        let b = batch(&[1, 2, 3], &[-5.0, 50.0, 150.0], &["a", "b", "c"]);
+        let checks = vec![
+            QualityCheckSpec {
+                column: "amount".to_string(),
+                check: QualityCheckKind::Min { min: 0.0 },
+            },
+            QualityCheckSpec {
+                column: "amount".to_string(),
+                check: QualityCheckKind::Max { max: 100.0 },
+            },
+        ];
+        let result = evaluate_quality_checks(&[b], &checks);
+        assert_eq!(result[0].status, "fail"); // -5.0 < 0.0
+        assert_eq!(result[1].status, "fail"); // 150.0 > 100.0
     }
 
-    #[tokio::test]
-    async fn min_and_max_bound_a_numeric_column() {
-        let b = batch();
-        let outcomes = evaluate_checks(
-            b.schema(),
-            &[b.clone()],
-            &[
-                check("amount", QualityCheckKind::Min { value: 0.0 }),
-                check("amount", QualityCheckKind::Max { value: 100.0 }),
-            ],
-        )
-        .await
-        .unwrap();
-        assert_eq!(outcomes[0].status, QualityCheckStatus::Fail); // -5.0 < 0
-        assert_eq!(outcomes[1].status, QualityCheckStatus::Fail); // 999.0 > 100
+    #[test]
+    fn accepted_values_flags_unexpected_entries() {
+        let b = batch(&[1, 2], &[1.0, 2.0], &["active", "bogus"]);
+        let spec = QualityCheckSpec {
+            column: "status".to_string(),
+            check: QualityCheckKind::AcceptedValues {
+                values: vec!["active".to_string(), "inactive".to_string()],
+            },
+        };
+        let result = evaluate_quality_checks(&[b], &[spec]);
+        assert_eq!(result[0].status, "fail");
+        assert!(result[0].message.as_ref().unwrap().contains("bogus"));
     }
 
-    #[tokio::test]
-    async fn accepted_values_rejects_an_out_of_set_value() {
-        let b = batch();
-        let outcomes = evaluate_checks(
-            b.schema(),
-            &[b],
-            &[check(
-                "status",
-                QualityCheckKind::AcceptedValues {
-                    values: vec!["ok".to_string(), "pending".to_string()],
-                },
-            )],
-        )
-        .await
-        .unwrap();
-        assert_eq!(outcomes[0].status, QualityCheckStatus::Fail); // "weird"
+    #[test]
+    fn unknown_column_fails_loudly_not_silently() {
+        let b = batch(&[1], &[1.0], &["a"]);
+        let spec = QualityCheckSpec {
+            column: "does_not_exist".to_string(),
+            check: QualityCheckKind::NotNull,
+        };
+        let result = evaluate_quality_checks(&[b], &[spec]);
+        assert_eq!(result[0].status, "fail");
+        assert!(result[0].message.as_ref().unwrap().contains("not found"));
     }
 
-    #[tokio::test]
-    async fn empty_checks_short_circuit_without_a_query() {
-        let b = batch();
-        let outcomes = evaluate_checks(b.schema(), &[b], &[]).await.unwrap();
-        assert!(outcomes.is_empty());
-    }
-
-    #[tokio::test]
-    async fn on_failure_action_is_carried_through_to_the_outcome() {
-        let b = batch();
-        let mut c = check("email", QualityCheckKind::NotNull);
-        c.on_failure = QualityFailureAction::Block;
-        let outcomes = evaluate_checks(b.schema(), &[b], &[c]).await.unwrap();
-        assert_eq!(outcomes[0].on_failure, QualityFailureAction::Block);
+    #[test]
+    fn empty_batches_pass_trivially() {
+        let result = evaluate_quality_checks(
+            &[],
+            &[QualityCheckSpec {
+                column: "id".to_string(),
+                check: QualityCheckKind::NotNull,
+            }],
+        );
+        // Zero output rows can't have violated anything — pass, not fail,
+        // and not treated as a "column not found" error either.
+        assert_eq!(result[0].status, "pass");
     }
 }

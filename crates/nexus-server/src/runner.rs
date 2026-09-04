@@ -100,78 +100,37 @@ fn schema_without_opcode(schema: &arrow_schema::SchemaRef) -> arrow_schema::Sche
 /// persistence in `lib.rs::execute_pipeline_run`: a failure here is logged
 /// and never fails the run itself — this is observability, not pipeline
 /// correctness.
+///
+/// When the captured schema differs from the pipeline's previously
+/// captured one (`PipelineSchemaStore::record`'s return value — `None` on
+/// the first-ever capture or when nothing changed), fires an alert through
+/// the same per-pipeline channels (`spec.alerts`) a run success/failure
+/// already uses (`AlertNotifier::notify_pipeline_run`) — schema drift is
+/// exactly the kind of thing a run can succeed at while still being worth
+/// a human's attention.
+#[allow(clippy::too_many_arguments)]
 async fn record_pipeline_schema(
     schema_store: &crate::pipeline_schema_store::PipelineSchemaStore,
+    alerts: &crate::alerts::AlertNotifier,
+    pipeline_alerts: Option<&nexus_core::AlertsConfig>,
+    run_id: i64,
     pipeline_id: &str,
     source_columns: &[crate::pipeline_schema_store::ColumnInfo],
     output_columns: &[crate::pipeline_schema_store::ColumnInfo],
     column_lineage: Option<&[crate::pipeline_schema_store::ColumnLineageInfo]>,
 ) {
-    if let Err(e) = schema_store
+    match schema_store
         .record(pipeline_id, source_columns, output_columns, column_lineage)
         .await
     {
-        tracing::warn!(error = %e, "failed to persist pipeline schema");
-    }
-}
-
-/// Evaluates `spec.quality_checks` (native, no-dbt quality — `nexus_core::
-/// quality`) against a run's final output batches and persists each result
-/// through the same `dbt_test_result_store` table a dbt test result lands
-/// in, distinguished only by a `native.<column>.<check>` `unique_id` prefix
-/// — so `GET /pipelines/{id}/dbt-tests` (the Quality tab) surfaces both
-/// origins without a second table/endpoint to keep in sync. Returns an
-/// error (failing the whole run, before any sink is built — same contract
-/// as any other pre-write validation failure in this file) when a failing
-/// check is configured `on_failure: block`; a `warn` failure is logged and
-/// persisted but never fails the run.
-async fn run_quality_checks(
-    spec: &PipelineSpec,
-    run_id: i64,
-    quality_results: &crate::dbt_test_result_store::DbtTestResultStore,
-    output: &[arrow_array::RecordBatch],
-    output_schema: arrow_schema::SchemaRef,
-    log: Option<&RunLogger>,
-) -> anyhow::Result<()> {
-    if spec.quality_checks.is_empty() || output.is_empty() {
-        return Ok(());
-    }
-
-    let outcomes = nexus_core::evaluate_checks(output_schema, output, &spec.quality_checks)
-        .await
-        .map_err(|e| anyhow::anyhow!("quality check evaluation failed: {e}"))?;
-
-    let mut blocking_failures = Vec::new();
-    let mut test_outcomes = Vec::with_capacity(outcomes.len());
-    for o in &outcomes {
-        if o.status == nexus_core::QualityCheckStatus::Fail {
-            log_error(log, format!("quality check failed: {}", o.message)).await;
-            if o.on_failure == nexus_core::QualityFailureAction::Block {
-                blocking_failures.push(o.message.clone());
-            }
+        Ok(Some(drift)) => {
+            alerts.notify_pipeline_run(pipeline_alerts, pipeline_id, run_id, true, &drift);
         }
-        test_outcomes.push(crate::dbt_test_result_store::DbtTestOutcome {
-            unique_id: format!("native.{}.{}", o.column, o.check),
-            status: o.status.as_str().to_string(),
-            message: Some(o.message.clone()),
-            execution_time: 0.0,
-        });
+        Ok(None) => {}
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to persist pipeline schema");
+        }
     }
-
-    if let Err(e) = quality_results
-        .record_all(&spec.pipeline_id, run_id, &test_outcomes)
-        .await
-    {
-        tracing::warn!(error = %e, "failed to persist native quality check results");
-    }
-
-    if !blocking_failures.is_empty() {
-        anyhow::bail!(
-            "quality check(s) failed with on_failure=block: {}",
-            blocking_failures.join("; ")
-        );
-    }
-    Ok(())
 }
 
 /// Converts `nexus_core::transform::ColumnLineage` (borrowed `Expr` walk
@@ -237,6 +196,7 @@ fn log_progress(
 }
 
 #[tracing::instrument(skip_all, fields(pipeline_id = %spec.pipeline_id))]
+#[allow(clippy::too_many_arguments)]
 pub async fn run_pipeline(
     spec: &PipelineSpec,
     checkpoints: &CheckpointStore,
@@ -244,8 +204,9 @@ pub async fn run_pipeline(
     log: Option<&RunLogger>,
     active_license: Option<&LicenseClaims>,
     schema_store: &crate::pipeline_schema_store::PipelineSchemaStore,
+    alerts: &crate::alerts::AlertNotifier,
     run_id: i64,
-    quality_results: &crate::dbt_test_result_store::DbtTestResultStore,
+    quality_store: &crate::quality_check_store::QualityCheckStore,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     // A `*-cdc` source with a plain SQL transform (the only documented CDC
     // shape — `SELECT * FROM source0`, required to preserve `__opcode` for
@@ -276,6 +237,8 @@ pub async fn run_pipeline(
             log,
             active_license,
             schema_store,
+            alerts,
+            run_id,
         )
         .await
     } else if spec.has_transform() || spec.python.is_some() {
@@ -286,8 +249,9 @@ pub async fn run_pipeline(
             log,
             active_license,
             schema_store,
+            alerts,
             run_id,
-            quality_results,
+            quality_store,
         )
         .await
     } else {
@@ -306,6 +270,8 @@ pub async fn run_pipeline(
             log,
             active_license,
             schema_store,
+            alerts,
+            run_id,
         )
         .await
     }
@@ -323,6 +289,7 @@ pub async fn run_pipeline(
 ///   force adding a no-op Transform node merely to dodge this function's
 ///   old postgres-only restriction — see IMPLEMENTATION_PLAN.md Marco 1.
 #[tracing::instrument(skip_all, fields(pipeline_id = %spec.pipeline_id))]
+#[allow(clippy::too_many_arguments)]
 async fn run_linear_pipeline(
     spec: &PipelineSpec,
     checkpoints: &CheckpointStore,
@@ -330,6 +297,8 @@ async fn run_linear_pipeline(
     log: Option<&RunLogger>,
     active_license: Option<&LicenseClaims>,
     schema_store: &crate::pipeline_schema_store::PipelineSchemaStore,
+    alerts: &crate::alerts::AlertNotifier,
+    run_id: i64,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     if spec.embedding.is_some() {
         anyhow::bail!(
@@ -349,6 +318,8 @@ async fn run_linear_pipeline(
             log,
             active_license,
             schema_store,
+            alerts,
+            run_id,
         )
         .await;
     }
@@ -363,6 +334,9 @@ async fn run_linear_pipeline(
     let source_columns = column_infos(&schema);
     record_pipeline_schema(
         schema_store,
+        alerts,
+        spec.alerts.as_ref(),
+        run_id,
         &spec.pipeline_id,
         &source_columns,
         &source_columns,
@@ -570,6 +544,7 @@ async fn inject_cdc_resume_state(
 /// materializing path never actually produced any output for a realistic
 /// (sub-`max_batch_events`) CDC pipeline in the first place.
 #[tracing::instrument(skip_all, fields(pipeline_id = %spec.pipeline_id))]
+#[allow(clippy::too_many_arguments)]
 async fn run_streaming_cdc_pipeline(
     spec: &PipelineSpec,
     checkpoints: &CheckpointStore,
@@ -577,6 +552,8 @@ async fn run_streaming_cdc_pipeline(
     log: Option<&RunLogger>,
     active_license: Option<&LicenseClaims>,
     schema_store: &crate::pipeline_schema_store::PipelineSchemaStore,
+    alerts: &crate::alerts::AlertNotifier,
+    run_id: i64,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     // Resume-state lookup is anchored on the first sink's resolved name
     // ("sink0" when unnamed) — every sink commits the same source position
@@ -628,6 +605,9 @@ async fn run_streaming_cdc_pipeline(
         .map(to_lineage_infos);
     record_pipeline_schema(
         schema_store,
+        alerts,
+        spec.alerts.as_ref(),
+        run_id,
         &spec.pipeline_id,
         &column_infos(&source_schema),
         &column_infos(&output_schema),
@@ -760,6 +740,7 @@ async fn run_streaming_cdc_pipeline(
 /// path's `NonNumeric` case: if `p0` already committed in a prior run of
 /// this `pipeline_id`, this is a no-op.
 #[tracing::instrument(skip_all, fields(pipeline_id = %spec.pipeline_id))]
+#[allow(clippy::too_many_arguments)]
 async fn run_passthrough_pipeline(
     spec: &PipelineSpec,
     checkpoints: &CheckpointStore,
@@ -767,6 +748,8 @@ async fn run_passthrough_pipeline(
     log: Option<&RunLogger>,
     active_license: Option<&LicenseClaims>,
     schema_store: &crate::pipeline_schema_store::PipelineSchemaStore,
+    alerts: &crate::alerts::AlertNotifier,
+    run_id: i64,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     if spec.embedding.is_some() {
         anyhow::bail!(
@@ -821,6 +804,9 @@ async fn run_passthrough_pipeline(
     let source_columns = column_infos(&source_schema);
     record_pipeline_schema(
         schema_store,
+        alerts,
+        spec.alerts.as_ref(),
+        run_id,
         &spec.pipeline_id,
         &source_columns,
         &source_columns,
@@ -906,6 +892,7 @@ async fn run_passthrough_pipeline(
 /// operates on a single upstream table's batches. When both are set, the
 /// order is SQL transform, then python, over its output.
 #[tracing::instrument(skip_all, fields(pipeline_id = %spec.pipeline_id))]
+#[allow(clippy::too_many_arguments)]
 async fn run_transform_pipeline(
     spec: &PipelineSpec,
     checkpoints: &CheckpointStore,
@@ -913,8 +900,9 @@ async fn run_transform_pipeline(
     log: Option<&RunLogger>,
     active_license: Option<&LicenseClaims>,
     schema_store: &crate::pipeline_schema_store::PipelineSchemaStore,
+    alerts: &crate::alerts::AlertNotifier,
     run_id: i64,
-    quality_results: &crate::dbt_test_result_store::DbtTestResultStore,
+    quality_store: &crate::quality_check_store::QualityCheckStore,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     // Same reasoning as `run_passthrough_pipeline`'s `is_cdc` check: a `-cdc`
     // source is meant to run again every scheduler tick, using
@@ -1040,6 +1028,9 @@ async fn run_transform_pipeline(
         .unwrap_or_default();
     record_pipeline_schema(
         schema_store,
+        alerts,
+        spec.alerts.as_ref(),
+        run_id,
         &spec.pipeline_id,
         &source_columns,
         &output_columns,
@@ -1047,8 +1038,24 @@ async fn run_transform_pipeline(
     )
     .await;
 
-    if let Some(first) = output.first() {
-        run_quality_checks(spec, run_id, quality_results, &output, first.schema(), log).await?;
+    // Native quality checks: only registered, never blocking (per product
+    // decision — a failing check must not stop a pipeline run, only be
+    // recorded for the Quality tab to surface). Evaluated here because this
+    // is the only path holding the fully materialized `output` in memory;
+    // see `nexus_core::quality`'s doc comment for why CDC/passthrough
+    // pipelines aren't covered in v1.
+    if !spec.quality_checks.is_empty() {
+        let outcomes = nexus_core::evaluate_quality_checks(&output, &spec.quality_checks);
+        if let Err(e) = quality_store
+            .record_all(&spec.pipeline_id, run_id, &outcomes)
+            .await
+        {
+            log_error(
+                log,
+                format!("failed to persist quality check results: {e}"),
+            )
+            .await;
+        }
     }
 
     let mut sinks = Vec::with_capacity(spec.sinks.len());

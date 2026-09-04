@@ -13,7 +13,14 @@ import type { ValueType } from 'recharts/types/component/DefaultTooltipContent'
 import { useAuth } from '@/lib/auth-context'
 import { useI18n } from '@/lib/i18n'
 import { usePipelines } from '@/hooks/usePipelines'
-import { getDbtTestResults, listRuns, type DbtTestOutcome, type RunRecord } from '@/lib/api'
+import {
+  getDbtTestResults,
+  getQualityCheckResults,
+  listRuns,
+  type DbtTestOutcome,
+  type QualityCheckOutcome,
+  type RunRecord,
+} from '@/lib/api'
 import { EmptyState } from '@/components/EmptyState'
 import { StatusBadge } from '@/components/ui/status-badge'
 
@@ -21,18 +28,10 @@ function totalRowsWritten(run: RunRecord): number {
   return (run.stats ?? []).reduce((sum, s) => sum + s.rows_written, 0)
 }
 
-function badgeVariant(status: DbtTestOutcome['status']): 'success' | 'failed' | 'warning' {
+function badgeVariant(status: string): 'success' | 'failed' | 'warning' {
   if (status === 'pass') return 'success'
   if (status === 'warn') return 'warning'
   return 'failed'
-}
-
-/** Both origins share the same `dbt_test_result_results` table/endpoint,
- * distinguished only by a `unique_id` prefix — `native.<column>.<check>`
- * for `PipelineSpec.quality_checks` (no dbt required), everything else is
- * a real dbt test (`test.<pkg>.<name>`). See `runner::run_quality_checks`. */
-function originOf(uniqueId: string): 'native' | 'dbt' {
-  return uniqueId.startsWith('native.') ? 'native' : 'dbt'
 }
 
 /** One test's history, oldest-first (matches the API's own ordering —
@@ -55,6 +54,32 @@ function groupByTest(results: DbtTestOutcome[]): TestGroup[] {
   return order.map((uniqueId) => ({ uniqueId, history: byId.get(uniqueId)! }))
 }
 
+/** Same shape as `TestGroup`, one row per `column`+`check` pair — native
+ * checks have no single "unique_id", so the pair is the natural key. */
+interface QualityCheckGroup {
+  key: string
+  column: string
+  check: string
+  history: QualityCheckOutcome[]
+}
+
+function groupByCheck(results: QualityCheckOutcome[]): QualityCheckGroup[] {
+  const order: string[] = []
+  const byKey = new Map<string, QualityCheckOutcome[]>()
+  for (const r of results) {
+    const key = `${r.column}:${r.check}`
+    if (!byKey.has(key)) {
+      byKey.set(key, [])
+      order.push(key)
+    }
+    byKey.get(key)!.push(r)
+  }
+  return order.map((key) => {
+    const history = byKey.get(key)!
+    return { key, column: history[0].column, check: history[0].check, history }
+  })
+}
+
 /**
  * "Quality" tab: row-count trend + dbt test history for one saved pipeline
  * at a time. Both sources already exist — `listRuns` (rows written, from
@@ -70,6 +95,7 @@ export function QualityPanel() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [runs, setRuns] = useState<RunRecord[]>([])
   const [testResults, setTestResults] = useState<DbtTestOutcome[]>([])
+  const [qualityResults, setQualityResults] = useState<QualityCheckOutcome[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -83,11 +109,16 @@ export function QualityPanel() {
     if (!token || !selectedId) return
     let cancelled = false
     setLoading(true)
-    Promise.all([listRuns(token, selectedId), getDbtTestResults(token, selectedId)])
-      .then(([runsResult, testsResult]) => {
+    Promise.all([
+      listRuns(token, selectedId),
+      getDbtTestResults(token, selectedId),
+      getQualityCheckResults(token, selectedId),
+    ])
+      .then(([runsResult, testsResult, qualityResult]) => {
         if (cancelled) return
         setRuns([...runsResult].reverse()) // API returns newest-first; chart wants oldest-first
         setTestResults(testsResult)
+        setQualityResults(qualityResult)
         setError(null)
       })
       .catch((err: unknown) => {
@@ -113,6 +144,7 @@ export function QualityPanel() {
   )
 
   const testGroups = useMemo(() => groupByTest(testResults), [testResults])
+  const qualityGroups = useMemo(() => groupByCheck(qualityResults), [qualityResults])
 
   return (
     <div className="h-full overflow-auto p-6">
@@ -214,19 +246,48 @@ export function QualityPanel() {
                       className="rounded-md border border-white/5 bg-white/[0.02] p-3"
                     >
                       <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="flex items-center gap-2">
-                          <span
-                            className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground"
-                            title={group.uniqueId}
-                          >
-                            {t(
-                              originOf(group.uniqueId) === 'native'
-                                ? 'quality.originNative'
-                                : 'quality.originDbt',
-                            )}
-                          </span>
-                          <span className="font-mono text-xs text-foreground">{group.uniqueId}</span>
+                        <span className="font-mono text-xs text-foreground">{group.uniqueId}</span>
+                        <div className="flex items-center gap-1.5">
+                          {group.history.map((r, i) => (
+                            <StatusBadge key={i} variant={badgeVariant(r.status)}>
+                              {t(`quality.${r.status}`)}
+                            </StatusBadge>
+                          ))}
                         </div>
+                      </div>
+                      {latest.status !== 'pass' && latest.message && (
+                        <p className="mt-2 text-xs text-red-400">
+                          {t('quality.latestMessage')}: {latest.message}
+                        </p>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-lg border border-white/10 bg-card p-4">
+            <div className="mb-3 text-xs font-medium text-muted-foreground">
+              {t('quality.nativeChecks')}
+            </div>
+            {qualityGroups.length === 0 ? (
+              <div className="flex h-16 items-center text-xs text-muted-foreground">
+                {t('quality.noNativeChecks')}
+              </div>
+            ) : (
+              <div className="flex flex-col gap-3">
+                {qualityGroups.map((group) => {
+                  const latest = group.history[group.history.length - 1]
+                  return (
+                    <div
+                      key={group.key}
+                      className="rounded-md border border-white/5 bg-white/[0.02] p-3"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-mono text-xs text-foreground">
+                          {group.check} ({group.column})
+                        </span>
                         <div className="flex items-center gap-1.5">
                           {group.history.map((r, i) => (
                             <StatusBadge key={i} variant={badgeVariant(r.status)}>

@@ -276,6 +276,17 @@ function PipelineSchemaPanel({ pipelineId, onClose }: { pipelineId: string; onCl
 
         {!loading && schema && (
           <div className="flex flex-col gap-5">
+            {schema.last_drift && (
+              <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-300">
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                <div>
+                  <div className="font-medium">{t('lineage.schema.driftTitle')}</div>
+                  <div className="mt-0.5 font-mono text-[11px] text-amber-300/80">
+                    {schema.last_drift}
+                  </div>
+                </div>
+              </div>
+            )}
             <div>
               <div className="mb-2 text-xs font-medium text-muted-foreground">
                 {t('lineage.schema.sourceColumns')}

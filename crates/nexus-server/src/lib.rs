@@ -22,6 +22,7 @@ mod pipeline_schema_store;
 mod pipeline_store;
 mod progress;
 mod python_transform;
+mod quality_check_store;
 mod rate_limit;
 mod resource_stats;
 mod run_log_store;
@@ -100,6 +101,10 @@ struct AppState {
     // don't need their own feature-gated construction path.
     #[allow(dead_code)]
     dbt_test_results: dbt_test_result_store::DbtTestResultStore,
+    // Only read from `run_transform_pipeline`'s native quality-check hook —
+    // see `dbt_test_results`'s note above for why it's unconditional here.
+    #[allow(dead_code)]
+    quality_checks: quality_check_store::QualityCheckStore,
     progress: ProgressHub,
     alerts: AlertNotifier,
     login_rate_limiter: std::sync::Arc<rate_limit::LoginRateLimiter>,
@@ -231,6 +236,10 @@ fn router(state: AppState) -> Router {
         .route(
             "/pipelines/{id}/dbt-tests",
             get(list_dbt_test_results_handler),
+        )
+        .route(
+            "/pipelines/{id}/quality-checks",
+            get(list_quality_check_results_handler),
         )
         // Whole-catalog graph, not a per-pipeline secret — the handler
         // below only ever hands back connector names + allowlisted
@@ -616,8 +625,9 @@ async fn execute_pipeline_run(
         Some(&logger),
         active_license.as_ref(),
         &state.pipeline_schemas,
+        &state.alerts,
         run_id,
-        &state.dbt_test_results,
+        &state.quality_checks,
     )
     .await;
     state.progress.finish(run_id).await;
@@ -1021,8 +1031,8 @@ async fn preview_adhoc_handler(
         post_dbt_sinks: Vec::new(),
         schedule: None,
         alerts: None,
-        draft: false,
         quality_checks: Vec::new(),
+        draft: false,
     };
     probe_spec
         .validate_security_with(state.allow_internal_hosts)
@@ -1129,17 +1139,13 @@ async fn list_runs_handler(
     Ok(Json(state.pipelines.list_runs(&id, limit, offset).await?))
 }
 
-/// Every recorded test result for this pipeline, grouped by test — what the
-/// Quality tab renders as a per-test pass/fail history. Despite the
-/// `dbt-tests` path segment (kept for backward compatibility), this now
-/// covers two origins sharing one table: real dbt test results
-/// (`unique_id` like `test.<pkg>.<name>`) and native, no-dbt checks from
-/// `PipelineSpec.quality_checks` (`unique_id` like `native.<column>.
-/// <check>`, persisted by `runner::run_quality_checks`) — CLAUDE.md §4.4's
-/// "Modo Padrão" had no per-row quality signal before this. The aggregate
-/// counts (`tests_total`/`tests_passed`) already ride along on each
-/// `RunRecord.dbt_summary` from `GET /pipelines/{id}/runs` (dbt runs only);
-/// this is the detail behind them (`dbt_test_result_store.rs`).
+/// Every recorded dbt test result for this pipeline, grouped by test —
+/// what the Quality tab renders as a per-test pass/fail history. The
+/// aggregate counts (`tests_total`/`tests_passed`) already ride along on
+/// each `RunRecord.dbt_summary` from `GET /pipelines/{id}/runs`; this is
+/// the detail behind them (`dbt_test_result_store.rs`). Companion to
+/// `list_quality_check_results_handler` below (native, no-dbt checks,
+/// separate store) — the Quality tab merges both, tagged by source.
 async fn list_dbt_test_results_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -1147,6 +1153,25 @@ async fn list_dbt_test_results_handler(
     Ok(Json(
         state
             .dbt_test_results
+            .list_for_pipeline(&id)
+            .await
+            .map_err(ApiError::internal)?,
+    ))
+}
+
+/// Every recorded native (dbt-independent) quality check result for this
+/// pipeline — the `QualityCheckSpec`s configured on the pipeline, evaluated
+/// against its materialized output on the `run_transform_pipeline` path
+/// (see `nexus_core::quality`'s doc comment and `quality_check_store.rs`).
+/// Companion to `list_dbt_test_results_handler`; the Quality tab merges
+/// both, tagged by source.
+async fn list_quality_check_results_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<nexus_core::QualityCheckOutcome>>, ApiError> {
+    Ok(Json(
+        state
+            .quality_checks
             .list_for_pipeline(&id)
             .await
             .map_err(ApiError::internal)?,
@@ -1659,6 +1684,8 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         dbt_test_result_store::DbtTestResultStore::connect(&config.pipelines_database_url).await?;
     let pipeline_schemas =
         pipeline_schema_store::PipelineSchemaStore::connect(&config.pipelines_database_url).await?;
+    let quality_checks =
+        quality_check_store::QualityCheckStore::connect(&config.pipelines_database_url).await?;
     if let Some((username, password)) = &config.bootstrap_admin {
         auth_store.seed_admin_if_empty(username, password).await?;
     }
@@ -1682,6 +1709,7 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         dbt_lineage,
         dbt_test_results,
         pipeline_schemas,
+        quality_checks,
         progress: ProgressHub::default(),
         alerts: AlertNotifier::new(
             AlertConfig {
@@ -1962,6 +1990,9 @@ mod tests {
             )
             .await
             .unwrap(),
+            quality_checks: quality_check_store::QualityCheckStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
             progress: ProgressHub::default(),
             alerts: AlertNotifier::new(AlertConfig::default(), false),
             login_rate_limiter: std::sync::Arc::new(rate_limit::LoginRateLimiter::new(
@@ -3549,6 +3580,9 @@ mod tests {
             )
             .await
             .unwrap(),
+            quality_checks: quality_check_store::QualityCheckStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
             progress: ProgressHub::default(),
             alerts: AlertNotifier::new(AlertConfig::default(), false),
             login_rate_limiter: limiter,

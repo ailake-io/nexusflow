@@ -854,8 +854,8 @@ mod tests {
             post_dbt_sinks: Vec::new(),
             schedule: None,
             alerts: None,
-            draft: false,
             quality_checks: Vec::new(),
+            draft: false,
         }
     }
 
