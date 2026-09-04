@@ -110,9 +110,13 @@ FROM ${RUNTIME_IMAGE} AS runtime
 # ODBC drivers are deliberately not installed here either.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       libpq5 libsqlite3-0 ca-certificates curl python3 python3-pip unixodbc \
+    # Pinned (not floating "latest") so a build can't silently pull in a
+    # compromised/broken release of any of these — same reproducibility
+    # posture as nexus-ai's ONNX model revision pin and
+    # scripts/build-python-runtime.sh's python-build-standalone tag pin.
     && pip3 install --break-system-packages --no-cache-dir \
-      pandas numpy pyarrow polars python-dateutil \
-      dbt-core dbt-postgres \
+      pandas==2.2.3 numpy==1.26.4 pyarrow==17.0.0 polars==1.8.2 python-dateutil==2.9.0 \
+      dbt-core==1.12.3 dbt-postgres==1.11.0 \
     # dbt-postgres is the baseline adapter (Postgres is the primary ADBC
     # warehouse this repo documents dbt against, CLAUDE.md §4.4) — a user
     # targeting a different warehouse (dbt-duckdb, dbt-clickhouse, etc.)
