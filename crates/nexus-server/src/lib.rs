@@ -616,6 +616,8 @@ async fn execute_pipeline_run(
         Some(&logger),
         active_license.as_ref(),
         &state.pipeline_schemas,
+        run_id,
+        &state.dbt_test_results,
     )
     .await;
     state.progress.finish(run_id).await;
@@ -1020,6 +1022,7 @@ async fn preview_adhoc_handler(
         schedule: None,
         alerts: None,
         draft: false,
+        quality_checks: Vec::new(),
     };
     probe_spec
         .validate_security_with(state.allow_internal_hosts)
@@ -1126,11 +1129,17 @@ async fn list_runs_handler(
     Ok(Json(state.pipelines.list_runs(&id, limit, offset).await?))
 }
 
-/// Every recorded dbt test result for this pipeline, grouped by test —
-/// what the Quality tab renders as a per-test pass/fail history. The
-/// aggregate counts (`tests_total`/`tests_passed`) already ride along on
-/// each `RunRecord.dbt_summary` from `GET /pipelines/{id}/runs`; this is
-/// the detail behind them (`dbt_test_result_store.rs`).
+/// Every recorded test result for this pipeline, grouped by test — what the
+/// Quality tab renders as a per-test pass/fail history. Despite the
+/// `dbt-tests` path segment (kept for backward compatibility), this now
+/// covers two origins sharing one table: real dbt test results
+/// (`unique_id` like `test.<pkg>.<name>`) and native, no-dbt checks from
+/// `PipelineSpec.quality_checks` (`unique_id` like `native.<column>.
+/// <check>`, persisted by `runner::run_quality_checks`) — CLAUDE.md §4.4's
+/// "Modo Padrão" had no per-row quality signal before this. The aggregate
+/// counts (`tests_total`/`tests_passed`) already ride along on each
+/// `RunRecord.dbt_summary` from `GET /pipelines/{id}/runs` (dbt runs only);
+/// this is the detail behind them (`dbt_test_result_store.rs`).
 async fn list_dbt_test_results_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,

@@ -298,6 +298,50 @@ pub struct PipelineSpec {
     /// with `draft=false` (or omitted) before running.
     #[serde(default)]
     pub draft: bool,
+    /// Native (no-dbt) data quality checks, evaluated against the pipeline's
+    /// output batches via DataFusion — see `crate::quality`. Empty (the
+    /// default) means no checks, same as before this field existed. Only
+    /// evaluated on the SQL-transform path (`runner::run_transform_pipeline`)
+    /// today — the no-transform linear/passthrough path and the CDC
+    /// streaming fast path don't run these yet (documented v1 scope, not
+    /// silently skipped).
+    #[serde(default)]
+    pub quality_checks: Vec<QualityCheckSpec>,
+}
+
+/// One native data-quality check, evaluated against a named output column.
+/// Companion to dbt-based testing (`DbtConfig`) for the common case where a
+/// pipeline has no dbt project at all — CLAUDE.md §4.4's "Modo Padrão" never
+/// had any per-row quality signal beyond a row-count trend until this.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QualityCheckSpec {
+    pub column: String,
+    #[serde(flatten)]
+    pub check: QualityCheckKind,
+    /// What happens when this check fails: `warn` (the default) records the
+    /// result and keeps writing to the sinks; `block` fails the whole run
+    /// before any sink is written, same posture as any other pre-write
+    /// validation error in this crate.
+    #[serde(default)]
+    pub on_failure: QualityFailureAction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "check")]
+pub enum QualityCheckKind {
+    NotNull,
+    Unique,
+    Min { value: f64 },
+    Max { value: f64 },
+    AcceptedValues { values: Vec<String> },
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum QualityFailureAction {
+    #[default]
+    Warn,
+    Block,
 }
 
 fn default_channel_capacity() -> usize {
