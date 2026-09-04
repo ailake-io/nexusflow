@@ -14,10 +14,15 @@ OUT_DIR="${1:-$REPO_ROOT/target/package}"
 
 BIN="$REPO_ROOT/target/release/nexusflow"
 ADBC_DIR="$REPO_ROOT/target/adbc"
+PYTHON_RUNTIME_DIR="$REPO_ROOT/target/python-runtime/python"
 for f in "$BIN" "$ADBC_DIR/libadbc_driver_postgresql.so" "$ADBC_DIR/libadbc_driver_sqlite.so" \
          "$ADBC_DIR/libadbc_driver_duckdb.so" "$ADBC_DIR/libadbc_clickhouse.so"; do
   [ -f "$f" ] || { echo "missing $f — build it first (see this script's header)" >&2; exit 1; }
 done
+[ -x "$PYTHON_RUNTIME_DIR/bin/python3" ] || {
+  echo "missing $PYTHON_RUNTIME_DIR — run ./scripts/build-python-runtime.sh first" >&2
+  exit 1
+}
 command -v rpmbuild >/dev/null || { echo "rpmbuild not found (apt install rpm on Debian/Ubuntu)" >&2; exit 1; }
 
 RPMBUILD_ROOT="$(mktemp -d)"
@@ -55,6 +60,7 @@ install -m 755 $ADBC_DIR/libadbc_driver_postgresql.so %{buildroot}/usr/lib/nexus
 install -m 755 $ADBC_DIR/libadbc_driver_sqlite.so %{buildroot}/usr/lib/nexusflow/
 install -m 755 $ADBC_DIR/libadbc_driver_duckdb.so %{buildroot}/usr/lib/nexusflow/
 install -m 755 $ADBC_DIR/libadbc_clickhouse.so %{buildroot}/usr/lib/nexusflow/
+cp -a $PYTHON_RUNTIME_DIR %{buildroot}/usr/lib/nexusflow/python
 install -m 755 $REPO_ROOT/packaging/linux/nexusflow-wrapper.sh %{buildroot}/usr/bin/nexusflow
 install -m 644 $REPO_ROOT/packaging/linux/nexusflow.desktop %{buildroot}/usr/share/applications/
 install -m 644 $REPO_ROOT/packaging/linux/nexusflow.service %{buildroot}/usr/lib/systemd/system/
@@ -86,6 +92,7 @@ fi
 %attr(755, root, root) /usr/lib/nexusflow/libadbc_driver_sqlite.so
 %attr(755, root, root) /usr/lib/nexusflow/libadbc_driver_duckdb.so
 %attr(755, root, root) /usr/lib/nexusflow/libadbc_clickhouse.so
+/usr/lib/nexusflow/python
 %attr(755, root, root) /usr/bin/nexusflow
 %attr(644, root, root) /usr/share/applications/nexusflow.desktop
 %attr(644, root, root) /usr/lib/systemd/system/nexusflow.service
