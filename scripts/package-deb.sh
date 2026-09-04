@@ -23,10 +23,15 @@ trap 'rm -rf "$STAGE"' EXIT
 
 BIN="$REPO_ROOT/target/release/nexusflow"
 ADBC_DIR="$REPO_ROOT/target/adbc"
+PYTHON_RUNTIME_DIR="$REPO_ROOT/target/python-runtime/python"
 for f in "$BIN" "$ADBC_DIR/libadbc_driver_postgresql.so" "$ADBC_DIR/libadbc_driver_sqlite.so" \
          "$ADBC_DIR/libadbc_driver_duckdb.so" "$ADBC_DIR/libadbc_clickhouse.so"; do
   [ -f "$f" ] || { echo "missing $f — build it first (see this script's header)" >&2; exit 1; }
 done
+[ -x "$PYTHON_RUNTIME_DIR/bin/python3" ] || {
+  echo "missing $PYTHON_RUNTIME_DIR — run ./scripts/build-python-runtime.sh first" >&2
+  exit 1
+}
 
 mkdir -p "$STAGE/usr/lib/nexusflow" "$STAGE/usr/bin" \
   "$STAGE/usr/share/applications" "$STAGE/usr/share/icons/hicolor/scalable/apps" \
@@ -38,6 +43,10 @@ install -m 755 "$ADBC_DIR/libadbc_driver_postgresql.so" "$STAGE/usr/lib/nexusflo
 install -m 755 "$ADBC_DIR/libadbc_driver_sqlite.so" "$STAGE/usr/lib/nexusflow/"
 install -m 755 "$ADBC_DIR/libadbc_driver_duckdb.so" "$STAGE/usr/lib/nexusflow/"
 install -m 755 "$ADBC_DIR/libadbc_clickhouse.so" "$STAGE/usr/lib/nexusflow/"
+# Self-contained CPython + pandas/pyarrow/dbt-core/dbt-postgres (see
+# scripts/build-python-runtime.sh) — makes the `python-transform`/`dbt`
+# features work with zero manual install on the target machine.
+cp -a "$PYTHON_RUNTIME_DIR" "$STAGE/usr/lib/nexusflow/python"
 install -m 755 "$REPO_ROOT/packaging/linux/nexusflow-wrapper.sh" "$STAGE/usr/bin/nexusflow"
 install -m 644 "$REPO_ROOT/packaging/linux/nexusflow.desktop" "$STAGE/usr/share/applications/"
 install -m 644 "$REPO_ROOT/packaging/linux/nexusflow.service" "$STAGE/lib/systemd/system/"

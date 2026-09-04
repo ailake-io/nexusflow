@@ -337,6 +337,16 @@ jobs:
           cp "nexusflow-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" \
             "/tmp/nexusflow-release-artifacts/${{ github.run_id }}/"
 
+      # Bundled, self-contained CPython + pandas/pyarrow/dbt-core/dbt-postgres
+      # (scripts/build-python-runtime.sh) — package-{deb,rpm,appimage}.sh
+      # below all fail fast if target/python-runtime/python is missing, so
+      # this has to run before them. Same x86_64-only scope as those scripts
+      # (the release build only downloads the linux-x86_64 python-build-
+      # standalone tarball).
+      - name: Build bundled Python runtime (python-transform/dbt features)
+        if: matrix.os == 'linux' && matrix.arch == 'x86_64'
+        run: ./scripts/build-python-runtime.sh target/python-runtime
+
       # scripts/package-{deb,rpm,appimage}.sh existed but were never wired into
       # CI — only the raw tarball above was actually produced/released. Each
       # script hardcodes amd64/x86_64 (see their own headers), so gated to

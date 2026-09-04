@@ -16,4 +16,13 @@ export ADBC_DRIVER_POSTGRESQL_PATH="${ADBC_DRIVER_POSTGRESQL_PATH:-/usr/lib/nexu
 export ADBC_DRIVER_SQLITE_PATH="${ADBC_DRIVER_SQLITE_PATH:-/usr/lib/nexusflow/libadbc_driver_sqlite.so}"
 export ADBC_DRIVER_CLICKHOUSE_PATH="${ADBC_DRIVER_CLICKHOUSE_PATH:-/usr/lib/nexusflow/libadbc_clickhouse.so}"
 export ADBC_DRIVER_DUCKDB_PATH="${ADBC_DRIVER_DUCKDB_PATH:-/usr/lib/nexusflow/libadbc_driver_duckdb.so}"
+# Bundled, self-contained CPython (scripts/build-python-runtime.sh) — the
+# `python-transform`/`dbt` features shell out to a bare `python3`/`dbt` on
+# PATH (nexus-server's python_transform.rs/dbt.rs), so prepending this
+# tree's own bin/ ahead of everything else means those features work with
+# no python/dbt install on the host at all, and never pick up a stray
+# system python3 that happens to be on PATH instead.
+if [ -d /usr/lib/nexusflow/python/bin ]; then
+  export PATH="/usr/lib/nexusflow/python/bin:$PATH"
+fi
 exec /usr/lib/nexusflow/nexusflow-bin "$@"
