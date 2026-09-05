@@ -75,7 +75,7 @@ Baixa o binário + drivers ADBC pra `~/.local/share/nexusflow` e cria `~/.local/
 
 Mesma coisa: todos os conectores já vêm linkados; o `.deb` declara `unixodbc`/`libsasl2-2` como `Depends`, AppImage/rpm exigem essas libs já presentes no sistema alvo.
 
-Windows: `.msi` real via `cargo-wix` (`.github/workflows/build-windows-installer.yml`, `workflow_dispatch` manual) já rodou com sucesso no self-hosted `windows-connectors-heavy` e gerou `nexusflow-0.1.3-x86_64.msi`, anexado à release `v0.1.3` — ainda não instalado/testado numa máquina Windows real por um humano, e `winget` continua não configurado. macOS (Homebrew/`.dmg`): specs em `packaging/macos/`, ainda não validados em máquina real (sem runner self-hosted disponível) — ver os comentários no arquivo.
+Windows: `.msi` real via `cargo-wix` (`.github/workflows/build-windows-installer.yml`, `workflow_dispatch` manual, `windows-latest` hospedado desde 2026-09-05) — o vcpkg/OpenSSL que resolvia o bug real do `mysql_cdc` (só suporta OpenSSL nativo, sem rustls) roda como passo explícito a cada execução agora; ainda não instalado/testado numa máquina Windows real por um humano, e `winget` continua não configurado. macOS (Homebrew): `release.yml`'s `build` job ganhou leg `macos-latest`/arm64 no mesmo dia — binário OSS-only (sem conectores enterprise, ver `packaging/macos/README.md`), formula em `packaging/macos/nexusflow.rb`, nenhuma release real passou por essa combinação ainda.
 
 ### Build a partir do source
 

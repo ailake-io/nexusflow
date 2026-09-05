@@ -189,16 +189,29 @@ jobs:
     strategy:
       matrix:
         include:
-          # arm64 (and macOS) still out of this matrix — not a billing block
+          # arm64 Linux still out of this matrix — not a billing block
           # anymore (this repo is public, hosted minutes are free/unmetered
           # regardless of the org's private-repo billing issue), just not
           # re-added yet as part of this runner migration. Re-add
-          # ubuntu-24.04-arm/macos-latest as their own matrix legs whenever
-          # arm64/macOS packaging becomes a priority — see git history for
-          # the exact matrix entry this repo used to carry for arm64.
+          # ubuntu-24.04-arm as its own matrix leg whenever arm64 Linux
+          # packaging becomes a priority — see git history for the exact
+          # matrix entry this repo used to carry for it.
           - os: linux
             arch: x86_64
             runner: ubuntu-latest
+          # macOS added 2026-09-05, untested on real hardware. GitHub's
+          # macos-latest is Apple Silicon (arm64). Real, documented gap:
+          # ships OSS connectors only, not the enterprise-bundled binary
+          # Linux/Windows get — the enterprise binary build (below) goes
+          # through `docker build`, and Docker isn't available on GitHub's
+          # hosted macOS runners at all (unlike Linux, and unlike Windows
+          # where build-windows-installer.yml avoids Docker entirely via a
+          # `[patch]`-redirected cargo build instead). Same non-Docker
+          # `[patch]` trick could extend this to macOS later — not done
+          # here, scoped down to get a working OSS build shipped first.
+          - os: macos
+            arch: arm64
+            runner: macos-latest
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     steps:
@@ -238,6 +251,16 @@ jobs:
           sudo apt-get update && sudo apt-get install -y \
             cmake pkg-config libpq-dev libsqlite3-dev libfmt-dev \
             unixodbc-dev libsasl2-dev libssl-dev zlib1g-dev
+
+      # macos-latest ships cmake/pkg-config already; unixodbc/libpq/fmt do
+      # not (Homebrew is preinstalled, used here instead of apt). No
+      # libsasl2/zlib equivalent installed — untested whether Homebrew's
+      # system zlib is sufficient for rdkafka's cmake-build feature to find
+      # SASL/zlib on its own; same "not yet proven" caveat as the rest of
+      # this macOS leg.
+      - name: Install native build deps (macOS)
+        if: matrix.os == 'macos'
+        run: brew install unixodbc libpq fmt
 
       - run: npm ci
         working-directory: frontend
@@ -286,7 +309,12 @@ jobs:
       # added here with a credential scoped to `nexusflow`. Not fixed in
       # this commit: (a) requires editing the other (private) repo, out of
       # scope of this change here.
+      #
+      # Linux only — the enterprise binary is built via `docker build`
+      # below, and Docker isn't available on GitHub's hosted macOS
+      # runners. macOS instead gets a plain OSS build, see the next step.
       - name: Clone nexus-connectors-enterprise (read-only deploy key)
+        if: matrix.os == 'linux'
         env:
           DEPLOY_KEY: ${{ secrets.ENTERPRISE_REPO_DEPLOY_KEY }}
         run: |
@@ -301,6 +329,7 @@ jobs:
           rm -f ~/.ssh/enterprise_deploy_key
 
       - name: Build enterprise binary (all OSS + enterprise connectors)
+        if: matrix.os == 'linux'
         run: |
           set -euo pipefail
           DOCKER_BUILDKIT=1 docker build --ssh default --target builder \
@@ -316,12 +345,19 @@ jobs:
           docker rm "$cid" >/dev/null
           docker rmi nexusflow-enterprise-builder-${{ github.run_id }} >/dev/null
 
+      # macOS: no enterprise bundling yet (see the "KNOWN GAP" comment
+      # above the Docker-based steps this replaces) — plain OSS binary,
+      # every OSS connector still linked in via connectors-all.
+      - name: Build plain OSS binary (macOS)
+        if: matrix.os == 'macos'
+        run: cargo build --release -p nexusflow --features embed-ui,connectors-all
+
       - name: Package tarball
         run: |
           stage="$(mktemp -d)"
           cp target/release/nexusflow "$stage/nexusflow-bin"
-          cp target/adbc/libadbc_driver_postgresql.so "$stage/"
-          cp target/adbc/libadbc_driver_sqlite.so "$stage/"
+          cp target/adbc/libadbc_driver_postgresql.* "$stage/"
+          cp target/adbc/libadbc_driver_sqlite.* "$stage/"
           tar -czf "nexusflow-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" -C "$stage" .
 
       - name: Upload tarball for downstream jobs
@@ -418,7 +454,7 @@ jobs:
       # now (that job already did the only thing this one used to need a
       # working tree for), and everything else below just downloads
       # artifacts and shells out to `gh`.
-      - name: Download tarball
+      - name: Download tarball (linux-x86_64)
         uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
         with:
           name: nexusflow-tarball-linux-x86_64
@@ -427,6 +463,11 @@ jobs:
         uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
         with:
           name: nexusflow-native-packages-linux-x86_64
+          path: dist
+      - name: Download tarball (macos-arm64)
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: nexusflow-tarball-macos-arm64
           path: dist
       - name: Generate SHA256SUMS
         run: |
