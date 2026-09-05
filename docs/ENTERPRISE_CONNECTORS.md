@@ -2,7 +2,7 @@
 
 Este doc detalha os candidatos a conector pago citados em `LICENSING.md §2`. Vivem em repo privado separado (`nexus-connectors-enterprise`, binário próprio — ver `LICENSING.md §2`), atrás de license key — nunca entram em `crates/nexus-connectors/` (OSS). Ver `ARCHITECTURE.md` e `ROADMAP.md` (Fase 12).
 
-**Status real (auditado, atualizado após a onda de expansão de conectores desta sessão):** o repo privado tem hoje 33 crates de conector — os 24 originais mais Teradata, Vertica, HubSpot, Zendesk, Google Sheets, Dropbox, Google Drive, ServiceNow, Dynamics 365, SharePoint, NetSuite e Workday. Kinesis e Pulsar ganharam sink (antes só source). `opensearch`/`synapse` continuam modos alternativos dos crates `elasticsearch`/`mssql`, não crates próprios. Restam sem crate por falta de demanda confirmada: SAP BAPI/IDoc (bloqueio legal — SDK NetWeaver proprietário, sem licença SAP não redistribuível, ver `ROADMAP.md` item 17) e IBM Db2 (excluído por decisão explícita, não falta de demanda).
+**Status real (auditado via `Cargo.toml` do repo privado, 2026-09-05):** o repo privado tem hoje **37 crates de conector** — os originais mais Teradata, Vertica, HubSpot, Zendesk, Google Sheets, Dropbox, Google Drive, ServiceNow, Dynamics 365, SharePoint, NetSuite, Workday, **Starburst (Trino)** e **X Ads** (esses dois últimos ainda sem entrada nas tabelas de categoria abaixo até esta atualização). Kinesis e Pulsar ganharam sink (antes só source). `opensearch`/`synapse` continuam modos alternativos dos crates `elasticsearch`/`mssql`, não crates próprios. Restam sem crate por falta de demanda confirmada: SAP BAPI/IDoc (bloqueio legal — SDK NetWeaver proprietário, sem licença SAP não redistribuível, ver `ROADMAP.md` item 17) e IBM Db2 (excluído por decisão explícita, não falta de demanda). Este número sobe com frequência — trate como o snapshot mais recente, não uma constante; a contagem exata vive em `Cargo.toml` do repo privado, as tabelas abaixo são a fonte de verdade por categoria.
 
 Ponto de partida do usuário: Excel, Oracle, Snowflake, ClickHouse, BigQuery, Redshift. Abaixo, esses mais outros candidatos organizados por categoria, com a lógica de mercado por trás de cada um (o mesmo racional que Fivetran/Airbyte/Matillion usam pra decidir o que cobra).
 
@@ -21,6 +21,7 @@ Ponto de partida do usuário: Excel, Oracle, Snowflake, ClickHouse, BigQuery, Re
 | **Teradata** ✅ implementado (ODBC, upsert via `UPDATE ... ELSE INSERT`) | Nicho legado, ticket alto, baixo volume |
 | **IBM Db2** | Mesma categoria de legado corporativo — excluído desta rodada por decisão explícita do usuário, não falta de demanda |
 | **Vertica** ✅ implementado (ODBC, upsert via `MERGE` nativo) | Nicho analítico, baixo volume mas clientes dispostos a pagar |
+| **Starburst (Trino)** ✅ implementado | Query federation sobre múltiplas fontes (data lake + DWs) — mesmo público-alvo de Databricks, cliente enterprise já rodando um cluster Trino/Starburst próprio |
 
 ## 2. SaaS / CRM / ERP
 
@@ -43,6 +44,7 @@ Ponto de partida do usuário: Excel, Oracle, Snowflake, ClickHouse, BigQuery, Re
 | **Google Ads** ✅ implementado | Par natural do GA4 |
 | **Meta Ads** (Facebook/Instagram) ✅ implementado | Mesma categoria, alto volume de contas pequenas/médias |
 | **LinkedIn Ads** ✅ implementado | Nicho B2B, ticket médio |
+| **X Ads** ✅ implementado | Mesma categoria de marketing analytics, volume menor que Meta/Google mas cliente já paga por ferramenta de ads que cobre a plataforma |
 | **Stripe** ✅ implementado (read-only por design — nunca ganha sink, transação financeira real fica fora de escopo) | Dados financeiros/billing, alta demanda em SaaS |
 | **Shopify** ✅ implementado | E-commerce, alto volume |
 | **TikTok Ads** ✅ implementado (não estava na lista original, construído por analogia ao Meta Ads/GA4) | Mesma categoria de marketing analytics, alto volume |
@@ -105,4 +107,4 @@ Ordenado por (demanda de mercado × disposição a pagar), não por dificuldade 
 
 Decisão de "o que construir primeiro" na Fase 12 deve seguir demanda real confirmada (mesmo racional já usado pro CDC nativo condicional em `ROADMAP.md`), não essa lista sozinha — ela é o inventário de candidatos, não um compromisso de roadmap.
 
-**Status real desta priorização:** blocos 1 (Teradata e Vertica incluídos), 2, 4 (HubSpot/Workday/NetSuite/Dynamics 365/ServiceNow/Zendesk incluídos), 5 e a maior parte do 6 (vector/search + CDC avançado + streaming, agora com Kinesis/Pulsar como source+sink) já foram construídos, junto com o bloco de arquivo/produtividade (Google Sheets, Dropbox, Google Drive, SharePoint). Restam sem crate apenas: Db2 (exclusão explícita, não falta de demanda) e SAP BAPI/IDoc (bloqueio legal — licença SAP proprietária, sem caminho Rust, ver `ROADMAP.md` item 17). (Databricks foi implementado no repo privado; ClickHouse saiu desta lista — foi pro repo público, ver seção 1.)
+**Status real desta priorização:** blocos 1 (Teradata, Vertica e Starburst incluídos), 2, 4 (HubSpot/Workday/NetSuite/Dynamics 365/ServiceNow/Zendesk incluídos), 5 (X Ads incluído) e a maior parte do 6 (vector/search + CDC avançado + streaming, agora com Kinesis/Pulsar como source+sink) já foram construídos, junto com o bloco de arquivo/produtividade (Google Sheets, Dropbox, Google Drive, SharePoint). Restam sem crate apenas: Db2 (exclusão explícita, não falta de demanda) e SAP BAPI/IDoc (bloqueio legal — licença SAP proprietária, sem caminho Rust, ver `ROADMAP.md` item 17). (Databricks foi implementado no repo privado; ClickHouse saiu desta lista — foi pro repo público, ver seção 1.)

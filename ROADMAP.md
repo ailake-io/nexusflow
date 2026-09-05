@@ -181,14 +181,18 @@ licenciamento e `docs/ENTERPRISE_CONNECTORS.md` pro catálogo/priorização.
   `csv`, seleção de aba/sheet) — prioridade tier-2 em
   `docs/ENTERPRISE_CONNECTORS.md` (baixa barreira técnica, alto volume em
   PME). Repo privado `nexus-connectors-enterprise` criado e ativo — bem
-  além do escopo original de "primeiro conector": já tem **24 crates / 51
-  entradas de catálogo** (Excel + BigQuery, Snowflake, Redshift, Synapse,
-  MSSQL/MSSQL CDC, Oracle/Oracle LogMiner CDC, SAP HANA, Salesforce,
-  Shopify, Stripe, Meta/Google/LinkedIn/TikTok Ads, GA4, YouTube
-  Analytics, Kinesis, Pulsar, Elasticsearch/OpenSearch, Weaviate, Azure AI
-  Search, Vertex AI Vector Search — ver `docs/DOCKER_LOCAL_TESTING.md`
-  desse repo pra lista completa com campos/exemplo de config por
-  conector).
+  além do escopo original de "primeiro conector": **37 crates** hoje
+  (contagem real via `Cargo.toml` do repo, 2026-09-05 — número sobe com
+  frequência, ver `docs/ENTERPRISE_CONNECTORS.md` pra lista viva por
+  categoria em vez de um total fixo aqui) — Excel, BigQuery, Snowflake,
+  Redshift, Synapse, MSSQL/MSSQL CDC, Oracle/Oracle LogMiner CDC, SAP
+  HANA, Teradata, Vertica, Salesforce, HubSpot, Zendesk, ServiceNow,
+  Dynamics 365, NetSuite, Workday, SharePoint, Dropbox, Google
+  Sheets/Drive, Shopify, Stripe, Meta/Google/LinkedIn/TikTok/X Ads, GA4,
+  YouTube Analytics, Kinesis, Pulsar, Starburst (Trino), Databricks,
+  Elasticsearch/OpenSearch, Weaviate, Azure AI Search, Vertex AI Vector
+  Search — ver `docs/DOCKER_LOCAL_TESTING.md` desse repo pra lista
+  completa com campos/exemplo de config por conector.
 - [ ] **Bloco 4 — Storefront mínimo**: página de venda + checkout, mesmo que
   simples (Mercado Pago Checkout Pro cobre a parte de pagamento sem UI
   custom pra dado de cartão).
@@ -286,12 +290,53 @@ Protocolo padrão de telemetria IoT (AWS IoT Core, Azure IoT Hub, HiveMQ, Mosqui
 
 ---
 
-## Fase 24 — Aba Infra: Canvas visual pra Terraform (AWS) — planejado, não implementado
+## Fase 23 — Conector ClickHouse (ADBC nativo, repo público)
+
+Estava registrado como candidato enterprise em `docs/ENTERPRISE_CONNECTORS.md` sob a premissa "ADBC básico OSS, avançado pago" — investigação numa sessão anterior derrubou essa premissa: RBAC e cluster mode (`Distributed`/`Replicated`, ClickHouse Keeper) são recursos OSS do próprio ClickHouse self-hosted, não existe feature "avançada" genuína pra reservar como paga (diferente de Snowflake/Oracle/SAP, que têm licenciamento pago real). Driver ADBC também é oficial (ClickHouse, Inc.) e grátis. Decisão: vai pro repo público, mesma categoria de Postgres/SQLite.
+
+- [x] `nexus-connector-clickhouse` (feature `clickhouse`) — mesmo esqueleto ADBC do `nexus-connector-postgres` (`driver.rs`/`config.rs`/`source.rs`/`sink.rs`), única option key `uri` confirmada contra a doc real do driver (adbc-drivers.org/drivers/clickhouse/), não múltiplas chaves como Snowflake.
+- [x] Instalação de um comando só (`dbc install clickhouse`, ADBC Driver Foundry) — diferente de Postgres/SQLite, que exigem compilar `libadbc_driver_*.so` na mão.
+- [x] **Sink append-only, achado real**: ClickHouse não tem `ON CONFLICT`/upsert leve (`ALTER TABLE ... UPDATE/DELETE` são mutations assíncronas pesadas). `write_batch` rejeita explicitamente batches de CDC com `__opcode` de delete em vez de descartar silenciosamente — dedup fica a cargo do usuário via `ReplacingMergeTree`/`CollapsingMergeTree`, mecanismo idiomático do próprio ClickHouse.
+- [x] `partition_column` em vez de `primary_key` (nome do Postgres, implica unicidade que o ClickHouse não impõe) — qualquer coluna orderável usada só pra particionar leitura em paralelo.
+- [ ] Sem teste de integração real (mesma ressalva de todo conector ADBC do repo — nem `postgres` tem, `ADBC_DRIVER_POSTGRESQL_PATH` também não é setado em CI). Só unit tests dos SQL builders.
+
+**Critério de pronto:** `cargo test -p nexus-connector-clickhouse` cobrindo os SQL builders (incluindo rejeição de SQL injection), `cargo build --features connectors-all` linkando o conector, `GET /connectors` listando `clickhouse`. **Atingido** (sem validação contra instância ClickHouse real — mesma ressalva que Snowflake/BigQuery/Databricks já carregam).
+
+---
+
+## Fase 24 — Expansão de conectores (gap analysis, OSS + enterprise)
+
+Motivada por uma análise de lacunas nesta sessão: conectores de streaming existiam só como source (nunca publicavam), e vários candidatos do `docs/ENTERPRISE_CONNECTORS.md` seguiam sem crate por falta de esforço, não por falta de demanda. Escopo: implementar tudo que fizesse sentido, exceto Db2 (exclusão explícita do usuário) e SAP BAPI/IDoc (achado durante a implementação: bloqueio legal, não técnico — SDK NetWeaver da SAP é proprietário e não redistribuível sem licença comercial direta, sem caminho Rust possível).
+
+**OSS (`crates/nexus-connectors/`):**
+- [x] Kafka ganhou sink (produtor via `rdkafka`, feature `producer`) — só tinha source antes.
+- [x] `duckdb` — fast-path ADBC oficial (`dbc install duckdb`), upsert real via `ON CONFLICT`, diferente do append-only do ClickHouse.
+- [x] `redis` — Streams (`XADD`/`XREAD`), não KV genérico; sem consumer group em v1.
+- [x] `nats` — pub/sub core, não JetStream (sem persistência/replay).
+- [x] `rabbitmq` — AMQP 0-9-1, sempre auto-ack no source (sem redelivery manual em v1).
+
+**Enterprise (`nexus-connectors-enterprise`, repo privado, 24 crates novos/alterados):**
+- [x] Kinesis e Pulsar ganharam sink (mesma lacuna do Kafka).
+- [x] Teradata, Vertica — mesmo esqueleto ODBC do HANA; Teradata usa `UPDATE ... ELSE INSERT` (sem `MERGE` nativo), Vertica usa `MERGE` real.
+- [x] HubSpot, Zendesk, Google Sheets — REST/JSON, testados com `wiremock`, mesmo padrão do Salesforce/Stripe.
+- [x] Dropbox, Google Drive — **acharam o próprio padrão** durante a implementação: em vez de listar metadado de arquivo como linha, reusam o parsing `arrow-csv` do `nexus-connector-csv` público contra uma pasta com CSV/TSV, já que `object_store` não tem backend pra essas duas nuvens.
+- [x] ServiceNow, Dynamics 365, SharePoint — REST/OAuth mais complexo (paginação OData v4 via `@odata.nextLink` em Dynamics/SharePoint, offset simples no ServiceNow).
+- [x] NetSuite — SuiteQL (não a SOAP SuiteTalk antiga) pra leitura, REST Record API pra escrita; schema inferido dinamicamente das colunas da query (sem `fields` fixo).
+- [x] Workday — **source-only, permanente**: RaaS (Report-as-a-Service) cobre leitura real, mas o write-path de verdade do Workday é SOAP (`Put_Worker` etc.), superfície de protocolo separada e muito maior, não uma simplificação de v1 — mesmo racional do Stripe ser read-only, só que por limitação técnica em vez de decisão de produto.
+
+**Achados reais durante a verificação** (não só desenvolvimento): um `| tail` mascarando exit code de pipe escondeu 3 bugs reais por um tempo (variant `redis::Value::Data` renomeado pra `BulkString` na 0.27; `hasMore` do NetSuite sem `#[serde(rename)]`, quebrando paginação silenciosamente; `needless_range_loop`/`if_same_then_else` do clippy em 3 crates) — todos recorrigidos após passar a rodar tudo com exit code real (redirecionado a arquivo, sem pipe). Dois bugs de clippy pré-existentes (não relacionados a este trabalho) em `mssql-cdc`/`oracle-cdc` também corrigidos a pedido do usuário.
+
+**Critério de pronto:** `cargo check`/`test`/`clippy -D warnings` limpos (exit code real, sem `| tail`) no workspace inteiro dos dois repos, `GET /connectors` listando cada conector novo. **Atingido** — 19 itens implementados e commitados (6 ondas), nenhum contra conta/tenant real (mesma ressalva de todo conector REST/ODBC deste repo — só `wiremock`/unit tests).
+
+---
+
+## Fase 25 — Aba Infra: Canvas visual pra Terraform (AWS) — planejado, não implementado
 
 Usuário pediu uma aba nova: desenhar infraestrutura AWS num Canvas
 visual (caixinha por recurso, clicar traz a config necessária) e
-gerar Terraform. Pesquisado e planejado nesta sessão, execução fica
-pra um próximo passo — registrado aqui pra não perder o levantamento.
+gerar Terraform. Pesquisado e planejado numa sessão anterior, execução
+fica pra um próximo passo — registrado aqui pra não perder o
+levantamento.
 
 **Achado que muda a estimativa de esforço pra baixo**: o mecanismo
 inteiro já existe, só nunca foi usado fora do domínio "conector de
@@ -330,10 +375,10 @@ aplicar o mesmo padrão a um domínio novo.
   dependendo de `aws_vpc`/`aws_subnet`/`aws_security_group`).
   Kinesis/Glue/MSK/Redshift ficam como expansão incremental depois,
   mesmo mecanismo, baixo risco (mesmo padrão que a allowlist de
-  recurso da aba Linhagem desta sessão já estabeleceu).
+  recurso da aba Linhagem já estabeleceu).
 
 **Desenho técnico levantado** (detalhe completo ficou só no plano
-efêmero da sessão, resumo aqui):
+efêmero da sessão original, resumo aqui):
 - Novo crate `crates/nexus-infra/` — um struct por recurso
   (`Deserialize + Serialize + JsonSchema`), campo que referencia outro
   nó do Canvas usa sufixo `_ref` (convenção pro frontend desenhar
@@ -362,46 +407,6 @@ efêmero da sessão, resumo aqui):
   em `terraform plan` de verdade sem conta AWS real pra testar contra
   — mesma ressalva de "sem conta real pra validar" que outros
   conectores desta sessão já carregam.
-
----
-
-## Fase 23 — Conector ClickHouse (ADBC nativo, repo público)
-
-Estava registrado como candidato enterprise em `docs/ENTERPRISE_CONNECTORS.md` sob a premissa "ADBC básico OSS, avançado pago" — investigação numa sessão anterior derrubou essa premissa: RBAC e cluster mode (`Distributed`/`Replicated`, ClickHouse Keeper) são recursos OSS do próprio ClickHouse self-hosted, não existe feature "avançada" genuína pra reservar como paga (diferente de Snowflake/Oracle/SAP, que têm licenciamento pago real). Driver ADBC também é oficial (ClickHouse, Inc.) e grátis. Decisão: vai pro repo público, mesma categoria de Postgres/SQLite.
-
-- [x] `nexus-connector-clickhouse` (feature `clickhouse`) — mesmo esqueleto ADBC do `nexus-connector-postgres` (`driver.rs`/`config.rs`/`source.rs`/`sink.rs`), única option key `uri` confirmada contra a doc real do driver (adbc-drivers.org/drivers/clickhouse/), não múltiplas chaves como Snowflake.
-- [x] Instalação de um comando só (`dbc install clickhouse`, ADBC Driver Foundry) — diferente de Postgres/SQLite, que exigem compilar `libadbc_driver_*.so` na mão.
-- [x] **Sink append-only, achado real**: ClickHouse não tem `ON CONFLICT`/upsert leve (`ALTER TABLE ... UPDATE/DELETE` são mutations assíncronas pesadas). `write_batch` rejeita explicitamente batches de CDC com `__opcode` de delete em vez de descartar silenciosamente — dedup fica a cargo do usuário via `ReplacingMergeTree`/`CollapsingMergeTree`, mecanismo idiomático do próprio ClickHouse.
-- [x] `partition_column` em vez de `primary_key` (nome do Postgres, implica unicidade que o ClickHouse não impõe) — qualquer coluna orderável usada só pra particionar leitura em paralelo.
-- [ ] Sem teste de integração real (mesma ressalva de todo conector ADBC do repo — nem `postgres` tem, `ADBC_DRIVER_POSTGRESQL_PATH` também não é setado em CI). Só unit tests dos SQL builders.
-
-**Critério de pronto:** `cargo test -p nexus-connector-clickhouse` cobrindo os SQL builders (incluindo rejeição de SQL injection), `cargo build --features connectors-all` linkando o conector, `GET /connectors` listando `clickhouse`. **Atingido** (sem validação contra instância ClickHouse real — mesma ressalva que Snowflake/BigQuery/Databricks já carregam).
-
----
-
-## Fase 24 — Expansão de conectores (gap analysis, OSS + enterprise)
-
-Motivada por uma análise de lacunas nesta sessão: conectores de streaming existiam só como source (nunca publicavam), e vários candidatos do `docs/ENTERPRISE_CONNECTORS.md` seguiam sem crate por falta de esforço, não por falta de demanda. Escopo: implementar tudo que fizesse sentido, exceto Db2 (exclusão explícita do usuário) e SAP BAPI/IDoc (achado durante a implementação: bloqueio legal, não técnico — SDK NetWeaver da SAP é proprietário e não redistribuível sem licença comercial direta, sem caminho Rust possível).
-
-**OSS (`crates/nexus-connectors/`):**
-- [x] Kafka ganhou sink (produtor via `rdkafka`, feature `producer`) — só tinha source antes.
-- [x] `duckdb` — fast-path ADBC oficial (`dbc install duckdb`), upsert real via `ON CONFLICT`, diferente do append-only do ClickHouse.
-- [x] `redis` — Streams (`XADD`/`XREAD`), não KV genérico; sem consumer group em v1.
-- [x] `nats` — pub/sub core, não JetStream (sem persistência/replay).
-- [x] `rabbitmq` — AMQP 0-9-1, sempre auto-ack no source (sem redelivery manual em v1).
-
-**Enterprise (`nexus-connectors-enterprise`, repo privado, 24 crates novos/alterados):**
-- [x] Kinesis e Pulsar ganharam sink (mesma lacuna do Kafka).
-- [x] Teradata, Vertica — mesmo esqueleto ODBC do HANA; Teradata usa `UPDATE ... ELSE INSERT` (sem `MERGE` nativo), Vertica usa `MERGE` real.
-- [x] HubSpot, Zendesk, Google Sheets — REST/JSON, testados com `wiremock`, mesmo padrão do Salesforce/Stripe.
-- [x] Dropbox, Google Drive — **acharam o próprio padrão** durante a implementação: em vez de listar metadado de arquivo como linha, reusam o parsing `arrow-csv` do `nexus-connector-csv` público contra uma pasta com CSV/TSV, já que `object_store` não tem backend pra essas duas nuvens.
-- [x] ServiceNow, Dynamics 365, SharePoint — REST/OAuth mais complexo (paginação OData v4 via `@odata.nextLink` em Dynamics/SharePoint, offset simples no ServiceNow).
-- [x] NetSuite — SuiteQL (não a SOAP SuiteTalk antiga) pra leitura, REST Record API pra escrita; schema inferido dinamicamente das colunas da query (sem `fields` fixo).
-- [x] Workday — **source-only, permanente**: RaaS (Report-as-a-Service) cobre leitura real, mas o write-path de verdade do Workday é SOAP (`Put_Worker` etc.), superfície de protocolo separada e muito maior, não uma simplificação de v1 — mesmo racional do Stripe ser read-only, só que por limitação técnica em vez de decisão de produto.
-
-**Achados reais durante a verificação** (não só desenvolvimento): um `| tail` mascarando exit code de pipe escondeu 3 bugs reais por um tempo (variant `redis::Value::Data` renomeado pra `BulkString` na 0.27; `hasMore` do NetSuite sem `#[serde(rename)]`, quebrando paginação silenciosamente; `needless_range_loop`/`if_same_then_else` do clippy em 3 crates) — todos recorrigidos após passar a rodar tudo com exit code real (redirecionado a arquivo, sem pipe). Dois bugs de clippy pré-existentes (não relacionados a este trabalho) em `mssql-cdc`/`oracle-cdc` também corrigidos a pedido do usuário.
-
-**Critério de pronto:** `cargo check`/`test`/`clippy -D warnings` limpos (exit code real, sem `| tail`) no workspace inteiro dos dois repos, `GET /connectors` listando cada conector novo. **Atingido** — 19 itens implementados e commitados (6 ondas), nenhum contra conta/tenant real (mesma ressalva de todo conector REST/ODBC deste repo — só `wiremock`/unit tests).
 
 ---
 
