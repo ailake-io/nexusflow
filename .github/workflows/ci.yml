@@ -10,21 +10,39 @@ on:
 permissions:
   contents: read
 
-# All 7 jobs below run on the same self-hosted machine (a shared dev
-# desktop, not a dedicated runner — see the `test`/`connectors` jobs'
-# comments) and are chained via `needs:` into one strict sequence so at
-# most one is ever alive at a time. That alone isn't enough: two different
-# pushes/PRs each start their own independent instance of this whole
-# workflow, and their two chains can still run side by side, each spawning
-# heavy cargo/docker builds that together exceed this machine's RAM (this
-# OOM-killed the runner's own systemd service more than once). A single
-# fixed group with no `github.ref`/`github.sha` in the key serializes
-# across every branch/PR, not just concurrent runs of the same one;
-# `cancel-in-progress: false` queues the new run instead of cancelling
-# in-progress work, so nothing gets thrown away.
-concurrency:
-  group: ci-self-hosted-runner
-  cancel-in-progress: false
+# Repo went public 2026-09-05. All jobs below moved from a shared
+# self-hosted desktop to `ubuntu-latest` (free/unmetered Actions minutes
+# on a public repo) at the same time, at the user's explicit request —
+# a stranger's fork/PR now runs whatever `runs-on:` says, and hosted
+# runners are ephemeral per-run (nothing to protect with the old
+# self-hosted `concurrency:` group, removed here). This workflow uses
+# plain `pull_request` (checks out the fork's code with a restricted
+# default `GITHUB_TOKEN`, no repo secrets in scope), never
+# `pull_request_target` — combined with GitHub's default requirement
+# that a maintainer approve Actions runs for a first-time outside
+# contributor, that's the real protection against a malicious PR now
+# that there's no self-hosted box for one to reach anyway.
+#
+# Known real risk carried over from the self-hosted era, not yet
+# re-verified on hosted as of this migration: the heavy jobs below
+# (docker-image/clippy/test/connectors — full `connectors-all` +
+# `embed-ui`, lancedb/milvus/mongodb's huge dependency trees) previously
+# blew past a GitHub-hosted runner's disk cap during linking ("ld
+# terminated with signal 7 [Bus error]", 39MB free — see each job's own
+# comment for the fuller history) and needed system packages
+# (libpq-dev/libsqlite3-dev/libfmt-dev/protobuf-compiler/unixodbc-dev/
+# cyrus-sasl) that the old self-hosted box had pre-installed once,
+# outside this repo's version control. Both are addressed inline below
+# (a disk-reclaim step + explicit `apt-get install`), but neither has
+# been proven against a real hosted run yet at the time of this commit —
+# treat the next CI run on this file as the actual test, not this
+# comment's intent.
+#
+# `needs:` between jobs is gone entirely — nothing here was ever a real
+# data dependency (every job that needs frontend/dist builds it inline
+# itself; no job downloads another's artifact), the old chain existed
+# purely to force one-at-a-time execution on the shared self-hosted
+# machine. All 8 jobs now run independently and in parallel.
 
 env:
   CARGO_TERM_COLOR: always
@@ -37,47 +55,9 @@ jobs:
   # fresh by this step's own `cargo audit` run (nothing to check out for
   # it), unlike the drift check against the root lockfile (see the
   # `connectors` job), which needs a `cargo check` to have run first.
-  # Self-hosted (see the workflow-level `concurrency` comment above) — no
-  # `needs:` since it doesn't touch the Rust *build* graph, but it still
-  # only runs after `fmt` releases the machine, same as every other job here.
-  # Scans the full commit history (every ref, `--log-opts="--all"`) for
-  # accidentally-committed secrets — added ahead of making this repo
-  # public, when a stranger's PR/fork can see the entire history for the
-  # first time. Ran manually once against all 383 commits/all refs
-  # (2026-09-05): exactly one match, the documented non-secret test key in
-  # crates/nexus-server/src/license.rs (see .gitleaks.toml's allowlist) —
-  # no real leak found. This job guards against a *future* commit
-  # introducing one, not a one-time audit.
-  #
-  # Pinned by version + sha256 (same pattern as ci.yml's appimagetool
-  # download / build-windows-installer.yml's gh CLI download) rather than
-  # a marketplace action — gitleaks ships no pinned-SHA GitHub Action of
-  # its own worth trusting blindly here.
-  gitleaks:
-    name: gitleaks
-    needs: fmt
-    runs-on: [self-hosted, Linux]
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          fetch-depth: 0 # full history — a shallow clone can't scan past commits
-      - name: Install gitleaks
-        env:
-          GITLEAKS_VERSION: "8.21.2"
-          GITLEAKS_SHA256: "5bc41815076e6ed6ef8fbecc9d9b75bcae31f39029ceb55da08086315316e3ba"
-        run: |
-          curl -fsSL -o gitleaks.tar.gz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum -c -
-          tar xzf gitleaks.tar.gz gitleaks
-          chmod +x gitleaks
-      - name: Scan full history for secrets
-        run: ./gitleaks detect --source . --log-opts="--all" -c .gitleaks.toml --redact --exit-code 1
-
   cargo-audit:
     name: cargo-audit
-    needs: gitleaks
-    runs-on: [self-hosted, Linux]
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -163,11 +143,9 @@ jobs:
         run: cargo audit --no-yanked --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195 --ignore RUSTSEC-2025-0009 --ignore RUSTSEC-2024-0336 --ignore RUSTSEC-2026-0258 --ignore RUSTSEC-2026-0099 --ignore RUSTSEC-2026-0098 --ignore RUSTSEC-2026-0049 --ignore RUSTSEC-2026-0104 --ignore RUSTSEC-2025-0134 --ignore RUSTSEC-2025-0010 --ignore RUSTSEC-2023-0086 --ignore RUSTSEC-2026-0002 --ignore RUSTSEC-2026-0253 --ignore RUSTSEC-2025-0141 --ignore RUSTSEC-2024-0384 --ignore RUSTSEC-2025-0119 --ignore RUSTSEC-2024-0436 --ignore RUSTSEC-2026-0173
         working-directory: crates/nexus-connectors
 
-  # Self-hosted, first in the chain (no `needs:`) — see the workflow-level
-  # `concurrency` comment above for why every job here shares one machine.
   fmt:
     name: fmt
-    runs-on: [self-hosted, Linux]
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -176,19 +154,48 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  # Scans the full commit history (every ref, `--log-opts="--all"`) for
+  # accidentally-committed secrets — added ahead of making this repo
+  # public, when a stranger's PR/fork can see the entire history for the
+  # first time. Ran manually once against all 383 commits/all refs
+  # (2026-09-05): exactly one match, the documented non-secret test key in
+  # crates/nexus-server/src/license.rs (see .gitleaks.toml's allowlist) —
+  # no real leak found. This job guards against a *future* commit
+  # introducing one, not a one-time audit.
+  #
+  # Pinned by version + sha256 (same pattern as this workflow's
+  # appimagetool download / build-windows-installer.yml's gh CLI download)
+  # rather than a marketplace action — gitleaks ships no pinned-SHA GitHub
+  # Action of its own worth trusting blindly here.
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0 # full history — a shallow clone can't scan past commits
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: "8.21.2"
+          GITLEAKS_SHA256: "5bc41815076e6ed6ef8fbecc9d9b75bcae31f39029ceb55da08086315316e3ba"
+        run: |
+          curl -fsSL -o gitleaks.tar.gz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum -c -
+          tar xzf gitleaks.tar.gz gitleaks
+          chmod +x gitleaks
+      - name: Scan full history for secrets
+        run: ./gitleaks detect --source . --log-opts="--all" -c .gitleaks.toml --redact --exit-code 1
+
   # --all-features covers embed-ui, nexus-ai's `cpu` feature (ort/hf-hub/
   # tokenizers) and connectors-all (mongodb/kafka/milvus/lancedb/... all
   # linked into nexus-server, not just the nested crates/nexus-connectors
-  # workspace) — this combination already ran a GitHub-hosted runner out of
-  # its ~14GB disk cap mid-link ("ld terminated with signal 7 [Bus error]",
-  # 39MB free); self-hosted has real disk, no such cap.
-  #
-  # needs: docker-image (not just fmt/frontend) — every job in this
-  # workflow chains to the previous one so only one is ever alive on this
-  # shared machine at a time (see the workflow-level `concurrency` comment).
-  # Still downloads frontend's artifact directly below since that's what
-  # embed-ui's RustEmbed derive needs at compile time, regardless of how
-  # many other jobs ran in between.
+  # workspace) — this exact combination has previously blown a GitHub-hosted
+  # runner's disk cap mid-link ("ld terminated with signal 7 [Bus error]",
+  # 39MB free) back when this workflow ran self-hosted-only; moved to
+  # `ubuntu-latest` 2026-09-05 at the user's explicit request (repo went
+  # public same day) with a disk-reclaim step below as the mitigation —
+  # not yet proven against a real run as of this commit.
   #
   # -p nexus-core -p nexus-ai -p nexus-server, not --workspace: `cargo
   # metadata --no-deps` from the repo root shows every crate under
@@ -200,26 +207,44 @@ jobs:
   # owns that.
   clippy:
     name: clippy
-    needs: docker-image
-    runs-on: [self-hosted, Linux]
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      # Reclaim disk on the hosted runner before a --all-features build —
+      # ubuntu-latest ships ~14GB free by default, already documented as
+      # not enough for this exact feature combination (see job comment
+      # above). Removing preinstalled toolchains this repo never uses
+      # (.NET, Android SDK, GHC) is the standard mitigation for that
+      # class of failure; verify against a real run, adjust if still short.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          df -h /
+      # rdkafka (kafka feature) needs cmake + zlib headers; odbc-api
+      # (odbc feature) needs unixODBC; lancedb's build.rs shells out to
+      # protoc; nexus-connector-iceberg's iceberg-catalog-sql pulls in
+      # sqlx's "sqlite" feature, which links the system libsqlite3.
+      # None of these ship on ubuntu-latest by default — they were
+      # "already present" only on the old self-hosted box, outside this
+      # repo's version control until now.
+      - name: Install system packages for connectors-all
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake pkg-config protobuf-compiler \
+            zlib1g-dev unixodbc-dev libsqlite3-dev libpq-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
       # --all-features turns on nexus-server's embed-ui, whose
       # #[derive(RustEmbed)] needs frontend/dist to exist at compile time
-      # (Marco 11). Built here directly (not downloaded from the `frontend`
-      # job's artifact, A34's original approach) — that artifact upload is
-      # `continue-on-error` (frontend job's own comment) precisely because
-      # it's allowed to fail (org Actions storage quota), which would leave
-      # nothing here to download; a correctness-gating step can't depend on
-      # a step that's allowed to fail. Rebuilding is cheap (~1s locally,
+      # (Marco 11). Built here directly rather than downloaded from the
+      # `frontend` job's artifact (that upload is `continue-on-error` and
+      # nothing downstream ever consumed it) — rebuilding is cheap and
       # frontend has no test-affecting logic clippy needs from a shared
-      # build), so it's simpler than trying to make the artifact hand-off
-      # itself resilient.
+      # build.
       - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
         with:
           node-version: "22"
@@ -235,16 +260,20 @@ jobs:
   # "docker run sobe binário único servindo UI em localhost:8080, sem
   # dependência externa além do container." Builds its own image from
   # scratch (frontend -> ADBC drivers -> release binary w/ embed-ui ->
-  # runtime, see ../../Dockerfile) — doesn't share build state with the
-  # fmt/clippy/test chain, but still runs after `frontend` in the machine's
-  # one-at-a-time queue (see the workflow-level `concurrency` comment).
+  # runtime, see ../../Dockerfile) inside the Docker build context, so it
+  # doesn't need the connectors-all system packages the clippy/test/
+  # connectors jobs install directly on the runner — everything it needs
+  # lives inside the Dockerfile's own build stages.
   docker-image:
     name: docker-image
-    needs: frontend
-    runs-on: [self-hosted, Linux]
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          df -h /
       - uses: docker/setup-buildx-action@c47758b77c9736f4b2ef4073d4d51994fabfe349 # v3.7.1
       - uses: docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a4 # v6.15.0
         with:
@@ -258,7 +287,6 @@ jobs:
         run: |
           jwt_secret="$(openssl rand -hex 32)"
           encryption_key="$(openssl rand -hex 32)"
-          # Ensure no leaked container from a previous run on this self-hosted host.
           docker rm -f nexusflow-ci >/dev/null 2>&1 || true
           # Always clean up, even if healthcheck/assertions fail.
           cleanup() { docker rm -f nexusflow-ci >/dev/null 2>&1 || true; }
@@ -280,17 +308,9 @@ jobs:
           [ "$status" = "200" ] || { echo "GET / returned $status, expected 200"; exit 1; }
           [ "$health" = "ok" ] || { echo "GET /health returned '$health', expected ok"; exit 1; }
 
-  # frontend/ (Marco 8) doesn't touch the Rust workspace, but still runs on
-  # the same self-hosted machine as everything else and slots into the
-  # fmt -> cargo-audit -> frontend -> docker-image -> clippy -> test ->
-  # connectors chain (see the workflow-level `concurrency` comment) — its
-  # own build is light, but node_modules/npm briefly adds to whatever else
-  # is resident, so it still gets its own turn rather than running
-  # alongside a cargo build.
   frontend:
     name: frontend
-    needs: cargo-audit
-    runs-on: [self-hosted, Linux]
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
       run:
@@ -314,11 +334,10 @@ jobs:
       - run: npm audit --audit-level=high
       # continue-on-error: this artifact is a debug convenience only (1-day
       # retention, nothing downstream reads it) — it must never be the
-      # reason this job (and everything gated on it) reports red. Hit in
-      # practice: the org's Actions artifact storage quota filled up
-      # ("Artifact storage quota has been hit... recalculated every 6-12
-      # hours"), which failed this step on an otherwise fully green build/
-      # test/lint/audit run.
+      # reason this job reports red. Hit in practice: the org's Actions
+      # artifact storage quota filled up ("Artifact storage quota has been
+      # hit... recalculated every 6-12 hours"), which failed this step on
+      # an otherwise fully green build/test/lint/audit run.
       - uses: actions/upload-artifact@834a144ee995460fba8ed112a2fc961b36a5ec5a # v4.3.6
         continue-on-error: true
         with:
@@ -326,26 +345,35 @@ jobs:
           path: frontend/dist
           retention-days: 1
 
-  # Self-hosted for the same reason as clippy above; needs: clippy is enough
-  # since frontend is already an ancestor of clippy in this chain.
+  # Same disk/package story as clippy above — this job compiles
+  # nexus-core/nexus-ai/nexus-server with --all-features (connectors-all
+  # included) plus builds the real ADBC drivers from source.
   test:
     name: test
-    needs: clippy
-    runs-on: [self-hosted, Linux]
+    runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          df -h /
+      # cmake/pkg-config/libpq-dev/libsqlite3-dev/libfmt-dev are needed to
+      # build the real ADBC drivers below (scripts/build-adbc-*-driver.sh,
+      # C++ builds, not crates.io packages) plus the same connectors-all
+      # system deps the clippy job installs (see that job's comment).
+      - name: Install system packages for connectors-all + ADBC build
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake pkg-config protobuf-compiler libfmt-dev \
+            zlib1g-dev unixodbc-dev libsqlite3-dev libpq-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
 
       # nexus-connector-postgres/nexus-connector-sqlite need the real ADBC
-      # drivers at test runtime (C++ implementations, not crates.io packages —
-      # see scripts/build-adbc-*-driver.sh). Integration tests also need a
-      # live Postgres via testcontainers (self-hosted has Docker, same as
-      # the connectors job below relies on). cmake/pkg-config/libpq-dev/
-      # libsqlite3-dev/libfmt-dev are assumed already present on this host,
-      # same posture as the connectors job's own comment below — no sudo
-      # apt-get here (runner service has no interactive sudo).
+      # drivers at test runtime. Integration tests also need a live
+      # Postgres via testcontainers (ubuntu-latest ships Docker).
       - name: Cache built ADBC drivers
         id: adbc-cache
         uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
@@ -363,22 +391,18 @@ jobs:
       # embedding_integration test (crates/nexus-ai/tests/embedding_integration.rs)
       # downloads a real sentence-transformers ONNX model + tokenizer from the
       # Hugging Face Hub into ~/.cache/nexusflow/models (see
-      # nexus-ai::embedding::model::cache_root). This host is a shared dev
-      # desktop doubling as the self-hosted runner (see the `connectors`
-      # job's comment below), not a dedicated ephemeral box, so nothing
-      # guarantees that directory survives between runs — cache it
-      # explicitly instead of relying on it.
+      # nexus-ai::embedding::model::cache_root) — cached explicitly since a
+      # hosted runner's cache doesn't otherwise survive between runs.
       - name: Cache Hugging Face model cache
         uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
           path: ~/.cache/nexusflow/models
           key: hf-models-${{ hashFiles('crates/nexus-ai/tests/embedding_integration.rs') }}
 
-      # Same reason and same fix as the clippy job above: --all-features
-      # enables embed-ui, whose RustEmbed derive needs frontend/dist to
-      # exist at compile time — built here directly rather than downloaded
-      # from the frontend job's (continue-on-error, allowed-to-fail)
-      # artifact upload.
+      # Same reason as the clippy job above: --all-features enables
+      # embed-ui, whose RustEmbed derive needs frontend/dist to exist at
+      # compile time — built here directly rather than downloaded from the
+      # frontend job's (continue-on-error, allowed-to-fail) artifact upload.
       - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
         with:
           node-version: "22"
@@ -393,16 +417,10 @@ jobs:
       # python_transform.rs`) shell out to a real `python3` and need
       # pandas/numpy/pyarrow/polars/python-dateutil on top of it — the
       # same packages the Dockerfile installs into the shipped image
-      # (CLAUDE.md §4.3). This host's default `python3` (Homebrew,
-      # PEP 668 externally-managed) has none of them, and isn't ours to
-      # `pip install --break-system-packages` into — that's the shared
-      # system Python of this dev desktop doubling as the self-hosted
-      # runner. A venv dedicated to this repo's CI
-      # (`~/.nexusflow-ci-python`, created once on the host, not part of
-      # the checkout) has all five; prepending its bin dir wins the
-      # `python3` PATH lookup for just this job.
-      - name: Prefer the nexusflow-ci venv's python3 (has pandas/pyarrow/etc.)
-        run: echo "/home/thiago/.nexusflow-ci-python/bin" >> "$GITHUB_PATH"
+      # (CLAUDE.md §4.3). ubuntu-latest ships a bare python3; installed
+      # directly here (hosted runner, no shared-desktop venv to reuse).
+      - name: Install Python packages for python_transform tests
+        run: pip install --no-input pandas numpy pyarrow polars python-dateutil
 
       - name: Run tests
         env:
@@ -414,9 +432,8 @@ jobs:
         # --workspace, this step was *also* running every connector crate's
         # own heavy/flaky container-based integration tests (e.g. kafka's
         # postgres_to_kafka_cdc_carries_correct_opcode_per_row, a 3-JVM
-        # Debezium test) a second time, racing the `connectors`/
-        # `connectors-heavy` jobs below for the same self-hosted machine's
-        # Docker/CPU and timing out.
+        # Debezium test) a second time, racing the `connectors` job below
+        # for the same runner's Docker/CPU and timing out.
         run: cargo test -p nexus-core -p nexus-ai -p nexus-server --all-features
 
   # crates/nexus-connectors is its own Cargo workspace (crate-per-connector,
@@ -436,24 +453,34 @@ jobs:
   # nested workspace's own CI checks. `cargo check --workspace --locked`
   # below validates that the committed lock is still usable, and the drift
   # step right after it guarantees the two locks stay aligned.
+  #
+  # Heaviest job in this workflow (lancedb/milvus/mongodb dep trees) —
+  # previously the one that actually hit the 14GB disk cap on
+  # `ubuntu-latest` (see the workflow-level comment's history). Same
+  # disk-reclaim + system-package mitigation as clippy/test above; this
+  # job is the real test of whether that's enough.
   connectors:
     name: connectors
-    needs: test
-    # Self-hosted Linux runner (nexusflow-local) — heaviest job (lancedb/milvus/
-    # mongodb dep trees), was hitting the 14GB disk cap on ubuntu-latest.
-    # Repo is private, single-maintainer, so no untrusted-PR risk.
-    runs-on: [self-hosted, Linux]
+    runs-on: ubuntu-latest
     timeout-minutes: 120
     defaults:
       run:
         working-directory: crates/nexus-connectors
-    # nexus-connector-lancedb/-milvus/-mongodb each pull in huge dependency
-    # trees (Lance/DataFusion/arrow-flight, tonic+prost, the full mongodb
-    # driver) — this is what blew past the GitHub-hosted runner's 14GB disk
-    # (see git history for that saga). Moot on self-hosted: real disk, no
-    # preinstalled-toolchain cleanup or job-count throttling needed.
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          df -h /
+      # zlib headers (kafka consumer feature) + protoc (lancedb's build.rs
+      # shells out to it) + libsqlite3-dev (nexus-connector-iceberg's
+      # iceberg-catalog-sql -> sqlx "sqlite" feature links the system lib).
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake pkg-config protobuf-compiler \
+            zlib1g-dev unixodbc-dev libsqlite3-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -461,12 +488,6 @@ jobs:
         with:
           workspaces: crates/nexus-connectors
 
-      # zlib headers (kafka consumer feature) + protoc (lancedb's build.rs
-      # shells out to it) + libsqlite3-dev (nexus-connector-iceberg's
-      # iceberg-catalog-sql -> sqlx "sqlite" feature links the system lib)
-      # are installed once on the self-hosted host, not per-run — no sudo
-      # apt-get here (runner service has no interactive sudo, and the
-      # packages persist on this disk between jobs anyway).
       - run: cargo fmt --all -- --check
 
       # Every connector must also compile with no features enabled — that's
@@ -487,12 +508,7 @@ jobs:
       # postgres_to_kafka_cdc_carries_correct_opcode_per_row (3 JVMs:
       # Zookeeper+Kafka+Connect) and text_chunk_embed_milvus_end_to_end
       # (3 containers: etcd+minio+milvus) are the two heaviest, flakiest
-      # tests in this workspace — this host is a shared dev desktop +
-      # self-hosted runner, chronically near its memory ceiling from normal
-      # desktop use, and these are the tests that feel it first. Deferred to
-      # the connectors-heavy job below so they run only after this job's own
-      # compile step has fully exited (and released its memory) instead of
-      # competing with it.
+      # tests in this workspace — skipped here for the same reason they
+      # always were (resource pressure), not re-evaluated as part of this
+      # runner migration.
       - run: cargo test --workspace --all-features --locked -- --skip postgres_to_kafka_cdc_carries_correct_opcode_per_row --skip text_chunk_embed_milvus_end_to_end
-
-

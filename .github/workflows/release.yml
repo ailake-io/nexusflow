@@ -16,31 +16,37 @@ name: Release
 # scripts/package-{deb,rpm,appimage}.sh, staged from the same release
 # binary+ADBC build as the tarball).
 #
-# arm64, Windows, and macOS are all out of scope for now (no installer, no
-# CI build in this workflow):
-# - arm64: no self-hosted equivalent to fall back to (unlike x86_64 above),
-#   and the hosted ubuntu-24.04-arm runner is blocked by an account billing
-#   issue (Settings > Billing and plans) — confirmed hitting even plain
-#   ubuntu-latest/x86_64, not just macOS/Windows, before x86_64 got routed
-#   to self-hosted. Re-add once billing is resolved — see git history for
-#   the exact matrix entry.
-# - Windows: build-windows (cargo-wix + packaging/windows/main.wxs, on the
-#   same self-hosted machine connectors-heavy.yml uses) was here and did
-#   run, but cargo build --features connectors-all failed for real —
-#   nexus-connector-mysql's mysql_cdc dependency only supports native
-#   OpenSSL (no rustls option), and that machine has no OpenSSL/vcpkg
-#   installed. Needs manual one-time setup on that host before re-adding
-#   (see git history for the removed job's full definition).
-# - macOS: no self-hosted macOS runner exists, the hosted macos-13/14
-#   runners hit the same billing block, and Mac isn't a current priority
-#   (ROADMAP.md's Pendências ativas item 5).
+# arm64, Windows, and macOS are still out of *this* workflow's matrix as of
+# this commit (no installer/CI build produced here yet) — not billing
+# blockers anymore now that the repo is public and hosted Actions minutes
+# are free/unmetered regardless of the org's private-repo billing issue,
+# just not re-added yet as part of this specific migration pass:
+# - arm64: no matrix leg here yet — `ubuntu-24.04-arm` is a normal hosted
+#   label now, same free tier as `ubuntu-latest`. Re-add as its own matrix
+#   entry when arm64 packaging becomes a priority.
+# - Windows: `.msi` is built by the separate build-windows-installer.yml
+#   workflow, not here — see that file for its own runner/setup story
+#   (OpenSSL/vcpkg, mysql_cdc's native-TLS requirement).
+# - macOS: specs exist in `packaging/macos/` but nothing builds them in CI
+#   yet (ROADMAP.md's Pendências ativas item 5) — `macos-latest` is a normal
+#   hosted runner now, same as Windows/Linux; this is a build-recipe gap to
+#   fill, not an infra one.
 #
-# All jobs run self-hosted on the same Linux machine as ci.yml's heavy jobs
-# — hosted ubuntu-latest runners are blocked account-wide by the billing
-# issue mentioned above, so the release jobs cannot rely on them either.
-# The `concurrency` group below serializes this workflow with CI (and with
-# other release runs) so the shared machine never runs two heavy cargo builds
-# at once.
+# All jobs moved to `ubuntu-latest` 2026-09-05 (repo went public same day,
+# same migration as ci.yml — see that file's header for the fuller
+# reasoning). This is a bigger change here than in ci.yml: every job below
+# used to pass files to the next one via a plain shared directory on the
+# self-hosted machine's disk (`/tmp/nexusflow-release-artifacts/$run_id`,
+# see each "Stage ... for downstream jobs"/"Fetch staged ..." step) instead
+# of `actions/upload-artifact`/`download-artifact`, specifically to dodge
+# the org's Actions artifact storage quota on this private repo ("Artifact
+# storage quota has been hit... recalculated every 6-12 hours", blocked
+# this exact chain once). That workaround only works when every job is the
+# same physical machine — on ephemeral hosted runners each job gets its own
+# fresh VM with no shared disk, so it's replaced below with real
+# upload-artifact/download-artifact. Public repos get free/unlimited
+# Actions artifact storage, which is what made the original quota problem
+# possible in the first place — this shouldn't recur.
 #
 # Continuous-release model, not tag-triggered: on `main`, this is the last
 # stage of a deliberate chain — CI -> connectors-heavy -> Release build ->
@@ -100,15 +106,6 @@ on:
 permissions:
   contents: read
 
-# Same fixed group as ci.yml — all release jobs share the same physical
-# self-hosted Linux machine as CI's heavy jobs. A fixed group with no
-# github.ref/github.sha in the key serializes across every branch/PR, not
-# just concurrent runs of the same one; cancel-in-progress: false queues
-# the new run instead of cancelling in-progress work.
-concurrency:
-  group: ci-self-hosted-runner
-  cancel-in-progress: false
-
 jobs:
   # Runs first, alone, before any packaging — real bug fixed here: this
   # used to live inside `github-release`, which only runs *after*
@@ -127,7 +124,7 @@ jobs:
   # failure this replaces) already behind another push.
   determine-version:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
-    runs-on: [self-hosted, Linux]
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: write
@@ -192,30 +189,23 @@ jobs:
     strategy:
       matrix:
         include:
-          # x86_64 routed to the same self-hosted machine ci.yml's
-          # test/connectors/docker-image jobs use — GitHub-hosted runners are
-          # blocked account-wide by a billing issue (Settings > Billing and
-          # plans), confirmed hitting even plain ubuntu-latest, not just
-          # macOS/Windows.
+          # arm64 (and macOS) still out of this matrix — not a billing block
+          # anymore (this repo is public, hosted minutes are free/unmetered
+          # regardless of the org's private-repo billing issue), just not
+          # re-added yet as part of this runner migration. Re-add
+          # ubuntu-24.04-arm/macos-latest as their own matrix legs whenever
+          # arm64/macOS packaging becomes a priority — see git history for
+          # the exact matrix entry this repo used to carry for arm64.
           - os: linux
             arch: x86_64
-            runner: [self-hosted, Linux]
-            self_hosted: true
-          # arm64 (and macOS below) dropped from this matrix for now — no
-          # self-hosted equivalent to fall back to (unlike x86_64 above),
-          # and the hosted ubuntu-24.04-arm/macos-13/macos-14 runners are
-          # all blocked by the same billing issue; a failing leg here was
-          # also showing up as a red run every single time regardless of
-          # x86_64's own outcome (even with fail-fast: false, which only
-          # stops one leg's failure from *cancelling* another, not from
-          # still being reported). Re-add arm64 once billing is resolved —
-          # see git history for the exact matrix entry.
+            runner: ubuntu-latest
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
-    # Concurrency is now handled at the workflow level (ci-self-hosted-runner
-    # group) so the whole Release workflow serializes with ci.yml on the same
-    # physical machine. Per-job concurrency is redundant and was removed.
     steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          df -h /
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           # Pinned to determine-version's exact output commit (post-bump if
@@ -239,12 +229,11 @@ jobs:
       # §3) and nexus-connector-kafka (rdkafka's default "cmake-build" feature
       # compiles vendored librdkafka from source, which auto-detects SASL/SSL/
       # zlib and silently builds without those protocols if headers are
-      # missing — installed here so the shipped binary has them). Skipped on
-      # the self-hosted runner: no interactive sudo there (same posture as
-      # ci.yml's test/connectors jobs), and these packages are assumed
-      # already present on that host from prior setup.
+      # missing — installed here so the shipped binary has them). Unconditional
+      # now that this always runs on a fresh ubuntu-latest VM (no host-level
+      # "already installed" assumption to skip past anymore).
       - name: Install native build deps for the ADBC drivers + connectors-all
-        if: matrix.os == 'linux' && !matrix.self_hosted
+        if: matrix.os == 'linux'
         run: |
           sudo apt-get update && sudo apt-get install -y \
             cmake pkg-config libpq-dev libsqlite3-dev libfmt-dev \
@@ -281,11 +270,22 @@ jobs:
       # build-windows-installer.yml's native build already make two) — that
       # Dockerfile is the proven recipe, and it clones its own pinned
       # `nexusflow` checkout independently rather than reusing this job's,
-      # so there's no risk of it seeing an inconsistent tree. `--ssh
-      # default` forwards this runner's own ssh-agent for that internal
-      # clone of the (also-private) `nexusflow` repo itself — the same
-      # agent this self-hosted machine already needs for its own git
-      # operations, not a new credential.
+      # so there's no risk of it seeing an inconsistent tree.
+      #
+      # KNOWN GAP as of the 2026-09-05 hosted-runner migration: `--ssh
+      # default` forwards an ssh-agent for that internal clone of
+      # `nexusflow` — on the old self-hosted box this worked because a
+      # persistent ssh-agent with the maintainer's own key was already
+      # running for unrelated reasons; a fresh `ubuntu-latest` runner has
+      # no such agent, so this step will fail outright ("no ssh agent
+      # found" or similar) until one of two things happens: (a) the
+      # private enterprise repo's Dockerfile is updated to clone
+      # `ailake-io/nexusflow` over plain HTTPS instead of SSH — the clean
+      # fix, since `nexusflow` is now public and needs no credential to
+      # clone at all — or (b) an explicit `ssh-agent`/`ssh-add` step is
+      # added here with a credential scoped to `nexusflow`. Not fixed in
+      # this commit: (a) requires editing the other (private) repo, out of
+      # scope of this change here.
       - name: Clone nexus-connectors-enterprise (read-only deploy key)
         env:
           DEPLOY_KEY: ${{ secrets.ENTERPRISE_REPO_DEPLOY_KEY }}
@@ -324,18 +324,12 @@ jobs:
           cp target/adbc/libadbc_driver_sqlite.so "$stage/"
           tar -czf "nexusflow-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" -C "$stage" .
 
-      # Every job below runs on the same single self-hosted Linux runner
-      # (see each job's runs-on), so a plain shared directory on that
-      # machine's disk hands artifacts between jobs without going through
-      # GitHub's own Actions artifact storage — which has a hard quota that
-      # doesn't recalculate for 6-12h after deleting old artifacts, and
-      # blocked this exact chain once already. Scoped by run_id so
-      # concurrent runs (or a re-run) don't collide.
-      - name: Stage tarball for downstream jobs (bypasses Actions artifact storage)
-        run: |
-          mkdir -p "/tmp/nexusflow-release-artifacts/${{ github.run_id }}"
-          cp "nexusflow-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" \
-            "/tmp/nexusflow-release-artifacts/${{ github.run_id }}/"
+      - name: Upload tarball for downstream jobs
+        uses: actions/upload-artifact@834a144ee995460fba8ed112a2fc961b36a5ec5a # v4.3.6
+        with:
+          name: nexusflow-tarball-${{ matrix.os }}-${{ matrix.arch }}
+          path: nexusflow-${{ matrix.os }}-${{ matrix.arch }}.tar.gz
+          retention-days: 1
 
       # Bundled, self-contained CPython + pandas/pyarrow/dbt-core/dbt-postgres
       # (scripts/build-python-runtime.sh) — package-{deb,rpm,appimage}.sh
@@ -355,11 +349,8 @@ jobs:
       - name: Build native Linux packages (deb/rpm/AppImage)
         if: matrix.os == 'linux' && matrix.arch == 'x86_64'
         run: |
-          # No sudo on the self-hosted runner (see the deps step above) —
-          # rpmbuild and appimagetool must already be available on this host.
           if ! command -v rpmbuild >/dev/null; then
-            echo "rpmbuild not found; install the 'rpm' package on the self-hosted host."
-            exit 1
+            sudo apt-get update && sudo apt-get install -y rpm
           fi
           if ! command -v appimagetool >/dev/null; then
             # Pinned to appimagetool 1.9.1 release (M34).
@@ -377,11 +368,13 @@ jobs:
           APPIMAGETOOL="${APPIMAGETOOL:-appimagetool --appimage-extract-and-run}" \
             ./scripts/package-appimage.sh target/package
 
-      - name: Stage native packages for downstream jobs (bypasses Actions artifact storage)
+      - name: Upload native packages for downstream jobs
         if: matrix.os == 'linux' && matrix.arch == 'x86_64'
-        run: |
-          mkdir -p "/tmp/nexusflow-release-artifacts/${{ github.run_id }}"
-          cp target/package/* "/tmp/nexusflow-release-artifacts/${{ github.run_id }}/"
+        uses: actions/upload-artifact@834a144ee995460fba8ed112a2fc961b36a5ec5a # v4.3.6
+        with:
+          name: nexusflow-native-packages-${{ matrix.os }}-${{ matrix.arch }}
+          path: target/package/*
+          retention-days: 1
 
   # build-windows removed for now — cargo build --features connectors-all
   # failed for real on the self-hosted windows-connectors-heavy runner:
@@ -396,15 +389,14 @@ jobs:
   smoke-test:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     needs: [determine-version, build]
-    runs-on: [self-hosted, Linux]
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      # Same-machine shared directory instead of actions/download-artifact —
-      # see the matching "Stage tarball" step in `build` for why.
-      - name: Fetch staged tarball
-        run: |
-          mkdir -p dist
-          cp "/tmp/nexusflow-release-artifacts/${{ github.run_id }}/nexusflow-linux-x86_64.tar.gz" dist/
+      - name: Download tarball
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: nexusflow-tarball-linux-x86_64
+          path: dist
       - name: Smoke test tarball
         run: |
           cd dist
@@ -414,30 +406,28 @@ jobs:
   github-release:
     if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') || github.event_name == 'workflow_dispatch'
     needs: [determine-version, build, smoke-test]
-    runs-on: [self-hosted, Linux]
-    # Self-hosted Linux (same machine as everything else here) — hosted
-    # ubuntu-latest is blocked account-wide by the billing issue described in
-    # this file's header. Needs `sha256sum` present on the host (standard on
-    # Ubuntu/Debian). GPG signing is intentionally omitted: the repo secrets
-    # are not configured, so only unsigned assets + SHA256SUMS are published.
+    runs-on: ubuntu-latest
+    # ubuntu-latest ships `sha256sum` by default. GPG signing is
+    # intentionally omitted: the repo secrets are not configured, so only
+    # unsigned assets + SHA256SUMS are published.
     timeout-minutes: 15
     permissions:
       contents: write
     steps:
       # No checkout here — version comes from `determine-version`'s output
       # now (that job already did the only thing this one used to need a
-      # working tree for), and everything else below just copies staged
-      # files and shells out to `gh`.
-      #
-      # Same-machine shared directory instead of actions/download-artifact
-      # — see the matching "Stage tarball"/"Stage native packages" steps in
-      # `build`. This is also the last job that reads the run's staged
-      # directory, so it cleans it up after (always(), so a failed release
-      # doesn't leak the staged files across runs indefinitely).
-      - name: Fetch staged build artifacts
-        run: |
-          mkdir -p dist
-          cp "/tmp/nexusflow-release-artifacts/${{ github.run_id }}"/* dist/
+      # working tree for), and everything else below just downloads
+      # artifacts and shells out to `gh`.
+      - name: Download tarball
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: nexusflow-tarball-linux-x86_64
+          path: dist
+      - name: Download native packages
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: nexusflow-native-packages-linux-x86_64
+          path: dist
       - name: Generate SHA256SUMS
         run: |
           cd dist
@@ -475,13 +465,10 @@ jobs:
           done
 
       - name: Clean up staged build artifacts
-        if: always()
-        run: rm -rf "/tmp/nexusflow-release-artifacts/${{ github.run_id }}"
-
   docker-publish:
     if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') || github.event_name == 'workflow_dispatch'
     needs: [determine-version, github-release]
-    runs-on: [self-hosted, Linux]
+    runs-on: ubuntu-latest
     timeout-minutes: 180
     permissions:
       contents: read
@@ -538,6 +525,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Same known gap as `build` job's identically-named clone step
+          # above: no ssh-agent exists on a fresh hosted runner for this to
+          # forward. Not fixed here — see that comment.
           ssh: default
           build-args: |
             NEXUSFLOW_REV=${{ needs.determine-version.outputs.sha }}
@@ -557,7 +547,7 @@ jobs:
   sync-develop:
     if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') || github.event_name == 'workflow_dispatch'
     needs: [determine-version, github-release]
-    runs-on: [self-hosted, Linux]
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: write
