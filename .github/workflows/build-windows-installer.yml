@@ -35,7 +35,12 @@ jobs:
   build-windows-installer:
     name: build-windows-installer
     runs-on: windows-latest
-    timeout-minutes: 60
+    # 60 min wasn't enough on a real run (2026-09-05): the plain-OSS
+    # `cargo build --release --features embed-ui,connectors-all` alone ran
+    # 44+ min before the job's own timeout cancelled it mid-build, and this
+    # step still has the enterprise binary rebuild after it. Bumped with
+    # real headroom rather than guessing again.
+    timeout-minutes: 150
     defaults:
       run:
         shell: pwsh
