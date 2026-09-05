@@ -187,6 +187,11 @@ jobs:
     needs: determine-version
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     strategy:
+      # A real run (2026-09-05) showed the cost of the default fail-fast:
+      # macOS failed on a real, unrelated bug (libpq pkg-config path) and
+      # cancelled the Linux leg mid-build, wasting ~40 min of otherwise-fine
+      # progress. One platform's failure shouldn't cancel the others.
+      fail-fast: false
       matrix:
         include:
           # arm64 Linux still out of this matrix — not a billing block
@@ -258,9 +263,18 @@ jobs:
       # system zlib is sufficient for rdkafka's cmake-build feature to find
       # SASL/zlib on its own; same "not yet proven" caveat as the rest of
       # this macOS leg.
+      #
+      # Real failure on a first real run (2026-09-05): libpq is keg-only in
+      # Homebrew (deliberately not linked into /opt/homebrew, to avoid
+      # conflicting with other Postgres installs) — its .pc file lives
+      # under `brew --prefix libpq`/lib/pkgconfig, outside pkg-config's
+      # default search path, so `pkg_check_modules(libpq)` failed outright
+      # ("Package 'libpq' not found") even though it was installed.
       - name: Install native build deps (macOS)
         if: matrix.os == 'macos'
-        run: brew install unixodbc libpq fmt
+        run: |
+          brew install unixodbc libpq fmt
+          echo "PKG_CONFIG_PATH=$(brew --prefix libpq)/lib/pkgconfig:$PKG_CONFIG_PATH" >> "$GITHUB_ENV"
 
       - run: npm ci
         working-directory: frontend
