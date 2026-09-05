@@ -335,11 +335,15 @@ jobs:
           set -euo pipefail
           mkdir -p -m 0700 ~/.ssh
           # Real failure on a first real run (2026-09-05): OpenSSH failed
-          # with "error in libcrypto" — the stored secret has CRLF line
-          # endings baked in (confirmed by build-windows-installer.yml's
-          # matching step: normalizing to LF-only there fixed the same key
-          # outright). `tr -d '\r'` strips them here too.
-          printf '%s' "$DEPLOY_KEY" | tr -d '\r' > ~/.ssh/enterprise_deploy_key
+          # with "error in libcrypto". Stripping CRLF alone (tried first,
+          # still failed the same way) wasn't enough — the missing piece
+          # was forcing exactly one trailing newline too, matching what
+          # actually fixed this on Windows (`.TrimEnd("`n") + "`n"` there).
+          # `$(...)` strips all trailing newlines from the captured value;
+          # `printf '%s\n'` adds back exactly one, regardless of whether
+          # the secret's raw value had zero, one, or several.
+          key="$(printf '%s' "$DEPLOY_KEY" | tr -d '\r')"
+          printf '%s\n' "$key" > ~/.ssh/enterprise_deploy_key
           chmod 600 ~/.ssh/enterprise_deploy_key
           ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
           GIT_SSH_COMMAND="ssh -i ~/.ssh/enterprise_deploy_key -o IdentitiesOnly=yes" \
@@ -554,11 +558,15 @@ jobs:
           set -euo pipefail
           mkdir -p -m 0700 ~/.ssh
           # Real failure on a first real run (2026-09-05): OpenSSH failed
-          # with "error in libcrypto" — the stored secret has CRLF line
-          # endings baked in (confirmed by build-windows-installer.yml's
-          # matching step: normalizing to LF-only there fixed the same key
-          # outright). `tr -d '\r'` strips them here too.
-          printf '%s' "$DEPLOY_KEY" | tr -d '\r' > ~/.ssh/enterprise_deploy_key
+          # with "error in libcrypto". Stripping CRLF alone (tried first,
+          # still failed the same way) wasn't enough — the missing piece
+          # was forcing exactly one trailing newline too, matching what
+          # actually fixed this on Windows (`.TrimEnd("`n") + "`n"` there).
+          # `$(...)` strips all trailing newlines from the captured value;
+          # `printf '%s\n'` adds back exactly one, regardless of whether
+          # the secret's raw value had zero, one, or several.
+          key="$(printf '%s' "$DEPLOY_KEY" | tr -d '\r')"
+          printf '%s\n' "$key" > ~/.ssh/enterprise_deploy_key
           chmod 600 ~/.ssh/enterprise_deploy_key
           ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
           GIT_SSH_COMMAND="ssh -i ~/.ssh/enterprise_deploy_key -o IdentitiesOnly=yes" \
