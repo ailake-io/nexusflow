@@ -96,6 +96,26 @@ jobs:
         with:
           workspaces: crates/nexus-connectors
 
+      # milvus-sdk-rust's build.rs (prost-build) needs a real `protoc` on
+      # PATH — present on the old self-hosted box from prior manual setup,
+      # not on a fresh windows-latest hosted runner. Pinned zip + sha256,
+      # same pattern as the rustup-init/gh-CLI downloads above/in
+      # build-windows-installer.yml.
+      - name: Install protoc
+        shell: pwsh
+        run: |
+          $protocVersion = "29.3"
+          $protocSha256 = "57ea59e9f551ad8d71ffaa9b5cfbe0ca1f4e720972a1db7ec2d12ab44bff9383"
+          $zipPath = "$env:TEMP\protoc.zip"
+          Invoke-WebRequest -Uri "https://github.com/protocolbuffers/protobuf/releases/download/v$protocVersion/protoc-$protocVersion-win64.zip" -OutFile $zipPath
+          $actual = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $protocSha256) {
+            Write-Error "protoc zip checksum mismatch: expected $protocSha256, got $actual"
+            exit 1
+          }
+          Expand-Archive -Path $zipPath -DestinationPath "$env:TEMP\protoc" -Force
+          "$env:TEMP\protoc\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+
       - name: Verify Docker is reachable
         shell: pwsh
         run: docker info
