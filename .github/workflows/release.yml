@@ -309,20 +309,15 @@ jobs:
       # `nexusflow` checkout independently rather than reusing this job's,
       # so there's no risk of it seeing an inconsistent tree.
       #
-      # KNOWN GAP as of the 2026-09-05 hosted-runner migration: `--ssh
-      # default` forwards an ssh-agent for that internal clone of
-      # `nexusflow` — on the old self-hosted box this worked because a
-      # persistent ssh-agent with the maintainer's own key was already
-      # running for unrelated reasons; a fresh `ubuntu-latest` runner has
-      # no such agent, so this step will fail outright ("no ssh agent
-      # found" or similar) until one of two things happens: (a) the
-      # private enterprise repo's Dockerfile is updated to clone
-      # `ailake-io/nexusflow` over plain HTTPS instead of SSH — the clean
-      # fix, since `nexusflow` is now public and needs no credential to
-      # clone at all — or (b) an explicit `ssh-agent`/`ssh-add` step is
-      # added here with a credential scoped to `nexusflow`. Not fixed in
-      # this commit: (a) requires editing the other (private) repo, out of
-      # scope of this change here.
+      # RESOLVED 2026-09-05 (was a KNOWN GAP in an earlier commit of this
+      # migration): the enterprise repo's Dockerfile used to clone
+      # `nexusflow` over SSH, needing `--ssh default` to forward an agent —
+      # confirmed failing outright on a real hosted run ("invalid empty ssh
+      # agent socket") since a fresh `ubuntu-latest` runner has no
+      # persistent agent like the old self-hosted box did. Fixed at the
+      # source: that Dockerfile now clones over plain HTTPS instead (
+      # `nexusflow` is public, no credential needed for that clone at all),
+      # so `docker build` below no longer passes `--ssh default`.
       #
       # Linux only — the enterprise binary is built via `docker build`
       # below, and Docker isn't available on GitHub's hosted macOS
@@ -355,7 +350,7 @@ jobs:
         if: matrix.os == 'linux'
         run: |
           set -euo pipefail
-          DOCKER_BUILDKIT=1 docker build --ssh default --target builder \
+          DOCKER_BUILDKIT=1 docker build --target builder \
             --build-arg NEXUSFLOW_REV=${{ needs.determine-version.outputs.sha }} \
             --build-arg ENTERPRISE_FEATURES=connectors-all \
             -t nexusflow-enterprise-builder-${{ github.run_id }} \
@@ -597,10 +592,6 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # Same known gap as `build` job's identically-named clone step
-          # above: no ssh-agent exists on a fresh hosted runner for this to
-          # forward. Not fixed here — see that comment.
-          ssh: default
           build-args: |
             NEXUSFLOW_REV=${{ needs.determine-version.outputs.sha }}
             ENTERPRISE_FEATURES=connectors-all
