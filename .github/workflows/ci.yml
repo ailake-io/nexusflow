@@ -233,7 +233,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             cmake pkg-config protobuf-compiler libprotobuf-dev \
-            zlib1g-dev unixodbc-dev libsqlite3-dev libpq-dev
+            zlib1g-dev libcurl4-openssl-dev unixodbc-dev libsqlite3-dev libpq-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -367,7 +367,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             cmake pkg-config protobuf-compiler libprotobuf-dev libfmt-dev \
-            zlib1g-dev unixodbc-dev libsqlite3-dev libpq-dev
+            zlib1g-dev libcurl4-openssl-dev unixodbc-dev libsqlite3-dev libpq-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
 
@@ -480,7 +480,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             cmake pkg-config protobuf-compiler libprotobuf-dev \
-            zlib1g-dev unixodbc-dev libsqlite3-dev
+            zlib1g-dev libcurl4-openssl-dev unixodbc-dev libsqlite3-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy

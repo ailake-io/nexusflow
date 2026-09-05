@@ -19,21 +19,86 @@ import {
 type Currency = 'brl' | 'usd'
 
 /**
- * Roadmap candidates (ROADMAP.md Fase 12 Bloco 3, priorização em
- * docs/ENTERPRISE_CONNECTORS.md's "Priorização sugerida" groups 1-2) — none
- * of these are registered connectors yet (no crate exists in this repo, see
- * that doc's own header), so there's no `licensed` state to show for them.
- * Kept honest with an "Em breve" badge and no buy button — no payment flow
- * exists yet either (Bloco 2/4), and no price model has been decided
- * (`docs/ENTERPRISE_LICENSING.md`'s own "Próximos passos" #2).
+ * Full enterprise connector catalog (docs/ENTERPRISE_CONNECTORS.md,
+ * 2026-09-05 — 37 crates in the private nexus-connectors-enterprise repo).
+ * None of these are registered connectors in *this* (OSS) binary — no
+ * crate for them exists in this repo, by design (LICENSING.md §2). Shown
+ * here purely for discovery: a plain-OSS user can see what exists and
+ * what it takes to unlock it, without the running binary pretending to
+ * have a `licensed` state for something it can't build at all. Grouped by
+ * category (same grouping as ENTERPRISE_CONNECTORS.md) with one shared
+ * blurb per category (`store.category*`) instead of a bespoke line per
+ * connector — purchase flow intentionally deferred (ROADMAP.md Fase 12
+ * Bloco 2/4 — no payment/pricing exists yet), so no buy button here even
+ * though `licensingConfigured` guards one below for the (currently empty)
+ * "available now" section.
  */
-const COMING_SOON: { slug: string; name: string; reasonKey: string }[] = [
-  { slug: 'snowflake', name: 'Snowflake', reasonKey: 'store.reasonSnowflake' },
-  { slug: 'bigquery', name: 'BigQuery', reasonKey: 'store.reasonBigquery' },
-  { slug: 'redshift', name: 'Redshift', reasonKey: 'store.reasonRedshift' },
-  { slug: 'databricks', name: 'Databricks', reasonKey: 'store.reasonDatabricks' },
-  { slug: 'salesforce', name: 'Salesforce', reasonKey: 'store.reasonSalesforce' },
-  { slug: 'excel', name: 'Excel', reasonKey: 'store.reasonExcel' },
+type EnterpriseCategory =
+  | 'dw'
+  | 'saas'
+  | 'marketing'
+  | 'office'
+  | 'vector'
+  | 'streaming'
+  | 'cdc'
+
+const ENTERPRISE_CATALOG: { slug: string; name: string; category: EnterpriseCategory }[] = [
+  // Data warehouses / bancos analíticos enterprise
+  { slug: 'snowflake', name: 'Snowflake', category: 'dw' },
+  { slug: 'bigquery', name: 'BigQuery', category: 'dw' },
+  { slug: 'redshift', name: 'Redshift', category: 'dw' },
+  { slug: 'databricks', name: 'Databricks', category: 'dw' },
+  { slug: 'oracle', name: 'Oracle', category: 'dw' },
+  { slug: 'hana', name: 'SAP HANA', category: 'dw' },
+  { slug: 'mssql', name: 'SQL Server / Synapse', category: 'dw' },
+  { slug: 'teradata', name: 'Teradata', category: 'dw' },
+  { slug: 'vertica', name: 'Vertica', category: 'dw' },
+  { slug: 'starburst', name: 'Starburst (Trino)', category: 'dw' },
+  // SaaS / CRM / ERP
+  { slug: 'salesforce', name: 'Salesforce', category: 'saas' },
+  { slug: 'hubspot', name: 'HubSpot', category: 'saas' },
+  { slug: 'workday', name: 'Workday', category: 'saas' },
+  { slug: 'netsuite', name: 'NetSuite', category: 'saas' },
+  { slug: 'dynamics365', name: 'Dynamics 365', category: 'saas' },
+  { slug: 'servicenow', name: 'ServiceNow', category: 'saas' },
+  { slug: 'zendesk', name: 'Zendesk', category: 'saas' },
+  // Marketing / Ads / Analytics
+  { slug: 'ga4', name: 'Google Analytics 4', category: 'marketing' },
+  { slug: 'google-ads', name: 'Google Ads', category: 'marketing' },
+  { slug: 'meta-ads', name: 'Meta Ads', category: 'marketing' },
+  { slug: 'linkedin-ads', name: 'LinkedIn Ads', category: 'marketing' },
+  { slug: 'tiktok-ads', name: 'TikTok Ads', category: 'marketing' },
+  { slug: 'x-ads', name: 'X Ads', category: 'marketing' },
+  { slug: 'stripe', name: 'Stripe', category: 'marketing' },
+  { slug: 'shopify', name: 'Shopify', category: 'marketing' },
+  { slug: 'youtube-analytics', name: 'YouTube Analytics', category: 'marketing' },
+  // Arquivos de escritório / produtividade
+  { slug: 'excel', name: 'Excel', category: 'office' },
+  { slug: 'google-sheets', name: 'Google Sheets', category: 'office' },
+  { slug: 'sharepoint', name: 'SharePoint', category: 'office' },
+  { slug: 'dropbox', name: 'Dropbox', category: 'office' },
+  { slug: 'google-drive', name: 'Google Drive', category: 'office' },
+  // Vetorial / busca enterprise
+  { slug: 'elasticsearch', name: 'Elasticsearch / OpenSearch', category: 'vector' },
+  { slug: 'weaviate', name: 'Weaviate', category: 'vector' },
+  { slug: 'vertex-vector-search', name: 'Vertex AI Vector Search', category: 'vector' },
+  { slug: 'azure-ai-search', name: 'Azure AI Search', category: 'vector' },
+  // Streaming enterprise
+  { slug: 'kinesis', name: 'Amazon Kinesis', category: 'streaming' },
+  { slug: 'pulsar', name: 'Apache Pulsar', category: 'streaming' },
+  // CDC avançado
+  { slug: 'oracle-cdc', name: 'Oracle CDC', category: 'cdc' },
+  { slug: 'mssql-cdc', name: 'SQL Server CDC', category: 'cdc' },
+]
+
+const CATEGORY_ORDER: EnterpriseCategory[] = [
+  'dw',
+  'saas',
+  'marketing',
+  'office',
+  'vector',
+  'streaming',
+  'cdc',
 ]
 
 /**
@@ -47,8 +112,9 @@ const COMING_SOON: { slug: string; name: string; reasonKey: string }[] = [
  *
  * "Disponíveis agora" only ever lists connectors the running binary
  * actually has registered with `requires_license` (none in this repo
- * today — see `docs/ENTERPRISE_LICENSING.md`); "Em breve" is the static
- * roadmap list above, never treated as real inventory.
+ * today — see `docs/ENTERPRISE_LICENSING.md`); the enterprise catalog
+ * below it is the static list above, grouped by category, never treated
+ * as real inventory this binary can build.
  */
 export function Store() {
   const { t } = useI18n()
@@ -288,22 +354,32 @@ export function Store() {
       )}
 
       <div>
-        <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        <h2 className="mb-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           {t('store.comingSoon')}
         </h2>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {COMING_SOON.map((c) => (
-            <div key={c.slug} className="rounded-xl border border-white/10 bg-card/50 p-4 opacity-80">
-              <div className="flex items-center justify-between">
-                <span className="font-medium text-foreground">{c.name}</span>
-                <span className="rounded-full bg-white/5 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
-                  {t('store.comingSoonBadge')}
-                </span>
-              </div>
-              <p className="mt-1.5 text-xs text-muted-foreground">{t(c.reasonKey)}</p>
+        <p className="mb-3 text-xs text-muted-foreground">{t('store.enterpriseCatalogNote')}</p>
+        {CATEGORY_ORDER.map((category) => (
+          <div key={category} className="mb-6">
+            <h3 className="mb-2 text-[11px] font-semibold text-muted-foreground">
+              {t(`store.category.${category}`)}
+            </h3>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {ENTERPRISE_CATALOG.filter((c) => c.category === category).map((c) => (
+                <div
+                  key={c.slug}
+                  className="rounded-xl border border-white/10 bg-card/50 p-4 opacity-80"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium text-foreground">{c.name}</span>
+                    <span className="rounded-full bg-white/5 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                      {t('store.comingSoonBadge')}
+                    </span>
+                  </div>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          </div>
+        ))}
       </div>
     </div>
   )
