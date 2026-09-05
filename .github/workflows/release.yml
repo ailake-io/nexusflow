@@ -334,7 +334,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p -m 0700 ~/.ssh
-          printf '%s' "$DEPLOY_KEY" > ~/.ssh/enterprise_deploy_key
+          # Real failure on a first real run (2026-09-05): OpenSSH failed
+          # with "error in libcrypto" — the stored secret has CRLF line
+          # endings baked in (confirmed by build-windows-installer.yml's
+          # matching step: normalizing to LF-only there fixed the same key
+          # outright). `tr -d '\r'` strips them here too.
+          printf '%s' "$DEPLOY_KEY" | tr -d '\r' > ~/.ssh/enterprise_deploy_key
           chmod 600 ~/.ssh/enterprise_deploy_key
           ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
           GIT_SSH_COMMAND="ssh -i ~/.ssh/enterprise_deploy_key -o IdentitiesOnly=yes" \
@@ -548,7 +553,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p -m 0700 ~/.ssh
-          printf '%s' "$DEPLOY_KEY" > ~/.ssh/enterprise_deploy_key
+          # Real failure on a first real run (2026-09-05): OpenSSH failed
+          # with "error in libcrypto" — the stored secret has CRLF line
+          # endings baked in (confirmed by build-windows-installer.yml's
+          # matching step: normalizing to LF-only there fixed the same key
+          # outright). `tr -d '\r'` strips them here too.
+          printf '%s' "$DEPLOY_KEY" | tr -d '\r' > ~/.ssh/enterprise_deploy_key
           chmod 600 ~/.ssh/enterprise_deploy_key
           ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
           GIT_SSH_COMMAND="ssh -i ~/.ssh/enterprise_deploy_key -o IdentitiesOnly=yes" \
