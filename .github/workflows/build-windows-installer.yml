@@ -178,7 +178,16 @@ jobs:
           $sshDir = "$env:USERPROFILE\.ssh"
           New-Item -ItemType Directory -Force -Path $sshDir | Out-Null
           $keyPath = "$sshDir\enterprise_deploy_key"
-          [System.IO.File]::WriteAllText($keyPath, $env:DEPLOY_KEY)
+          # Real failure on a first real run (2026-09-05): OpenSSH on
+          # Windows rejected the key outright ("invalid format"). Normalize
+          # to LF-only and force a trailing newline before writing — an SSH
+          # private key with CRLF line endings or a missing final newline
+          # (either possible depending on how the GitHub secret's value was
+          # entered) fails PEM parsing even though the key content itself
+          # is correct. Untested whether this was the actual root cause;
+          # it's a safe, idempotent normalization regardless.
+          $normalizedKey = ($env:DEPLOY_KEY -replace "`r`n", "`n" -replace "`r", "`n").TrimEnd("`n") + "`n"
+          [System.IO.File]::WriteAllText($keyPath, $normalizedKey)
           icacls $keyPath /inheritance:r /grant:r "$($env:USERNAME):(R)" | Out-Null
           ssh-keyscan.exe github.com 2>$null | Out-File -Append -Encoding ascii "$sshDir\known_hosts"
           $env:GIT_SSH_COMMAND = "ssh -i `"$keyPath`" -o IdentitiesOnly=yes"
