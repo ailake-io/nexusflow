@@ -214,7 +214,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path enterprise-src\.cargo | Out-Null
           $repoRoot = (Get-Location).Path -replace '\\', '/'
           @"
-          [patch."ssh://git@github.com/ailake-io/nexusflow.git"]
+          [patch."https://github.com/ailake-io/nexusflow.git"]
           nexus-core = { path = "$repoRoot/crates/nexus-core" }
           nexus-server = { path = "$repoRoot/crates/nexus-server" }
           "@ | Out-File -Encoding utf8 enterprise-src\.cargo\config.toml
