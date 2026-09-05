@@ -195,10 +195,7 @@ fn router(state: AppState) -> Router {
         // Deleting one run from the history is the same tier as deleting
         // the pipeline itself — both are destructive, irreversible edits
         // to state a `Read`/`Execute` caller shouldn't be able to make.
-        .route(
-            "/pipelines/{id}/runs/{run_id}",
-            delete(delete_run_handler),
-        )
+        .route("/pipelines/{id}/runs/{run_id}", delete(delete_run_handler))
         // Full spec (connector configs, secrets included) for reloading a
         // saved pipeline back onto the canvas to edit it. Gated behind
         // `Write` (not `Read`) because it's symmetric to create/update: only
@@ -3594,7 +3591,11 @@ mod tests {
     /// A login POST with `peer` attached as the connection's `ConnectInfo`
     /// — `oneshot` never opens a real socket, so this is how these tests
     /// simulate "requests arriving from this real address" without one.
-    fn login_credentials_request(peer: SocketAddr, username: &str, password: &str) -> Request<Body> {
+    fn login_credentials_request(
+        peer: SocketAddr,
+        username: &str,
+        password: &str,
+    ) -> Request<Body> {
         let body = serde_json::json!({"username": username, "password": password});
         Request::builder()
             .method("POST")

@@ -1050,11 +1050,7 @@ async fn run_transform_pipeline(
             .record_all(&spec.pipeline_id, run_id, &outcomes)
             .await
         {
-            log_error(
-                log,
-                format!("failed to persist quality check results: {e}"),
-            )
-            .await;
+            log_error(log, format!("failed to persist quality check results: {e}")).await;
         }
     }
 

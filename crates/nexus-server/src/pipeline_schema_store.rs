@@ -93,7 +93,11 @@ fn diff_columns(old: &[ColumnInfo], new: &[ColumnInfo]) -> Vec<String> {
 /// captured schema, suitable as an alert message — `None` when nothing
 /// changed (including when there's no previous schema to compare against,
 /// i.e. this is the pipeline's first run).
-fn drift_message(previous: &PipelineSchema, source: &[ColumnInfo], output: &[ColumnInfo]) -> Option<String> {
+fn drift_message(
+    previous: &PipelineSchema,
+    source: &[ColumnInfo],
+    output: &[ColumnInfo],
+) -> Option<String> {
     let mut parts = Vec::new();
     let source_diff = diff_columns(&previous.source_columns, source);
     if !source_diff.is_empty() {
@@ -146,9 +150,11 @@ impl PipelineSchemaStore {
             }
             MetadataPool::Postgres(p) => {
                 sqlx::query(create).execute(p).await?;
-                sqlx::query("ALTER TABLE pipeline_schemas ADD COLUMN IF NOT EXISTS last_drift TEXT")
-                    .execute(p)
-                    .await?;
+                sqlx::query(
+                    "ALTER TABLE pipeline_schemas ADD COLUMN IF NOT EXISTS last_drift TEXT",
+                )
+                .execute(p)
+                .await?;
             }
         }
 
@@ -229,21 +235,27 @@ impl PipelineSchemaStore {
              FROM pipeline_schemas WHERE pipeline_id = ?",
         );
         #[allow(clippy::type_complexity)]
-        let row: Option<(String, String, String, Option<String>, String, Option<String>)> =
-            match &self.pool {
-                MetadataPool::Sqlite(p) => {
-                    sqlx::query_as(sqlx::AssertSqlSafe(sql))
-                        .bind(pipeline_id)
-                        .fetch_optional(p)
-                        .await?
-                }
-                MetadataPool::Postgres(p) => {
-                    sqlx::query_as(sqlx::AssertSqlSafe(sql))
-                        .bind(pipeline_id)
-                        .fetch_optional(p)
-                        .await?
-                }
-            };
+        let row: Option<(
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+            Option<String>,
+        )> = match &self.pool {
+            MetadataPool::Sqlite(p) => {
+                sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .bind(pipeline_id)
+                    .fetch_optional(p)
+                    .await?
+            }
+            MetadataPool::Postgres(p) => {
+                sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .bind(pipeline_id)
+                    .fetch_optional(p)
+                    .await?
+            }
+        };
 
         let Some((pipeline_id, source_json, output_json, lineage_json, captured_at, last_drift)) =
             row
@@ -345,7 +357,10 @@ mod tests {
             .await
             .unwrap();
         let source = cols(&["id"], &["Int64"]);
-        let drift = store.record("pipe-1", &source, &source, None).await.unwrap();
+        let drift = store
+            .record("pipe-1", &source, &source, None)
+            .await
+            .unwrap();
         assert_eq!(drift, None);
     }
 
@@ -355,8 +370,14 @@ mod tests {
             .await
             .unwrap();
         let source = cols(&["id", "amount"], &["Int64", "Int64"]);
-        store.record("pipe-1", &source, &source, None).await.unwrap();
-        let drift = store.record("pipe-1", &source, &source, None).await.unwrap();
+        store
+            .record("pipe-1", &source, &source, None)
+            .await
+            .unwrap();
+        let drift = store
+            .record("pipe-1", &source, &source, None)
+            .await
+            .unwrap();
         assert_eq!(drift, None);
     }
 
@@ -377,7 +398,10 @@ mod tests {
 
         assert!(drift.contains("+region"), "drift message: {drift}");
         assert!(drift.contains("-status"), "drift message: {drift}");
-        assert!(drift.contains("amount: Int64→Utf8"), "drift message: {drift}");
+        assert!(
+            drift.contains("amount: Int64→Utf8"),
+            "drift message: {drift}"
+        );
     }
 
     #[tokio::test]

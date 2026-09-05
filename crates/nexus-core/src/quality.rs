@@ -73,9 +73,7 @@ fn display_value(batch: &RecordBatch, col: usize, row: usize) -> Option<String> 
     if array.is_null(row) {
         return None;
     }
-    use arrow_array::{
-        BooleanArray, Float64Array, Int64Array, StringArray,
-    };
+    use arrow_array::{BooleanArray, Float64Array, Int64Array, StringArray};
     let s = match array.data_type() {
         DataType::Int64 => array
             .as_any()
@@ -158,15 +156,15 @@ fn evaluate_one(batches: &[RecordBatch], spec: &QualityCheckSpec) -> QualityChec
     // user explicitly configured a check against a specific column name,
     // so a typo should surface, not vanish).
     let Some(col_idx) = column_index(first, &spec.column) else {
-        return fail(format!("column {:?} not found in pipeline output", spec.column));
+        return fail(format!(
+            "column {:?} not found in pipeline output",
+            spec.column
+        ));
     };
 
     match &spec.check {
         QualityCheckKind::NotNull => {
-            let null_count: usize = batches
-                .iter()
-                .map(|b| b.column(col_idx).null_count())
-                .sum();
+            let null_count: usize = batches.iter().map(|b| b.column(col_idx).null_count()).sum();
             if null_count == 0 {
                 pass()
             } else {
@@ -188,7 +186,10 @@ fn evaluate_one(batches: &[RecordBatch], spec: &QualityCheckSpec) -> QualityChec
             if duplicates.is_empty() {
                 pass()
             } else {
-                fail(format!("duplicate value(s) found: {}", duplicates.join(", ")))
+                fail(format!(
+                    "duplicate value(s) found: {}",
+                    duplicates.join(", ")
+                ))
             }
         }
         QualityCheckKind::Min { min } => {
@@ -260,7 +261,10 @@ pub fn evaluate_quality_checks(
     checks: &[QualityCheckSpec],
 ) -> Vec<QualityCheckOutcome> {
     let _ = total_rows(batches); // reserved for a future row-count-based check
-    checks.iter().map(|spec| evaluate_one(batches, spec)).collect()
+    checks
+        .iter()
+        .map(|spec| evaluate_one(batches, spec))
+        .collect()
 }
 
 #[cfg(test)]

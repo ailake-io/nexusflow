@@ -25,7 +25,9 @@ pub use pipeline::{
     PartitionHandle, PartitionStats, PipelineEngine, ProgressEvent, ProgressSender,
     TransformPipeline,
 };
-pub use quality::{evaluate_quality_checks, QualityCheckKind, QualityCheckOutcome, QualityCheckSpec};
+pub use quality::{
+    evaluate_quality_checks, QualityCheckKind, QualityCheckOutcome, QualityCheckSpec,
+};
 pub use record_batch_builder::RecordBatchBuilder;
 pub use registry::{ConnectorDescriptor, ConnectorRegistry, SinkBuilder, SourceBuilder};
 pub use retry::{is_transient_error, retry_with_backoff, RetryConfig};

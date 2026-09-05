@@ -324,14 +324,18 @@ impl PipelineStore {
 
         let sql = self.q("SELECT id FROM pipeline_runs WHERE pipeline_id = ?");
         let run_ids: Vec<(i64,)> = match &self.pool {
-            MetadataPool::Sqlite(p) => sqlx::query_as(sqlx::AssertSqlSafe(sql))
-                .bind(id)
-                .fetch_all(p)
-                .await?,
-            MetadataPool::Postgres(p) => sqlx::query_as(sqlx::AssertSqlSafe(sql))
-                .bind(id)
-                .fetch_all(p)
-                .await?,
+            MetadataPool::Sqlite(p) => {
+                sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .bind(id)
+                    .fetch_all(p)
+                    .await?
+            }
+            MetadataPool::Postgres(p) => {
+                sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .bind(id)
+                    .fetch_all(p)
+                    .await?
+            }
         };
 
         let sql = self.q("DELETE FROM pipeline_runs WHERE pipeline_id = ?");
@@ -759,16 +763,20 @@ impl PipelineStore {
         // handler can return an accurate error instead of a blanket 404.
         let sql = self.q("SELECT status FROM pipeline_runs WHERE id = ? AND pipeline_id = ?");
         let row: Option<(String,)> = match &self.pool {
-            MetadataPool::Sqlite(p) => sqlx::query_as(sqlx::AssertSqlSafe(sql))
-                .bind(run_id)
-                .bind(pipeline_id)
-                .fetch_optional(p)
-                .await?,
-            MetadataPool::Postgres(p) => sqlx::query_as(sqlx::AssertSqlSafe(sql))
-                .bind(run_id)
-                .bind(pipeline_id)
-                .fetch_optional(p)
-                .await?,
+            MetadataPool::Sqlite(p) => {
+                sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .bind(run_id)
+                    .bind(pipeline_id)
+                    .fetch_optional(p)
+                    .await?
+            }
+            MetadataPool::Postgres(p) => {
+                sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .bind(run_id)
+                    .bind(pipeline_id)
+                    .fetch_optional(p)
+                    .await?
+            }
         };
         Ok(match row {
             Some((status,)) if status == "running" => DeleteRunOutcome::StillRunning,

@@ -33,15 +33,16 @@ pub(crate) fn open_connection(uri: &str) -> Result<ManagedConnection, NexusError
     // only `duckdb_adbc_init`. Try the standard name first, fall back to the
     // DuckDB-specific one — a failed symbol resolution has no side effects,
     // so the fallback is safe.
-    let mut driver = ManagedDriver::load_dynamic_from_filename(&driver_path, None, AdbcVersion::V110)
-        .or_else(|_| {
-            ManagedDriver::load_dynamic_from_filename(
-                &driver_path,
-                Some(b"duckdb_adbc_init"),
-                AdbcVersion::V110,
-            )
-        })
-        .map_err(|e| NexusError::Connector(format!("failed to load ADBC driver: {e}")))?;
+    let mut driver =
+        ManagedDriver::load_dynamic_from_filename(&driver_path, None, AdbcVersion::V110)
+            .or_else(|_| {
+                ManagedDriver::load_dynamic_from_filename(
+                    &driver_path,
+                    Some(b"duckdb_adbc_init"),
+                    AdbcVersion::V110,
+                )
+            })
+            .map_err(|e| NexusError::Connector(format!("failed to load ADBC driver: {e}")))?;
 
     let opts = [(OptionDatabase::Uri, uri.into())];
     let database = driver

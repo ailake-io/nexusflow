@@ -117,9 +117,8 @@ pub fn resource_identifier(connector: &str, config: &Value) -> Option<(ResourceK
         "mongodb" | "mongodb-cdc" | "chromadb" => {
             qualified("database", "collection").map(|id| (ResourceKind::Collection, id))
         }
-        "qdrant" | "milvus" => {
-            either("collection", "collection_name").map(|c| (ResourceKind::Collection, c.to_string()))
-        }
+        "qdrant" | "milvus" => either("collection", "collection_name")
+            .map(|c| (ResourceKind::Collection, c.to_string())),
         "pinecone" => qualified("namespace", "index_name").map(|id| (ResourceKind::Collection, id)),
         "kafka" => field("topic").map(|t| (ResourceKind::Topic, t.to_string())),
         "mqtt" => field("topic_filter").map(|t| (ResourceKind::Topic, t.to_string())),
@@ -129,7 +128,9 @@ pub fn resource_identifier(connector: &str, config: &Value) -> Option<(ResourceK
         "csv" | "parquet" => field("path").map(|p| (ResourceKind::File, p.to_string())),
         // Enterprise connectors — ODBC batch (database+table, no CDC
         // variant for any of these yet):
-        "teradata" | "vertica" => qualified("database", "table").map(|id| (ResourceKind::Table, id)),
+        "teradata" | "vertica" => {
+            qualified("database", "table").map(|id| (ResourceKind::Table, id))
+        }
         // Enterprise REST/SaaS — one stable identifier per connector, no
         // shared namespace concept:
         "hubspot" => field("object_type").map(|o| (ResourceKind::Collection, o.to_string())),
@@ -181,7 +182,9 @@ pub fn resource_identifier(connector: &str, config: &Value) -> Option<(ResourceK
         }
         "azure-ai-search" => field("index_name").map(|i| (ResourceKind::Collection, i.to_string())),
         "weaviate" => field("class_name").map(|c| (ResourceKind::Collection, c.to_string())),
-        "vertex-vector-search" => field("index_id").map(|i| (ResourceKind::Collection, i.to_string())),
+        "vertex-vector-search" => {
+            field("index_id").map(|i| (ResourceKind::Collection, i.to_string()))
+        }
         // Enterprise streaming:
         "kinesis" => field("stream_name").map(|s| (ResourceKind::Topic, s.to_string())),
         "pulsar" => field("topic").map(|t| (ResourceKind::Topic, t.to_string())),
