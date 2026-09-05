@@ -1,15 +1,18 @@
 name: build-windows-installer
 
 # Standalone .msi build — deliberately NOT part of the CI -> connectors-heavy
-# -> Release chain (release.yml). Windows was dropped from that chain
-# because the self-hosted windows-connectors-heavy runner needs a one-time
-# manual vcpkg/OpenSSL setup before `cargo build --features connectors-all`
-# succeeds (nexus-connector-mysql's mysql_cdc only supports native OpenSSL,
-# no rustls option) — see release.yml's header comment for the full story.
-# This workflow only ever runs when a human explicitly triggers it
-# (workflow_dispatch), never on push/PR, and never blocks or is blocked by
-# CI/connectors-heavy/Release — the same self-hosted Windows runner
-# connectors-heavy.yml uses, but a fully independent workflow file.
+# -> Release chain (release.yml). Moved off the dedicated self-hosted
+# Windows box to hosted `windows-latest` 2026-09-05 (repo went public same
+# day, no more self-hosted NexusFlow Actions) — the vcpkg/OpenSSL setup
+# that used to be a manual one-time step on that host is now an explicit
+# `vcpkg install` step below, run fresh each time against the vcpkg
+# GitHub's windows-latest image ships pre-installed
+# (`$env:VCPKG_INSTALLATION_ROOT`). Not yet proven against a real run as of
+# this commit — nexus-connector-mysql's mysql_cdc only supports native
+# OpenSSL (no rustls option), which is what originally failed here before
+# vcpkg was set up. This workflow only ever runs when a human explicitly
+# triggers it (workflow_dispatch), never on push/PR, and never blocks or is
+# blocked by CI/connectors-heavy/Release.
 on:
   workflow_dispatch:
     inputs:
@@ -31,7 +34,7 @@ env:
 jobs:
   build-windows-installer:
     name: build-windows-installer
-    runs-on: [windows-connectors-heavy]
+    runs-on: windows-latest
     timeout-minutes: 60
     defaults:
       run:
@@ -70,23 +73,22 @@ jobs:
           "C:\Program Files\Git\usr\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
           "C:\Program Files\CMake\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
 
-      # One-time manual setup this runner needs before this ever succeeds
-      # (see the workflow-level comment above): `vcpkg install
-      # openssl:x64-windows-static-md`, `vcpkg integrate install`, and
-      # VCPKG_ROOT set in the runner's own environment (not here — it has
-      # to survive across jobs/runs, this step only *verifies* it, with a
-      # clear error instead of a cryptic openssl-sys build failure deep in
-      # the cargo build step below).
-      - name: Verify vcpkg OpenSSL is set up
+      # Runs fresh every time now (ephemeral hosted runner, no persistent
+      # one-time setup possible) — GitHub's windows-latest image ships
+      # vcpkg pre-installed at $env:VCPKG_INSTALLATION_ROOT, so this is
+      # "install one package into it" rather than a from-scratch vcpkg
+      # bootstrap. `vcpkg integrate install` wires MSBuild to auto-link
+      # vcpkg packages; openssl-sys's build.rs also needs VCPKG_ROOT set
+      # explicitly to find it (persisted via $GITHUB_ENV for later steps).
+      - name: Install vcpkg OpenSSL (static)
         shell: pwsh
         run: |
-          if (-not $env:VCPKG_ROOT) {
-            Write-Error "VCPKG_ROOT is not set on this runner — one-time setup needed: vcpkg install openssl:x64-windows-static-md && vcpkg integrate install, then set VCPKG_ROOT in the runner's environment. See this workflow's header comment."
-            exit 1
-          }
-          $opensslPkg = Join-Path $env:VCPKG_ROOT "installed\x64-windows-static-md\lib\libssl.lib"
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install openssl:x64-windows-static-md
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" integrate install
+          "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $opensslPkg = Join-Path $env:VCPKG_INSTALLATION_ROOT "installed\x64-windows-static-md\lib\libssl.lib"
           if (!(Test-Path $opensslPkg)) {
-            Write-Error "openssl:x64-windows-static-md not found under VCPKG_ROOT — run: vcpkg install openssl:x64-windows-static-md"
+            Write-Error "openssl:x64-windows-static-md install did not produce $opensslPkg"
             exit 1
           }
 

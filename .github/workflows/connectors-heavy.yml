@@ -28,9 +28,16 @@ jobs:
   connectors-heavy:
     name: connectors-heavy
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
-    # Dedicated Windows self-hosted runner. Docker Desktop must be running and
-    # exposing the named pipe for testcontainers.
-    runs-on: [windows-connectors-heavy]
+    # Moved off the dedicated self-hosted Windows box to hosted
+    # `windows-latest` 2026-09-05 (repo went public same day, no more
+    # self-hosted NexusFlow Actions — see ci.yml/release.yml for the same
+    # migration). GitHub's windows-latest image ships Docker Desktop with
+    # Linux container support already switched on (the named pipe below is
+    # the same one that mode exposes) — not yet proven against a real run
+    # of this specific job as of this commit; the old self-hosted box's own
+    # comment history is the only evidence this job's Docker requirement is
+    # real, not a guess.
+    runs-on: windows-latest
     timeout-minutes: 180
     defaults:
       run:
