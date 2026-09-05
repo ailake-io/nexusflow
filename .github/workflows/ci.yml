@@ -40,9 +40,43 @@ jobs:
   # Self-hosted (see the workflow-level `concurrency` comment above) — no
   # `needs:` since it doesn't touch the Rust *build* graph, but it still
   # only runs after `fmt` releases the machine, same as every other job here.
+  # Scans the full commit history (every ref, `--log-opts="--all"`) for
+  # accidentally-committed secrets — added ahead of making this repo
+  # public, when a stranger's PR/fork can see the entire history for the
+  # first time. Ran manually once against all 383 commits/all refs
+  # (2026-09-05): exactly one match, the documented non-secret test key in
+  # crates/nexus-server/src/license.rs (see .gitleaks.toml's allowlist) —
+  # no real leak found. This job guards against a *future* commit
+  # introducing one, not a one-time audit.
+  #
+  # Pinned by version + sha256 (same pattern as ci.yml's appimagetool
+  # download / build-windows-installer.yml's gh CLI download) rather than
+  # a marketplace action — gitleaks ships no pinned-SHA GitHub Action of
+  # its own worth trusting blindly here.
+  gitleaks:
+    name: gitleaks
+    needs: fmt
+    runs-on: [self-hosted, Linux]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0 # full history — a shallow clone can't scan past commits
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: "8.21.2"
+          GITLEAKS_SHA256: "5bc41815076e6ed6ef8fbecc9d9b75bcae31f39029ceb55da08086315316e3ba"
+        run: |
+          curl -fsSL -o gitleaks.tar.gz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum -c -
+          tar xzf gitleaks.tar.gz gitleaks
+          chmod +x gitleaks
+      - name: Scan full history for secrets
+        run: ./gitleaks detect --source . --log-opts="--all" -c .gitleaks.toml --redact --exit-code 1
+
   cargo-audit:
     name: cargo-audit
-    needs: fmt
+    needs: gitleaks
     runs-on: [self-hosted, Linux]
     timeout-minutes: 15
     steps:
