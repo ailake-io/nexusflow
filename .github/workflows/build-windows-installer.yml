@@ -99,6 +99,25 @@ jobs:
 
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
 
+      # Same real failure connectors-heavy.yml hit and fixed: lance-encoding
+      # (pulled in by connectors-all's lancedb) needs a real `protoc` on
+      # PATH, absent from windows-latest by default. Pinned zip + sha256,
+      # same download as that workflow's fix.
+      - name: Install protoc
+        shell: pwsh
+        run: |
+          $protocVersion = "29.3"
+          $protocSha256 = "57ea59e9f551ad8d71ffaa9b5cfbe0ca1f4e720972a1db7ec2d12ab44bff9383"
+          $zipPath = "$env:TEMP\protoc.zip"
+          Invoke-WebRequest -Uri "https://github.com/protocolbuffers/protobuf/releases/download/v$protocVersion/protoc-$protocVersion-win64.zip" -OutFile $zipPath
+          $actual = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $protocSha256) {
+            Write-Error "protoc zip checksum mismatch: expected $protocSha256, got $actual"
+            exit 1
+          }
+          Expand-Archive -Path $zipPath -DestinationPath "$env:TEMP\protoc" -Force
+          "$env:TEMP\protoc\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+
       - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.4.0
         with:
           node-version: 22
