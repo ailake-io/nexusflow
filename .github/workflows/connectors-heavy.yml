@@ -12,7 +12,7 @@ on:
   # `workflow_run` is the only way to sequence separate workflow files —
   # there's no cross-file `needs:`. The job-level `if:` below only lets this
   # actually run when CI's main-branch run succeeded; a failed/cancelled CI
-  # run on main should not still kick off the heavy Windows suite.
+  # run on main should not still kick off this heavy suite.
   workflow_run:
     workflows: ["CI"]
     types: [completed]
@@ -28,23 +28,23 @@ jobs:
   connectors-heavy:
     name: connectors-heavy
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
-    # Moved off the dedicated self-hosted Windows box to hosted
-    # `windows-latest` 2026-09-05 (repo went public same day, no more
-    # self-hosted NexusFlow Actions — see ci.yml/release.yml for the same
-    # migration). GitHub's windows-latest image ships Docker Desktop with
-    # Linux container support already switched on (the named pipe below is
-    # the same one that mode exposes) — not yet proven against a real run
-    # of this specific job as of this commit; the old self-hosted box's own
-    # comment history is the only evidence this job's Docker requirement is
-    # real, not a guess.
-    runs-on: windows-latest
+    # Moved off a dedicated self-hosted Windows box to hosted `ubuntu-latest`
+    # 2026-09-05 (repo went public same day, no more self-hosted NexusFlow
+    # Actions — see ci.yml/release.yml for the same migration). Originally
+    # ran on Windows only because that was the available "heavy" dedicated
+    # machine, not because the test needs Windows — `milvus_integration.rs`
+    # is plain testcontainers + Docker + CPU embeddings, nothing
+    # OS-specific, confirmed by reading the test itself. `windows-latest`
+    # was tried first and failed outright: GitHub's hosted Windows image
+    # doesn't run Docker in Linux-container mode, so testcontainers had no
+    # daemon to reach at all ("failed to connect to the docker API...
+    # system cannot find the file specified"). Linux hosted runners already
+    # run Docker natively — same pattern ci.yml's test/connectors jobs use.
+    runs-on: ubuntu-latest
     timeout-minutes: 180
     defaults:
       run:
-        shell: pwsh
         working-directory: crates/nexus-connectors
-    env:
-      DOCKER_HOST: npipe:////./pipe/docker_engine
     steps:
       # workflow_run's default ref/sha context is the repo's default branch,
       # not the commit CI just validated on main — pin explicitly so this
@@ -53,71 +53,33 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
-      # The self-hosted Windows runner has WSL's bash earlier in PATH than Git
-      # Bash, so dtolnay/rust-toolchain's internal bash steps mangle the temp
-      # script path. Use PowerShell to install/verify rustup instead, and put
-      # Git for Windows' Unix tools + CMake on PATH so rdkafka-sys can build
-      # librdkafka with its cmake-build feature.
-      - name: Install Rust stable
-        shell: pwsh
+      - name: Free disk space
         run: |
-          $cargoBin = "$env:USERPROFILE\.cargo\bin"
-          if (!(Get-Command rustc.exe -ErrorAction SilentlyContinue)) {
-            # win.rustup.rs's `.sha256` sidecar has been returning a bare S3
-            # NoSuchKey 404 (the installer itself still serves fine) — switched
-            # to the same official release bucket rustup itself publishes from,
-            # which serves both files correctly.
-            Invoke-WebRequest -Uri https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe -OutFile rustup-init.exe
-            # Served as `content-type: binary/octet-stream` (no charset) — Invoke-WebRequest
-            # hands back raw bytes here, not a string, so `.Content` needs an explicit decode
-            # before `.Split()` works.
-            $shaBytes = (Invoke-WebRequest -Uri https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe.sha256 -UseBasicParsing).Content
-            $expected = [System.Text.Encoding]::ASCII.GetString($shaBytes).Trim().Split()[0]
-            $actual = (Get-FileHash -Algorithm SHA256 -Path rustup-init.exe).Hash
-            if ($expected -ne $actual) {
-              Write-Error "rustup-init checksum mismatch: expected $expected, got $actual"
-              exit 1
-            }
-            ./rustup-init.exe -y --default-toolchain stable --no-modify-path
-            Remove-Item rustup-init.exe
-          }
-          # rustup-init doesn't put cargoBin on PATH for *this* running
-          # process (only future ones, and only if --no-modify-path were
-          # dropped) — the $GITHUB_PATH appends below only take effect in
-          # later steps. Without this, a first-ever run on a fresh runner
-          # fails right here: "rustup: command not found".
-          $env:Path = "$cargoBin;$env:Path"
-          rustup default stable
-          "$cargoBin" | Out-File -FilePath $env:GITHUB_PATH -Append
-          "C:\Program Files\Git\usr\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
-          "C:\Program Files\CMake\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          df -h /
 
-      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+      # protobuf-compiler alone doesn't ship the google/protobuf/*.proto
+      # well-known-types files on Ubuntu (needed by milvus-sdk-rust's
+      # build.rs via prost-build) — libprotobuf-dev provides those. Same
+      # fix ci.yml's clippy/test/connectors jobs needed for the same reason.
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
         with:
           workspaces: crates/nexus-connectors
 
-      # milvus-sdk-rust's build.rs (prost-build) needs a real `protoc` on
-      # PATH — present on the old self-hosted box from prior manual setup,
-      # not on a fresh windows-latest hosted runner. Pinned zip + sha256,
-      # same pattern as the rustup-init/gh-CLI downloads above/in
-      # build-windows-installer.yml.
-      - name: Install protoc
-        shell: pwsh
-        run: |
-          $protocVersion = "29.3"
-          $protocSha256 = "57ea59e9f551ad8d71ffaa9b5cfbe0ca1f4e720972a1db7ec2d12ab44bff9383"
-          $zipPath = "$env:TEMP\protoc.zip"
-          Invoke-WebRequest -Uri "https://github.com/protocolbuffers/protobuf/releases/download/v$protocVersion/protoc-$protocVersion-win64.zip" -OutFile $zipPath
-          $actual = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLower()
-          if ($actual -ne $protocSha256) {
-            Write-Error "protoc zip checksum mismatch: expected $protocSha256, got $actual"
-            exit 1
-          }
-          Expand-Archive -Path $zipPath -DestinationPath "$env:TEMP\protoc" -Force
-          "$env:TEMP\protoc\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
-
-      - name: Verify Docker is reachable
-        shell: pwsh
-        run: docker info
+      # --all-features turns on nexus-ai's `cpu` feature, whose embedding
+      # model download needs the Hugging Face Hub cache — same as ci.yml's
+      # test job, cached the same way for the same reason (hosted runner
+      # cache doesn't otherwise survive between runs).
+      - name: Cache Hugging Face model cache
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ~/.cache/nexusflow/models
+          key: hf-models-milvus-${{ hashFiles('crates/nexus-connectors/nexus-connector-milvus/tests/milvus_integration.rs') }}
 
       - run: cargo test -p nexus-connector-milvus --all-features --test milvus_integration
