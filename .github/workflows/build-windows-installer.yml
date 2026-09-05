@@ -197,16 +197,20 @@ jobs:
       - name: Build enterprise binary (all OSS + enterprise connectors)
         shell: pwsh
         run: |
-          # Same overlay the enterprise Dockerfile does: this repo's own
-          # nexus-connector-kinesis crate is a placeholder/early version —
-          # the enterprise repo's copy is authoritative, and nexus-server's
-          # connectors-all feature resolves the *path* dependency at
-          # crates/nexus-connectors/nexus-connector-kinesis, so it has to be
-          # replaced there before the patch below redirects nexus-server
-          # itself at this checkout.
-          Remove-Item -Recurse -Force crates\nexus-connectors\nexus-connector-kinesis
-          Copy-Item -Recurse enterprise-src\crates\nexus-connector-kinesis crates\nexus-connectors\nexus-connector-kinesis
-
+          # Real failure on a first real run (2026-09-05): this step used
+          # to overlay a "placeholder" nexus-connector-kinesis from
+          # enterprise-src onto this OSS checkout — stale by the time this
+          # ever actually ran. The OSS `nexusflow` repo has never had a
+          # nexus-connector-kinesis crate at all (confirmed earlier this
+          # same session: zero references anywhere in this repo), and the
+          # enterprise repo's own Cargo.toml/bin/main.rs were fixed
+          # separately (kinesis added as its own workspace member,
+          # `extern crate` wired in `bin/main.rs`) so it no longer needs
+          # this overlay — same fix already removed the matching dead step
+          # from the enterprise Dockerfile. Removed here for the same
+          # reason: `crates\nexus-connectors\nexus-connector-kinesis`
+          # doesn't exist in this checkout, so `Remove-Item` on it failed
+          # outright.
           New-Item -ItemType Directory -Force -Path enterprise-src\.cargo | Out-Null
           $repoRoot = (Get-Location).Path -replace '\\', '/'
           @"
