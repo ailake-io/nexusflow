@@ -273,7 +273,7 @@ jobs:
       - name: Install native build deps (macOS)
         if: matrix.os == 'macos'
         run: |
-          brew install unixodbc libpq fmt
+          brew install unixodbc libpq fmt protobuf
           echo "PKG_CONFIG_PATH=$(brew --prefix libpq)/lib/pkgconfig:$PKG_CONFIG_PATH" >> "$GITHUB_ENV"
 
       - run: npm ci
