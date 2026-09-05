@@ -464,7 +464,6 @@ jobs:
             gh release upload "$tag" "$f" --clobber
           done
 
-      - name: Clean up staged build artifacts
   docker-publish:
     if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') || github.event_name == 'workflow_dispatch'
     needs: [determine-version, github-release]
