@@ -2,6 +2,74 @@
 
 Guia prático de instalação e uso — do zero até rodar seu primeiro pipeline. Para arquitetura interna, ver [`ARCHITECTURE.md`](../ARCHITECTURE.md); para a stack completa, [`CLAUDE.md`](../CLAUDE.md).
 
+## Requisitos de hardware
+
+> **Estimativas de engenharia, não benchmark formal.** Este repositório
+> não tem uma suíte de performance própria ainda — os números abaixo vêm
+> de fatos conhecidos da arquitetura (o que é comprovadamente CPU-bound
+> ou memory-bound, ver referências entre parênteses), não de medição real
+> de throughput em hardware específico. Trate como ponto de partida pra
+> dimensionar, não como garantia.
+
+### Mínimo — testar localmente, 1-2 pipelines simples, sem embeddings
+
+| Recurso | Valor |
+|---|---|
+| CPU | 2 núcleos |
+| RAM | 2 GB |
+| Disco | 1 GB livre (binário + SQLite + drivers ADBC) |
+| SO | Linux x86_64 (único caminho validado de ponta a ponta — ver `README.md`'s nota de validação de plataforma) |
+| Rede | só o necessário pras fontes/destinos configurados |
+
+Suficiente pro binário single-node com SQLite (padrão), 1-2 pipelines
+batch simples sem `embedding`/`dbt`, volume de dado pequeno. O processo
+em si é leve (Rust, sem JVM) — o teto real vem do que os *pipelines*
+fazem, não do binário parado.
+
+### Recomendado — produção, múltiplos pipelines concorrentes, embeddings/dbt
+
+| Recurso | Valor |
+|---|---|
+| CPU | 4-8 núcleos |
+| RAM | 8-16 GB |
+| Disco | SSD, 20 GB+ livres |
+| GPU | Opcional, **não obrigatória** |
+| Backend de metadados | Postgres em vez de SQLite (multi-réplica/k8s) |
+
+Por que esses números, não chutados:
+
+- **RAM escala com o node `transform` (inclui `embedding`)** — pipeline
+  sem `transform` (passthrough) faz streaming de verdade, memória
+  limitada pelo `channel_capacity` configurado; mas `transform`/
+  `embedding` **materializam o dataset inteiro em memória**
+  (`PipelineEngine::drain_sources`, `ARCHITECTURE.md §4`) antes de
+  aplicar SQL/embedding. Uma tabela de origem grande passando por
+  `transform` precisa de RAM proporcional ao tamanho dela, não do
+  tamanho do batch.
+- **Single-node compartilha um processo só** — todo pipeline do mesmo
+  deployment roda na mesma máquina, paralelismo é *dentro* do processo
+  via tasks do tokio (`ARCHITECTURE.md §6`, decisão deliberada de
+  escopo). Múltiplas partições/pipelines concorrentes competem pelo
+  mesmo CPU/RAM — dimensionar pelo pico de uso simultâneo esperado, não
+  por um pipeline isolado.
+- **Modelo de embedding local fica carregado em memória** — backend
+  `cpu`/ONNX (`ARCHITECTURE.md §8`) carrega o modelo uma vez por run;
+  modelos pequenos (`all-MiniLM-L6-v2`) ficam na casa de 100MB, modelos
+  maiores passam de 1GB. Inferência CPU se beneficia de mais núcleos.
+- **CDC nativo mantém conexão persistente** — `postgres-cdc`/
+  `mongodb-cdc`/`mysql-cdc` seguram uma conexão de replicação/change
+  stream aberta o tempo todo (`ARCHITECTURE.md §7`); rede instável
+  degrada resume, não corrompe dado (checkpoint por partição cobre
+  isso), mas convém rede estável pra CDC em produção.
+- **GPU (`cuda`/`metal`) existe mas não foi validada em hardware real**
+  neste projeto ainda (`ROADMAP.md`, item 3 das "Pendências ativas") —
+  acelera embedding em volume alto quando funcionar, mas CPU já atende
+  volume pequeno/médio sem GPU nenhuma.
+- **SSD, não HDD** — cache de modelo (`~/.cache/nexusflow/models`),
+  checkpoint SQLite com escrita frequente em CDC, e formatos de data
+  lake locais (Parquet/Delta/Iceberg/AI-Lake) fazem I/O de disco
+  suficiente pra HDD virar gargalo real.
+
 ## 1. Instalação
 
 Escolha uma das opções abaixo. Todas sobem o mesmo binário: um único processo servindo API REST + WebSocket + UI web em `http://localhost:8080`.
