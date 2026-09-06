@@ -1376,12 +1376,28 @@ async fn apply_llm_stage(
 
     let backend = nexus_ai::llm::load_llm_backend(spec);
     let cache = connect_llm_cache(spec).await?;
-    let nexus_core::LlmModelConfig::Api {
-        model,
-        cost_per_1k_prompt_tokens,
-        cost_per_1k_completion_tokens,
-        ..
-    } = &spec.model;
+    let (model, cost_per_1k_prompt_tokens, cost_per_1k_completion_tokens) = match &spec.model {
+        nexus_core::LlmModelConfig::Api {
+            model,
+            cost_per_1k_prompt_tokens,
+            cost_per_1k_completion_tokens,
+            ..
+        } => (
+            model,
+            cost_per_1k_prompt_tokens,
+            cost_per_1k_completion_tokens,
+        ),
+        nexus_core::LlmModelConfig::Anthropic {
+            model,
+            cost_per_1k_prompt_tokens,
+            cost_per_1k_completion_tokens,
+            ..
+        } => (
+            model,
+            cost_per_1k_prompt_tokens,
+            cost_per_1k_completion_tokens,
+        ),
+    };
 
     let mut out = Vec::with_capacity(inputs.len());
     for (name, schema, batches) in inputs {

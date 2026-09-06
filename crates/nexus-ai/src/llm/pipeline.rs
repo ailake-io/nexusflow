@@ -1,3 +1,4 @@
+use crate::llm::anthropic_client::{AnthropicClient, AnthropicClientConfig};
 use crate::llm::client::{LlmClient, LlmClientConfig};
 use crate::llm::common::{append_text_column, cache_key, LlmCache, LlmError};
 use arrow_array::RecordBatch;
@@ -6,25 +7,35 @@ use nexus_core::{LlmModelConfig, LlmNodeSpec};
 
 /// A loaded LLM backend, reused across every batch of a run — mirrors
 /// `embedding::EmbeddingBackend`'s shape (loaded once via
-/// [`load_llm_backend`], not per batch) even though there's only one
-/// variant today; keeps the door open for a future non-HTTP backend
-/// without another breaking change to `apply_llm`'s signature.
+/// [`load_llm_backend`], not per batch).
 pub enum LlmBackend {
     Api(LlmClient),
+    Anthropic(AnthropicClient),
 }
 
 pub fn load_llm_backend(spec: &LlmNodeSpec) -> LlmBackend {
-    let LlmModelConfig::Api {
-        base_url,
-        model,
-        api_key_env,
-        ..
-    } = &spec.model;
-    LlmBackend::Api(LlmClient::new(LlmClientConfig {
-        base_url: base_url.clone(),
-        model: model.clone(),
-        api_key_env: api_key_env.clone(),
-    }))
+    match &spec.model {
+        LlmModelConfig::Api {
+            base_url,
+            model,
+            api_key_env,
+            ..
+        } => LlmBackend::Api(LlmClient::new(LlmClientConfig {
+            base_url: base_url.clone(),
+            model: model.clone(),
+            api_key_env: api_key_env.clone(),
+        })),
+        LlmModelConfig::Anthropic {
+            base_url,
+            model,
+            api_key_env,
+            ..
+        } => LlmBackend::Anthropic(AnthropicClient::new(AnthropicClientConfig {
+            base_url: base_url.clone(),
+            model: model.clone(),
+            api_key_env: api_key_env.clone(),
+        })),
+    }
 }
 
 /// Metadata for one LLM call, returned alongside the transformed batch so
@@ -91,8 +102,10 @@ pub async fn apply_llm(
     backend: &LlmBackend,
     cache: Option<&dyn LlmCache>,
 ) -> Result<LlmApplyResult, LlmError> {
-    let LlmBackend::Api(client) = backend;
-    let LlmModelConfig::Api { model, .. } = &spec.model;
+    let model = match &spec.model {
+        LlmModelConfig::Api { model, .. } => model,
+        LlmModelConfig::Anthropic { model, .. } => model,
+    };
 
     let column_indices: Vec<(String, usize)> = spec
         .input_columns
@@ -128,9 +141,18 @@ pub async fn apply_llm(
         let (response_text, tokens_prompt, tokens_completion, latency_ms) = match cached {
             Some(text) => (text, 0, 0, 0),
             None => {
-                let resp = client
-                    .call(&prompt, spec.max_tokens, spec.temperature)
-                    .await?;
+                let resp = match backend {
+                    LlmBackend::Api(client) => {
+                        client
+                            .call(&prompt, spec.max_tokens, spec.temperature)
+                            .await?
+                    }
+                    LlmBackend::Anthropic(client) => {
+                        client
+                            .call(&prompt, spec.max_tokens, spec.temperature)
+                            .await?
+                    }
+                };
                 if let (Some(c), Some(cache_spec)) = (cache, &spec.cache) {
                     c.set(&key, &resp.text, cache_spec.ttl_seconds).await;
                 }

@@ -301,21 +301,29 @@ pub struct LlmCacheSpec {
     pub ttl_seconds: u64,
 }
 
-/// Which backend serves the LLM call. Only an HTTP API today (no local
-/// ONNX/GGUF path) — kept as a tagged enum matching `EmbeddingModelSpec`'s
-/// shape so a future local backend doesn't require a breaking spec change.
+/// Which backend serves the LLM call. No local ONNX/GGUF path — always an
+/// HTTP API, either OpenAI-shaped (`Api`, covers OpenAI itself, Ollama's
+/// `/v1` compat endpoint, Moonshot/Kimi, Groq, and most other providers
+/// that mimic the OpenAI request/response shape) or Anthropic's own native
+/// Messages API (`Anthropic` — different auth header, request/response
+/// shape, so it needs its own variant rather than fitting `Api`). Kept as
+/// a tagged enum matching `EmbeddingModelSpec`'s shape so a future backend
+/// doesn't require a breaking spec change.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "backend")]
 pub enum LlmModelConfig {
     Api {
         /// Base URL of an OpenAI-compatible chat completions endpoint (no
-        /// trailing `/chat/completions` — e.g. "https://api.openai.com/v1").
+        /// trailing `/chat/completions` — e.g. "https://api.openai.com/v1",
+        /// "http://localhost:11434/v1" for Ollama, "https://api.moonshot.cn/v1"
+        /// for Kimi).
         base_url: String,
         /// Model name passed through to the API request body.
         model: String,
         /// Name of the environment variable holding the API key on the
         /// machine running nexus-server — never the key itself (CLAUDE.md
-        /// §5: no secret lives in the persisted DAG JSON).
+        /// §5: no secret lives in the persisted DAG JSON). `None` means the
+        /// endpoint needs no auth (e.g. a local Ollama/vLLM server).
         #[serde(default)]
         api_key_env: Option<String>,
         /// Price per 1,000 prompt/completion tokens, in whatever currency
@@ -328,6 +336,29 @@ pub enum LlmModelConfig {
         #[serde(default)]
         cost_per_1k_completion_tokens: Option<f64>,
     },
+    /// Anthropic's native Messages API (`POST {base_url}/v1/messages`,
+    /// `x-api-key` header instead of `Authorization: Bearer`, `max_tokens`
+    /// required by the API itself unlike OpenAI's optional field) — not
+    /// OpenAI-shaped, so it can't reuse `Api` above.
+    Anthropic {
+        /// No trailing `/v1/messages` — e.g. "https://api.anthropic.com".
+        #[serde(default = "default_anthropic_base_url")]
+        base_url: String,
+        /// e.g. "claude-sonnet-5", "claude-opus-5".
+        model: String,
+        /// Name of the environment variable holding the API key — never
+        /// the key itself, same reasoning as `Api::api_key_env`. Unlike
+        /// `Api`, this is required: Anthropic's API has no "no auth" mode.
+        api_key_env: String,
+        #[serde(default)]
+        cost_per_1k_prompt_tokens: Option<f64>,
+        #[serde(default)]
+        cost_per_1k_completion_tokens: Option<f64>,
+    },
+}
+
+fn default_anthropic_base_url() -> String {
+    "https://api.anthropic.com".to_string()
 }
 
 /// Two shapes, both valid DAGs (ARCHITECTURE.md §4):
@@ -621,9 +652,24 @@ impl PipelineSpec {
                     "llm.output_column must not be empty".into(),
                 ));
             }
-            let LlmModelConfig::Api {
-                base_url, model, ..
-            } = &llm.model;
+            let (base_url, model) = match &llm.model {
+                LlmModelConfig::Api {
+                    base_url, model, ..
+                } => (base_url, model),
+                LlmModelConfig::Anthropic {
+                    base_url,
+                    model,
+                    api_key_env,
+                    ..
+                } => {
+                    if api_key_env.trim().is_empty() {
+                        return Err(NexusError::Schema(
+                            "llm.model.api_key_env must not be empty".into(),
+                        ));
+                    }
+                    (base_url, model)
+                }
+            };
             if base_url.trim().is_empty() {
                 return Err(NexusError::Schema(
                     "llm.model.base_url must not be empty".into(),
@@ -855,7 +901,10 @@ fn validate_llm_security(
     model: &LlmModelConfig,
     allow_internal_hosts: bool,
 ) -> Result<(), NexusError> {
-    let LlmModelConfig::Api { base_url, .. } = model;
+    let base_url = match model {
+        LlmModelConfig::Api { base_url, .. } => base_url,
+        LlmModelConfig::Anthropic { base_url, .. } => base_url,
+    };
     if base_url.starts_with('/') {
         return Err(NexusError::Schema(
             "llm.model.base_url must not be an absolute path".into(),
