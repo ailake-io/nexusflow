@@ -266,6 +266,15 @@ export interface RunRecord {
   error: string | null
   stats: PartitionStats[] | null
   dbt_summary: DbtRunSummary | null
+  /** LLMOPS_IMPLEMENTATION_PLAN.md Marco L2 — `null` when the run had no
+   *  `llm` node. */
+  llm_stats: LlmRunStats | null
+}
+
+export interface LlmRunStats {
+  tokens_prompt: number
+  tokens_completion: number
+  cost_estimate: number
 }
 
 /**

@@ -64,6 +64,15 @@ pub struct RunRecord {
     /// dbt outcome summary (Marco 10 task #26's UI panel) — `None` when the
     /// pipeline has no `dbt` step, or that build lacks the "dbt" feature.
     pub dbt_summary: Option<serde_json::Value>,
+    /// LLM token/cost usage (LLMOPS_IMPLEMENTATION_PLAN.md Marco L2) —
+    /// `None` when the run had no `llm` node, or that build lacks the
+    /// "llm" feature. Always `None` from `list_runs` itself (this store
+    /// has no dependency on `pipeline_run_llm_stats_store` — a separate
+    /// table/store, same reasoning `license_store` and `pipeline_store`
+    /// stay independent); `list_runs_handler` fills it in afterwards. Same
+    /// serialization convention as `dbt_summary` above (always present,
+    /// `null` rather than omitted when absent).
+    pub llm_stats: Option<serde_json::Value>,
 }
 
 /// Persists `PipelineSpec`s (encrypted at rest, see `crypto.rs`) and the
@@ -719,6 +728,7 @@ impl PipelineStore {
                         error,
                         stats,
                         dbt_summary,
+                        llm_stats: None,
                     })
                 },
             )

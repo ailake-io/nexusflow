@@ -282,6 +282,15 @@ pub enum LlmModelConfig {
         /// §5: no secret lives in the persisted DAG JSON).
         #[serde(default)]
         api_key_env: Option<String>,
+        /// Price per 1,000 prompt/completion tokens, in whatever currency
+        /// the caller wants displayed (LLMOPS_IMPLEMENTATION_PLAN.md Marco
+        /// L2). No universal price table exists across providers/models —
+        /// the user supplies it. `None` means cost is never estimated for
+        /// this node (aggregate cost stays 0, tokens still tracked).
+        #[serde(default)]
+        cost_per_1k_prompt_tokens: Option<f64>,
+        #[serde(default)]
+        cost_per_1k_completion_tokens: Option<f64>,
     },
 }
 

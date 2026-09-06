@@ -18,6 +18,7 @@ pub fn load_llm_backend(spec: &LlmNodeSpec) -> LlmBackend {
         base_url,
         model,
         api_key_env,
+        ..
     } = &spec.model;
     LlmBackend::Api(LlmClient::new(LlmClientConfig {
         base_url: base_url.clone(),
@@ -184,6 +185,8 @@ mod tests {
                 base_url: server.uri(),
                 model: "gpt-test".to_string(),
                 api_key_env: None,
+                cost_per_1k_prompt_tokens: None,
+                cost_per_1k_completion_tokens: None,
             },
             max_tokens: None,
             temperature: None,

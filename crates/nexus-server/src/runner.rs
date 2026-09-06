@@ -207,6 +207,7 @@ pub async fn run_pipeline(
     alerts: &crate::alerts::AlertNotifier,
     run_id: i64,
     quality_store: &crate::quality_check_store::QualityCheckStore,
+    llm_stats_store: &crate::pipeline_run_llm_stats_store::PipelineRunLlmStatsStore,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     // A `*-cdc` source with a plain SQL transform (the only documented CDC
     // shape — `SELECT * FROM source0`, required to preserve `__opcode` for
@@ -252,6 +253,7 @@ pub async fn run_pipeline(
             alerts,
             run_id,
             quality_store,
+            llm_stats_store,
         )
         .await
     } else {
@@ -893,6 +895,9 @@ async fn run_passthrough_pipeline(
 /// order is SQL transform, then python, over its output.
 #[tracing::instrument(skip_all, fields(pipeline_id = %spec.pipeline_id))]
 #[allow(clippy::too_many_arguments)]
+// `llm_stats_store` is only read inside the `#[cfg(feature = "llm")]` block
+// below — unused (by design, not a bug) when that feature is off.
+#[cfg_attr(not(feature = "llm"), allow(unused_variables))]
 async fn run_transform_pipeline(
     spec: &PipelineSpec,
     checkpoints: &CheckpointStore,
@@ -903,6 +908,7 @@ async fn run_transform_pipeline(
     alerts: &crate::alerts::AlertNotifier,
     run_id: i64,
     quality_store: &crate::quality_check_store::QualityCheckStore,
+    llm_stats_store: &crate::pipeline_run_llm_stats_store::PipelineRunLlmStatsStore,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     // Same reasoning as `run_passthrough_pipeline`'s `is_cdc` check: a `-cdc`
     // source is meant to run again every scheduler tick, using
@@ -948,7 +954,7 @@ async fn run_transform_pipeline(
     }
 
     #[cfg(feature = "llm")]
-    let inputs = apply_llm_stage(inputs, spec.llm.as_ref(), log).await?;
+    let inputs = apply_llm_stage(inputs, spec.llm.as_ref(), log, run_id, llm_stats_store).await?;
     #[cfg(not(feature = "llm"))]
     if spec.llm.is_some() {
         anyhow::bail!(
@@ -1271,13 +1277,20 @@ async fn apply_llm_stage(
     inputs: Vec<(String, ArrowSchemaRef, Vec<ArrowRecordBatch>)>,
     llm_spec: Option<&nexus_core::LlmNodeSpec>,
     log: Option<&RunLogger>,
+    run_id: i64,
+    llm_stats_store: &crate::pipeline_run_llm_stats_store::PipelineRunLlmStatsStore,
 ) -> anyhow::Result<Vec<(String, ArrowSchemaRef, Vec<ArrowRecordBatch>)>> {
     let Some(spec) = llm_spec else {
         return Ok(inputs);
     };
 
     let backend = nexus_ai::llm::load_llm_backend(spec);
-    let nexus_core::LlmModelConfig::Api { model, .. } = &spec.model;
+    let nexus_core::LlmModelConfig::Api {
+        model,
+        cost_per_1k_prompt_tokens,
+        cost_per_1k_completion_tokens,
+        ..
+    } = &spec.model;
 
     let mut out = Vec::with_capacity(inputs.len());
     for (name, schema, batches) in inputs {
@@ -1285,6 +1298,21 @@ async fn apply_llm_stage(
         for batch in &batches {
             let result = nexus_ai::llm::apply_llm(batch, spec, &backend).await?;
             for call in &result.calls {
+                let cost_estimate = cost_per_1k_prompt_tokens.unwrap_or(0.0)
+                    * (call.tokens_prompt as f64 / 1000.0)
+                    + cost_per_1k_completion_tokens.unwrap_or(0.0)
+                        * (call.tokens_completion as f64 / 1000.0);
+                if let Err(e) = llm_stats_store
+                    .record_call(
+                        run_id,
+                        call.tokens_prompt,
+                        call.tokens_completion,
+                        cost_estimate,
+                    )
+                    .await
+                {
+                    tracing::warn!(error = %e, run_id, "failed to persist llm run stats");
+                }
                 // Never the prompt/response text itself unless the spec
                 // opts in — same posture as every other log line touching
                 // user content in this codebase (CLAUDE.md §5). Built via

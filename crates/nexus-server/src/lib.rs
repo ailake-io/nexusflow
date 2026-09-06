@@ -18,6 +18,7 @@ mod license;
 mod license_store;
 mod lineage;
 pub mod migrate;
+mod pipeline_run_llm_stats_store;
 mod pipeline_schema_store;
 mod pipeline_store;
 mod progress;
@@ -105,6 +106,11 @@ struct AppState {
     // see `dbt_test_results`'s note above for why it's unconditional here.
     #[allow(dead_code)]
     quality_checks: quality_check_store::QualityCheckStore,
+    // Written by `apply_llm_stage`'s `#[cfg(feature = "llm")]` block, but
+    // read unconditionally by `list_runs_handler` (empty table when the
+    // feature is off, not a compile-time concern) — no `#[allow(dead_code)]`
+    // needed here unlike `dbt_test_results`/`quality_checks` above.
+    llm_stats: pipeline_run_llm_stats_store::PipelineRunLlmStatsStore,
     progress: ProgressHub,
     alerts: AlertNotifier,
     login_rate_limiter: std::sync::Arc<rate_limit::LoginRateLimiter>,
@@ -625,6 +631,7 @@ async fn execute_pipeline_run(
         &state.alerts,
         run_id,
         &state.quality_checks,
+        &state.llm_stats,
     )
     .await;
     state.progress.finish(run_id).await;
@@ -1134,7 +1141,21 @@ async fn list_runs_handler(
     Query(pagination): Query<Pagination>,
 ) -> Result<Json<Vec<RunRecord>>, ApiError> {
     let (limit, offset) = pagination.validated()?;
-    Ok(Json(state.pipelines.list_runs(&id, limit, offset).await?))
+    let mut runs = state.pipelines.list_runs(&id, limit, offset).await?;
+    // `list_runs` never joins llm_stats itself (separate store/table, see
+    // `RunRecord.llm_stats`'s doc comment) — filled in here, one lookup per
+    // run in the page (bounded by `limit`, same cost class as the dbt/
+    // stats JSON already parsed per row above).
+    for run in &mut runs {
+        if let Ok(Some(stats)) = state.llm_stats.get(run.id).await {
+            run.llm_stats = Some(serde_json::json!({
+                "tokens_prompt": stats.tokens_prompt,
+                "tokens_completion": stats.tokens_completion,
+                "cost_estimate": stats.cost_estimate,
+            }));
+        }
+    }
+    Ok(Json(runs))
 }
 
 /// Every recorded dbt test result for this pipeline, grouped by test —
@@ -1504,9 +1525,10 @@ async fn progress_ws_handler(
         .strip_prefix("nexusflow-")
         .ok_or_else(|| ApiError::unauthorized("expected nexusflow-<token> protocol"))?;
     let (progress_rx, log_rx) = authorize_progress_subscription(&state, token, run_id).await?;
+    let llm_stats = state.llm_stats.clone();
     Ok(ws
         .protocols([proto.clone()])
-        .on_upgrade(move |socket| forward_progress(socket, progress_rx, log_rx)))
+        .on_upgrade(move |socket| forward_progress(socket, progress_rx, log_rx, run_id, llm_stats)))
 }
 
 /// Split out from `progress_ws_handler` so it's callable directly from a
@@ -1550,6 +1572,8 @@ async fn forward_progress(
     mut socket: WebSocket,
     mut rx: tokio::sync::broadcast::Receiver<nexus_core::ProgressEvent>,
     mut log_rx: tokio::sync::broadcast::Receiver<RunLogEvent>,
+    run_id: i64,
+    llm_stats: pipeline_run_llm_stats_store::PipelineRunLlmStatsStore,
 ) {
     let mut hardware = hardware_stats::HardwareMonitor::new();
     let mut hardware_ticker = tokio::time::interval(HARDWARE_STATS_INTERVAL);
@@ -1558,6 +1582,13 @@ async fn forward_progress(
     // to the client is discarded rather than shipped as a misleading 0%.
     hardware_ticker.tick().await;
     hardware.sample();
+    // Same interval as hardware_stats, separate ticker (LLMOPS_IMPLEMENTATION_PLAN.md
+    // Marco L2) — a DB read per tick instead of an in-memory sample, but
+    // negligible for one indexed row every 2s on a single active run.
+    // Skipped entirely (no frame sent) when the run has no llm node, unlike
+    // hardware_stats which is unconditionally useful for every run.
+    let mut llm_stats_ticker = tokio::time::interval(HARDWARE_STATS_INTERVAL);
+    llm_stats_ticker.tick().await;
 
     loop {
         tokio::select! {
@@ -1605,6 +1636,19 @@ async fn forward_progress(
                     .expect("HardwareStats always serializes");
                 if socket.send(Message::Text(json.into())).await.is_err() {
                     break;
+                }
+            }
+            _ = llm_stats_ticker.tick() => {
+                if let Ok(Some(stats)) = llm_stats.get(run_id).await {
+                    let json = serde_json::to_string(&serde_json::json!({ "llm_stats": {
+                        "tokens_prompt": stats.tokens_prompt,
+                        "tokens_completion": stats.tokens_completion,
+                        "cost_estimate": stats.cost_estimate,
+                    } }))
+                    .expect("llm stats always serialize");
+                    if socket.send(Message::Text(json.into())).await.is_err() {
+                        break;
+                    }
                 }
             }
             incoming = socket.recv() => {
@@ -1684,6 +1728,10 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         pipeline_schema_store::PipelineSchemaStore::connect(&config.pipelines_database_url).await?;
     let quality_checks =
         quality_check_store::QualityCheckStore::connect(&config.pipelines_database_url).await?;
+    let llm_stats = pipeline_run_llm_stats_store::PipelineRunLlmStatsStore::connect(
+        &config.pipelines_database_url,
+    )
+    .await?;
     if let Some((username, password)) = &config.bootstrap_admin {
         auth_store.seed_admin_if_empty(username, password).await?;
     }
@@ -1708,6 +1756,7 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         dbt_test_results,
         pipeline_schemas,
         quality_checks,
+        llm_stats,
         progress: ProgressHub::default(),
         alerts: AlertNotifier::new(
             AlertConfig {
@@ -1991,6 +2040,11 @@ mod tests {
             quality_checks: quality_check_store::QualityCheckStore::connect("sqlite::memory:")
                 .await
                 .unwrap(),
+            llm_stats: pipeline_run_llm_stats_store::PipelineRunLlmStatsStore::connect(
+                "sqlite::memory:",
+            )
+            .await
+            .unwrap(),
             progress: ProgressHub::default(),
             alerts: AlertNotifier::new(AlertConfig::default(), false),
             login_rate_limiter: std::sync::Arc::new(rate_limit::LoginRateLimiter::new(
@@ -3581,6 +3635,11 @@ mod tests {
             quality_checks: quality_check_store::QualityCheckStore::connect("sqlite::memory:")
                 .await
                 .unwrap(),
+            llm_stats: pipeline_run_llm_stats_store::PipelineRunLlmStatsStore::connect(
+                "sqlite::memory:",
+            )
+            .await
+            .unwrap(),
             progress: ProgressHub::default(),
             alerts: AlertNotifier::new(AlertConfig::default(), false),
             login_rate_limiter: limiter,
