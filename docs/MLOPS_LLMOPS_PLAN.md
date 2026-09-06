@@ -1,5 +1,8 @@
 # 🤖 MLOps e LLMOps no NexusFlow — levantamento e próximos passos
 
+> Plano de implementação técnica (marcos, arquivos, critério de pronto)
+> da parte de LLMOps deste levantamento: `docs/LLMOPS_IMPLEMENTATION_PLAN.md`.
+
 > **Status: levantamento/ideação (2026-09-05), nada implementado ainda.**
 > Este documento registra uma discussão exploratória sobre estender o
 > NexusFlow (hoje um framework de movimentação/transformação de dados) em
