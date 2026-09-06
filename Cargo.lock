@@ -7596,7 +7596,9 @@ dependencies = [
  "arrow-array 58.4.0",
  "arrow-cast 58.4.0",
  "arrow-schema 58.4.0",
+ "async-trait",
  "dirs 5.0.1",
+ "hex",
  "hf-hub",
  "ndarray 0.17.2",
  "nexus-core",
@@ -7604,6 +7606,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.20",
  "tokenizers",
  "tokio",
@@ -8019,6 +8022,8 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "testcontainers",
+ "testcontainers-modules",
  "tokio",
 ]
 

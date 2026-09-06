@@ -1267,6 +1267,63 @@ async fn apply_embedding_stage(
     Ok(out)
 }
 
+/// Wraps `nexus_connector_redis::RedisKvClient` to implement nexus-ai's
+/// `LlmCache` trait (LLMOPS_IMPLEMENTATION_PLAN.md Marco L3) — lives here,
+/// not in nexus-ai, so that crate never depends on a specific connector
+/// (same layering reasoning as `LlmCache` itself being a trait). Errors are
+/// swallowed (logged, not propagated): a cache miss/write failure is a
+/// cost/latency regression, never a reason to fail the pipeline run.
+#[cfg(all(feature = "llm", feature = "redis"))]
+struct RedisLlmCache(nexus_connector_redis::RedisKvClient);
+
+#[cfg(all(feature = "llm", feature = "redis"))]
+#[async_trait::async_trait]
+impl nexus_ai::llm::LlmCache for RedisLlmCache {
+    async fn get(&self, key: &str) -> Option<String> {
+        match self.0.get(key).await {
+            Ok(value) => value,
+            Err(e) => {
+                tracing::warn!(error = %e, "llm cache GET failed, treating as a miss");
+                None
+            }
+        }
+    }
+
+    async fn set(&self, key: &str, value: &str, ttl_seconds: u64) {
+        if let Err(e) = self.0.set_ex(key, value, ttl_seconds).await {
+            tracing::warn!(error = %e, "llm cache SETEX failed");
+        }
+    }
+}
+
+/// Connects the cache backend `spec.cache` asks for, if any. A `Some(cache)`
+/// spec on a binary built without the "redis" feature is a clear
+/// config/build-mismatch error, not a silent no-cache fallback — same
+/// posture as the embedding backend's "not compiled into this binary"
+/// errors.
+#[cfg(feature = "llm")]
+async fn connect_llm_cache(
+    spec: &nexus_core::LlmNodeSpec,
+) -> anyhow::Result<Option<Box<dyn nexus_ai::llm::LlmCache>>> {
+    if spec.cache.is_none() {
+        return Ok(None);
+    }
+    #[cfg(feature = "redis")]
+    {
+        let cache_spec = spec.cache.as_ref().expect("checked above");
+        let client = nexus_connector_redis::RedisKvClient::connect(&cache_spec.url).await?;
+        Ok(Some(
+            Box::new(RedisLlmCache(client)) as Box<dyn nexus_ai::llm::LlmCache>
+        ))
+    }
+    #[cfg(not(feature = "redis"))]
+    {
+        anyhow::bail!(
+            "pipeline's llm node has a cache configured but the server was built without the 'redis' feature"
+        )
+    }
+}
+
 /// Same shape as `apply_embedding_stage` — loads the backend once per run,
 /// then applies it to every batch of every named input. Runs after
 /// `embedding` (see `PipelineSpec::llm`'s doc comment for the stage order),
@@ -1285,6 +1342,7 @@ async fn apply_llm_stage(
     };
 
     let backend = nexus_ai::llm::load_llm_backend(spec);
+    let cache = connect_llm_cache(spec).await?;
     let nexus_core::LlmModelConfig::Api {
         model,
         cost_per_1k_prompt_tokens,
@@ -1296,7 +1354,7 @@ async fn apply_llm_stage(
     for (name, schema, batches) in inputs {
         let mut transformed = Vec::with_capacity(batches.len());
         for batch in &batches {
-            let result = nexus_ai::llm::apply_llm(batch, spec, &backend).await?;
+            let result = nexus_ai::llm::apply_llm(batch, spec, &backend, cache.as_deref()).await?;
             for call in &result.calls {
                 let cost_estimate = cost_per_1k_prompt_tokens.unwrap_or(0.0)
                     * (call.tokens_prompt as f64 / 1000.0)

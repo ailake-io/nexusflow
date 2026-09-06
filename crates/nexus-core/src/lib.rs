@@ -17,7 +17,7 @@ pub use cdc::{project_column, split_by_opcode, CdcSplit};
 pub use checkpoint::{CheckpointCursor, Opcode, OPCODE_COLUMN};
 pub use dag::{
     is_internal_ip, AlertsConfig, ChunkingSpec, DbtCommand, DbtConfig, EmailAlertChannel,
-    EmbeddingModelSpec, EmbeddingSpec, LlmModelConfig, LlmNodeSpec, NodeSpec,
+    EmbeddingModelSpec, EmbeddingSpec, LlmCacheSpec, LlmModelConfig, LlmNodeSpec, NodeSpec,
     PagerDutyAlertChannel, PipelineSpec, PythonTransformSpec, TransformSpec, WebhookAlertChannel,
 };
 pub use error::{with_timeout, NexusError};

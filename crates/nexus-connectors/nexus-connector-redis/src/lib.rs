@@ -6,11 +6,15 @@
 
 mod config;
 #[cfg(feature = "client")]
+mod kv;
+#[cfg(feature = "client")]
 mod sink;
 #[cfg(feature = "client")]
 mod source;
 
 pub use config::{RedisConnectorConfig, RedisFieldSpec, RedisStartingPosition};
+#[cfg(feature = "client")]
+pub use kv::RedisKvClient;
 #[cfg(feature = "client")]
 pub use sink::RedisSink;
 #[cfg(feature = "client")]

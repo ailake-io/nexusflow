@@ -1,5 +1,5 @@
 use crate::llm::client::{LlmClient, LlmClientConfig};
-use crate::llm::common::{append_text_column, LlmError};
+use crate::llm::common::{append_text_column, cache_key, LlmCache, LlmError};
 use arrow_array::RecordBatch;
 use arrow_cast::display::array_value_to_string;
 use nexus_core::{LlmModelConfig, LlmNodeSpec};
@@ -72,12 +72,20 @@ pub fn build_prompt(template: &str, values: &[(&str, String)]) -> String {
 /// request), 1 row in -> 1 row out — no chunking/expansion. The `backend`
 /// must be loaded once per pipeline run (see [`load_llm_backend`]) and
 /// reused across all batches.
+///
+/// `cache`, when `Some`, is checked before every call and written after a
+/// miss (LLMOPS_IMPLEMENTATION_PLAN.md Marco L3) — a hit produces an
+/// `LlmCallStats` with zero tokens and ~0 latency, since no real call was
+/// made. `cache` is a trait object (see `LlmCache`'s doc comment) so this
+/// crate never depends on `nexus-connector-redis` directly.
 pub async fn apply_llm(
     batch: &RecordBatch,
     spec: &LlmNodeSpec,
     backend: &LlmBackend,
+    cache: Option<&dyn LlmCache>,
 ) -> Result<LlmApplyResult, LlmError> {
     let LlmBackend::Api(client) = backend;
+    let LlmModelConfig::Api { model, .. } = &spec.model;
 
     let column_indices: Vec<(String, usize)> = spec
         .input_columns
@@ -104,20 +112,39 @@ pub async fn apply_llm(
             values.push((name.as_str(), value));
         }
         let prompt = build_prompt(&spec.prompt_template, &values);
+        let key = cache_key(model, &prompt, spec.max_tokens, spec.temperature);
 
-        let resp = client
-            .call(&prompt, spec.max_tokens, spec.temperature)
-            .await?;
+        let cached = match cache {
+            Some(c) => c.get(&key).await,
+            None => None,
+        };
+        let (response_text, tokens_prompt, tokens_completion, latency_ms) = match cached {
+            Some(text) => (text, 0, 0, 0),
+            None => {
+                let resp = client
+                    .call(&prompt, spec.max_tokens, spec.temperature)
+                    .await?;
+                if let (Some(c), Some(cache_spec)) = (cache, &spec.cache) {
+                    c.set(&key, &resp.text, cache_spec.ttl_seconds).await;
+                }
+                (
+                    resp.text,
+                    resp.tokens_prompt,
+                    resp.tokens_completion,
+                    resp.latency_ms,
+                )
+            }
+        };
         calls.push(LlmCallStats {
-            tokens_prompt: resp.tokens_prompt,
-            tokens_completion: resp.tokens_completion,
-            latency_ms: resp.latency_ms,
+            tokens_prompt,
+            tokens_completion,
+            latency_ms,
             prompt_len_chars: prompt.chars().count(),
-            response_len_chars: resp.text.chars().count(),
+            response_len_chars: response_text.chars().count(),
             prompt: prompt.clone(),
-            response: resp.text.clone(),
+            response: response_text.clone(),
         });
-        responses.push(resp.text);
+        responses.push(response_text);
     }
 
     let batch = append_text_column(batch, &responses, &spec.output_column)?;
@@ -191,10 +218,11 @@ mod tests {
             max_tokens: None,
             temperature: None,
             log_full_content: false,
+            cache: None,
         };
         let backend = load_llm_backend(&spec);
 
-        let result = apply_llm(&batch, &spec, &backend).await.unwrap();
+        let result = apply_llm(&batch, &spec, &backend, None).await.unwrap();
         assert_eq!(result.calls.len(), 2);
         assert_eq!(result.calls[0].tokens_prompt, 3);
         assert_eq!(result.calls[0].tokens_completion, 1);
@@ -208,5 +236,108 @@ mod tests {
             .unwrap();
         assert_eq!(answer_col.value(0), "42");
         assert_eq!(answer_col.value(1), "42");
+    }
+
+    struct InMemoryCache {
+        store: std::sync::Mutex<std::collections::HashMap<String, String>>,
+        sets: std::sync::atomic::AtomicUsize,
+    }
+
+    impl InMemoryCache {
+        fn new() -> Self {
+            Self {
+                store: std::sync::Mutex::new(std::collections::HashMap::new()),
+                sets: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LlmCache for InMemoryCache {
+        async fn get(&self, key: &str) -> Option<String> {
+            self.store.lock().unwrap().get(key).cloned()
+        }
+
+        async fn set(&self, key: &str, value: &str, _ttl_seconds: u64) {
+            self.sets.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.store
+                .lock()
+                .unwrap()
+                .insert(key.to_string(), value.to_string());
+        }
+    }
+
+    #[tokio::test]
+    async fn cache_hit_skips_the_call_and_reports_zero_tokens() {
+        use arrow_array::{Int32Array, StringArray};
+        use arrow_schema::{DataType, Field, Schema};
+        use std::sync::Arc;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        // Expect exactly ONE real HTTP call — a second call for the same
+        // row (same prompt) must be served entirely from cache.
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"content": "cached-answer"}}],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 2}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("question", DataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from(vec![1])),
+                Arc::new(StringArray::from(vec!["same question?"])),
+            ],
+        )
+        .unwrap();
+
+        let spec = LlmNodeSpec {
+            prompt_template: "Answer: {question}".to_string(),
+            input_columns: vec!["question".to_string()],
+            output_column: "answer".to_string(),
+            model: LlmModelConfig::Api {
+                base_url: server.uri(),
+                model: "gpt-test".to_string(),
+                api_key_env: None,
+                cost_per_1k_prompt_tokens: None,
+                cost_per_1k_completion_tokens: None,
+            },
+            max_tokens: None,
+            temperature: None,
+            log_full_content: false,
+            cache: Some(nexus_core::LlmCacheSpec {
+                url: "redis://unused-in-test".to_string(),
+                ttl_seconds: 60,
+            }),
+        };
+        let backend = load_llm_backend(&spec);
+        let cache = InMemoryCache::new();
+
+        let first = apply_llm(&batch, &spec, &backend, Some(&cache))
+            .await
+            .unwrap();
+        assert_eq!(first.calls[0].tokens_prompt, 5);
+        assert_eq!(first.calls[0].tokens_completion, 2);
+
+        let second = apply_llm(&batch, &spec, &backend, Some(&cache))
+            .await
+            .unwrap();
+        assert_eq!(second.calls[0].tokens_prompt, 0);
+        assert_eq!(second.calls[0].tokens_completion, 0);
+        assert_eq!(second.calls[0].latency_ms, 0);
+        assert_eq!(second.calls[0].response, "cached-answer");
+
+        // Only the miss (first call) ever wrote to the cache.
+        assert_eq!(cache.sets.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 }

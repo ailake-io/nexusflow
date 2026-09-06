@@ -263,6 +263,21 @@ pub struct LlmNodeSpec {
     /// log line in this codebase that touches user content.
     #[serde(default)]
     pub log_full_content: bool,
+    /// Response cache (LLMOPS_IMPLEMENTATION_PLAN.md Marco L3) — `None`
+    /// means every call hits the API, no caching.
+    #[serde(default)]
+    pub cache: Option<LlmCacheSpec>,
+}
+
+/// Redis-backed response cache — key is `sha256(model + prompt + max_tokens
+/// + temperature)` (`nexus_ai::llm::cache_key`), value is the raw response
+/// text. Always Redis for now (no enum with 1 variant — same reasoning
+/// `LlmModelConfig` had before it needed more than `Api`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmCacheSpec {
+    /// Redis connection URL (e.g. "redis://localhost:6379").
+    pub url: String,
+    pub ttl_seconds: u64,
 }
 
 /// Which backend serves the LLM call. Only an HTTP API today (no local
@@ -597,6 +612,16 @@ impl PipelineSpec {
                 if !(0.0..=2.0).contains(&temperature) {
                     return Err(NexusError::Schema(
                         "llm.temperature must be between 0.0 and 2.0".into(),
+                    ));
+                }
+            }
+            if let Some(cache) = &llm.cache {
+                if cache.url.trim().is_empty() {
+                    return Err(NexusError::Schema("llm.cache.url must not be empty".into()));
+                }
+                if cache.ttl_seconds == 0 {
+                    return Err(NexusError::Schema(
+                        "llm.cache.ttl_seconds must be > 0".into(),
                     ));
                 }
             }

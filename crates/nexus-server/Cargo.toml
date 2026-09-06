@@ -229,12 +229,16 @@ arrow-array = "58.4.0"
 arrow-json = "58.4.0"
 arrow-schema = "58.4.0"
 futures-util = "0.3.33"
+# Only used by `runner.rs`'s `RedisLlmCache` (LLMOPS_IMPLEMENTATION_PLAN.md
+# Marco L3, features "llm"+"redis") to implement nexus-ai's `LlmCache`
+# trait — a proc-macro dependency, negligible compile-time cost, so not
+# worth its own Cargo feature gate.
+async-trait = "0.1.91"
 # Only used by the `python-transform` feature, to round-trip RecordBatches
 # across the process boundary to/from the python3 subprocess.
 parquet = { version = "58.4.0", optional = true }
 
 [dev-dependencies]
-async-trait = "0.1.91"
 futures = "0.3.33"
 futures-util = "0.3.33"
 # Only for connectors.rs's license-enforcement tests, which register a

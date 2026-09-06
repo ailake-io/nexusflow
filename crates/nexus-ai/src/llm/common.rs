@@ -1,5 +1,6 @@
 use arrow_array::{RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use async_trait::async_trait;
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -11,6 +12,54 @@ pub enum LlmError {
     Arrow(#[from] arrow_schema::ArrowError),
     #[error("model output shape not appendable: {0}")]
     UnexpectedOutputShape(String),
+}
+
+/// Response cache for LLM calls (LLMOPS_IMPLEMENTATION_PLAN.md Marco L3) —
+/// a trait, not a concrete Redis dependency, so nexus-ai never needs to
+/// know about `nexus-connector-redis` (a connector crate, layered above
+/// this one). `nexus-server::runner::apply_llm_stage` implements this over
+/// `nexus_connector_redis::RedisKvClient` and passes it in; tests use an
+/// in-memory `HashMap`-backed implementation.
+#[async_trait]
+pub trait LlmCache: Send + Sync {
+    async fn get(&self, key: &str) -> Option<String>;
+    /// Cache-write failures are the caller's problem to log, not this
+    /// trait's — `apply_llm` treats a write failure as non-fatal (a cache
+    /// miss next time is a cost/latency regression, not a correctness
+    /// bug), so this returns nothing to react to.
+    async fn set(&self, key: &str, value: &str, ttl_seconds: u64);
+}
+
+/// Cache key for one LLM call — same inputs must always produce the same
+/// key, and any of these fields differing must produce a different one
+/// (LLMOPS_IMPLEMENTATION_PLAN.md Marco L3: "sha256(model + prompt +
+/// max_tokens + temperature)"). Pure and testable without a real cache.
+pub fn cache_key(
+    model: &str,
+    prompt: &str,
+    max_tokens: Option<u32>,
+    temperature: Option<f32>,
+) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(model.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(prompt.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(
+        max_tokens
+            .map(|v| v.to_string())
+            .unwrap_or_default()
+            .as_bytes(),
+    );
+    hasher.update(b"\0");
+    hasher.update(
+        temperature
+            .map(|v| v.to_string())
+            .unwrap_or_default()
+            .as_bytes(),
+    );
+    format!("nexusflow:llm-cache:{}", hex::encode(hasher.finalize()))
 }
 
 /// Appends `responses` (one string per row of `batch`) as a `Utf8` column

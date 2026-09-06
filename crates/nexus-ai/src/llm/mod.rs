@@ -12,7 +12,7 @@ mod common;
 mod pipeline;
 
 pub use client::{LlmClient, LlmClientConfig, LlmResponse};
-pub use common::{append_text_column, LlmError};
+pub use common::{append_text_column, cache_key, LlmCache, LlmError};
 pub use pipeline::{
     apply_llm, build_prompt, load_llm_backend, LlmApplyResult, LlmBackend, LlmCallStats,
 };
