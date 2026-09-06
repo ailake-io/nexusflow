@@ -239,6 +239,52 @@ fn default_similarity_threshold() -> f32 {
     0.8
 }
 
+/// Configuration for the optional LLM stage (LLMOPS_IMPLEMENTATION_PLAN.md
+/// Marco L1). Defined in nexus-core for the same reason as `EmbeddingSpec`
+/// above: `PipelineSpec` carries it without adding an nexus-ai dependency to
+/// the core crate; nexus-ai consumes this spec at runtime.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmNodeSpec {
+    /// Template interpolated per row — `{column_name}` placeholders are
+    /// replaced with that row's value for each entry in `input_columns`.
+    pub prompt_template: String,
+    /// Columns available for interpolation into `prompt_template`.
+    pub input_columns: Vec<String>,
+    /// Name of the new column holding the LLM's response text.
+    pub output_column: String,
+    pub model: LlmModelConfig,
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
+    #[serde(default)]
+    pub temperature: Option<f32>,
+    /// Logs the full prompt/response text in run logs, not just metadata
+    /// (token counts, latency). Off by default — prompt/response can carry
+    /// customer-sensitive data (CLAUDE.md §5), same posture as every other
+    /// log line in this codebase that touches user content.
+    #[serde(default)]
+    pub log_full_content: bool,
+}
+
+/// Which backend serves the LLM call. Only an HTTP API today (no local
+/// ONNX/GGUF path) — kept as a tagged enum matching `EmbeddingModelSpec`'s
+/// shape so a future local backend doesn't require a breaking spec change.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "backend")]
+pub enum LlmModelConfig {
+    Api {
+        /// Base URL of an OpenAI-compatible chat completions endpoint (no
+        /// trailing `/chat/completions` — e.g. "https://api.openai.com/v1").
+        base_url: String,
+        /// Model name passed through to the API request body.
+        model: String,
+        /// Name of the environment variable holding the API key on the
+        /// machine running nexus-server — never the key itself (CLAUDE.md
+        /// §5: no secret lives in the persisted DAG JSON).
+        #[serde(default)]
+        api_key_env: Option<String>,
+    },
+}
+
 /// Two shapes, both valid DAGs (ARCHITECTURE.md §4):
 /// - No transform: strictly linear `1 source -> 1 sink`, partitioned
 ///   execution (Marco 1's model — `PipelineEngine::run`).
@@ -255,10 +301,16 @@ pub struct PipelineSpec {
     /// before the SQL transform (if present) or before the sinks.
     #[serde(default)]
     pub embedding: Option<EmbeddingSpec>,
+    /// Optional LLM stage (LLMOPS_IMPLEMENTATION_PLAN.md Marco L1), applied
+    /// after `embedding` (if present) and before the SQL transform — e.g.
+    /// chunk -> embed -> also ask an LLM something about the original text,
+    /// both written to the same sink.
+    #[serde(default)]
+    pub llm: Option<LlmNodeSpec>,
     /// Optional Python cleaning/transformation stage, chained after the SQL
     /// `transform` (if present) and before the sinks — order is `sources ->
-    /// embedding -> transform -> python -> sinks`. When `transform` is
-    /// `None`, `python` still requires exactly 1 source/1 sink (same
+    /// embedding -> llm -> transform -> python -> sinks`. When `transform`
+    /// is `None`, `python` still requires exactly 1 source/1 sink (same
     /// constraint as the transform-less linear path — see `validate()`),
     /// since there's no SQL stage to fan multiple sources into one table
     /// first.
@@ -508,6 +560,39 @@ impl PipelineSpec {
             }
         }
 
+        if let Some(llm) = &self.llm {
+            if llm.prompt_template.trim().is_empty() {
+                return Err(NexusError::Schema(
+                    "llm.prompt_template must not be empty".into(),
+                ));
+            }
+            if llm.output_column.trim().is_empty() {
+                return Err(NexusError::Schema(
+                    "llm.output_column must not be empty".into(),
+                ));
+            }
+            let LlmModelConfig::Api {
+                base_url, model, ..
+            } = &llm.model;
+            if base_url.trim().is_empty() {
+                return Err(NexusError::Schema(
+                    "llm.model.base_url must not be empty".into(),
+                ));
+            }
+            if model.trim().is_empty() {
+                return Err(NexusError::Schema(
+                    "llm.model.model must not be empty".into(),
+                ));
+            }
+            if let Some(temperature) = llm.temperature {
+                if !(0.0..=2.0).contains(&temperature) {
+                    return Err(NexusError::Schema(
+                        "llm.temperature must be between 0.0 and 2.0".into(),
+                    ));
+                }
+            }
+        }
+
         if !self.post_dbt_sinks.is_empty() {
             let has_output = self.dbt.as_ref().is_some_and(|d| d.output.is_some());
             if !has_output {
@@ -618,6 +703,9 @@ impl PipelineSpec {
         if let Some(embedding) = &self.embedding {
             validate_embedding_security(&embedding.model, allow_internal_hosts)?;
         }
+        if let Some(llm) = &self.llm {
+            validate_llm_security(&llm.model, allow_internal_hosts)?;
+        }
         if let Some(alerts) = &self.alerts {
             validate_alerts_security(alerts, allow_internal_hosts)?;
         }
@@ -695,6 +783,30 @@ fn validate_embedding_security(
                         "embedding.model.base_url points to an internal host".into(),
                     ));
                 }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Same SSRF guard as `validate_embedding_security`, for `llm.model.base_url`
+/// — an identical user-supplied outbound-request URL, same risk.
+fn validate_llm_security(
+    model: &LlmModelConfig,
+    allow_internal_hosts: bool,
+) -> Result<(), NexusError> {
+    let LlmModelConfig::Api { base_url, .. } = model;
+    if base_url.starts_with('/') {
+        return Err(NexusError::Schema(
+            "llm.model.base_url must not be an absolute path".into(),
+        ));
+    }
+    if !allow_internal_hosts {
+        if let Some(host) = http_host(base_url) {
+            if is_internal_host(&host) {
+                return Err(NexusError::Schema(
+                    "llm.model.base_url points to an internal host".into(),
+                ));
             }
         }
     }

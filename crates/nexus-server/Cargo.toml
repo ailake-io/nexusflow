@@ -32,6 +32,12 @@ embeddings = ["dep:nexus-ai", "nexus-ai/cpu"]
 # tokenizers in the binary. Independent of `embeddings`; both can be on at
 # once so a `PipelineSpec.embedding.model` of either backend tag works.
 embeddings-api = ["dep:nexus-ai", "nexus-ai/api"]
+# LLM pipeline stage (LLMOPS_IMPLEMENTATION_PLAN.md Marco L1): calls an
+# OpenAI-compatible chat completions endpoint via nexus-ai's `llm` feature.
+# Deliberately independent of `embeddings`/`embeddings-api` — a binary may
+# want one without the other, same reasoning as those two being independent
+# of each other.
+llm = ["dep:nexus-ai", "nexus-ai/llm"]
 # Single-binary deployment (Marco 11, CLAUDE.md §7): embeds frontend/dist
 # into the binary via rust-embed and serves it (with SPA fallback) for any
 # GET that doesn't match an API route. Off by default because rust-embed's
@@ -62,7 +68,7 @@ connectors-all = [
     "mongodb", "mysql", "kafka", "mqtt", "rest", "odbc", "milvus", "qdrant", "lancedb",
     "pgvector", "pinecone", "chromadb", "deltalake", "iceberg", "parquet",
     "ailake", "csv", "clickhouse", "duckdb", "redis", "nats", "rabbitmq",
-    "embeddings", "embeddings-api",
+    "embeddings", "embeddings-api", "llm",
     "postgres-cdc", "mysql-cdc", "deltalake-cdc", "iceberg-cdc", "ailake-cdc",
 ]
 # Same as connectors-all but without the heavy ONNX/embedding dependencies.

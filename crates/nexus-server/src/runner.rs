@@ -13,9 +13,9 @@ use nexus_core::{
     PipelineEngine, PipelineSpec, ProgressEvent, ProgressSender, Transform, OPCODE_COLUMN,
 };
 
-#[cfg(any(feature = "embeddings", feature = "embeddings-api"))]
+#[cfg(any(feature = "embeddings", feature = "embeddings-api", feature = "llm"))]
 use arrow_array::RecordBatch as ArrowRecordBatch;
-#[cfg(any(feature = "embeddings", feature = "embeddings-api"))]
+#[cfg(any(feature = "embeddings", feature = "embeddings-api", feature = "llm"))]
 use arrow_schema::SchemaRef as ArrowSchemaRef;
 
 /// Narrates a fallible step to the run's execution log (`RunLogger`, see
@@ -947,6 +947,15 @@ async fn run_transform_pipeline(
         );
     }
 
+    #[cfg(feature = "llm")]
+    let inputs = apply_llm_stage(inputs, spec.llm.as_ref(), log).await?;
+    #[cfg(not(feature = "llm"))]
+    if spec.llm.is_some() {
+        anyhow::bail!(
+            "pipeline contains an llm node but the server was built without the 'llm' feature"
+        );
+    }
+
     // Captured before `inputs` is consumed below — flattens every source's
     // schema into one column list (a fan-in transform reads all of them;
     // dedup by name since a join's key columns legitimately show up on more
@@ -1248,6 +1257,58 @@ async fn apply_embedding_stage(
         // (nothing to derive a schema from).
         let updated_schema = embedded.first().map(|b| b.schema()).unwrap_or(schema);
         out.push((name, updated_schema, embedded));
+    }
+    Ok(out)
+}
+
+/// Same shape as `apply_embedding_stage` — loads the backend once per run,
+/// then applies it to every batch of every named input. Runs after
+/// `embedding` (see `PipelineSpec::llm`'s doc comment for the stage order),
+/// so a pipeline can chunk+embed *and* ask an LLM something about the
+/// original text, both landing in the same sink.
+#[cfg(feature = "llm")]
+async fn apply_llm_stage(
+    inputs: Vec<(String, ArrowSchemaRef, Vec<ArrowRecordBatch>)>,
+    llm_spec: Option<&nexus_core::LlmNodeSpec>,
+    log: Option<&RunLogger>,
+) -> anyhow::Result<Vec<(String, ArrowSchemaRef, Vec<ArrowRecordBatch>)>> {
+    let Some(spec) = llm_spec else {
+        return Ok(inputs);
+    };
+
+    let backend = nexus_ai::llm::load_llm_backend(spec);
+    let nexus_core::LlmModelConfig::Api { model, .. } = &spec.model;
+
+    let mut out = Vec::with_capacity(inputs.len());
+    for (name, schema, batches) in inputs {
+        let mut transformed = Vec::with_capacity(batches.len());
+        for batch in &batches {
+            let result = nexus_ai::llm::apply_llm(batch, spec, &backend).await?;
+            for call in &result.calls {
+                // Never the prompt/response text itself unless the spec
+                // opts in — same posture as every other log line touching
+                // user content in this codebase (CLAUDE.md §5). Built via
+                // serde_json rather than hand-rolled string formatting so
+                // arbitrary model names/content never produce malformed or
+                // injectable JSON.
+                let mut fields = serde_json::json!({
+                    "model": model,
+                    "tokens_prompt": call.tokens_prompt,
+                    "tokens_completion": call.tokens_completion,
+                    "latency_ms": call.latency_ms,
+                    "prompt_len_chars": call.prompt_len_chars,
+                    "response_len_chars": call.response_len_chars,
+                });
+                if spec.log_full_content {
+                    fields["prompt"] = serde_json::Value::String(call.prompt.clone());
+                    fields["response"] = serde_json::Value::String(call.response.clone());
+                }
+                log_info(log, format!("llm call: {fields}")).await;
+            }
+            transformed.push(result.batch);
+        }
+        let updated_schema = transformed.first().map(|b| b.schema()).unwrap_or(schema);
+        out.push((name, updated_schema, transformed));
     }
     Ok(out)
 }

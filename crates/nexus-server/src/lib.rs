@@ -1021,6 +1021,7 @@ async fn preview_adhoc_handler(
         transform: None,
         sinks: Vec::new(),
         embedding: None,
+        llm: None,
         python: None,
         channel_capacity: 100,
         partitions: 1,

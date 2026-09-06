@@ -396,6 +396,7 @@ mod tests {
             transform: None,
             sinks,
             embedding: None,
+            llm: None,
             python: None,
             channel_capacity: 100,
             partitions: 1,
