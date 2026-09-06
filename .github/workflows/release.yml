@@ -290,11 +290,13 @@ jobs:
       # workspace across runs, so a `target/adbc` from some prior manual
       # build silently masked this workflow never building them itself. A
       # fresh hosted runner has no such leftover state, so this failed
-      # outright the first time this ran there.
-      - if: matrix.os == 'linux'
-        run: ./scripts/build-adbc-duckdb-driver.sh target/adbc
-      - if: matrix.os == 'linux'
-        run: ./scripts/build-adbc-clickhouse-driver.sh target/adbc
+      # outright the first time this ran there. Unconditional on both
+      # platforms since 2026-09-06 — both scripts became macOS-aware the
+      # same day (a first real macOS run caught the duckdb script silently
+      # staging a non-functional Linux binary, and the clickhouse script
+      # hardcoding a Linux-only `.so` extension).
+      - run: ./scripts/build-adbc-duckdb-driver.sh target/adbc
+      - run: ./scripts/build-adbc-clickhouse-driver.sh target/adbc
 
       # Every distributed artifact (this tarball, the .deb/.rpm/AppImage
       # below, docker-publish's image, and build-windows-installer.yml's
@@ -397,11 +399,15 @@ jobs:
           cp target/release/nexusflow "$stage/nexusflow-bin"
           cp target/adbc/libadbc_driver_postgresql.* "$stage/"
           cp target/adbc/libadbc_driver_sqlite.* "$stage/"
-          # duckdb/clickhouse drivers are Linux-only for now (the two build
-          # scripts aren't macOS-aware yet, unlike the postgresql/sqlite
-          # ones) — only present, and only copied, on the linux leg.
-          [ -f target/adbc/libadbc_driver_duckdb.so ] && cp target/adbc/libadbc_driver_duckdb.so "$stage/"
-          [ -f target/adbc/libadbc_clickhouse.so ] && cp target/adbc/libadbc_clickhouse.so "$stage/"
+          # duckdb/clickhouse build scripts became macOS-aware too
+          # (2026-09-06, same fix as postgresql/sqlite already had) — copy
+          # whichever extension actually got produced, glob-safe if the
+          # file doesn't exist at all (shouldn't happen now that both
+          # scripts run unconditionally earlier in this job, but a stray
+          # `*` failing to expand shouldn't break packaging either way).
+          for f in target/adbc/libadbc_driver_duckdb.* target/adbc/libadbc_clickhouse.*; do
+            [ -f "$f" ] && cp "$f" "$stage/"
+          done
           tar -czf "nexusflow-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" -C "$stage" .
 
       - name: Upload tarball for downstream jobs
