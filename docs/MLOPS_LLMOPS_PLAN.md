@@ -92,6 +92,90 @@ médio — é CRUD simples, mas é uma capacidade que não existe em nenhuma
 forma hoje (o sistema não tem conceito de "geração individual dentro de
 um run" pra anexar feedback).
 
+## Diferencial real (não é só copiar Langfuse/LangSmith/Helicone)
+
+Ferramentas de observabilidade de LLM (Langfuse, LangSmith, Helicone)
+observam a chamada de LLM **de fora** — instrumentam o código do app,
+mas não sabem de onde o dado que virou contexto/RAG veio. O NexusFlow já
+é dono do pipeline inteiro **antes** da chamada acontecer (fonte → chunk
+→ embed → vector DB). Isso abre duas capacidades que nenhuma ferramenta
+de observabilidade pura consegue replicar sem virar também uma
+ferramenta de dados:
+
+### 1. Linhagem completa até a geração — o diferencial mais forte
+
+"Essa alucinação veio do chunk #47 do documento X, ingerido da tabela
+Postgres Y em 2026-09-01, com o modelo de embedding Z v3" — rastreando
+do dado bruto até a resposta específica do LLM. O grafo de linhagem
+cross-pipeline já existe (`lineage.rs`) e a linhagem de coluna via
+DataFusion também (`nexus-core::transform`) — estender mais um salto
+(linha do vector DB → geração do LLM, node `llm` do item 1 acima) dá
+continuidade a algo que já existe, não é arquitetura nova do zero.
+Langfuse/LangSmith param na resposta do vector DB; não sabem nem que
+pipeline gerou aquele chunk, muito menos a tabela de origem.
+
+**O que precisa de verdade:** um mecanismo de rastreamento ligando linha
+específica → geração específica — isso é uma junção nova no grafo de
+linhagem (hoje o grafo liga pipeline→recurso e coluna→coluna, não
+linha→geração de LLM), não é "só adicionar um node".
+
+### 2. RAG reativo via CDC que já existe
+
+A maioria dos sistemas RAG fica com índice desatualizado até alguém
+rodar um re-embed manual. O NexusFlow já tem CDC nativo (Postgres WAL,
+MongoDB Change Streams, MySQL binlog, `ARCHITECTURE.md §7`) — um evento
+de mudança na fonte poderia disparar re-chunk/re-embed automático só das
+linhas que mudaram, com linhagem completa de "o que disparou essa
+atualização" (reaproveitando o item 1 acima). Resolve staleness de RAG,
+problema real que nenhuma ferramenta de observabilidade resolve porque
+não são donas da ingestão.
+
+**Fio condutor:** o moat aqui não é "observar chamada de LLM melhor", é
+"ser dono do dado desde a origem" — algo que ferramenta que só vende
+observabilidade não consegue replicar sem virar concorrente direto do
+próprio NexusFlow em movimentação de dados.
+
+## Como empacotar isso como enterprise (mesmo mecanismo dos conectores)
+
+Não precisa de infra de licenciamento nova — o registry de conector já é
+agnóstico ao que a "coisa" faz. `ConnectorDescriptor` com
+`requires_license: Some(slug)` (`nexus-core::registry`) só guarda um
+nome + trava por license; não exige que seja de fato um `Source`/`Sink`
+de I/O. Dá pra registrar "linhagem até a geração" ou "RAG reativo via
+CDC" como mais uma entrada no catálogo:
+
+```rust
+submit_enterprise_connector!(
+    "llm-lineage-tracking",
+    ConnectorCapability::Capability,  // variante nova, não é I/O
+    LlmLineageConfig
+)
+```
+
+Com isso, de graça, sem construir UI/licenciamento novo:
+- Aparece em `GET /connectors` com `licensed: bool`, igual qualquer
+  conector pago.
+- Cadeado no `ConnectorPalette.tsx` do mesmo jeito que Salesforce/
+  Snowflake hoje.
+- Aba **Store** já lista, categoriza (ver `ENTERPRISE_CATALOG` do
+  `Store.tsx`), mostra bloqueado/liberado sem mudança de código.
+- `check_connector_license` (`connectors.rs`) já barra o uso sem
+  license, no mesmo ponto que já barra conector pago.
+
+**Trabalho real:** só a lógica em si (linhagem row→geração, ou trigger
+de re-embed via CDC) — vive num crate no repo privado
+`nexus-connectors-enterprise`, exatamente como Salesforce/SAP vivem
+hoje. **Única mudança estrutural:** adicionar uma variante em
+`ConnectorCapability` (hoje só `AdbcNative`/`ArrowFlight`/`Bridged`)
+pra cobrir "capacidade" em vez de "fonte/destino de dado" — cosmético,
+não muda o mecanismo de license.
+
+**Por que isso vende bem:** o cliente que já paga por conector
+enterprise (Salesforce, Snowflake) vê a linhagem row→geração-LLM na
+mesma tela, mesmo fluxo de compra, sem precisar aprender/adotar outro
+produto separado. Reforça o pacote existente em vez de virar upsell de
+ferramenta nova.
+
 ## MLOps — o que dá pra ter parecido com MLflow
 
 MLflow tem 4 componentes: Tracking, Model Registry, Projects, Serving.
