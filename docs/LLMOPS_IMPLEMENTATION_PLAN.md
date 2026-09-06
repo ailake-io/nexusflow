@@ -19,8 +19,8 @@ Marco L2 — Custo/tokens agregado
 Marco L3 — Cache de resposta
 Marco L4 — Versionamento de prompt
 Marco L5 — Linhagem row→geração (diferencial #1)
-Marco L6 — RAG reativo via CDC (diferencial #2) — BLOQUEADO até resolver
-           uma limitação real do engine, ver seção própria abaixo
+Marco L6 — RAG reativo via CDC (diferencial #2), precisa de um fix real
+           no `run_partition` do engine — ver desenho concreto na seção
 Marco L7 — Avaliação sistemática (golden dataset)
 Marco L8 — Empacotamento enterprise
 ```
@@ -197,46 +197,104 @@ chunks/linhas de origem usados como contexto.
 
 ---
 
-## Marco L6 — RAG reativo via CDC (diferencial #2) — BLOQUEADO
+## Marco L6 — RAG reativo via CDC (diferencial #2)
 
 **Objetivo:** mudança na fonte dispara re-embed automático das linhas
 afetadas, mantendo o índice vetorial fresco.
 
-**Bloqueio real, confirmado no código (`runner.rs`, 2026-09-06):** hoje
+**Bloqueio de hoje, confirmado no código (`runner.rs`, 2026-09-06):**
 `embedding` é **rejeitado explicitamente** no caminho passthrough
 ("embedding stage is not supported on the no-transform passthrough
 path; add a transform node to use embeddings") — só funciona com um
-node `transform`. E `ARCHITECTURE.md §7` já documenta que CDC + node de
-`transform` passa por `drain_sources` (materializa tudo antes de
-processar), o que nunca termina pra um source CDC em volume realista
-(WAL/binlog não têm fim natural). **As duas limitações juntas bloqueiam
-esse marco por completo** — não dá pra ter `postgres-cdc` alimentando um
-node `embedding` hoje, de nenhuma forma, sem antes resolver uma das
-duas.
+node `transform`, e `ARCHITECTURE.md §7` já documenta que CDC + node de
+`transform` passa por `drain_sources` (materializa tudo, nunca termina
+pra um source CDC em volume realista). **Mas isso é encanamento, não
+limitação de arquitetura** — ver desenho concreto abaixo, verificado
+contra o código real, não uma decisão em aberto.
 
-**Caminho pra destravar** (não implementado, só o desenho):
-- **Opção A (mais direta):** estender o caminho *passthrough* (que já
-  processa CDC corretamente, streaming de verdade, sem `drain_sources`)
-  pra também aplicar `embedding` por linha — hoje o passthrough só faz
-  `Source → Sink` direto, sem estágio de transformação nenhum no meio.
-  Precisa: `run_partition` (`nexus-core::pipeline`) ganhar um hook
-  opcional de transformação por-linha (aplicar embedding num
-  `RecordBatch` pequeno por vez, não no dataset inteiro) — mudança real
-  no engine central, não trivial, mas resolveria também o item já
-  listado em `ROADMAP.md` "Débitos conhecidos" (CDC+transform) de
-  quebra.
-- **Opção B (mais isolada, menos poder):** um node novo `reactive_embed`
-  específico pra esse caso, que não passa pelo `PipelineEngine` genérico
-  — um loop dedicado: consome eventos CDC diretamente (sem passar pelo
-  runner batch), re-embeda e escreve no sink vetorial. Menos
-  reaproveitamento do engine existente, mas não exige tocar no núcleo de
-  streaming/checkpoint que hoje é usado por todo o resto do sistema.
+### Como destravar — desenho concreto, verificado contra o código real
 
-**Recomendação:** não começar este marco sem antes resolver a Opção A
-(ou decidir formalmente pela B) — é decisão de arquitetura de verdade,
-não escolha de implementação de detalhe. Revisitar depois do L5 estar
-funcionando (RAG "manual" via `/rag/query`), quando já tiver o node
-`llm`/geração/linhagem provados em produção.
+**Achado que simplifica tudo:** a restrição não é técnica de verdade —
+é só encanamento faltando. Confirmado lendo o código (2026-09-06):
+
+- `nexus_ai::embedding::apply_embedding(batch: &RecordBatch, spec,
+  backend) -> Result<RecordBatch, EmbeddingError>` (`nexus-ai/src/
+  embedding/pipeline.rs:111`) já opera **um `RecordBatch` por vez** —
+  não depende do dataset inteiro, nunca precisou de `drain_sources`.
+  `apply_embedding_stage` (`runner.rs:1220`) só chama isso num loop
+  `for batch in inputs`.
+- `PipelineEngine::run_partition` (`nexus-core/src/pipeline.rs:114`) —
+  o caminho passthrough que CDC já usa corretamente — tem uma task
+  leitora (`source.read_batches()` → `tx.send(batch)`) e uma task
+  escritora (`rx.recv()` → **direto** `sink.write_batch(batch)`,
+  `pipeline.rs:152-158`). **Não existe nenhum estágio de transformação
+  no meio** — é por isso que passthrough nunca precisou de
+  `drain_sources`: ele nunca fez nada além de repassar o batch adiante.
+
+Ou seja: `embedding` já é compatível com processamento em streaming por
+natureza (função pura por batch); só nunca foi conectado no caminho que
+já faz streaming de verdade. A opção B do parágrafo anterior (node
+dedicado fora do engine) não é necessária — dá pra resolver dentro do
+próprio `PipelineEngine`, sem duplicar lógica de streaming/checkpoint.
+
+**Mudança concreta (3 pontos, em ordem):**
+
+1. **`nexus-core::pipeline`** — `run_partition` ganha um parâmetro novo
+   opcional, um closure genérico (nexus-core não pode saber de
+   `nexus-ai` — regra de camada já estabelecida, mesma razão de
+   `RunLogStore` viver só em `nexus-server`):
+   ```rust
+   pub type BatchTransform =
+       Box<dyn Fn(RecordBatch) -> BoxFuture<'static, Result<RecordBatch, NexusError>> + Send + Sync>;
+
+   pub async fn run_partition(
+       &self,
+       handle: PartitionHandle,
+       progress: Option<ProgressSender>,
+       batch_transform: Option<BatchTransform>,   // novo
+   ) -> Result<PartitionStats, NexusError> {
+   ```
+   Na task escritora (`pipeline.rs:152`), antes de `sink.write_batch(batch)`:
+   ```rust
+   let batch = match &batch_transform {
+       Some(f) => f(batch).await?,
+       None => batch,
+   };
+   ```
+   Um batch de entrada pode virar um batch com **mais linhas** (chunking
+   expande 1 linha em N chunks) — sem problema, o resto do loop
+   (contagem de rows/bytes escritos, checkpoint) já opera sobre o batch
+   que efetivamente foi escrito, não assume 1:1 com o que foi lido.
+
+2. **`nexus-server::runner`** — em `run_passthrough_pipeline`, remover a
+   rejeição atual (`runner.rs:754-757`) e, quando `spec.embedding.is_some()`:
+   carregar o backend uma vez (`nexus_ai::embedding::
+   load_embedding_backend`, mesma chamada que `apply_embedding_stage` já
+   faz) e construir o `BatchTransform` fechando sobre `backend`+`spec`,
+   chamando `nexus_ai::embedding::apply_embedding` por dentro. Passar
+   esse closure pra `run_partition`. Sem essa flag, comportamento
+   idêntico a hoje (closure `None`).
+
+3. **Nada muda em `ARCHITECTURE.md §7`'s CDC** — os 3 conectores CDC
+   nativos já entregam pro passthrough exatamente como fazem hoje; o
+   `resume_state`/checkpoint por partição já funciona igual, porque a
+   transformação acontece **depois** da leitura e **antes** da escrita,
+   sem tocar no mecanismo de posição/resume do source.
+
+**Por que isso não foi feito assim desde o início:** `embedding` nasceu
+pensado pra combinar com `transform` (SQL, fan-in/fan-out — caso de uso
+original, `ARCHITECTURE.md §8`), e a proibição no passthrough foi
+provavelmente só "não testamos essa combinação ainda" virando um erro
+explícito em vez de um bug silencioso — não uma limitação de design
+proposital documentada em lugar nenhum.
+
+**Critério de pronto:** pipeline `postgres-cdc → embedding → lancedb`
+(sem node `transform`) processando um WAL ao vivo, streaming de verdade
+(sem esperar o WAL "acabar", que nunca acontece) — mesmo teste de
+integração real que os outros conectores CDC já usam
+(testcontainers), agora com uma asserção a mais: linha nova no Postgres
+aparece como embedding novo no LanceDB em poucos segundos, sem reiniciar
+o pipeline.
 
 ---
 
@@ -302,9 +360,10 @@ L1 (node llm + tracing) ──┬──> L2 (custo/tokens)
                           └──> L4 (versionamento de prompt) ──> L5 (linhagem row→geração)
                                                                   │
                                                                   v
-                                                        L6 (RAG reativo) — bloqueado
-                                                          por limitação real do engine,
-                                                          não por L5
+                                                        L6 (RAG reativo) — precisa do
+                                                          fix de encanamento no
+                                                          run_partition (ver seção
+                                                          própria), não depende de L5
 
 L7 (avaliação sistemática) depende de L1 (reaproveita call_llm) e L4
 (precisa saber qual versão de prompt foi avaliada).
