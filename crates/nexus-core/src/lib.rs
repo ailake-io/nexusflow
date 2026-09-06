@@ -18,7 +18,8 @@ pub use checkpoint::{CheckpointCursor, Opcode, OPCODE_COLUMN};
 pub use dag::{
     is_internal_ip, AlertsConfig, ChunkingSpec, DbtCommand, DbtConfig, EmailAlertChannel,
     EmbeddingModelSpec, EmbeddingSpec, LlmCacheSpec, LlmModelConfig, LlmNodeSpec, NodeSpec,
-    PagerDutyAlertChannel, PipelineSpec, PythonTransformSpec, TransformSpec, WebhookAlertChannel,
+    PagerDutyAlertChannel, PipelineSpec, PromptRef, PythonTransformSpec, TransformSpec,
+    WebhookAlertChannel,
 };
 pub use error::{with_timeout, NexusError};
 pub use pipeline::{

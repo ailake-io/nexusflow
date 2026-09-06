@@ -78,9 +78,16 @@ pub fn build_prompt(template: &str, values: &[(&str, String)]) -> String {
 /// `LlmCallStats` with zero tokens and ~0 latency, since no real call was
 /// made. `cache` is a trait object (see `LlmCache`'s doc comment) so this
 /// crate never depends on `nexus-connector-redis` directly.
+///
+/// `template` is the already-resolved prompt text — `spec.prompt` is only
+/// a `PromptRef` (name + optional version, Marco L4); resolving that
+/// reference against `nexus-server::prompt_template_store` happens in the
+/// caller, not here (same layering reasoning as `LlmCache`: this crate
+/// never touches a database).
 pub async fn apply_llm(
     batch: &RecordBatch,
     spec: &LlmNodeSpec,
+    template: &str,
     backend: &LlmBackend,
     cache: Option<&dyn LlmCache>,
 ) -> Result<LlmApplyResult, LlmError> {
@@ -111,7 +118,7 @@ pub async fn apply_llm(
             let value = array_value_to_string(batch.column(*idx), row).map_err(LlmError::Arrow)?;
             values.push((name.as_str(), value));
         }
-        let prompt = build_prompt(&spec.prompt_template, &values);
+        let prompt = build_prompt(template, &values);
         let key = cache_key(model, &prompt, spec.max_tokens, spec.temperature);
 
         let cached = match cache {
@@ -205,7 +212,10 @@ mod tests {
         .unwrap();
 
         let spec = LlmNodeSpec {
-            prompt_template: "Answer: {question}".to_string(),
+            prompt: nexus_core::PromptRef {
+                name: "test-prompt".to_string(),
+                version: None,
+            },
             input_columns: vec!["question".to_string()],
             output_column: "answer".to_string(),
             model: LlmModelConfig::Api {
@@ -222,7 +232,9 @@ mod tests {
         };
         let backend = load_llm_backend(&spec);
 
-        let result = apply_llm(&batch, &spec, &backend, None).await.unwrap();
+        let result = apply_llm(&batch, &spec, "Answer: {question}", &backend, None)
+            .await
+            .unwrap();
         assert_eq!(result.calls.len(), 2);
         assert_eq!(result.calls[0].tokens_prompt, 3);
         assert_eq!(result.calls[0].tokens_completion, 1);
@@ -302,7 +314,10 @@ mod tests {
         .unwrap();
 
         let spec = LlmNodeSpec {
-            prompt_template: "Answer: {question}".to_string(),
+            prompt: nexus_core::PromptRef {
+                name: "test-prompt".to_string(),
+                version: None,
+            },
             input_columns: vec!["question".to_string()],
             output_column: "answer".to_string(),
             model: LlmModelConfig::Api {
@@ -322,14 +337,15 @@ mod tests {
         };
         let backend = load_llm_backend(&spec);
         let cache = InMemoryCache::new();
+        let template = "Answer: {question}";
 
-        let first = apply_llm(&batch, &spec, &backend, Some(&cache))
+        let first = apply_llm(&batch, &spec, template, &backend, Some(&cache))
             .await
             .unwrap();
         assert_eq!(first.calls[0].tokens_prompt, 5);
         assert_eq!(first.calls[0].tokens_completion, 2);
 
-        let second = apply_llm(&batch, &spec, &backend, Some(&cache))
+        let second = apply_llm(&batch, &spec, template, &backend, Some(&cache))
             .await
             .unwrap();
         assert_eq!(second.calls[0].tokens_prompt, 0);

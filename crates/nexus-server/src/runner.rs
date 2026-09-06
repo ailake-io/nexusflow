@@ -208,6 +208,7 @@ pub async fn run_pipeline(
     run_id: i64,
     quality_store: &crate::quality_check_store::QualityCheckStore,
     llm_stats_store: &crate::pipeline_run_llm_stats_store::PipelineRunLlmStatsStore,
+    prompt_templates: &crate::prompt_template_store::PromptTemplateStore,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     // A `*-cdc` source with a plain SQL transform (the only documented CDC
     // shape — `SELECT * FROM source0`, required to preserve `__opcode` for
@@ -254,6 +255,7 @@ pub async fn run_pipeline(
             run_id,
             quality_store,
             llm_stats_store,
+            prompt_templates,
         )
         .await
     } else {
@@ -909,6 +911,7 @@ async fn run_transform_pipeline(
     run_id: i64,
     quality_store: &crate::quality_check_store::QualityCheckStore,
     llm_stats_store: &crate::pipeline_run_llm_stats_store::PipelineRunLlmStatsStore,
+    prompt_templates: &crate::prompt_template_store::PromptTemplateStore,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     // Same reasoning as `run_passthrough_pipeline`'s `is_cdc` check: a `-cdc`
     // source is meant to run again every scheduler tick, using
@@ -954,7 +957,15 @@ async fn run_transform_pipeline(
     }
 
     #[cfg(feature = "llm")]
-    let inputs = apply_llm_stage(inputs, spec.llm.as_ref(), log, run_id, llm_stats_store).await?;
+    let inputs = apply_llm_stage(
+        inputs,
+        spec.llm.as_ref(),
+        log,
+        run_id,
+        llm_stats_store,
+        prompt_templates,
+    )
+    .await?;
     #[cfg(not(feature = "llm"))]
     if spec.llm.is_some() {
         anyhow::bail!(
@@ -1336,9 +1347,31 @@ async fn apply_llm_stage(
     log: Option<&RunLogger>,
     run_id: i64,
     llm_stats_store: &crate::pipeline_run_llm_stats_store::PipelineRunLlmStatsStore,
+    prompt_templates: &crate::prompt_template_store::PromptTemplateStore,
 ) -> anyhow::Result<Vec<(String, ArrowSchemaRef, Vec<ArrowRecordBatch>)>> {
     let Some(spec) = llm_spec else {
         return Ok(inputs);
+    };
+
+    let template = prompt_templates
+        .resolve(&spec.prompt.name, spec.prompt.version)
+        .await?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "llm node references prompt {:?} version {:?}, which doesn't exist",
+                spec.prompt.name,
+                spec.prompt.version
+            )
+        })?;
+    let resolved_version = match spec.prompt.version {
+        Some(v) => v,
+        // Re-resolve which version "latest" actually was, so the log line
+        // below records a concrete number instead of "None" — only runs
+        // once per run, not per call.
+        None => prompt_templates
+            .latest_version(&spec.prompt.name)
+            .await?
+            .unwrap_or(0),
     };
 
     let backend = nexus_ai::llm::load_llm_backend(spec);
@@ -1354,7 +1387,9 @@ async fn apply_llm_stage(
     for (name, schema, batches) in inputs {
         let mut transformed = Vec::with_capacity(batches.len());
         for batch in &batches {
-            let result = nexus_ai::llm::apply_llm(batch, spec, &backend, cache.as_deref()).await?;
+            let result =
+                nexus_ai::llm::apply_llm(batch, spec, &template, &backend, cache.as_deref())
+                    .await?;
             for call in &result.calls {
                 let cost_estimate = cost_per_1k_prompt_tokens.unwrap_or(0.0)
                     * (call.tokens_prompt as f64 / 1000.0)
@@ -1379,6 +1414,8 @@ async fn apply_llm_stage(
                 // injectable JSON.
                 let mut fields = serde_json::json!({
                     "model": model,
+                    "prompt_name": spec.prompt.name,
+                    "prompt_version": resolved_version,
                     "tokens_prompt": call.tokens_prompt,
                     "tokens_completion": call.tokens_completion,
                     "latency_ms": call.latency_ms,

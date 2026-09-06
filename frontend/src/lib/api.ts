@@ -136,6 +136,33 @@ export function installLicense(token: string, licenseKey: string): Promise<Licen
   )
 }
 
+/** Matches nexus-server::prompt_template_store::PromptTemplate, as
+ *  returned by GET /prompts (LLMOPS_IMPLEMENTATION_PLAN.md Marco L4). */
+export interface PromptTemplate {
+  name: string
+  version: number
+  template: string
+  created_at: string
+}
+
+export function listPrompts(token: string): Promise<PromptTemplate[]> {
+  return request<PromptTemplate[]>('/prompts', {}, token)
+}
+
+/** Always creates a new version — see `PromptTemplateStore::create`'s doc
+ *  comment for why this never overwrites an existing one. */
+export function createPrompt(
+  token: string,
+  name: string,
+  template: string,
+): Promise<{ name: string; version: number }> {
+  return request<{ name: string; version: number }>(
+    '/prompts',
+    { method: 'POST', body: JSON.stringify({ name, template }) },
+    token,
+  )
+}
+
 /**
  * `nexus-licensing` — a separate, centrally-run service (never this
  * `nexus-server` instance itself, see `docs/ENTERPRISE_LICENSING.md`), so

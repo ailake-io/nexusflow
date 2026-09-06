@@ -22,6 +22,7 @@ mod pipeline_run_llm_stats_store;
 mod pipeline_schema_store;
 mod pipeline_store;
 mod progress;
+mod prompt_template_store;
 mod python_transform;
 mod quality_check_store;
 mod rate_limit;
@@ -111,6 +112,7 @@ struct AppState {
     // feature is off, not a compile-time concern) — no `#[allow(dead_code)]`
     // needed here unlike `dbt_test_results`/`quality_checks` above.
     llm_stats: pipeline_run_llm_stats_store::PipelineRunLlmStatsStore,
+    prompt_templates: prompt_template_store::PromptTemplateStore,
     progress: ProgressHub,
     alerts: AlertNotifier,
     login_rate_limiter: std::sync::Arc<rate_limit::LoginRateLimiter>,
@@ -215,6 +217,13 @@ fn router(state: AppState) -> Router {
         // `browse_fs_handler`'s doc comment for why no extra sandbox is
         // layered underneath this.
         .route("/system/browse-fs", get(browse_fs_handler))
+        // Prompt templates (LLMOPS_IMPLEMENTATION_PLAN.md Marco L4) — same
+        // tier as editing a pipeline's config, since an `llm` node's
+        // `PromptRef` points at one of these.
+        .route(
+            "/prompts",
+            get(list_prompts_handler).post(create_prompt_handler),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_role::<AppState>,
@@ -632,6 +641,7 @@ async fn execute_pipeline_run(
         run_id,
         &state.quality_checks,
         &state.llm_stats,
+        &state.prompt_templates,
     )
     .await;
     state.progress.finish(run_id).await;
@@ -1461,6 +1471,54 @@ async fn license_status_handler(
 }
 
 #[derive(Deserialize)]
+struct CreatePromptRequest {
+    name: String,
+    template: String,
+}
+
+#[derive(Serialize)]
+struct CreatePromptResponse {
+    name: String,
+    version: u32,
+}
+
+/// Always inserts a new version — see `PromptTemplateStore::create`'s doc
+/// comment for why this never overwrites (LLMOPS_IMPLEMENTATION_PLAN.md
+/// Marco L4).
+async fn create_prompt_handler(
+    State(state): State<AppState>,
+    Json(body): Json<CreatePromptRequest>,
+) -> Result<Json<CreatePromptResponse>, ApiError> {
+    if body.name.trim().is_empty() {
+        return Err(ApiError::bad_request("name must not be empty"));
+    }
+    if body.template.trim().is_empty() {
+        return Err(ApiError::bad_request("template must not be empty"));
+    }
+    let version = state
+        .prompt_templates
+        .create(&body.name, &body.template)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(CreatePromptResponse {
+        name: body.name,
+        version,
+    }))
+}
+
+async fn list_prompts_handler(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<prompt_template_store::PromptTemplate>>, ApiError> {
+    Ok(Json(
+        state
+            .prompt_templates
+            .list()
+            .await
+            .map_err(ApiError::internal)?,
+    ))
+}
+
+#[derive(Deserialize)]
 struct UpdateRoleRequest {
     role: Role,
 }
@@ -1732,6 +1790,8 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         &config.pipelines_database_url,
     )
     .await?;
+    let prompt_templates =
+        prompt_template_store::PromptTemplateStore::connect(&config.pipelines_database_url).await?;
     if let Some((username, password)) = &config.bootstrap_admin {
         auth_store.seed_admin_if_empty(username, password).await?;
     }
@@ -1757,6 +1817,7 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         pipeline_schemas,
         quality_checks,
         llm_stats,
+        prompt_templates,
         progress: ProgressHub::default(),
         alerts: AlertNotifier::new(
             AlertConfig {
@@ -2041,6 +2102,11 @@ mod tests {
                 .await
                 .unwrap(),
             llm_stats: pipeline_run_llm_stats_store::PipelineRunLlmStatsStore::connect(
+                "sqlite::memory:",
+            )
+            .await
+            .unwrap(),
+            prompt_templates: prompt_template_store::PromptTemplateStore::connect(
                 "sqlite::memory:",
             )
             .await
@@ -3636,6 +3702,11 @@ mod tests {
                 .await
                 .unwrap(),
             llm_stats: pipeline_run_llm_stats_store::PipelineRunLlmStatsStore::connect(
+                "sqlite::memory:",
+            )
+            .await
+            .unwrap(),
+            prompt_templates: prompt_template_store::PromptTemplateStore::connect(
                 "sqlite::memory:",
             )
             .await

@@ -239,16 +239,37 @@ fn default_similarity_threshold() -> f32 {
     0.8
 }
 
+/// Points at a named, versioned prompt template
+/// (LLMOPS_IMPLEMENTATION_PLAN.md Marco L4) instead of embedding the
+/// template text inline — lets a prompt's wording change without editing
+/// every `PipelineSpec` that uses it, and ties every logged LLM call back
+/// to exactly which prompt version produced it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptRef {
+    pub name: String,
+    /// `None` = always resolve to the newest version at run time (unlike
+    /// `EmbeddingModelSpec::Onnx.revision`, which defaults to a fixed
+    /// "main" — a prompt's wording doesn't carry the same reproducibility
+    /// cost a swapped ONNX model binary would, so "latest" is a reasonable
+    /// default here). `Some(v)` pins to that exact version regardless of
+    /// newer ones created later.
+    #[serde(default)]
+    pub version: Option<u32>,
+}
+
 /// Configuration for the optional LLM stage (LLMOPS_IMPLEMENTATION_PLAN.md
 /// Marco L1). Defined in nexus-core for the same reason as `EmbeddingSpec`
 /// above: `PipelineSpec` carries it without adding an nexus-ai dependency to
 /// the core crate; nexus-ai consumes this spec at runtime.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmNodeSpec {
-    /// Template interpolated per row — `{column_name}` placeholders are
-    /// replaced with that row's value for each entry in `input_columns`.
-    pub prompt_template: String,
-    /// Columns available for interpolation into `prompt_template`.
+    /// Which saved prompt template to use (LLMOPS_IMPLEMENTATION_PLAN.md
+    /// Marco L4) — resolved to the actual template text at run time via
+    /// `nexus-server::prompt_template_store` (nexus-core/nexus-ai never
+    /// touch that store directly, same layering as `LlmCache`).
+    pub prompt: PromptRef,
+    /// Columns available for interpolation into the resolved prompt
+    /// template's `{column_name}` placeholders.
     pub input_columns: Vec<String>,
     /// Name of the new column holding the LLM's response text.
     pub output_column: String,
@@ -585,9 +606,14 @@ impl PipelineSpec {
         }
 
         if let Some(llm) = &self.llm {
-            if llm.prompt_template.trim().is_empty() {
+            if llm.prompt.name.trim().is_empty() {
                 return Err(NexusError::Schema(
-                    "llm.prompt_template must not be empty".into(),
+                    "llm.prompt.name must not be empty".into(),
+                ));
+            }
+            if llm.prompt.version == Some(0) {
+                return Err(NexusError::Schema(
+                    "llm.prompt.version must be > 0 (versions start at 1)".into(),
                 ));
             }
             if llm.output_column.trim().is_empty() {
