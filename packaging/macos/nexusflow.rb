@@ -21,10 +21,13 @@
 # Apple Silicon only (arm64) — matches `release.yml`'s matrix, which only
 # builds on `macos-latest` (Apple Silicon). No Intel (x86_64) build exists.
 #
-# Known gap vs. Linux/Windows installers: this ships OSS connectors only —
-# the enterprise-bundled binary Linux/Windows get is built via `docker
-# build`, and Docker isn't available on GitHub's hosted macOS runners (see
-# release.yml's `build` job comment for the full explanation).
+# The tarball this formula installs comes from release.yml's automatic
+# `macos`/`arm64` leg by default (OSS connectors only), but running
+# .github/workflows/build-macos-installer.yml (workflow_dispatch, same
+# non-Docker Cargo [patch] trick build-windows-installer.yml uses)
+# overwrites that same release asset with an enterprise-bundled build —
+# same end state as Linux/Windows, this formula doesn't need to know
+# which one is currently published under the tag it points at.
 class Nexusflow < Formula
   desc "Universal Rust data & vector framework — ETL/ELT/streaming + AI Lakehouse Builder"
   homepage "https://github.com/ailake-io/nexusflow"

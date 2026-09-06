@@ -12,16 +12,26 @@ best-effort até uma release real passar por aqui.
   `nexusflow-macos-arm64.tar.gz` e o `sha256` real for copiado do
   `SHA256SUMS` daquela release.
 
-## Limitação real: sem conectores enterprise
+## Dois caminhos de build — igual ao Windows
 
-Diferente do tarball Linux e do `.msi` Windows, o binário macOS **não**
-inclui os conectores enterprise. Os dois outros caminhos contornam a
-ausência de `docker` no runner (Linux usa `docker build` direto; Windows
-usa um `[patch]` de Cargo pra evitar precisar de Docker) — macOS por ora
-só builda o binário OSS puro (`cargo build --release --features
-embed-ui,connectors-all`). Estender pra enterprise depois é o mesmo truque
-do Windows (clonar o repo privado + `[patch]` apontando pro checkout OSS
-já baixado), não implementado ainda.
+`release.yml`'s leg `macos`/`arm64` (automático, a cada release) builda
+só o binário **OSS puro** (`connectors-all`, sem enterprise) — é o que
+entra na chain automática pra não arriscar o release principal com um
+build ainda não validado (mesmo racional do Windows já ter um workflow
+separado do zero).
+
+`.github/workflows/build-macos-installer.yml` (novo, `workflow_dispatch`
+manual, 2026-09-06) builda o binário **enterprise-bundled** completo —
+mesmo truque do Windows (clonar `nexus-connectors-enterprise` + `[patch]`
+de Cargo apontando pro checkout OSS já baixado, sem precisar de Docker,
+que não existe em runner macOS hospedado). Roda-lo com `-f
+version=vX.Y.Z` **sobrescreve** o `nexusflow-macos-arm64.tar.gz` que o
+release automático já publicou (mesmo nome de arquivo, `--clobber`) —
+resultado final: o asset publicado na release passa a ser o
+enterprise-bundled, igual ao que Linux/Windows já entregam. **Ainda não
+validado em execução real** — primeira vez que macOS + `connectors-all`
++ todo conector enterprise (vários linkam `odbc-api` contra libpq/
+unixodbc) é tentado.
 
 ## Arquitetura suportada
 

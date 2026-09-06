@@ -1,0 +1,150 @@
+name: build-macos-installer
+
+# Standalone macOS tarball build — deliberately NOT part of the CI ->
+# connectors-heavy -> Release chain (release.yml), same reasoning as
+# build-windows-installer.yml: an untested build (macOS + connectors-all
+# + every enterprise connector has never been attempted before this
+# workflow existed) shouldn't be able to fail the critical release path
+# that just became reliable (2026-09-06). release.yml's own macOS leg
+# still ships a plain-OSS tarball on every release; this workflow adds
+# the enterprise-bundled one on top, on demand.
+#
+# Homebrew formula (packaging/macos/nexusflow.rb) expects exactly the
+# artifact this produces: nexusflow-macos-arm64.tar.gz attached to a
+# GitHub Release, containing nexusflow-bin + the 4 ADBC .dylib's.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: >-
+          Existing release tag (e.g. v0.1.3, already published by
+          release.yml) to attach the built tarball to via `gh release
+          upload`. Leave blank to just build and upload it as a workflow
+          artifact, without publishing it anywhere.
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-macos-installer:
+    name: build-macos-installer
+    runs-on: macos-latest
+    # Same two-full-cargo-builds-back-to-back shape as
+    # build-windows-installer.yml (plain OSS, then the enterprise binary
+    # on top) — that workflow needed 240min for the same pattern on
+    # Windows. Matching it here rather than guessing a smaller number
+    # again.
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
+
+      # Same fix release.yml's macOS leg already validated on a real run
+      # (2026-09-06): libpq is keg-only in Homebrew, needs PKG_CONFIG_PATH
+      # exported explicitly or pkg_check_modules(libpq) fails outright.
+      - name: Install native build deps (macOS)
+        run: |
+          brew install unixodbc libpq fmt protobuf
+          echo "PKG_CONFIG_PATH=$(brew --prefix libpq)/lib/pkgconfig:$PKG_CONFIG_PATH" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - run: ./scripts/build-adbc-postgresql-driver.sh target/adbc
+      - run: ./scripts/build-adbc-sqlite-driver.sh target/adbc
+      - run: ./scripts/build-adbc-duckdb-driver.sh target/adbc
+      - run: ./scripts/build-adbc-clickhouse-driver.sh target/adbc
+
+      # Same clone this repo's release.yml Linux leg uses, already
+      # validated on a real run (2026-09-06) after two real fixes: strip
+      # CRLF and force exactly one trailing newline on the key before
+      # writing it (see release.yml's matching step for the full story).
+      - name: Clone nexus-connectors-enterprise (read-only deploy key)
+        env:
+          DEPLOY_KEY: ${{ secrets.ENTERPRISE_REPO_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p -m 0700 ~/.ssh
+          key="$(printf '%s' "$DEPLOY_KEY" | tr -d '\r')"
+          printf '%s\n' "$key" > ~/.ssh/enterprise_deploy_key
+          chmod 600 ~/.ssh/enterprise_deploy_key
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/enterprise_deploy_key -o IdentitiesOnly=yes" \
+            git clone --depth 1 ssh://git@github.com/ailake-io/nexus-connectors-enterprise.git \
+            enterprise-src
+          rm -f ~/.ssh/enterprise_deploy_key
+
+      # Same non-Docker trick build-windows-installer.yml uses (no Docker
+      # on hosted macOS runners either): redirect the enterprise repo's
+      # nexus-core/nexus-server git dependency at this job's own
+      # already-checked-out+frontend-built OSS tree via a Cargo [patch],
+      # then build nexusflow-enterprise directly. UNTESTED as of this
+      # commit — first time macOS + connectors-all + every enterprise
+      # connector (several link odbc-api against libpq/unixodbc) has
+      # been attempted; treat the first real run as the actual test,
+      # same posture as every other "first run" in this migration.
+      - name: Build enterprise binary (all OSS + enterprise connectors)
+        run: |
+          set -euo pipefail
+          repo_root="$(pwd)"
+          mkdir -p enterprise-src/.cargo
+          cat > enterprise-src/.cargo/config.toml <<EOF
+          [patch."https://github.com/ailake-io/nexusflow.git"]
+          nexus-core = { path = "$repo_root/crates/nexus-core" }
+          nexus-server = { path = "$repo_root/crates/nexus-server" }
+          EOF
+          cd enterprise-src
+          rm -f Cargo.lock
+          cargo generate-lockfile
+          cargo build --release -p nexusflow-enterprise \
+            --features connectors-all-no-embeddings,dbt,python-transform,embed-ui,connectors-all
+          cd ..
+          cp enterprise-src/target/release/nexusflow-enterprise target/release/nexusflow
+
+      # Same shape as release.yml's "Package tarball" step, enterprise
+      # binary instead of plain OSS.
+      - name: Package tarball
+        run: |
+          stage="$(mktemp -d)"
+          cp target/release/nexusflow "$stage/nexusflow-bin"
+          cp target/adbc/libadbc_driver_postgresql.dylib "$stage/"
+          cp target/adbc/libadbc_driver_sqlite.dylib "$stage/"
+          cp target/adbc/libadbc_driver_duckdb.dylib "$stage/"
+          cp target/adbc/libadbc_clickhouse.dylib "$stage/"
+          tar -czf nexusflow-macos-arm64.tar.gz -C "$stage" .
+
+      # Only needed when no `version` was given — same reasoning as
+      # build-windows-installer.yml's matching step (Actions artifact
+      # storage quota, don't depend on it when publishing straight from
+      # disk is an option).
+      - uses: actions/upload-artifact@834a144ee995460fba8ed112a2fc961b36a5ec5a # v4.4.3
+        if: inputs.version == ''
+        with:
+          name: nexusflow-macos-installer
+          path: nexusflow-macos-arm64.tar.gz
+
+      # GitHub-hosted macos-latest ships the `gh` CLI preinstalled —
+      # unlike build-windows-installer.yml's self-hosted-turned-hosted
+      # Windows box, no separate install step needed here.
+      - name: Attach to release
+        if: inputs.version != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.version }}
+        run: gh release upload "$RELEASE_TAG" nexusflow-macos-arm64.tar.gz --clobber

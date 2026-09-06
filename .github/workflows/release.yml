@@ -331,9 +331,12 @@ jobs:
       # `nexusflow` is public, no credential needed for that clone at all),
       # so `docker build` below no longer passes `--ssh default`.
       #
-      # Linux only — the enterprise binary is built via `docker build`
-      # below, and Docker isn't available on GitHub's hosted macOS
-      # runners. macOS instead gets a plain OSS build, see the next step.
+      # Linux only in this job — the enterprise binary is built via
+      # `docker build` below, and Docker isn't available on GitHub's
+      # hosted macOS runners. macOS gets a plain OSS build here (see the
+      # next step) and its own enterprise bundling in the separate
+      # build-macos-installer.yml instead (same reasoning as
+      # build-windows-installer.yml being decoupled from this chain).
       - name: Clone nexus-connectors-enterprise (read-only deploy key)
         if: matrix.os == 'linux'
         env:
@@ -377,9 +380,13 @@ jobs:
           docker rm "$cid" >/dev/null
           docker rmi nexusflow-enterprise-builder-${{ github.run_id }} >/dev/null
 
-      # macOS: no enterprise bundling yet (see the "KNOWN GAP" comment
-      # above the Docker-based steps this replaces) — plain OSS binary,
-      # every OSS connector still linked in via connectors-all.
+      # macOS: no enterprise bundling in this workflow, deliberately — see
+      # the new standalone build-macos-installer.yml (same pattern as
+      # build-windows-installer.yml: workflow_dispatch only, decoupled
+      # from this automatic release chain) instead of baking an untested
+      # macOS+connectors-all+enterprise build into the critical path that
+      # just became reliable. Plain OSS binary here, every OSS connector
+      # still linked in via connectors-all.
       - name: Build plain OSS binary (macOS)
         if: matrix.os == 'macos'
         run: cargo build --release -p nexusflow --features embed-ui,connectors-all
