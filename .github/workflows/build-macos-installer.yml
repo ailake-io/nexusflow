@@ -71,6 +71,17 @@ jobs:
       - run: ./scripts/build-adbc-duckdb-driver.sh target/adbc
       - run: ./scripts/build-adbc-clickhouse-driver.sh target/adbc
 
+      # Real failure on the first real run (2026-09-06): this step was
+      # missing entirely, so `target/release/` never existed at repo
+      # root and the enterprise-binary step's `cp ... target/release/nexusflow`
+      # below failed ("No such file or directory"). build-windows-installer.yml
+      # builds the plain-OSS binary here for the same reason (creates
+      # target\release\, then gets overwritten by the enterprise binary) —
+      # this step restores that same two-full-builds shape, matching the
+      # 240min timeout already budgeted for it.
+      - name: cargo build --release
+        run: cargo build --release -p nexusflow --features embed-ui,connectors-all
+
       # Same clone this repo's release.yml Linux leg uses, already
       # validated on a real run (2026-09-06) after two real fixes: strip
       # CRLF and force exactly one trailing newline on the key before
@@ -94,11 +105,11 @@ jobs:
       # on hosted macOS runners either): redirect the enterprise repo's
       # nexus-core/nexus-server git dependency at this job's own
       # already-checked-out+frontend-built OSS tree via a Cargo [patch],
-      # then build nexusflow-enterprise directly. UNTESTED as of this
-      # commit — first time macOS + connectors-all + every enterprise
-      # connector (several link odbc-api against libpq/unixodbc) has
-      # been attempted; treat the first real run as the actual test,
-      # same posture as every other "first run" in this migration.
+      # then build nexusflow-enterprise directly. Validated on a real run
+      # (2026-09-06): macOS + connectors-all + every enterprise connector
+      # compiles cleanly (63m54s) — the only real failure on that run was
+      # the missing `cargo build --release -p nexusflow` step above
+      # (target/release/ didn't exist yet for the `cp` below to target).
       - name: Build enterprise binary (all OSS + enterprise connectors)
         run: |
           set -euo pipefail
