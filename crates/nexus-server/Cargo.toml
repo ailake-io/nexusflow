@@ -265,7 +265,9 @@ parquet = { version = "58.4.0", optional = true }
 # libgit2 from source (via the `libgit2-sys` build script), so this needs
 # no system libgit2/OpenSSL beyond a C toolchain — same "works out of the
 # box cross-platform" bar as every other optional heavy dependency here.
-git2 = { version = "0.19.0", default-features = false, features = ["vendored-libgit2"], optional = true }
+# Pinned >=0.20.4: GHSA-j39j-6gw9-jw6h (Dependabot #24/#25) — UB dereferencing
+# a `Buf` struct in versions before that, fixed upstream.
+git2 = { version = "0.21.0", default-features = false, features = ["vendored-libgit2"], optional = true }
 # Text diff for the version-history `.../diff` endpoints (pipeline
 # summaries and prompt template text) — no diff library exists in this
 # workspace yet.
