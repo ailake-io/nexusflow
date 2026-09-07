@@ -304,17 +304,14 @@ async fn run_linear_pipeline(
     alerts: &crate::alerts::AlertNotifier,
     run_id: i64,
 ) -> anyhow::Result<Vec<PartitionStats>> {
-    if spec.embedding.is_some() {
-        anyhow::bail!(
-            "embedding stage is not supported on the no-transform (postgres→postgres) path; \
-             add a transform node to use embeddings"
-        );
-    }
-
     let source_node = &spec.sources[0];
     let sink_node = &spec.sinks[0];
 
     if source_node.connector != "postgres" || sink_node.connector != "postgres" {
+        // `run_passthrough_pipeline` supports `embedding` (Marco L6) — this
+        // check used to live at the top of this function, unconditionally,
+        // which rejected embedding for *both* sub-paths before either ever
+        // ran; moved below so it only applies to the postgres-native path.
         return run_passthrough_pipeline(
             spec,
             checkpoints,
@@ -326,6 +323,13 @@ async fn run_linear_pipeline(
             run_id,
         )
         .await;
+    }
+
+    if spec.embedding.is_some() {
+        anyhow::bail!(
+            "embedding stage is not supported on the no-transform (postgres→postgres) path; \
+             add a transform node to use embeddings"
+        );
     }
 
     let source_cfg: PostgresConnectorConfig = serde_json::from_value(source_node.config.clone())?;
@@ -755,12 +759,49 @@ async fn run_passthrough_pipeline(
     alerts: &crate::alerts::AlertNotifier,
     run_id: i64,
 ) -> anyhow::Result<Vec<PartitionStats>> {
-    if spec.embedding.is_some() {
+    // Marco L6: `embedding` on this path is what makes reactive RAG
+    // possible — a `postgres-cdc -> embedding -> lancedb` pipeline with no
+    // `transform` node streams straight through (this path), unlike
+    // `run_transform_pipeline` which needs `drain_sources` first (never
+    // completes for a CDC source, see `ARCHITECTURE.md §7`). Loaded once
+    // per run, not once per batch (same reasoning `apply_embedding_stage`
+    // gives for `run_transform_pipeline`'s equivalent), then wrapped as a
+    // `BatchTransform` the engine applies to every batch between read and
+    // write — see `nexus_core::pipeline::BatchTransform`'s doc comment for
+    // why this lives in nexus-core as a generic hook instead of a
+    // hardcoded embedding call.
+    #[cfg(any(feature = "embeddings", feature = "embeddings-api"))]
+    let batch_transform: Option<nexus_core::BatchTransform> = match &spec.embedding {
+        Some(embedding_spec) => {
+            let backend = std::sync::Arc::new(
+                nexus_ai::embedding::load_embedding_backend(embedding_spec).await?,
+            );
+            let embedding_spec = embedding_spec.clone();
+            Some(Box::new(move |batch: ArrowRecordBatch| {
+                let backend = backend.clone();
+                let embedding_spec = embedding_spec.clone();
+                Box::pin(async move {
+                    nexus_ai::embedding::apply_embedding(&batch, &embedding_spec, &backend)
+                        .await
+                        .map_err(|e| nexus_core::NexusError::Connector(e.to_string()))
+                })
+                    as futures::future::BoxFuture<
+                        'static,
+                        Result<ArrowRecordBatch, nexus_core::NexusError>,
+                    >
+            }) as nexus_core::BatchTransform)
+        }
+        None => None,
+    };
+    #[cfg(not(any(feature = "embeddings", feature = "embeddings-api")))]
+    let batch_transform: Option<nexus_core::BatchTransform> = if spec.embedding.is_some() {
         anyhow::bail!(
-            "embedding stage is not supported on the no-transform passthrough path; \
-             add a transform node to use embeddings"
+            "pipeline contains an embedding node but the server was built without \
+             the 'embeddings' or 'embeddings-api' feature"
         );
-    }
+    } else {
+        None
+    };
 
     let source_node = &spec.sources[0];
     let sink_node = &spec.sinks[0];
@@ -839,36 +880,41 @@ async fn run_passthrough_pipeline(
 
     let engine = PipelineEngine::new(spec.channel_capacity);
     let (progress, progress_handle) = log_progress(log, progress, 1, "partitions");
-    let results = engine.run(vec![handle], progress).await;
+    // Always exactly one partition ("p0") on this path (see this
+    // function's doc comment) — calls `run_partition` directly instead of
+    // `.run(vec![handle], ...)` so `batch_transform` (Marco L6) has
+    // somewhere to go; `.run()`'s signature is shared with the genuinely
+    // multi-partition postgres-native path above, which doesn't need it.
+    let result = engine
+        .run_partition(handle, progress, batch_transform)
+        .await;
     let _ = progress_handle.await;
 
     let mut stats = Vec::new();
     let mut errors = Vec::new();
-    for result in results {
-        match result {
-            Ok(stat) => {
-                checkpoints
-                    .commit(
-                        &spec.pipeline_id,
-                        &CheckpointCursor {
-                            resume_state: stat.resume_state.clone(),
-                            ..CheckpointCursor::new(stat.partition_id.clone())
-                        },
-                    )
-                    .await?;
-                stats.push(stat);
-            }
-            Err(e) => {
-                log_error(
-                    log,
-                    format!(
-                        "partition failed: {}",
-                        crate::error::sanitize_error(&e.to_string())
-                    ),
+    match result {
+        Ok(stat) => {
+            checkpoints
+                .commit(
+                    &spec.pipeline_id,
+                    &CheckpointCursor {
+                        resume_state: stat.resume_state.clone(),
+                        ..CheckpointCursor::new(stat.partition_id.clone())
+                    },
                 )
-                .await;
-                errors.push(e);
-            }
+                .await?;
+            stats.push(stat);
+        }
+        Err(e) => {
+            log_error(
+                log,
+                format!(
+                    "partition failed: {}",
+                    crate::error::sanitize_error(&e.to_string())
+                ),
+            )
+            .await;
+            errors.push(e);
         }
     }
 

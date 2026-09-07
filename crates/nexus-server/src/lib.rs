@@ -2275,6 +2275,7 @@ mod tests {
                     sink: Box::new(NullSink),
                 },
                 None,
+                None,
             )
             .await
             .expect("partition runs successfully");

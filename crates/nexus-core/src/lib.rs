@@ -23,7 +23,7 @@ pub use dag::{
 };
 pub use error::{with_timeout, NexusError};
 pub use pipeline::{
-    PartitionHandle, PartitionStats, PipelineEngine, ProgressEvent, ProgressSender,
+    BatchTransform, PartitionHandle, PartitionStats, PipelineEngine, ProgressEvent, ProgressSender,
     TransformPipeline,
 };
 pub use quality::{
