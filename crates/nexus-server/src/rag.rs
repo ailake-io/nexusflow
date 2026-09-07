@@ -9,20 +9,22 @@
 //! (batch, columnar) — a RAG question is a single ad-hoc string, not a
 //! batch.
 //!
-//! v1 scope: only a `lancedb` sink is supported as the vector store (see
-//! `docs/LLMOPS_IMPLEMENTATION_PLAN.md` Marco L5 — this session's own
-//! investigation found zero vector connectors with any search/query
-//! capability before this module; LanceDB is the first).
+//! Supports every vector sink NexusFlow has (LanceDB, Qdrant, Milvus,
+//! pgvector, Pinecone, ChromaDB) — v1 (Marco L5) only had LanceDB, since
+//! this session's own investigation found zero vector connectors with any
+//! search/query capability before that; the other 5 gained one each
+//! (Marco L7 follow-up, "RAG multi-vetor"). Each non-LanceDB search client
+//! returns `(key, text)` pairs directly (their natural shape — points/
+//! JSON/SQL rows, not Arrow) instead of being forced into a `RecordBatch`;
+//! only LanceDB's own client still returns that (unchanged since L5).
 
 use crate::auth::{require_role, Role};
 use crate::error::ApiError;
 use crate::llm_generation_store::NewGeneration;
 use crate::AppState;
-use arrow_cast::display::array_value_to_string;
 use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{middleware, Extension, Json, Router};
-use nexus_connector_lancedb::{LanceDbConnectorConfig, LanceDbSearchClient};
 use nexus_core::LlmModelConfig;
 use serde::{Deserialize, Serialize};
 
@@ -73,17 +75,17 @@ async fn rag_query_handler(
         .llm
         .as_ref()
         .ok_or_else(|| ApiError::bad_request("pipeline has no llm config, required for RAG"))?;
+    const SUPPORTED_VECTOR_SINKS: [&str; 6] =
+        ["lancedb", "qdrant", "milvus", "pgvector", "pinecone", "chromadb"];
     let sink_node = spec
         .sinks
         .iter()
-        .find(|s| s.connector == "lancedb")
+        .find(|s| SUPPORTED_VECTOR_SINKS.contains(&s.connector.as_str()))
         .ok_or_else(|| {
-            ApiError::bad_request(
-                "pipeline has no lancedb sink — RAG v1 only supports LanceDB as the vector store",
-            )
+            ApiError::bad_request(format!(
+                "pipeline has no supported vector sink — RAG needs one of {SUPPORTED_VECTOR_SINKS:?}"
+            ))
         })?;
-    let sink_cfg: LanceDbConnectorConfig = serde_json::from_value(sink_node.config.clone())
-        .map_err(|e| ApiError::internal(format!("invalid lancedb sink config: {e}")))?;
 
     // Same model that embedded the stored rows in the first place — a
     // question embedded by a different model would search a vector space
@@ -99,32 +101,39 @@ async fn rag_query_handler(
         .pop()
         .ok_or_else(|| ApiError::internal("embedding backend returned no vector"))?;
 
-    let search_client = LanceDbSearchClient::connect(&sink_cfg)
-        .await
-        .map_err(ApiError::internal)?;
-    let batches = search_client
-        .search(query_vector, &sink_cfg.embedding_column, top_k)
-        .await
-        .map_err(ApiError::internal)?;
-
-    let mut context_parts = Vec::new();
-    let mut context_keys = Vec::new();
-    for batch in &batches {
-        let Ok(text_idx) = batch.schema().index_of(&embedding_spec.source_column) else {
-            continue;
-        };
-        let Ok(key_idx) = batch.schema().index_of(&sink_cfg.primary_key) else {
-            continue;
-        };
-        for row in 0..batch.num_rows() {
-            if let Ok(text) = array_value_to_string(batch.column(text_idx), row) {
-                context_parts.push(text);
+    // Each non-LanceDB client already returns `(key, text)` pairs — the
+    // natural shape for a vector store that isn't Arrow-native (points/
+    // JSON/SQL rows), see each `search.rs`'s own doc comment for why this
+    // isn't forced into a `RecordBatch`. Only LanceDB's own client (Marco
+    // L5) still returns `Vec<RecordBatch>`, extracted exactly as before.
+    let (context_keys, context_parts): (Vec<String>, Vec<String>) =
+        match sink_node.connector.as_str() {
+            "lancedb" => {
+                search_lancedb(&sink_node.config, &embedding_spec.source_column, query_vector, top_k)
+                    .await?
             }
-            if let Ok(key) = array_value_to_string(batch.column(key_idx), row) {
-                context_keys.push(key);
+            "qdrant" => {
+                search_qdrant(&sink_node.config, &embedding_spec.source_column, query_vector, top_k)
+                    .await?
             }
-        }
-    }
+            "milvus" => {
+                search_milvus(&sink_node.config, &embedding_spec.source_column, query_vector, top_k)
+                    .await?
+            }
+            "pgvector" => {
+                search_pgvector(&sink_node.config, &embedding_spec.source_column, query_vector, top_k)
+                    .await?
+            }
+            "pinecone" => {
+                search_pinecone(&sink_node.config, &embedding_spec.source_column, query_vector, top_k)
+                    .await?
+            }
+            "chromadb" => {
+                search_chromadb(&sink_node.config, &embedding_spec.source_column, query_vector, top_k)
+                    .await?
+            }
+            other => unreachable!("SUPPORTED_VECTOR_SINKS filtered to a known name, got {other:?}"),
+        };
     if context_parts.is_empty() {
         return Err(ApiError::not_found(
             "no context found in the vector store for this question — has the pipeline run yet?",
@@ -194,6 +203,221 @@ async fn rag_query_handler(
         answer: response.text,
         context_keys,
     }))
+}
+
+// --- Per-connector search dispatch (RAG multi-vetor, Marco L7 follow-up) ---
+//
+// Each pair below is one connector: the real implementation behind
+// `#[cfg(feature = "...")]`, and a stub behind `#[cfg(not(feature = "..."))]`
+// that returns a clear error instead of a compile error — `sink_node.config`
+// is only ever deserialized into `nexus_connector_X::XConnectorConfig`
+// inside the feature-gated half, so a binary built without that connector's
+// feature never even sees the type name (same reasoning
+// `run_transform_pipeline`'s `#[cfg(not(feature = "llm"))]` bail! has for
+// `spec.llm`). All 5 return `(keys, texts)` — the caller `.unzip()`s their
+// `Vec<(String, String)>` result, same shape every non-LanceDB
+// `search.rs` produces directly.
+
+#[cfg(feature = "lancedb")]
+async fn search_lancedb(
+    sink_config: &serde_json::Value,
+    source_column: &str,
+    query_vector: Vec<f32>,
+    top_k: usize,
+) -> Result<(Vec<String>, Vec<String>), ApiError> {
+    use arrow_cast::display::array_value_to_string;
+
+    let cfg: nexus_connector_lancedb::LanceDbConnectorConfig = serde_json::from_value(sink_config.clone())
+        .map_err(|e| ApiError::internal(format!("invalid lancedb sink config: {e}")))?;
+    let client = nexus_connector_lancedb::LanceDbSearchClient::connect(&cfg)
+        .await
+        .map_err(ApiError::internal)?;
+    let batches = client
+        .search(query_vector, &cfg.embedding_column, top_k)
+        .await
+        .map_err(ApiError::internal)?;
+
+    let mut keys = Vec::new();
+    let mut texts = Vec::new();
+    for batch in &batches {
+        let Ok(text_idx) = batch.schema().index_of(source_column) else {
+            continue;
+        };
+        let Ok(key_idx) = batch.schema().index_of(&cfg.primary_key) else {
+            continue;
+        };
+        for row in 0..batch.num_rows() {
+            if let Ok(text) = array_value_to_string(batch.column(text_idx), row) {
+                texts.push(text);
+            }
+            if let Ok(key) = array_value_to_string(batch.column(key_idx), row) {
+                keys.push(key);
+            }
+        }
+    }
+    Ok((keys, texts))
+}
+#[cfg(not(feature = "lancedb"))]
+async fn search_lancedb(
+    _sink_config: &serde_json::Value,
+    _source_column: &str,
+    _query_vector: Vec<f32>,
+    _top_k: usize,
+) -> Result<(Vec<String>, Vec<String>), ApiError> {
+    Err(ApiError::bad_request(
+        "pipeline has a lancedb sink but the server was built without the 'lancedb' feature",
+    ))
+}
+
+#[cfg(feature = "qdrant")]
+async fn search_qdrant(
+    sink_config: &serde_json::Value,
+    source_column: &str,
+    query_vector: Vec<f32>,
+    top_k: usize,
+) -> Result<(Vec<String>, Vec<String>), ApiError> {
+    let cfg: nexus_connector_qdrant::QdrantConnectorConfig = serde_json::from_value(sink_config.clone())
+        .map_err(|e| ApiError::internal(format!("invalid qdrant sink config: {e}")))?;
+    let client = nexus_connector_qdrant::QdrantSearchClient::connect(&cfg).map_err(ApiError::internal)?;
+    Ok(client
+        .search(query_vector, source_column, top_k)
+        .await
+        .map_err(ApiError::internal)?
+        .into_iter()
+        .unzip())
+}
+#[cfg(not(feature = "qdrant"))]
+async fn search_qdrant(
+    _sink_config: &serde_json::Value,
+    _source_column: &str,
+    _query_vector: Vec<f32>,
+    _top_k: usize,
+) -> Result<(Vec<String>, Vec<String>), ApiError> {
+    Err(ApiError::bad_request(
+        "pipeline has a qdrant sink but the server was built without the 'qdrant' feature",
+    ))
+}
+
+#[cfg(feature = "milvus")]
+async fn search_milvus(
+    sink_config: &serde_json::Value,
+    source_column: &str,
+    query_vector: Vec<f32>,
+    top_k: usize,
+) -> Result<(Vec<String>, Vec<String>), ApiError> {
+    let cfg: nexus_connector_milvus::MilvusConnectorConfig = serde_json::from_value(sink_config.clone())
+        .map_err(|e| ApiError::internal(format!("invalid milvus sink config: {e}")))?;
+    let client = nexus_connector_milvus::MilvusSearchClient::connect(&cfg)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(client
+        .search(query_vector, &cfg.embedding_column, source_column, top_k)
+        .await
+        .map_err(ApiError::internal)?
+        .into_iter()
+        .unzip())
+}
+#[cfg(not(feature = "milvus"))]
+async fn search_milvus(
+    _sink_config: &serde_json::Value,
+    _source_column: &str,
+    _query_vector: Vec<f32>,
+    _top_k: usize,
+) -> Result<(Vec<String>, Vec<String>), ApiError> {
+    Err(ApiError::bad_request(
+        "pipeline has a milvus sink but the server was built without the 'milvus' feature",
+    ))
+}
+
+#[cfg(feature = "pgvector")]
+async fn search_pgvector(
+    sink_config: &serde_json::Value,
+    source_column: &str,
+    query_vector: Vec<f32>,
+    top_k: usize,
+) -> Result<(Vec<String>, Vec<String>), ApiError> {
+    let cfg: nexus_connector_pgvector::PgVectorConnectorConfig = serde_json::from_value(sink_config.clone())
+        .map_err(|e| ApiError::internal(format!("invalid pgvector sink config: {e}")))?;
+    let client = nexus_connector_pgvector::PgVectorSearchClient::connect(&cfg)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(client
+        .search(query_vector, &cfg.embedding_column, source_column, top_k as i64)
+        .await
+        .map_err(ApiError::internal)?
+        .into_iter()
+        .unzip())
+}
+#[cfg(not(feature = "pgvector"))]
+async fn search_pgvector(
+    _sink_config: &serde_json::Value,
+    _source_column: &str,
+    _query_vector: Vec<f32>,
+    _top_k: usize,
+) -> Result<(Vec<String>, Vec<String>), ApiError> {
+    Err(ApiError::bad_request(
+        "pipeline has a pgvector sink but the server was built without the 'pgvector' feature",
+    ))
+}
+
+#[cfg(feature = "pinecone")]
+async fn search_pinecone(
+    sink_config: &serde_json::Value,
+    source_column: &str,
+    query_vector: Vec<f32>,
+    top_k: usize,
+) -> Result<(Vec<String>, Vec<String>), ApiError> {
+    let cfg: nexus_connector_pinecone::PineconeConnectorConfig = serde_json::from_value(sink_config.clone())
+        .map_err(|e| ApiError::internal(format!("invalid pinecone sink config: {e}")))?;
+    let client = nexus_connector_pinecone::PineconeSearchClient::connect(&cfg).map_err(ApiError::internal)?;
+    Ok(client
+        .search(query_vector, source_column, top_k)
+        .await
+        .map_err(ApiError::internal)?
+        .into_iter()
+        .unzip())
+}
+#[cfg(not(feature = "pinecone"))]
+async fn search_pinecone(
+    _sink_config: &serde_json::Value,
+    _source_column: &str,
+    _query_vector: Vec<f32>,
+    _top_k: usize,
+) -> Result<(Vec<String>, Vec<String>), ApiError> {
+    Err(ApiError::bad_request(
+        "pipeline has a pinecone sink but the server was built without the 'pinecone' feature",
+    ))
+}
+
+#[cfg(feature = "chromadb")]
+async fn search_chromadb(
+    sink_config: &serde_json::Value,
+    source_column: &str,
+    query_vector: Vec<f32>,
+    top_k: usize,
+) -> Result<(Vec<String>, Vec<String>), ApiError> {
+    let cfg: nexus_connector_chromadb::ChromaConnectorConfig = serde_json::from_value(sink_config.clone())
+        .map_err(|e| ApiError::internal(format!("invalid chromadb sink config: {e}")))?;
+    let client = nexus_connector_chromadb::ChromaSearchClient::connect(&cfg)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(client
+        .search(query_vector, source_column, top_k)
+        .await
+        .map_err(ApiError::internal)?
+        .into_iter()
+        .unzip())
+}
+#[cfg(not(feature = "chromadb"))]
+async fn search_chromadb(
+    _sink_config: &serde_json::Value,
+    _source_column: &str,
+    _query_vector: Vec<f32>,
+    _top_k: usize,
+) -> Result<(Vec<String>, Vec<String>), ApiError> {
+    Err(ApiError::bad_request(
+        "pipeline has a chromadb sink but the server was built without the 'chromadb' feature",
+    ))
 }
 
 /// `spec.llm.prompt.version` is `None` for "always latest" — re-resolves

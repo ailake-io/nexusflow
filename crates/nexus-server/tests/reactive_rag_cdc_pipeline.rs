@@ -179,6 +179,11 @@ async fn reactive_rag_cdc_is_denied_without_a_covering_license() {
                 "filename": "onnx/model.onnx",
                 "tokenizer_filename": "tokenizer.json",
                 "max_length": 128
+            },
+            "chunking": {
+                "strategy": "fixed_window",
+                "chunk_size": 1000,
+                "overlap": 0
             }
         },
         "sinks": [{

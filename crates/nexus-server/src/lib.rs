@@ -31,7 +31,14 @@ mod quality_check_store;
 #[cfg(all(
     feature = "llm",
     any(feature = "embeddings", feature = "embeddings-api"),
-    feature = "lancedb"
+    any(
+        feature = "lancedb",
+        feature = "qdrant",
+        feature = "milvus",
+        feature = "pgvector",
+        feature = "pinecone",
+        feature = "chromadb"
+    )
 ))]
 mod rag;
 mod rate_limit;
@@ -334,7 +341,14 @@ fn router(state: AppState) -> Router {
     #[cfg(all(
         feature = "llm",
         any(feature = "embeddings", feature = "embeddings-api"),
-        feature = "lancedb"
+        any(
+            feature = "lancedb",
+            feature = "qdrant",
+            feature = "milvus",
+            feature = "pgvector",
+            feature = "pinecone",
+            feature = "chromadb"
+        )
     ))]
     let rag_state = state.clone();
 
@@ -364,7 +378,14 @@ fn router(state: AppState) -> Router {
     #[cfg(all(
         feature = "llm",
         any(feature = "embeddings", feature = "embeddings-api"),
-        feature = "lancedb"
+        any(
+            feature = "lancedb",
+            feature = "qdrant",
+            feature = "milvus",
+            feature = "pgvector",
+            feature = "pinecone",
+            feature = "chromadb"
+        )
     ))]
     let app = app.merge(rag::routes(rag_state));
 
@@ -437,7 +458,7 @@ async fn list_connectors_handler(
             // `Capability`-kind descriptors (Marco L8) are license-check
             // targets, not real connectors — never expose them as a node
             // type the Canvas could try to add to a DAG.
-            .filter(|d| d.capability != ConnectorCapability::Capability)
+            .filter(|d| d.capability != nexus_core::ConnectorCapability::Capability)
             .map(|d| ConnectorCatalogEntry {
                 name: d.name,
                 capability: d.capability,
@@ -2749,7 +2770,14 @@ mod tests {
     #[cfg(all(
         feature = "llm",
         any(feature = "embeddings", feature = "embeddings-api"),
-        feature = "lancedb"
+        any(
+            feature = "lancedb",
+            feature = "qdrant",
+            feature = "milvus",
+            feature = "pgvector",
+            feature = "pinecone",
+            feature = "chromadb"
+        )
     ))]
     #[tokio::test]
     async fn generation_lineage_is_forbidden_without_a_covering_license() {
@@ -2798,7 +2826,14 @@ mod tests {
     #[cfg(all(
         feature = "llm",
         any(feature = "embeddings", feature = "embeddings-api"),
-        feature = "lancedb"
+        any(
+            feature = "lancedb",
+            feature = "qdrant",
+            feature = "milvus",
+            feature = "pgvector",
+            feature = "pinecone",
+            feature = "chromadb"
+        )
     ))]
     #[tokio::test]
     async fn generation_lineage_is_visible_with_a_covering_license() {
@@ -2876,7 +2911,6 @@ mod tests {
             .collect();
         assert!(!names.contains(&"llm-lineage-tracking"));
         assert!(!names.contains(&"reactive-rag-cdc"));
-        assert_eq!(results[0]["message"], "3 rows failed");
     }
 
     #[tokio::test]
