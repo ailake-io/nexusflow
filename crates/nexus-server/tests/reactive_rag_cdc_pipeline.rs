@@ -4,26 +4,42 @@
     any(feature = "embeddings", feature = "embeddings-api")
 ))]
 
-//! Real end-to-end: `postgres-cdc -> embedding -> lancedb`, no `transform`
-//! node (LLMOPS_IMPLEMENTATION_PLAN.md Marco L6's own acceptance
-//! criterion). Before this marco, `run_linear_pipeline` rejected any spec
-//! with `embedding` set before even deciding which sub-path it would take
-//! — a CDC source (which never goes through the `transform`/
-//! `drain_sources` path, see `ARCHITECTURE.md §7`) could never combine
-//! with `embedding` at all. This proves that combination now works
-//! against a real Postgres logical-replication stream and a real
-//! embedding model, not mocked.
+//! Reactive RAG (`postgres-cdc -> embedding -> lancedb`, no `transform`
+//! node) is enterprise-gated as of LLMOPS_IMPLEMENTATION_PLAN.md Marco L8
+//! (`"reactive-rag-cdc"` slug, `capability_registry.rs`) — this test now
+//! proves an OSS binary with no license installed can't actually run this
+//! combination, end to end through the real HTTP API, not just that
+//! `check_connector_license` itself works (already covered directly by
+//! `capability_registry.rs`'s unit tests) or that the gate is wired into
+//! `run_passthrough_pipeline` (covered by `runner.rs`'s own
+//! `reactive_rag_cdc_combination_is_denied_without_a_covering_license`,
+//! which uses a bogus URI for speed).
+//!
+//! No real postgres container here on purpose: the license check in
+//! `run_passthrough_pipeline` runs before any connector actually connects
+//! (proven by the two tests above), so a real database would only add
+//! ~1-2s of container startup for zero additional verification — the
+//! `postgres-cdc` config below just needs to deserialize into
+//! `PostgresCdcConfig`, never needs to be reachable.
+//!
+//! The positive case ("with a license covering `reactive-rag-cdc`, this
+//! combination actually works") is **not** testable from this file, or
+//! anywhere in the public `nexusflow` repo: `license::test_support`'s
+//! signing key only exists under `#[cfg(test)]` inside `nexus-server`'s
+//! own crate compilation — an external `tests/*.rs` file links against
+//! the library built *without* `cfg(test)`, so it sees the real
+//! (unsigned-here) production public key and no `test_support` module at
+//! all. That positive test belongs wherever a real or test signing key
+//! actually lives (`nexus-licensing`), not this OSS repo — same reasoning
+//! `license.rs`'s own module doc gives for never committing the real
+//! private key here.
 
 use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
 use axum::Router;
-use nexus_connector_lancedb::{LanceDbConnectorConfig, LanceDbSearchClient, LanceDbStorageOptions};
 use nexus_server::{build_app, ServerConfig};
 use serde_json::{json, Value};
-use testcontainers::core::WaitFor;
-use testcontainers::runners::AsyncRunner;
-use testcontainers::{GenericImage, ImageExt};
 use tower::ServiceExt;
 
 async fn login(app: Router, username: &str, password: &str) -> String {
@@ -80,7 +96,7 @@ async fn post_run(
 }
 
 async fn wait_for_run(app: &Router, pipeline_id: &str, run_id: i64, token: &str) -> Value {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         let response = app
             .clone()
@@ -110,7 +126,7 @@ async fn wait_for_run(app: &Router, pipeline_id: &str, run_id: i64, token: &str)
             std::time::Instant::now() < deadline,
             "run {run_id} never reached a terminal state"
         );
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
 }
 
@@ -128,70 +144,24 @@ fn test_server_config(checkpoint_database_url: String) -> ServerConfig {
         pagerduty_routing_key: None,
         email: None,
         webhook_url: None,
-        // Same escape hatch `postgres_pipeline.rs` already uses — testcontainers
-        // exposes Postgres on localhost, which validate_security() blocks by
-        // default (SSRF hardening, C5).
         allow_internal_hosts: true,
         trust_proxy_headers: false,
     }
 }
 
 #[tokio::test]
-async fn embedding_stage_runs_on_the_cdc_passthrough_path() {
-    let postgres = GenericImage::new("postgres", "16")
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", "nexus")
-        .with_env_var("POSTGRES_PASSWORD", "nexus")
-        .with_env_var("POSTGRES_DB", "nexus")
-        .with_cmd(["postgres", "-c", "wal_level=logical"])
-        .start()
-        .await
-        .expect("postgres starts");
-
-    let host = postgres.get_host().await.expect("container host");
-    let port = postgres
-        .get_host_port_ipv4(5432)
-        .await
-        .expect("postgres host port");
-    let uri = format!("postgres://nexus:nexus@{host}:{port}/nexus");
-
-    let pg_pool = sqlx::PgPool::connect(&uri)
-        .await
-        .expect("connects to postgres for setup");
-    // No seed row here — a replication slot only streams changes that
-    // happen *after* it's created (`postgres-cdc`'s own
-    // `postgres_cdc_integration.rs` connects the source before its DML,
-    // for the same reason). The row is inserted below, after the pipeline
-    // run has started and had time to actually create the slot.
-    sqlx::raw_sql(
-        "CREATE TABLE docs (id BIGINT PRIMARY KEY, body TEXT); \
-         ALTER TABLE docs REPLICA IDENTITY FULL; \
-         CREATE PUBLICATION pub_docs FOR TABLE docs;",
-    )
-    .execute(&pg_pool)
-    .await
-    .expect("test table + publication created");
-
-    let dir = tempfile::tempdir().expect("tempdir creates");
-    let lancedb_uri = dir.path().to_str().unwrap().to_string();
-
+async fn reactive_rag_cdc_is_denied_without_a_covering_license() {
     let spec = json!({
         "pipeline_id": "cdc-embed-lancedb",
         "sources": [{
             "connector": "postgres-cdc",
             "config": {
-                "uri": uri,
+                // Never dialed — the license check runs before any
+                // connector actually connects (see module doc comment).
+                "uri": "postgres://nobody:nobody@127.0.0.1:1/nowhere",
                 "table": "docs",
                 "publication_name": "pub_docs",
                 "slot_name": "slot_docs",
-                // Stream ends after 1 event instead of the default 1000 —
-                // this test only ever produces 1 (the insert below), and a
-                // CDC source's stream otherwise blocks waiting for more
-                // WAL activity that never comes, so the run would never
-                // reach a terminal HTTP state.
-                "max_batch_events": 1,
                 "fields": [
                     {"name": "id", "data_type": "int64", "nullable": false},
                     {"name": "body", "data_type": "utf8", "nullable": false}
@@ -209,21 +179,12 @@ async fn embedding_stage_runs_on_the_cdc_passthrough_path() {
                 "filename": "onnx/model.onnx",
                 "tokenizer_filename": "tokenizer.json",
                 "max_length": 128
-            },
-            "chunking": {
-                "strategy": "fixed_window",
-                // Larger than the seed row's text so it stays 1 chunk = 1
-                // row — this test asserts the embedding stage ran at all
-                // on the CDC passthrough path, not chunking's row-expansion
-                // (already covered by nexus-core's own unit test).
-                "chunk_size": 1000,
-                "overlap": 0
             }
         },
         "sinks": [{
             "connector": "lancedb",
             "config": {
-                "path": lancedb_uri.clone(),
+                "path": "/tmp/unused-reactive-rag-gate-test",
                 "table_name": "docs_embedded",
                 "primary_key": "id",
                 "embedding_column": "embedding",
@@ -233,7 +194,7 @@ async fn embedding_stage_runs_on_the_cdc_passthrough_path() {
     });
 
     let checkpoint_db_path = std::env::temp_dir().join(format!(
-        "nexus_reactive_rag_test_checkpoints_{}.db",
+        "nexus_reactive_rag_gate_test_checkpoints_{}.db",
         std::process::id()
     ));
     let checkpoint_db_url = format!("sqlite://{}", checkpoint_db_path.display());
@@ -248,59 +209,19 @@ async fn embedding_stage_runs_on_the_cdc_passthrough_path() {
     assert_eq!(
         status,
         StatusCode::ACCEPTED,
-        "run was not accepted: {body:?}"
+        "run is still accepted synchronously — the license gate fires inside the \
+         background run task, not at POST time: {body:?}"
     );
 
-    // Gives the background supervisor task time to actually call
-    // `build_source`/`PostgresCdcSource::connect` (creates the replication
-    // slot) before this insert happens — a slot only streams changes from
-    // its creation point forward, so inserting too early would never be
-    // seen by the CDC source at all (this is what made the first real run
-    // of this test hang for the full 120s timeout instead of succeeding).
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-    sqlx::raw_sql(
-        "INSERT INTO docs (id, body) VALUES \
-         (1, 'NexusFlow moves data at high speed across many connectors.');",
-    )
-    .execute(&pg_pool)
-    .await
-    .expect("seed row inserted after the CDC source should be listening");
     let run_id = body["run_id"].as_i64().expect("202 body carries run_id");
     let record = wait_for_run(&app, "cdc-embed-lancedb", run_id, &token).await;
     assert_eq!(
-        record["status"], "success",
-        "run must succeed — before Marco L6 this failed outright with \
-         \"embedding stage is not supported on the no-transform passthrough \
-         path\": {record:?}"
+        record["status"], "failed",
+        "no license covers reactive-rag-cdc — the run must not succeed: {record:?}"
     );
-
-    // Verify against LanceDB directly via `LanceDbSearchClient` (Marco L5)
-    // — a zero vector still returns whatever rows exist (distance ordering
-    // doesn't matter here, just presence) — the row that came through the
-    // CDC source must have a real embedding vector, not just its original
-    // columns, or this table wouldn't be queryable as a vector column at
-    // all.
-    let search_cfg = LanceDbConnectorConfig {
-        uri: Some(lancedb_uri),
-        path: None,
-        storage_options: LanceDbStorageOptions::default(),
-        table: None,
-        table_name: Some("docs_embedded".to_string()),
-        primary_key: "id".to_string(),
-        embedding_column: "embedding".to_string(),
-        dimension: 384,
-        timeout_seconds: 30,
-    };
-    let search_client = LanceDbSearchClient::connect(&search_cfg)
-        .await
-        .expect("connects to the sink's lancedb table");
-    let results = search_client
-        .search(vec![0.0f32; 384], "embedding", 10)
-        .await
-        .expect("search succeeds");
-    let total_rows: usize = results.iter().map(|b| b.num_rows()).sum();
-    assert_eq!(
-        total_rows, 1,
-        "the one seed row must have made it through CDC+embedding"
+    let error = record["error"].as_str().unwrap_or_default();
+    assert!(
+        error.contains("reactive-rag-cdc"),
+        "run's error should name the missing capability, got: {error:?}"
     );
 }

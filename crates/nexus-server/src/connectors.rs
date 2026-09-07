@@ -78,16 +78,25 @@ use nexus_connector_rest::{RestConnectorConfig, RestSource, WebhookSink, Webhook
 /// design (see each crate's own src/lib.rs doc comment), not an oversight
 /// here.
 /// The single enforcement point for enterprise-connector licensing
-/// (ROADMAP.md Fase 12, Bloco 1; `docs/ENTERPRISE_LICENSING.md §5`).
+/// (ROADMAP.md Fase 12, Bloco 1; `docs/ENTERPRISE_LICENSING.md §5`) —
+/// also reused as-is (`pub(crate)`) for the two non-connector capability
+/// slugs registered by `capability_registry.rs`
+/// (LLMOPS_IMPLEMENTATION_PLAN.md Marco L8: `"llm-lineage-tracking"`,
+/// `"reactive-rag-cdc"`), which are always present in `ConnectorRegistry`
+/// (registered from this crate itself, not a plugin) so the "not found"
+/// branch below never applies to them.
 /// `ConnectorRegistry::find` looks up whatever crate registered this
 /// connector name via `submit_connector!`/`submit_enterprise_connector!`
 /// (`nexus-core/registry.rs`) — an OSS connector always has
 /// `requires_license: None` and passes here unconditionally; only a
-/// connector registered with `submit_enterprise_connector!` (no crate does
-/// yet — see that macro's own doc comment) is gated. An unknown connector
-/// name is left for the caller's own match arm to reject with its usual
-/// "unsupported connector" error, not this function.
-fn check_connector_license(
+/// connector registered with `submit_enterprise_connector!` is gated. An
+/// unknown connector name is left for the caller's own match arm to reject
+/// with its usual "unsupported connector" error, not this function — that
+/// second gate is what makes "not found → allow" safe for real connectors,
+/// but it does not exist for the two capability slugs above (see
+/// `capability_registry.rs`'s doc comment for why they're registered here
+/// instead of a private crate).
+pub(crate) fn check_connector_license(
     connector: &str,
     active_license: Option<&LicenseClaims>,
 ) -> anyhow::Result<()> {

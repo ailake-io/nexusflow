@@ -237,6 +237,16 @@ async fn generation_detail_handler(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<Json<GenerationDetailResponse>, ApiError> {
+    // Enterprise gate (LLMOPS_IMPLEMENTATION_PLAN.md Marco L8) — row→
+    // generation lineage is the paid diferencial, not `POST /rag/query`
+    // itself (asking a question stays OSS). Reuses the exact mechanism
+    // already enforced for enterprise connectors; see
+    // `capability_registry.rs`'s doc comment for why the slug is
+    // registered from this crate instead of a private one.
+    let active_license = state.license_store.active().await.unwrap_or(None);
+    crate::connectors::check_connector_license("llm-lineage-tracking", active_license.as_ref())
+        .map_err(|e| ApiError::forbidden(e.to_string()))?;
+
     let generation = state
         .llm_generations
         .get(id)

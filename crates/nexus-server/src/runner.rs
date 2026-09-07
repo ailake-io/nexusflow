@@ -808,6 +808,19 @@ async fn run_passthrough_pipeline(
     let source_node = &spec.sources[0];
     let sink_node = &spec.sinks[0];
 
+    // Enterprise gate (LLMOPS_IMPLEMENTATION_PLAN.md Marco L8) — reactive
+    // RAG (a `*-cdc` source combined with `embedding`, which is exactly
+    // what makes the batch_transform above non-`None` on a CDC source) is
+    // the paid diferencial, not embedding-on-passthrough in general: a
+    // plain batch source (e.g. `csv`) with `embedding` and no transform
+    // stays OSS. Reuses the same mechanism already enforced for
+    // enterprise connectors; see `capability_registry.rs`'s doc comment
+    // for why the slug is registered from this crate instead of a
+    // private one.
+    if source_node.connector.ends_with("-cdc") && spec.embedding.is_some() {
+        crate::connectors::check_connector_license("reactive-rag-cdc", active_license)?;
+    }
+
     // CDC sources (`*-cdc`) are meant to run again every scheduler tick,
     // not once-and-done — they use `resume_state` for continuity, not the
     // "already finished" marker every batch connector's single run leaves
@@ -1718,6 +1731,75 @@ mod tests {
         assert!(
             (avg_v1 - avg_v2).abs() > 0.5,
             "prompt version swap must measurably move the average score: v1={avg_v1} v2={avg_v2}"
+        );
+    }
+
+    /// Marco L8's enterprise gate on reactive RAG (`*-cdc` source +
+    /// `embedding` on the passthrough path). Deliberately doesn't spin up
+    /// a real postgres-cdc container — the license check in
+    /// `run_passthrough_pipeline` runs before any connector is actually
+    /// built, so a `postgres-cdc` config that could never connect (bogus
+    /// URI) is enough to prove the gate fires without needing the full
+    /// `reactive_rag_cdc_pipeline.rs` environment. "With a covering
+    /// license" isn't tested here — `license::test_support` (the signing
+    /// key) only exists under `#[cfg(test)]`, so it's exercised directly
+    /// in `capability_registry.rs`'s tests instead; this test only proves
+    /// the wiring (right condition, right slug), not `covers()` itself.
+    #[cfg(all(feature = "llm", any(feature = "embeddings", feature = "embeddings-api")))]
+    #[tokio::test]
+    async fn reactive_rag_cdc_combination_is_denied_without_a_covering_license() {
+        let checkpoints = CheckpointStore::connect("sqlite::memory:").await.unwrap();
+        let schema_store =
+            crate::pipeline_schema_store::PipelineSchemaStore::connect("sqlite::memory:")
+                .await
+                .unwrap();
+        let alerts = crate::alerts::AlertNotifier::new(crate::alerts::AlertConfig::default(), false);
+
+        let spec: PipelineSpec = serde_json::from_value(serde_json::json!({
+            "pipeline_id": "reactive-rag-gate-test",
+            "sources": [{
+                "connector": "postgres-cdc",
+                "config": {
+                    "uri": "postgres://nobody:nobody@127.0.0.1:1/nowhere",
+                    "table": "docs",
+                    "publication_name": "pub_docs",
+                    "slot_name": "slot_docs",
+                    "fields": [{"name": "id", "data_type": "int64", "nullable": false}]
+                }
+            }],
+            "embedding": {
+                "source_column": "id",
+                "output_column": "embedding",
+                "dimension": 8,
+                "model": {
+                    "backend": "onnx",
+                    "repo": "unused",
+                    "revision": "main",
+                    "filename": "unused",
+                    "tokenizer_filename": "unused",
+                    "max_length": 8
+                }
+            },
+            "sinks": [{"connector": "lancedb", "config": {}}]
+        }))
+        .unwrap();
+
+        let result = run_passthrough_pipeline(
+            &spec,
+            &checkpoints,
+            None,
+            None,
+            None, // no active license
+            &schema_store,
+            &alerts,
+            1,
+        )
+        .await;
+
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("reactive-rag-cdc"),
+            "expected the license-gate error, got: {err}"
         );
     }
 }

@@ -193,6 +193,17 @@ licenciamento e `docs/ENTERPRISE_CONNECTORS.md` pro catálogo/priorização.
   Elasticsearch/OpenSearch, Weaviate, Azure AI Search, Vertex AI Vector
   Search — ver `docs/DOCKER_LOCAL_TESTING.md` desse repo pra lista
   completa com campos/exemplo de config por conector.
+- [x] **Bloco 5 — Gate de capabilities não-conector (LLMOps Marco L8)**:
+  `"llm-lineage-tracking"` (`GET /lineage/generation/{id}`) e
+  `"reactive-rag-cdc"` (`*-cdc` source + `embedding` no passthrough)
+  reaproveitam o enforcement do Bloco 1 (`check_connector_license`), mas
+  registrados via `submit_enterprise_connector!` dentro do próprio
+  `nexus-server` (`capability_registry.rs`), não num crate privado —
+  esse código já roda sempre no binário público, diferente de um
+  conector real que só existe quando o crate enterprise está linkado.
+  `ConnectorCapability` ganhou uma 4ª variante (`Capability`) só pra
+  esses dois, filtrada de `GET /connectors` (nunca vira node type no
+  Canvas). Ver `docs/ENTERPRISE_LICENSING.md §5`.
 - [ ] **Bloco 4 — Storefront mínimo**: página de venda + checkout, mesmo que
   simples (Mercado Pago Checkout Pro cobre a parte de pagamento sem UI
   custom pra dado de cartão).

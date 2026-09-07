@@ -2,6 +2,7 @@ mod alerts;
 mod auth;
 mod auth_store;
 mod browse;
+mod capability_registry;
 mod checkpoint_store;
 mod connectors;
 mod crypto;
@@ -433,6 +434,10 @@ async fn list_connectors_handler(
     let active_license = state.license_store.active().await.ok().flatten();
     Json(
         ConnectorRegistry::all()
+            // `Capability`-kind descriptors (Marco L8) are license-check
+            // targets, not real connectors — never expose them as a node
+            // type the Canvas could try to add to a DAG.
+            .filter(|d| d.capability != ConnectorCapability::Capability)
             .map(|d| ConnectorCatalogEntry {
                 name: d.name,
                 capability: d.capability,
@@ -2737,6 +2742,140 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["unique_id"], "test.proj.not_null_orders_id");
         assert_eq!(results[0]["status"], "fail");
+    }
+
+    // --- Marco L8: llm-lineage-tracking / reactive-rag-cdc enterprise gate ---
+
+    #[cfg(all(
+        feature = "llm",
+        any(feature = "embeddings", feature = "embeddings-api"),
+        feature = "lancedb"
+    ))]
+    #[tokio::test]
+    async fn generation_lineage_is_forbidden_without_a_covering_license() {
+        let state = test_state().await;
+        let read_token = bearer(&state, Role::Read);
+        // Seeded directly — this test is about the license gate in front
+        // of the handler, not about producing a real generation via RAG
+        // (already covered by `reactive_rag_cdc_pipeline.rs`/
+        // `lancedb_search_integration.rs`).
+        let id = state
+            .llm_generations
+            .record(llm_generation_store::NewGeneration {
+                pipeline_id: "p1",
+                question: "what is nexusflow?",
+                answer: "a data movement framework",
+                prompt_name: "rag-prompt",
+                prompt_version: 1,
+                model: "gpt-test",
+                tokens_prompt: 10,
+                tokens_completion: 5,
+                resource_id: None,
+                context_keys: &[],
+            })
+            .await
+            .unwrap();
+        let app = router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/lineage/generation/{id}"))
+                    .header("authorization", &read_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "no license installed — the generation exists (id is real), so a non-403 \
+             status here would mean the license check isn't actually gating this handler"
+        );
+    }
+
+    #[cfg(all(
+        feature = "llm",
+        any(feature = "embeddings", feature = "embeddings-api"),
+        feature = "lancedb"
+    ))]
+    #[tokio::test]
+    async fn generation_lineage_is_visible_with_a_covering_license() {
+        use crate::license::test_support::{claims, sign};
+
+        let state = test_state().await;
+        state
+            .license_store
+            .install(&sign(&claims(vec!["llm-lineage-tracking"])))
+            .await
+            .unwrap();
+        let read_token = bearer(&state, Role::Read);
+        let id = state
+            .llm_generations
+            .record(llm_generation_store::NewGeneration {
+                pipeline_id: "p1",
+                question: "what is nexusflow?",
+                answer: "a data movement framework",
+                prompt_name: "rag-prompt",
+                prompt_version: 1,
+                model: "gpt-test",
+                tokens_prompt: 10,
+                tokens_completion: 5,
+                resource_id: None,
+                context_keys: &[],
+            })
+            .await
+            .unwrap();
+        let app = router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/lineage/generation/{id}"))
+                    .header("authorization", &read_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = body_json(response).await;
+        assert_eq!(body["question"], "what is nexusflow?");
+    }
+
+    #[tokio::test]
+    async fn connectors_catalog_never_exposes_capability_only_slugs() {
+        // `llm-lineage-tracking`/`reactive-rag-cdc` (Marco L8,
+        // `capability_registry.rs`) are license-check targets, not real
+        // connectors — they must never show up as a node type the Canvas
+        // could try to add to a DAG.
+        let state = test_state().await;
+        let read_token = bearer(&state, Role::Read);
+        let app = router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/connectors")
+                    .header("authorization", &read_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let entries = body_json(response).await;
+        let names: Vec<&str> = entries
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["name"].as_str().unwrap())
+            .collect();
+        assert!(!names.contains(&"llm-lineage-tracking"));
+        assert!(!names.contains(&"reactive-rag-cdc"));
         assert_eq!(results[0]["message"], "3 rows failed");
     }
 
