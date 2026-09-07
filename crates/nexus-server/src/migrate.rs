@@ -350,7 +350,7 @@ mod tests {
         let cipher = SecretCipher::from_hex_key(&"ab".repeat(32)).unwrap();
         let pipeline_store = PipelineStore::connect(&pipelines_sqlite_url).await.unwrap();
         pipeline_store
-            .create(&sample_spec("p1"), &cipher)
+            .create(&sample_spec("p1"), &cipher, "alice")
             .await
             .unwrap();
         let run_id = pipeline_store.start_run("p1").await.unwrap();

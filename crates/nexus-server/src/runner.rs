@@ -1707,11 +1707,11 @@ mod tests {
         let prompt_templates = PromptTemplateStore::connect("sqlite::memory:").await.unwrap();
         let eval_store = LlmEvalResultStore::connect("sqlite::memory:").await.unwrap();
         prompt_templates
-            .create("eval-prompt", "STYLE_GOOD: what is the capital of {country}?")
+            .create("eval-prompt", "STYLE_GOOD: what is the capital of {country}?", "alice")
             .await
             .unwrap();
         prompt_templates
-            .create("eval-prompt", "STYLE_BAD: what is the capital of {country}?")
+            .create("eval-prompt", "STYLE_BAD: what is the capital of {country}?", "alice")
             .await
             .unwrap();
 
@@ -1883,7 +1883,7 @@ mod tests {
             crate::prompt_template_store::PromptTemplateStore::connect("sqlite::memory:")
                 .await
                 .unwrap();
-        prompt_templates.create("linear-eval-prompt", "Q: {question}").await.unwrap();
+        prompt_templates.create("linear-eval-prompt", "Q: {question}", "alice").await.unwrap();
         let llm_eval_store =
             crate::llm_eval_result_store::LlmEvalResultStore::connect("sqlite::memory:")
                 .await
@@ -1960,7 +1960,7 @@ mod tests {
             crate::prompt_template_store::PromptTemplateStore::connect("sqlite::memory:")
                 .await
                 .unwrap();
-        prompt_templates.create("cdc-eval-prompt", "Q: {question}").await.unwrap();
+        prompt_templates.create("cdc-eval-prompt", "Q: {question}", "alice").await.unwrap();
         let llm_eval_store =
             crate::llm_eval_result_store::LlmEvalResultStore::connect("sqlite::memory:")
                 .await

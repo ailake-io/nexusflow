@@ -151,6 +151,13 @@ fn test_server_config() -> ServerConfig {
         webhook_url: None,
         allow_internal_hosts: true,
         trust_proxy_headers: false,
+        #[cfg(feature = "version-history")]
+        git_history_path: tempfile::tempdir()
+            .unwrap()
+            .keep()
+            .join("history.git")
+            .to_string_lossy()
+            .to_string(),
     }
 }
 

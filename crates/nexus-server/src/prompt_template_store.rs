@@ -18,6 +18,11 @@ pub struct PromptTemplate {
     pub version: u32,
     pub template: String,
     pub created_at: String,
+    /// Username (`Claims.sub`) that created this version — `None` for
+    /// rows written before this column existed. Doubles as the git author
+    /// when the `version-history` feature commits the same save to
+    /// `git_history_store.rs` (see `lib.rs`'s `create_prompt_handler`).
+    pub created_by: Option<String>,
 }
 
 impl PromptTemplateStore {
@@ -38,12 +43,20 @@ impl PromptTemplateStore {
                         version INTEGER NOT NULL,
                         template TEXT NOT NULL,
                         created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                        created_by TEXT,
                         UNIQUE(name, version)
                     )
                     "#,
                 )
                 .execute(p)
                 .await?;
+                // Same migration pattern as `pipelines.created_by`/
+                // `checkpoints.resume_state` — `CREATE TABLE IF NOT
+                // EXISTS` is a no-op against a table that predates this
+                // column, and SQLite has no `ADD COLUMN IF NOT EXISTS`.
+                let _ = sqlx::query("ALTER TABLE prompt_templates ADD COLUMN created_by TEXT")
+                    .execute(p)
+                    .await;
             }
             MetadataPool::Postgres(p) => {
                 sqlx::query(
@@ -54,9 +67,15 @@ impl PromptTemplateStore {
                         version INTEGER NOT NULL,
                         template TEXT NOT NULL,
                         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        created_by TEXT,
                         UNIQUE(name, version)
                     )
                     "#,
+                )
+                .execute(p)
+                .await?;
+                sqlx::query(
+                    "ALTER TABLE prompt_templates ADD COLUMN IF NOT EXISTS created_by TEXT",
                 )
                 .execute(p)
                 .await?;
@@ -73,15 +92,18 @@ impl PromptTemplateStore {
     /// as a constraint-violation error on the losing insert, not a silent
     /// overwrite — acceptable here since prompt creation is a low-frequency
     /// admin action, not a hot path needing serialized-write throughput.
-    pub async fn create(&self, name: &str, template: &str) -> Result<u32, sqlx::Error> {
+    pub async fn create(&self, name: &str, template: &str, author: &str) -> Result<u32, sqlx::Error> {
         let next_version = self.latest_version(name).await?.unwrap_or(0) + 1;
-        let sql = self.q("INSERT INTO prompt_templates (name, version, template) VALUES (?, ?, ?)");
+        let sql = self.q(
+            "INSERT INTO prompt_templates (name, version, template, created_by) VALUES (?, ?, ?, ?)",
+        );
         match &self.pool {
             MetadataPool::Sqlite(p) => {
                 sqlx::query(sqlx::AssertSqlSafe(sql))
                     .bind(name)
                     .bind(next_version as i64)
                     .bind(template)
+                    .bind(author)
                     .execute(p)
                     .await?;
             }
@@ -90,6 +112,7 @@ impl PromptTemplateStore {
                     .bind(name)
                     .bind(next_version as i64)
                     .bind(template)
+                    .bind(author)
                     .execute(p)
                     .await?;
             }
@@ -166,10 +189,10 @@ impl PromptTemplateStore {
     /// this scale).
     pub async fn list(&self) -> Result<Vec<PromptTemplate>, sqlx::Error> {
         let sql = self.q(
-            "SELECT name, version, template, created_at FROM prompt_templates \
+            "SELECT name, version, template, created_at, created_by FROM prompt_templates \
              ORDER BY name ASC, version DESC",
         );
-        let rows: Vec<(String, i64, String, String)> = match &self.pool {
+        let rows: Vec<(String, i64, String, String, Option<String>)> = match &self.pool {
             MetadataPool::Sqlite(p) => {
                 sqlx::query_as(sqlx::AssertSqlSafe(sql))
                     .fetch_all(p)
@@ -183,11 +206,12 @@ impl PromptTemplateStore {
         };
         Ok(rows
             .into_iter()
-            .map(|(name, version, template, created_at)| PromptTemplate {
+            .map(|(name, version, template, created_at, created_by)| PromptTemplate {
                 name,
                 version: version as u32,
                 template,
                 created_at,
+                created_by,
             })
             .collect())
     }
@@ -203,7 +227,7 @@ mod tests {
             .await
             .unwrap();
         let version = store
-            .create("summarize", "Summarize: {text}")
+            .create("summarize", "Summarize: {text}", "alice")
             .await
             .unwrap();
         assert_eq!(version, 1);
@@ -214,8 +238,8 @@ mod tests {
         let store = PromptTemplateStore::connect("sqlite::memory:")
             .await
             .unwrap();
-        store.create("summarize", "v1 text").await.unwrap();
-        let v2 = store.create("summarize", "v2 text").await.unwrap();
+        store.create("summarize", "v1 text", "alice").await.unwrap();
+        let v2 = store.create("summarize", "v2 text", "alice").await.unwrap();
         assert_eq!(v2, 2);
 
         assert_eq!(
@@ -233,8 +257,8 @@ mod tests {
         let store = PromptTemplateStore::connect("sqlite::memory:")
             .await
             .unwrap();
-        store.create("summarize", "v1 text").await.unwrap();
-        store.create("summarize", "v2 text").await.unwrap();
+        store.create("summarize", "v1 text", "alice").await.unwrap();
+        store.create("summarize", "v2 text", "bob").await.unwrap();
 
         assert_eq!(
             store.resolve("summarize", None).await.unwrap(),
@@ -255,9 +279,9 @@ mod tests {
         let store = PromptTemplateStore::connect("sqlite::memory:")
             .await
             .unwrap();
-        store.create("b-prompt", "b text").await.unwrap();
-        store.create("a-prompt", "a v1").await.unwrap();
-        store.create("a-prompt", "a v2").await.unwrap();
+        store.create("b-prompt", "b text", "alice").await.unwrap();
+        store.create("a-prompt", "a v1", "alice").await.unwrap();
+        store.create("a-prompt", "a v2", "bob").await.unwrap();
 
         let all = store.list().await.unwrap();
         let names_versions: Vec<(&str, u32)> =

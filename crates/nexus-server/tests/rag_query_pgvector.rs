@@ -91,6 +91,13 @@ fn test_server_config(checkpoint_database_url: String) -> ServerConfig {
         // suite uses (SSRF hardening otherwise blocks it, C5).
         allow_internal_hosts: true,
         trust_proxy_headers: false,
+        #[cfg(feature = "version-history")]
+        git_history_path: tempfile::tempdir()
+            .unwrap()
+            .keep()
+            .join("history.git")
+            .to_string_lossy()
+            .to_string(),
     }
 }
 

@@ -18,10 +18,19 @@ pub enum PipelineStoreError {
     Sqlx(#[from] sqlx::Error),
 }
 
-/// (spec_ciphertext, created_at, updated_at, last_run status, last_run started_at)
-/// — the row shape shared by `get_summary`'s and `list_summaries`' LEFT JOIN
-/// against the most recent `pipeline_runs` row per pipeline.
-type SummaryRow = (String, String, String, Option<String>, Option<String>);
+/// (spec_ciphertext, created_at, updated_at, created_by, updated_by,
+/// last_run status, last_run started_at) — the row shape shared by
+/// `get_summary`'s and `list_summaries`' LEFT JOIN against the most
+/// recent `pipeline_runs` row per pipeline.
+type SummaryRow = (
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
 
 #[derive(Serialize)]
 pub struct NodeSummary {
@@ -50,6 +59,12 @@ pub struct PipelineSummary {
     /// glance which scheduled/manual runs are healthy.
     pub last_run_status: Option<String>,
     pub last_run_at: Option<String>,
+    /// Username (`Claims.sub`) that created/last saved this pipeline —
+    /// `None` for rows written before this column existed. Doubles as the
+    /// git author when the `version-history` feature commits the same
+    /// save to `git_history_store.rs` (see `lib.rs`'s pipeline handlers).
+    pub created_by: Option<String>,
+    pub updated_by: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -132,12 +147,26 @@ impl PipelineStore {
                         id TEXT PRIMARY KEY,
                         spec_ciphertext TEXT NOT NULL,
                         created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                        created_by TEXT,
+                        updated_by TEXT
                     )
                     "#,
                 )
                 .execute(p)
                 .await?;
+                // Same migration pattern as `checkpoints.resume_state`
+                // above: `CREATE TABLE IF NOT EXISTS` is a no-op against a
+                // `pipelines` table that predates these two columns, and
+                // SQLite has no `ADD COLUMN IF NOT EXISTS` — run it and
+                // swallow the only realistic failure ("column already
+                // exists" on a later boot).
+                let _ = sqlx::query("ALTER TABLE pipelines ADD COLUMN created_by TEXT")
+                    .execute(p)
+                    .await;
+                let _ = sqlx::query("ALTER TABLE pipelines ADD COLUMN updated_by TEXT")
+                    .execute(p)
+                    .await;
 
                 sqlx::query(
                     r#"
@@ -181,12 +210,23 @@ impl PipelineStore {
                         id TEXT PRIMARY KEY,
                         spec_ciphertext TEXT NOT NULL,
                         created_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')),
-                        updated_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
+                        updated_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')),
+                        created_by TEXT,
+                        updated_by TEXT
                     )
                     "#,
                 )
                 .execute(p)
                 .await?;
+                // Postgres supports `ADD COLUMN IF NOT EXISTS` — real
+                // idempotent migration, no error-swallowing needed (same
+                // reasoning as `checkpoints.resume_state` above).
+                sqlx::query("ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS created_by TEXT")
+                    .execute(p)
+                    .await?;
+                sqlx::query("ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS updated_by TEXT")
+                    .execute(p)
+                    .await?;
 
                 sqlx::query(
                     r#"
@@ -232,19 +272,26 @@ impl PipelineStore {
         &self,
         spec: &PipelineSpec,
         cipher: &SecretCipher,
+        author: &str,
     ) -> Result<(), PipelineStoreError> {
         let ciphertext = encode_spec(spec, cipher);
-        let sql = self.q("INSERT INTO pipelines (id, spec_ciphertext) VALUES (?, ?)");
+        let sql = self.q(
+            "INSERT INTO pipelines (id, spec_ciphertext, created_by, updated_by) VALUES (?, ?, ?, ?)",
+        );
         let result: Result<(), sqlx::Error> = match &self.pool {
             MetadataPool::Sqlite(p) => sqlx::query(sqlx::AssertSqlSafe(sql))
                 .bind(&spec.pipeline_id)
                 .bind(&ciphertext)
+                .bind(author)
+                .bind(author)
                 .execute(p)
                 .await
                 .map(|_| ()),
             MetadataPool::Postgres(p) => sqlx::query(sqlx::AssertSqlSafe(sql))
                 .bind(&spec.pipeline_id)
                 .bind(&ciphertext)
+                .bind(author)
+                .bind(author)
                 .execute(p)
                 .await
                 .map(|_| ()),
@@ -274,14 +321,16 @@ impl PipelineStore {
         id: &str,
         spec: &PipelineSpec,
         cipher: &SecretCipher,
+        author: &str,
     ) -> Result<(), PipelineStoreError> {
         let ciphertext = encode_spec(spec, cipher);
         let rows_affected = match &self.pool {
             MetadataPool::Sqlite(p) => {
                 sqlx::query(sqlx::AssertSqlSafe(self.q(
-                    "UPDATE pipelines SET spec_ciphertext = ?, updated_at = datetime('now') WHERE id = ?",
+                    "UPDATE pipelines SET spec_ciphertext = ?, updated_at = datetime('now'), updated_by = ? WHERE id = ?",
                 )))
                 .bind(&ciphertext)
+                .bind(author)
                 .bind(id)
                 .execute(p)
                 .await?
@@ -289,9 +338,10 @@ impl PipelineStore {
             }
             MetadataPool::Postgres(p) => {
                 sqlx::query(sqlx::AssertSqlSafe(self.q(
-                    "UPDATE pipelines SET spec_ciphertext = ?, updated_at = (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')) WHERE id = ?",
+                    "UPDATE pipelines SET spec_ciphertext = ?, updated_at = (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')), updated_by = ? WHERE id = ?",
                 )))
                 .bind(&ciphertext)
+                .bind(author)
                 .bind(id)
                 .execute(p)
                 .await?
@@ -372,7 +422,8 @@ impl PipelineStore {
         cipher: &SecretCipher,
     ) -> Result<PipelineSummary, PipelineStoreError> {
         let sql = self.q(
-            "SELECT p.spec_ciphertext, p.created_at, p.updated_at, r.status, r.started_at \
+            "SELECT p.spec_ciphertext, p.created_at, p.updated_at, p.created_by, p.updated_by, \
+                 r.status, r.started_at \
              FROM pipelines p LEFT JOIN pipeline_runs r ON r.id = ( \
                  SELECT id FROM pipeline_runs WHERE pipeline_id = p.id \
                  ORDER BY id DESC LIMIT 1 \
@@ -392,13 +443,15 @@ impl PipelineStore {
                     .await?
             }
         };
-        let (ciphertext, created_at, updated_at, last_run_status, last_run_at) =
+        let (ciphertext, created_at, updated_at, created_by, updated_by, last_run_status, last_run_at) =
             row.ok_or_else(|| PipelineStoreError::NotFound(id.to_string()))?;
         let spec = decode_spec(&ciphertext, cipher)?;
         Ok(summarize(
             spec,
             created_at,
             updated_at,
+            created_by,
+            updated_by,
             last_run_status,
             last_run_at,
         ))
@@ -466,7 +519,8 @@ impl PipelineStore {
         offset: i64,
     ) -> Result<Vec<PipelineSummary>, PipelineStoreError> {
         let sql = self.q(
-            "SELECT p.spec_ciphertext, p.created_at, p.updated_at, r.status, r.started_at \
+            "SELECT p.spec_ciphertext, p.created_at, p.updated_at, p.created_by, p.updated_by, \
+                 r.status, r.started_at \
              FROM pipelines p LEFT JOIN pipeline_runs r ON r.id = ( \
                  SELECT id FROM pipeline_runs WHERE pipeline_id = p.id \
                  ORDER BY id DESC LIMIT 1 \
@@ -490,12 +544,14 @@ impl PipelineStore {
         };
         rows.into_iter()
             .map(
-                |(ciphertext, created_at, updated_at, last_run_status, last_run_at)| {
+                |(ciphertext, created_at, updated_at, created_by, updated_by, last_run_status, last_run_at)| {
                     let spec = decode_spec(&ciphertext, cipher)?;
                     Ok(summarize(
                         spec,
                         created_at,
                         updated_at,
+                        created_by,
+                        updated_by,
                         last_run_status,
                         last_run_at,
                     ))
@@ -802,12 +858,20 @@ pub enum DeleteRunOutcome {
     StillRunning,
 }
 
-fn encode_spec(spec: &PipelineSpec, cipher: &SecretCipher) -> String {
+/// `pub(crate)` (not private) so `lib.rs`'s `commit_pipeline_history`
+/// (`version-history` feature) can commit the exact same ciphertext this
+/// store persists to SQL — see that function's doc comment for why the
+/// git blob is the ciphertext, never the decrypted spec.
+pub(crate) fn encode_spec(spec: &PipelineSpec, cipher: &SecretCipher) -> String {
     let json = serde_json::to_string(spec).expect("PipelineSpec always serializes");
     cipher.encrypt(&json)
 }
 
-fn decode_spec(
+/// `pub(crate)` alongside `encode_spec` above — `lib.rs`'s version-history
+/// diff/rollback handlers decode a historic ciphertext blob read straight
+/// out of `git_history_store.rs`, the same way this store decodes the one
+/// it reads out of SQL.
+pub(crate) fn decode_spec(
     ciphertext: &str,
     cipher: &SecretCipher,
 ) -> Result<PipelineSpec, PipelineStoreError> {
@@ -817,10 +881,34 @@ fn decode_spec(
     serde_json::from_str(&json).map_err(|e| PipelineStoreError::Corrupt(e.to_string()))
 }
 
+/// Reduces a `PipelineSpec` to the same secret-free shape
+/// `PipelineSummary` already exposes over the API (connector + node name
+/// only, never `NodeSpec.config` — CLAUDE.md §5), as plain JSON suitable
+/// for a text diff. `version-history`'s diff endpoint is the only caller:
+/// it never has SQL-derived timestamps/authors for an arbitrary historic
+/// commit, only the raw spec, so this skips straight from `PipelineSpec`
+/// to redacted JSON without going through `PipelineSummary` itself (which
+/// requires those extra fields).
+#[cfg(feature = "version-history")]
+pub(crate) fn redact_for_diff(spec: &PipelineSpec) -> serde_json::Value {
+    let to_json = |n: &nexus_core::NodeSpec| {
+        serde_json::json!({ "connector": n.connector, "name": n.name })
+    };
+    serde_json::json!({
+        "pipeline_id": spec.pipeline_id,
+        "sources": spec.sources.iter().map(to_json).collect::<Vec<_>>(),
+        "sinks": spec.sinks.iter().map(to_json).collect::<Vec<_>>(),
+        "has_transform": spec.transform.is_some(),
+        "schedule": spec.schedule,
+    })
+}
+
 fn summarize(
     spec: PipelineSpec,
     created_at: String,
     updated_at: String,
+    created_by: Option<String>,
+    updated_by: Option<String>,
     last_run_status: Option<String>,
     last_run_at: Option<String>,
 ) -> PipelineSummary {
@@ -836,6 +924,8 @@ fn summarize(
         sinks: spec.sinks.into_iter().map(to_summary).collect(),
         created_at,
         updated_at,
+        created_by,
+        updated_by,
         last_run_status,
         last_run_at,
     }
@@ -898,9 +988,9 @@ mod tests {
         let cipher = cipher();
         let spec = sample_spec("p1");
 
-        store.create(&spec, &cipher).await.unwrap();
+        store.create(&spec, &cipher, "alice").await.unwrap();
         assert!(matches!(
-            store.create(&spec, &cipher).await,
+            store.create(&spec, &cipher, "alice").await,
             Err(PipelineStoreError::AlreadyExists(_))
         ));
     }
@@ -909,7 +999,7 @@ mod tests {
     async fn summary_never_contains_config() {
         let store = PipelineStore::connect("sqlite::memory:").await.unwrap();
         let cipher = cipher();
-        store.create(&sample_spec("p1"), &cipher).await.unwrap();
+        store.create(&sample_spec("p1"), &cipher, "alice").await.unwrap();
 
         let summary = store.get_summary("p1", &cipher).await.unwrap();
         assert_eq!(summary.sources[0].connector, "postgres");
@@ -936,7 +1026,7 @@ mod tests {
             pagerduty: None,
             email: None,
         });
-        store.create(&spec, &cipher).await.unwrap();
+        store.create(&spec, &cipher, "alice").await.unwrap();
 
         let summary = store.get_summary("p1", &cipher).await.unwrap();
         // Structural: `PipelineSummary` has no `alerts` field at all, so
@@ -953,7 +1043,7 @@ mod tests {
     async fn spec_is_encrypted_at_rest_not_plaintext() {
         let store = PipelineStore::connect("sqlite::memory:").await.unwrap();
         let cipher = cipher();
-        store.create(&sample_spec("p1"), &cipher).await.unwrap();
+        store.create(&sample_spec("p1"), &cipher, "alice").await.unwrap();
 
         let MetadataPool::Sqlite(pool) = &store.pool else {
             unreachable!("this test always connects via sqlite::memory:")
@@ -972,14 +1062,43 @@ mod tests {
     async fn update_replaces_spec() {
         let store = PipelineStore::connect("sqlite::memory:").await.unwrap();
         let cipher = cipher();
-        store.create(&sample_spec("p1"), &cipher).await.unwrap();
+        store.create(&sample_spec("p1"), &cipher, "alice").await.unwrap();
 
         let mut updated = sample_spec("p1");
         updated.sinks[0].connector = "postgres".to_string();
-        store.update("p1", &updated, &cipher).await.unwrap();
+        store.update("p1", &updated, &cipher, "alice").await.unwrap();
 
         let summary = store.get_summary("p1", &cipher).await.unwrap();
         assert_eq!(summary.sinks[0].connector, "postgres");
+    }
+
+    /// `created_by` is set once at `create` and never changes; `updated_by`
+    /// tracks whoever last called `update` — the pair a rollback/diff
+    /// endpoint (or just the Canvas UI) needs to show "who touched this".
+    #[tokio::test]
+    async fn create_and_update_record_separate_authors() {
+        let store = PipelineStore::connect("sqlite::memory:").await.unwrap();
+        let cipher = cipher();
+        store
+            .create(&sample_spec("p1"), &cipher, "alice")
+            .await
+            .unwrap();
+
+        let summary = store.get_summary("p1", &cipher).await.unwrap();
+        assert_eq!(summary.created_by.as_deref(), Some("alice"));
+        assert_eq!(summary.updated_by.as_deref(), Some("alice"));
+
+        store
+            .update("p1", &sample_spec("p1"), &cipher, "bob")
+            .await
+            .unwrap();
+        let summary = store.get_summary("p1", &cipher).await.unwrap();
+        assert_eq!(
+            summary.created_by.as_deref(),
+            Some("alice"),
+            "create's author is never overwritten by a later update"
+        );
+        assert_eq!(summary.updated_by.as_deref(), Some("bob"));
     }
 
     #[tokio::test]
@@ -988,7 +1107,7 @@ mod tests {
         let cipher = cipher();
         assert!(matches!(
             store
-                .update("missing", &sample_spec("missing"), &cipher)
+                .update("missing", &sample_spec("missing"), &cipher, "alice")
                 .await,
             Err(PipelineStoreError::NotFound(_))
         ));
@@ -998,7 +1117,7 @@ mod tests {
     async fn delete_removes_pipeline() {
         let store = PipelineStore::connect("sqlite::memory:").await.unwrap();
         let cipher = cipher();
-        store.create(&sample_spec("p1"), &cipher).await.unwrap();
+        store.create(&sample_spec("p1"), &cipher, "alice").await.unwrap();
 
         store.delete("p1").await.unwrap();
         assert!(matches!(
@@ -1146,9 +1265,9 @@ mod tests {
         assert!(matches!(store.pool, MetadataPool::Postgres(_)));
         let cipher = cipher();
 
-        store.create(&sample_spec("p1"), &cipher).await.unwrap();
+        store.create(&sample_spec("p1"), &cipher, "alice").await.unwrap();
         assert!(matches!(
-            store.create(&sample_spec("p1"), &cipher).await,
+            store.create(&sample_spec("p1"), &cipher, "alice").await,
             Err(PipelineStoreError::AlreadyExists(_))
         ));
 
@@ -1157,7 +1276,7 @@ mod tests {
 
         let mut updated = sample_spec("p1");
         updated.sinks[0].connector = "postgres".to_string();
-        store.update("p1", &updated, &cipher).await.unwrap();
+        store.update("p1", &updated, &cipher, "alice").await.unwrap();
         assert_eq!(
             store.get_summary("p1", &cipher).await.unwrap().sinks[0].connector,
             "postgres"
