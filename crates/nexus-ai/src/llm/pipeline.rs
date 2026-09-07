@@ -252,6 +252,7 @@ mod tests {
             log_full_content: false,
             cache: None,
             eval: vec![],
+            eval_scoring: nexus_core::EvalScoringMode::TokenSimilarity,
         };
         let backend = load_llm_backend(&spec);
 
@@ -358,6 +359,7 @@ mod tests {
                 ttl_seconds: 60,
             }),
             eval: vec![],
+            eval_scoring: nexus_core::EvalScoringMode::TokenSimilarity,
         };
         let backend = load_llm_backend(&spec);
         let cache = InMemoryCache::new();

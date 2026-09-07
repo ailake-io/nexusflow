@@ -295,6 +295,26 @@ pub struct LlmNodeSpec {
     /// Empty (the default) means no eval — most `llm` nodes don't need one.
     #[serde(default)]
     pub eval: Vec<LlmEvalCase>,
+    /// How `eval` is scored — `#[serde(default)]` keeps every spec saved
+    /// before this field existed on `TokenSimilarity`, the original L7
+    /// behavior.
+    #[serde(default)]
+    pub eval_scoring: EvalScoringMode,
+}
+
+/// Scoring strategy for `LlmNodeSpec.eval` (LLMOPS_IMPLEMENTATION_PLAN.md
+/// Marco L7 follow-up). `TokenSimilarity` (the default) is direct
+/// comparison — deterministic, no extra API call. `LlmJudge` reuses the
+/// same `LlmBackend` that answered the golden question for a *second* call
+/// that grades the answer against the expected one, at roughly double the
+/// per-case cost — trades money for judgment that isn't fooled by
+/// paraphrasing token similarity would score low.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum EvalScoringMode {
+    #[default]
+    TokenSimilarity,
+    LlmJudge,
 }
 
 /// One golden test case for Marco L7. `inputs` mirrors the batch `llm`

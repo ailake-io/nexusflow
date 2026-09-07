@@ -242,6 +242,8 @@ pub async fn run_pipeline(
             schema_store,
             alerts,
             run_id,
+            prompt_templates,
+            llm_eval_store,
         )
         .await
     } else if spec.has_transform() || spec.python.is_some() {
@@ -278,6 +280,8 @@ pub async fn run_pipeline(
             schema_store,
             alerts,
             run_id,
+            prompt_templates,
+            llm_eval_store,
         )
         .await
     }
@@ -296,6 +300,11 @@ pub async fn run_pipeline(
 ///   old postgres-only restriction — see IMPLEMENTATION_PLAN.md Marco 1.
 #[tracing::instrument(skip_all, fields(pipeline_id = %spec.pipeline_id))]
 #[allow(clippy::too_many_arguments)]
+// `prompt_templates`/`llm_eval_store` are only read inside the
+// `#[cfg(feature = "llm")]` call to `maybe_run_llm_eval` below — unused (by
+// design, not a bug) when that feature is off, same reasoning
+// `run_transform_pipeline` already has for its own copies of these.
+#[cfg_attr(not(feature = "llm"), allow(unused_variables))]
 async fn run_linear_pipeline(
     spec: &PipelineSpec,
     checkpoints: &CheckpointStore,
@@ -305,7 +314,16 @@ async fn run_linear_pipeline(
     schema_store: &crate::pipeline_schema_store::PipelineSchemaStore,
     alerts: &crate::alerts::AlertNotifier,
     run_id: i64,
+    prompt_templates: &crate::prompt_template_store::PromptTemplateStore,
+    llm_eval_store: &crate::llm_eval_result_store::LlmEvalResultStore,
 ) -> anyhow::Result<Vec<PartitionStats>> {
+    // Golden-dataset eval (Marco L7) doesn't depend on which sub-path below
+    // actually runs (postgres-partitioned or `run_passthrough_pipeline`) —
+    // one call here covers both, no need to duplicate it into
+    // `run_passthrough_pipeline` too (its only caller is this function).
+    #[cfg(feature = "llm")]
+    maybe_run_llm_eval(spec, run_id, log, llm_eval_store, prompt_templates).await;
+
     let source_node = &spec.sources[0];
     let sink_node = &spec.sinks[0];
 
@@ -555,6 +573,7 @@ async fn inject_cdc_resume_state(
 /// (sub-`max_batch_events`) CDC pipeline in the first place.
 #[tracing::instrument(skip_all, fields(pipeline_id = %spec.pipeline_id))]
 #[allow(clippy::too_many_arguments)]
+#[cfg_attr(not(feature = "llm"), allow(unused_variables))]
 async fn run_streaming_cdc_pipeline(
     spec: &PipelineSpec,
     checkpoints: &CheckpointStore,
@@ -564,7 +583,12 @@ async fn run_streaming_cdc_pipeline(
     schema_store: &crate::pipeline_schema_store::PipelineSchemaStore,
     alerts: &crate::alerts::AlertNotifier,
     run_id: i64,
+    prompt_templates: &crate::prompt_template_store::PromptTemplateStore,
+    llm_eval_store: &crate::llm_eval_result_store::LlmEvalResultStore,
 ) -> anyhow::Result<Vec<PartitionStats>> {
+    #[cfg(feature = "llm")]
+    maybe_run_llm_eval(spec, run_id, log, llm_eval_store, prompt_templates).await;
+
     // Resume-state lookup is anchored on the first sink's resolved name
     // ("sink0" when unnamed) — every sink commits the same source position
     // at the end of a run, so any of them would do; this just picks one
@@ -761,6 +785,22 @@ async fn run_passthrough_pipeline(
     alerts: &crate::alerts::AlertNotifier,
     run_id: i64,
 ) -> anyhow::Result<Vec<PartitionStats>> {
+    // Enterprise gate (LLMOPS_IMPLEMENTATION_PLAN.md Marco L8) — reactive
+    // RAG (a `*-cdc` source combined with `embedding`, which is exactly
+    // what the `batch_transform` block below builds) is the paid
+    // diferencial, not embedding-on-passthrough in general: a plain batch
+    // source (e.g. `csv`) with `embedding` and no transform stays OSS.
+    // Deliberately checked *before* `batch_transform` is built below — that
+    // block does real work (loading an embedding model, possibly
+    // downloading it) for a combination this gate might reject outright;
+    // failing fast here means a missing license never pays that cost.
+    // Reuses the same mechanism already enforced for enterprise
+    // connectors; see `capability_registry.rs`'s doc comment for why the
+    // slug is registered from this crate instead of a private one.
+    if spec.sources[0].connector.ends_with("-cdc") && spec.embedding.is_some() {
+        crate::connectors::check_connector_license("reactive-rag-cdc", active_license)?;
+    }
+
     // Marco L6: `embedding` on this path is what makes reactive RAG
     // possible — a `postgres-cdc -> embedding -> lancedb` pipeline with no
     // `transform` node streams straight through (this path), unlike
@@ -807,19 +847,6 @@ async fn run_passthrough_pipeline(
 
     let source_node = &spec.sources[0];
     let sink_node = &spec.sinks[0];
-
-    // Enterprise gate (LLMOPS_IMPLEMENTATION_PLAN.md Marco L8) — reactive
-    // RAG (a `*-cdc` source combined with `embedding`, which is exactly
-    // what makes the batch_transform above non-`None` on a CDC source) is
-    // the paid diferencial, not embedding-on-passthrough in general: a
-    // plain batch source (e.g. `csv`) with `embedding` and no transform
-    // stays OSS. Reuses the same mechanism already enforced for
-    // enterprise connectors; see `capability_registry.rs`'s doc comment
-    // for why the slug is registered from this crate instead of a
-    // private one.
-    if source_node.connector.ends_with("-cdc") && spec.embedding.is_some() {
-        crate::connectors::check_connector_license("reactive-rag-cdc", active_license)?;
-    }
 
     // CDC sources (`*-cdc`) are meant to run again every scheduler tick,
     // not once-and-done — they use `resume_state` for continuity, not the
@@ -1035,18 +1062,8 @@ async fn run_transform_pipeline(
         );
     }
 
-    // Golden-dataset evaluation (LLMOPS_IMPLEMENTATION_PLAN.md Marco L7):
-    // independent of the batch's actual row data — a fixed set of
-    // question/expected-answer pairs re-run every time this node's pipeline
-    // runs, so a prompt-version change's effect on quality is measurable.
-    // Never blocking, same posture as the native quality checks below.
     #[cfg(feature = "llm")]
-    if let Some(llm_spec) = spec.llm.as_ref() {
-        if !llm_spec.eval.is_empty() {
-            run_llm_eval(llm_spec, run_id, &spec.pipeline_id, log, llm_eval_store, prompt_templates)
-                .await;
-        }
-    }
+    maybe_run_llm_eval(spec, run_id, log, llm_eval_store, prompt_templates).await;
 
     // Captured before `inputs` is consumed below — flattens every source's
     // schema into one column list (a fan-in transform reads all of them;
@@ -1527,6 +1544,30 @@ async fn apply_llm_stage(
     Ok(out)
 }
 
+/// Entry point shared by every pipeline shape's `run_*` function
+/// (`run_transform_pipeline`, `run_linear_pipeline`,
+/// `run_streaming_cdc_pipeline`) — golden-dataset evaluation
+/// (LLMOPS_IMPLEMENTATION_PLAN.md Marco L7) is independent of the batch's
+/// actual row data (a fixed set of question/expected-answer pairs, not
+/// derived from what the pipeline actually moved), so it runs the same way
+/// regardless of which path executed the pipeline. Never blocking, same
+/// posture as `run_llm_eval` itself.
+#[cfg(feature = "llm")]
+async fn maybe_run_llm_eval(
+    spec: &PipelineSpec,
+    run_id: i64,
+    log: Option<&RunLogger>,
+    llm_eval_store: &crate::llm_eval_result_store::LlmEvalResultStore,
+    prompt_templates: &crate::prompt_template_store::PromptTemplateStore,
+) {
+    if let Some(llm_spec) = spec.llm.as_ref() {
+        if !llm_spec.eval.is_empty() {
+            run_llm_eval(llm_spec, run_id, &spec.pipeline_id, log, llm_eval_store, prompt_templates)
+                .await;
+        }
+    }
+}
+
 /// Runs `llm_spec.eval`'s golden dataset (LLMOPS_IMPLEMENTATION_PLAN.md
 /// Marco L7) once per run and persists the scores — never fails the run
 /// itself (mirrors the native quality-check block's non-blocking posture in
@@ -1710,6 +1751,7 @@ mod tests {
             log_full_content: false,
             cache: None,
             eval: eval_cases.clone(),
+            eval_scoring: nexus_core::EvalScoringMode::TokenSimilarity,
         };
 
         run_llm_eval(&make_spec(1), 1, "pipe-1", None, &eval_store, &prompt_templates).await;
@@ -1778,6 +1820,11 @@ mod tests {
                     "filename": "unused",
                     "tokenizer_filename": "unused",
                     "max_length": 8
+                },
+                "chunking": {
+                    "strategy": "fixed_window",
+                    "chunk_size": 1000,
+                    "overlap": 0
                 }
             },
             "sinks": [{"connector": "lancedb", "config": {}}]
@@ -1801,5 +1848,171 @@ mod tests {
             err.to_string().contains("reactive-rag-cdc"),
             "expected the license-gate error, got: {err}"
         );
+    }
+
+    /// Golden-dataset eval (Marco L7) previously only ran inside
+    /// `run_transform_pipeline` — this proves `run_linear_pipeline` (Marco
+    /// 1's postgres-partitioned-or-passthrough entry point) now runs it
+    /// too, via `maybe_run_llm_eval` at the top of the function, before any
+    /// real connector is touched. The pipeline itself is expected to fail
+    /// after that (bogus csv source) — only the eval side effect matters
+    /// here, same reasoning as the license-gate test above.
+    #[cfg(feature = "llm")]
+    #[tokio::test]
+    async fn run_linear_pipeline_runs_golden_dataset_eval_via_passthrough() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"content": "42"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1}
+            })))
+            .mount(&server)
+            .await;
+
+        let checkpoints = CheckpointStore::connect("sqlite::memory:").await.unwrap();
+        let schema_store =
+            crate::pipeline_schema_store::PipelineSchemaStore::connect("sqlite::memory:")
+                .await
+                .unwrap();
+        let alerts = crate::alerts::AlertNotifier::new(crate::alerts::AlertConfig::default(), false);
+        let prompt_templates =
+            crate::prompt_template_store::PromptTemplateStore::connect("sqlite::memory:")
+                .await
+                .unwrap();
+        prompt_templates.create("linear-eval-prompt", "Q: {question}").await.unwrap();
+        let llm_eval_store =
+            crate::llm_eval_result_store::LlmEvalResultStore::connect("sqlite::memory:")
+                .await
+                .unwrap();
+
+        let mut inputs = std::collections::BTreeMap::new();
+        inputs.insert("question".to_string(), "anything".to_string());
+        let spec: PipelineSpec = serde_json::from_value(serde_json::json!({
+            "pipeline_id": "linear-eval-test",
+            "sources": [{"connector": "csv", "config": {"path": "/nonexistent.csv"}}],
+            "sinks": [{"connector": "csv", "config": {"path": "/tmp/nonexistent-out.csv"}}],
+            "llm": {
+                "prompt": {"name": "linear-eval-prompt"},
+                "input_columns": [],
+                "output_column": "answer",
+                "model": {"backend": "api", "base_url": server.uri(), "model": "gpt-test"},
+                "eval": [{
+                    "name": "golden-1",
+                    "inputs": inputs,
+                    "expected_answer": "42"
+                }]
+            }
+        }))
+        .unwrap();
+
+        // Real connectors are never reachable — expected to fail after the
+        // eval hook already ran. Only the eval side effect is asserted.
+        let _ = run_linear_pipeline(
+            &spec,
+            &checkpoints,
+            None,
+            None,
+            None,
+            &schema_store,
+            &alerts,
+            1,
+            &prompt_templates,
+            &llm_eval_store,
+        )
+        .await;
+
+        let results = llm_eval_store.list_for_pipeline("linear-eval-test").await.unwrap();
+        assert_eq!(results.len(), 1, "eval must run even on the non-transform path");
+        assert_eq!(results[0].eval_name, "golden-1");
+        assert!(results[0].passed, "score was {}", results[0].score);
+    }
+
+    /// Same proof as above, for `run_streaming_cdc_pipeline` (the CDC+SQL
+    /// fast path) — the third and last pipeline shape that skipped eval
+    /// before this change.
+    #[cfg(feature = "llm")]
+    #[tokio::test]
+    async fn run_streaming_cdc_pipeline_runs_golden_dataset_eval() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"content": "42"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1}
+            })))
+            .mount(&server)
+            .await;
+
+        let checkpoints = CheckpointStore::connect("sqlite::memory:").await.unwrap();
+        let schema_store =
+            crate::pipeline_schema_store::PipelineSchemaStore::connect("sqlite::memory:")
+                .await
+                .unwrap();
+        let alerts = crate::alerts::AlertNotifier::new(crate::alerts::AlertConfig::default(), false);
+        let prompt_templates =
+            crate::prompt_template_store::PromptTemplateStore::connect("sqlite::memory:")
+                .await
+                .unwrap();
+        prompt_templates.create("cdc-eval-prompt", "Q: {question}").await.unwrap();
+        let llm_eval_store =
+            crate::llm_eval_result_store::LlmEvalResultStore::connect("sqlite::memory:")
+                .await
+                .unwrap();
+
+        let mut inputs = std::collections::BTreeMap::new();
+        inputs.insert("question".to_string(), "anything".to_string());
+        let spec: PipelineSpec = serde_json::from_value(serde_json::json!({
+            "pipeline_id": "cdc-eval-test",
+            "sources": [{
+                "connector": "postgres-cdc",
+                "config": {
+                    "uri": "postgres://nobody:nobody@127.0.0.1:1/nowhere",
+                    "table": "docs",
+                    "publication_name": "pub_docs",
+                    "slot_name": "slot_docs",
+                    "fields": [{"name": "id", "data_type": "int64", "nullable": false}]
+                }
+            }],
+            "transform": {"sql": "SELECT * FROM source0"},
+            "sinks": [{"connector": "csv", "config": {"path": "/tmp/nonexistent-out2.csv"}}],
+            "llm": {
+                "prompt": {"name": "cdc-eval-prompt"},
+                "input_columns": [],
+                "output_column": "answer",
+                "model": {"backend": "api", "base_url": server.uri(), "model": "gpt-test"},
+                "eval": [{
+                    "name": "golden-1",
+                    "inputs": inputs,
+                    "expected_answer": "42"
+                }]
+            }
+        }))
+        .unwrap();
+
+        let _ = run_streaming_cdc_pipeline(
+            &spec,
+            &checkpoints,
+            None,
+            None,
+            None,
+            &schema_store,
+            &alerts,
+            1,
+            &prompt_templates,
+            &llm_eval_store,
+        )
+        .await;
+
+        let results = llm_eval_store.list_for_pipeline("cdc-eval-test").await.unwrap();
+        assert_eq!(results.len(), 1, "eval must run on the streaming CDC path too");
+        assert_eq!(results[0].eval_name, "golden-1");
+        assert!(results[0].passed, "score was {}", results[0].score);
     }
 }
