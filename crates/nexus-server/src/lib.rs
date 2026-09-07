@@ -17,6 +17,7 @@ mod hardware_stats;
 mod license;
 mod license_store;
 mod lineage;
+mod llm_generation_store;
 pub mod migrate;
 mod pipeline_run_llm_stats_store;
 mod pipeline_schema_store;
@@ -25,6 +26,12 @@ mod progress;
 mod prompt_template_store;
 mod python_transform;
 mod quality_check_store;
+#[cfg(all(
+    feature = "llm",
+    any(feature = "embeddings", feature = "embeddings-api"),
+    feature = "lancedb"
+))]
+mod rag;
 mod rate_limit;
 mod resource_stats;
 mod run_log_store;
@@ -113,6 +120,11 @@ struct AppState {
     // needed here unlike `dbt_test_results`/`quality_checks` above.
     llm_stats: pipeline_run_llm_stats_store::PipelineRunLlmStatsStore,
     prompt_templates: prompt_template_store::PromptTemplateStore,
+    // Only written/read by `rag.rs`'s `#[cfg(all(feature = "llm", ...))]`
+    // module (Marco L5) — kept unconditional on AppState, same reasoning
+    // as `dbt_test_results`/`quality_checks` above.
+    #[allow(dead_code)]
+    llm_generations: llm_generation_store::LlmGenerationStore,
     progress: ProgressHub,
     alerts: AlertNotifier,
     login_rate_limiter: std::sync::Arc<rate_limit::LoginRateLimiter>,
@@ -306,6 +318,16 @@ fn router(state: AppState) -> Router {
         ))
         .layer(Extension(Role::Read));
 
+    // Cloned before `state` is moved into `.with_state(state)` below —
+    // `rag::routes` (Marco L5, cfg-gated) needs its own `AppState` to
+    // build its sub-router, merged in after the main app is stateless.
+    #[cfg(all(
+        feature = "llm",
+        any(feature = "embeddings", feature = "embeddings-api"),
+        feature = "lancedb"
+    ))]
+    let rag_state = state.clone();
+
     let app = Router::new()
         .route("/health", get(health))
         // Unauthenticated like /health — Prometheus scrapers don't carry a
@@ -328,6 +350,13 @@ fn router(state: AppState) -> Router {
         .merge(write_protected)
         .merge(read_protected)
         .with_state(state);
+
+    #[cfg(all(
+        feature = "llm",
+        any(feature = "embeddings", feature = "embeddings-api"),
+        feature = "lancedb"
+    ))]
+    let app = app.merge(rag::routes(rag_state));
 
     // Only wired in for the single-binary build (Marco 11) — without the
     // feature, an unmatched route just gets axum's default 404, same as
@@ -1792,6 +1821,8 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
     .await?;
     let prompt_templates =
         prompt_template_store::PromptTemplateStore::connect(&config.pipelines_database_url).await?;
+    let llm_generations =
+        llm_generation_store::LlmGenerationStore::connect(&config.pipelines_database_url).await?;
     if let Some((username, password)) = &config.bootstrap_admin {
         auth_store.seed_admin_if_empty(username, password).await?;
     }
@@ -1818,6 +1849,7 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         quality_checks,
         llm_stats,
         prompt_templates,
+        llm_generations,
         progress: ProgressHub::default(),
         alerts: AlertNotifier::new(
             AlertConfig {
@@ -2111,6 +2143,9 @@ mod tests {
             )
             .await
             .unwrap(),
+            llm_generations: llm_generation_store::LlmGenerationStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
             progress: ProgressHub::default(),
             alerts: AlertNotifier::new(AlertConfig::default(), false),
             login_rate_limiter: std::sync::Arc::new(rate_limit::LoginRateLimiter::new(
@@ -3711,6 +3746,9 @@ mod tests {
             )
             .await
             .unwrap(),
+            llm_generations: llm_generation_store::LlmGenerationStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
             progress: ProgressHub::default(),
             alerts: AlertNotifier::new(AlertConfig::default(), false),
             login_rate_limiter: limiter,

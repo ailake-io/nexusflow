@@ -2,9 +2,11 @@
 //! order. See ARCHITECTURE.md §4.3, IMPLEMENTATION_PLAN.md Marco 5.
 
 mod config;
+mod search;
 mod sink;
 
 pub use config::{LanceDbConnectorConfig, LanceDbStorageOptions};
+pub use search::LanceDbSearchClient;
 pub use sink::LanceDbSink;
 
 nexus_core::submit_connector!(
