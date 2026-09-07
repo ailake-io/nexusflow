@@ -288,6 +288,25 @@ pub struct LlmNodeSpec {
     /// means every call hits the API, no caching.
     #[serde(default)]
     pub cache: Option<LlmCacheSpec>,
+    /// Golden dataset (LLMOPS_IMPLEMENTATION_PLAN.md Marco L7) — fixed
+    /// question/expected-answer pairs re-run every time this node's pipeline
+    /// runs, scored against the *current* prompt version/model, so a prompt
+    /// change's effect on answer quality is measurable instead of assumed.
+    /// Empty (the default) means no eval — most `llm` nodes don't need one.
+    #[serde(default)]
+    pub eval: Vec<LlmEvalCase>,
+}
+
+/// One golden test case for Marco L7. `inputs` mirrors the batch `llm`
+/// node's own `{column_name}` interpolation (not RAG's fixed
+/// `{context}`/`{question}` convention, see `rag.rs`) — a map lets a golden
+/// case fill in whatever placeholders this node's prompt template actually
+/// references, regardless of `input_columns`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmEvalCase {
+    pub name: String,
+    pub inputs: std::collections::BTreeMap<String, String>,
+    pub expected_answer: String,
 }
 
 /// Redis-backed response cache — key is `sha256(model + prompt + max_tokens

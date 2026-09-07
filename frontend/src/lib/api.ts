@@ -408,6 +408,30 @@ export function getQualityCheckResults(
   )
 }
 
+/** Matches nexus-server::llm_eval_result_store's `LlmEvalOutcome`, as
+ *  returned by GET /pipelines/{id}/llm-eval-results. Golden-dataset scores
+ *  (LLMOPS_IMPLEMENTATION_PLAN.md Marco L7) for an `llm` node's
+ *  `eval` cases — re-run every time the pipeline runs, scored against the
+ *  prompt version active at that run, never blocking. */
+export interface LlmEvalOutcome {
+  eval_name: string
+  prompt_version: number
+  score: number
+  passed: boolean
+  message: string | null
+}
+
+export function getLlmEvalResults(
+  token: string,
+  pipelineId: string,
+): Promise<LlmEvalOutcome[]> {
+  return request<LlmEvalOutcome[]>(
+    `/pipelines/${encodeURIComponent(pipelineId)}/llm-eval-results`,
+    {},
+    token,
+  )
+}
+
 /** Matches nexus-server::lineage::ResourceKind. */
 export type LineageResourceKind = 'table' | 'collection' | 'topic' | 'file'
 

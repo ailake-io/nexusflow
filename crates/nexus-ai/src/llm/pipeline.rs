@@ -251,6 +251,7 @@ mod tests {
             temperature: None,
             log_full_content: false,
             cache: None,
+            eval: vec![],
         };
         let backend = load_llm_backend(&spec);
 
@@ -356,6 +357,7 @@ mod tests {
                 url: "redis://unused-in-test".to_string(),
                 ttl_seconds: 60,
             }),
+            eval: vec![],
         };
         let backend = load_llm_backend(&spec);
         let cache = InMemoryCache::new();

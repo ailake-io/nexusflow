@@ -209,6 +209,7 @@ pub async fn run_pipeline(
     quality_store: &crate::quality_check_store::QualityCheckStore,
     llm_stats_store: &crate::pipeline_run_llm_stats_store::PipelineRunLlmStatsStore,
     prompt_templates: &crate::prompt_template_store::PromptTemplateStore,
+    llm_eval_store: &crate::llm_eval_result_store::LlmEvalResultStore,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     // A `*-cdc` source with a plain SQL transform (the only documented CDC
     // shape — `SELECT * FROM source0`, required to preserve `__opcode` for
@@ -256,6 +257,7 @@ pub async fn run_pipeline(
             quality_store,
             llm_stats_store,
             prompt_templates,
+            llm_eval_store,
         )
         .await
     } else {
@@ -958,6 +960,7 @@ async fn run_transform_pipeline(
     quality_store: &crate::quality_check_store::QualityCheckStore,
     llm_stats_store: &crate::pipeline_run_llm_stats_store::PipelineRunLlmStatsStore,
     prompt_templates: &crate::prompt_template_store::PromptTemplateStore,
+    llm_eval_store: &crate::llm_eval_result_store::LlmEvalResultStore,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     // Same reasoning as `run_passthrough_pipeline`'s `is_cdc` check: a `-cdc`
     // source is meant to run again every scheduler tick, using
@@ -1017,6 +1020,19 @@ async fn run_transform_pipeline(
         anyhow::bail!(
             "pipeline contains an llm node but the server was built without the 'llm' feature"
         );
+    }
+
+    // Golden-dataset evaluation (LLMOPS_IMPLEMENTATION_PLAN.md Marco L7):
+    // independent of the batch's actual row data — a fixed set of
+    // question/expected-answer pairs re-run every time this node's pipeline
+    // runs, so a prompt-version change's effect on quality is measurable.
+    // Never blocking, same posture as the native quality checks below.
+    #[cfg(feature = "llm")]
+    if let Some(llm_spec) = spec.llm.as_ref() {
+        if !llm_spec.eval.is_empty() {
+            run_llm_eval(llm_spec, run_id, &spec.pipeline_id, log, llm_eval_store, prompt_templates)
+                .await;
+        }
     }
 
     // Captured before `inputs` is consumed below — flattens every source's
@@ -1498,6 +1514,68 @@ async fn apply_llm_stage(
     Ok(out)
 }
 
+/// Runs `llm_spec.eval`'s golden dataset (LLMOPS_IMPLEMENTATION_PLAN.md
+/// Marco L7) once per run and persists the scores — never fails the run
+/// itself (mirrors the native quality-check block's non-blocking posture in
+/// `run_transform_pipeline`), since a failing eval case is a signal to
+/// surface on the Quality tab, not a reason to stop moving data.
+#[cfg(feature = "llm")]
+async fn run_llm_eval(
+    llm_spec: &nexus_core::LlmNodeSpec,
+    run_id: i64,
+    pipeline_id: &str,
+    log: Option<&RunLogger>,
+    llm_eval_store: &crate::llm_eval_result_store::LlmEvalResultStore,
+    prompt_templates: &crate::prompt_template_store::PromptTemplateStore,
+) {
+    let template = match prompt_templates
+        .resolve(&llm_spec.prompt.name, llm_spec.prompt.version)
+        .await
+    {
+        Ok(Some(template)) => template,
+        Ok(None) => {
+            log_error(
+                log,
+                format!(
+                    "llm eval: prompt {:?} version {:?} not found, skipping golden dataset",
+                    llm_spec.prompt.name, llm_spec.prompt.version
+                ),
+            )
+            .await;
+            return;
+        }
+        Err(e) => {
+            log_error(log, format!("llm eval: failed to resolve prompt: {e}")).await;
+            return;
+        }
+    };
+    let resolved_version = match llm_spec.prompt.version {
+        Some(v) => v,
+        None => prompt_templates
+            .latest_version(&llm_spec.prompt.name)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(0),
+    };
+
+    let backend = nexus_ai::llm::load_llm_backend(llm_spec);
+    let outcomes = nexus_ai::llm::run_eval_cases(llm_spec, &template, &backend).await;
+    let outcomes: Vec<_> = outcomes
+        .into_iter()
+        .map(|o| crate::llm_eval_result_store::LlmEvalOutcome {
+            eval_name: o.eval_name,
+            prompt_version: resolved_version,
+            score: o.score,
+            passed: o.passed,
+            message: Some(o.answer),
+        })
+        .collect();
+    if let Err(e) = llm_eval_store.record_all(pipeline_id, run_id, &outcomes).await {
+        log_error(log, format!("failed to persist llm eval results: {e}")).await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1533,5 +1611,113 @@ mod tests {
         assert!(logs[0]
             .message
             .contains("postgres://***@db.internal:5432/app"));
+    }
+
+    /// Marco L7's own "done" criterion (LLMOPS_IMPLEMENTATION_PLAN.md):
+    /// swapping a prompt's version must move the golden dataset's average
+    /// score in a measurable way — proves `run_llm_eval` actually re-resolves
+    /// the prompt per run instead of reusing whatever it saw first, and that
+    /// `score_answer` really distinguishes a good answer from a bad one.
+    #[cfg(feature = "llm")]
+    #[tokio::test]
+    async fn swapping_prompt_version_measurably_changes_the_average_eval_score() {
+        use crate::llm_eval_result_store::LlmEvalResultStore;
+        use crate::prompt_template_store::PromptTemplateStore;
+        use nexus_core::{LlmEvalCase, LlmModelConfig, LlmNodeSpec, PromptRef};
+        use wiremock::matchers::{body_string_contains, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        // v1's template steers the model toward the right answer; v2's
+        // steers it toward a useless one — same two golden questions, only
+        // the prompt text differs, exactly what a real prompt-version swap
+        // would do to a real model's output.
+        for (style, country, answer) in [
+            ("STYLE_GOOD", "france", "paris"),
+            ("STYLE_GOOD", "japan", "tokyo"),
+            ("STYLE_BAD", "france", "i have no idea"),
+            ("STYLE_BAD", "japan", "i have no idea"),
+        ] {
+            Mock::given(method("POST"))
+                .and(path("/chat/completions"))
+                .and(body_string_contains(style))
+                .and(body_string_contains(country))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "choices": [{"message": {"content": answer}}],
+                    "usage": {"prompt_tokens": 4, "completion_tokens": 2}
+                })))
+                .mount(&server)
+                .await;
+        }
+
+        let prompt_templates = PromptTemplateStore::connect("sqlite::memory:").await.unwrap();
+        let eval_store = LlmEvalResultStore::connect("sqlite::memory:").await.unwrap();
+        prompt_templates
+            .create("eval-prompt", "STYLE_GOOD: what is the capital of {country}?")
+            .await
+            .unwrap();
+        prompt_templates
+            .create("eval-prompt", "STYLE_BAD: what is the capital of {country}?")
+            .await
+            .unwrap();
+
+        let mut france_inputs = std::collections::BTreeMap::new();
+        france_inputs.insert("country".to_string(), "france".to_string());
+        let mut japan_inputs = std::collections::BTreeMap::new();
+        japan_inputs.insert("country".to_string(), "japan".to_string());
+        let eval_cases = vec![
+            LlmEvalCase {
+                name: "capital-of-france".to_string(),
+                inputs: france_inputs,
+                expected_answer: "paris".to_string(),
+            },
+            LlmEvalCase {
+                name: "capital-of-japan".to_string(),
+                inputs: japan_inputs,
+                expected_answer: "tokyo".to_string(),
+            },
+        ];
+
+        let make_spec = |version: u32| LlmNodeSpec {
+            prompt: PromptRef {
+                name: "eval-prompt".to_string(),
+                version: Some(version),
+            },
+            input_columns: vec![],
+            output_column: "answer".to_string(),
+            model: LlmModelConfig::Api {
+                base_url: server.uri(),
+                model: "gpt-test".to_string(),
+                api_key_env: None,
+                cost_per_1k_prompt_tokens: None,
+                cost_per_1k_completion_tokens: None,
+            },
+            max_tokens: None,
+            temperature: None,
+            log_full_content: false,
+            cache: None,
+            eval: eval_cases.clone(),
+        };
+
+        run_llm_eval(&make_spec(1), 1, "pipe-1", None, &eval_store, &prompt_templates).await;
+        run_llm_eval(&make_spec(2), 2, "pipe-1", None, &eval_store, &prompt_templates).await;
+
+        let results = eval_store.list_for_pipeline("pipe-1").await.unwrap();
+        let avg_for_version = |v: u32| {
+            let scores: Vec<f64> = results
+                .iter()
+                .filter(|r| r.prompt_version == v)
+                .map(|r| r.score)
+                .collect();
+            scores.iter().sum::<f64>() / scores.len() as f64
+        };
+        let avg_v1 = avg_for_version(1);
+        let avg_v2 = avg_for_version(2);
+        assert!(avg_v1 > 0.9, "v1's average score was {avg_v1}, expected near 1.0");
+        assert!(avg_v2 < 0.1, "v2's average score was {avg_v2}, expected near 0.0");
+        assert!(
+            (avg_v1 - avg_v2).abs() > 0.5,
+            "prompt version swap must measurably move the average score: v1={avg_v1} v2={avg_v2}"
+        );
     }
 }

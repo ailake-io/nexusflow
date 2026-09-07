@@ -13,11 +13,13 @@
 mod anthropic_client;
 mod client;
 mod common;
+mod eval;
 mod pipeline;
 
 pub use anthropic_client::{AnthropicClient, AnthropicClientConfig};
 pub use client::{LlmClient, LlmClientConfig, LlmResponse};
 pub use common::{append_text_column, cache_key, LlmCache, LlmError};
+pub use eval::{run_eval_cases, score_answer, LlmEvalOutcome, EVAL_PASS_THRESHOLD};
 pub use pipeline::{
     apply_llm, build_prompt, load_llm_backend, LlmApplyResult, LlmBackend, LlmCallStats,
 };

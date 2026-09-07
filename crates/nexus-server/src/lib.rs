@@ -17,6 +17,7 @@ mod hardware_stats;
 mod license;
 mod license_store;
 mod lineage;
+mod llm_eval_result_store;
 mod llm_generation_store;
 pub mod migrate;
 mod pipeline_run_llm_stats_store;
@@ -120,6 +121,10 @@ struct AppState {
     // needed here unlike `dbt_test_results`/`quality_checks` above.
     llm_stats: pipeline_run_llm_stats_store::PipelineRunLlmStatsStore,
     prompt_templates: prompt_template_store::PromptTemplateStore,
+    // Written by `run_llm_eval`'s `#[cfg(feature = "llm")]` block (Marco
+    // L7), read unconditionally by `list_llm_eval_results_handler` — same
+    // reasoning as `llm_stats` above.
+    llm_eval_results: llm_eval_result_store::LlmEvalResultStore,
     // Only written/read by `rag.rs`'s `#[cfg(all(feature = "llm", ...))]`
     // module (Marco L5) — kept unconditional on AppState, same reasoning
     // as `dbt_test_results`/`quality_checks` above.
@@ -264,6 +269,10 @@ fn router(state: AppState) -> Router {
         .route(
             "/pipelines/{id}/quality-checks",
             get(list_quality_check_results_handler),
+        )
+        .route(
+            "/pipelines/{id}/llm-eval-results",
+            get(list_llm_eval_results_handler),
         )
         // Whole-catalog graph, not a per-pipeline secret — the handler
         // below only ever hands back connector names + allowlisted
@@ -671,6 +680,7 @@ async fn execute_pipeline_run(
         &state.quality_checks,
         &state.llm_stats,
         &state.prompt_templates,
+        &state.llm_eval_results,
     )
     .await;
     state.progress.finish(run_id).await;
@@ -1230,6 +1240,25 @@ async fn list_quality_check_results_handler(
     Ok(Json(
         state
             .quality_checks
+            .list_for_pipeline(&id)
+            .await
+            .map_err(ApiError::internal)?,
+    ))
+}
+
+/// Every recorded golden-dataset eval result for this pipeline
+/// (LLMOPS_IMPLEMENTATION_PLAN.md Marco L7) — scored per run against the
+/// `llm` node's current prompt version, evaluated by `run_llm_eval` on the
+/// `run_transform_pipeline` path (`llm_eval_result_store.rs`). Companion to
+/// `list_dbt_test_results_handler`/`list_quality_check_results_handler`;
+/// the Quality tab renders all three, tagged by source.
+async fn list_llm_eval_results_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<llm_eval_result_store::LlmEvalOutcome>>, ApiError> {
+    Ok(Json(
+        state
+            .llm_eval_results
             .list_for_pipeline(&id)
             .await
             .map_err(ApiError::internal)?,
@@ -1823,6 +1852,8 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         prompt_template_store::PromptTemplateStore::connect(&config.pipelines_database_url).await?;
     let llm_generations =
         llm_generation_store::LlmGenerationStore::connect(&config.pipelines_database_url).await?;
+    let llm_eval_results =
+        llm_eval_result_store::LlmEvalResultStore::connect(&config.pipelines_database_url).await?;
     if let Some((username, password)) = &config.bootstrap_admin {
         auth_store.seed_admin_if_empty(username, password).await?;
     }
@@ -1850,6 +1881,7 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         llm_stats,
         prompt_templates,
         llm_generations,
+        llm_eval_results,
         progress: ProgressHub::default(),
         alerts: AlertNotifier::new(
             AlertConfig {
@@ -2144,6 +2176,9 @@ mod tests {
             .await
             .unwrap(),
             llm_generations: llm_generation_store::LlmGenerationStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
+            llm_eval_results: llm_eval_result_store::LlmEvalResultStore::connect("sqlite::memory:")
                 .await
                 .unwrap(),
             progress: ProgressHub::default(),
@@ -3748,6 +3783,9 @@ mod tests {
             .await
             .unwrap(),
             llm_generations: llm_generation_store::LlmGenerationStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
+            llm_eval_results: llm_eval_result_store::LlmEvalResultStore::connect("sqlite::memory:")
                 .await
                 .unwrap(),
             progress: ProgressHub::default(),
