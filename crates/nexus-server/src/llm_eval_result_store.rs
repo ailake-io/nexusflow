@@ -124,7 +124,10 @@ impl LlmEvalResultStore {
     /// Every recorded result for `pipeline_id`, grouped by eval case and
     /// ordered oldest-first within each group — what the Quality tab renders
     /// as a per-case score history. Powers `GET /pipelines/{id}/llm-eval-results`.
-    pub async fn list_for_pipeline(&self, pipeline_id: &str) -> anyhow::Result<Vec<LlmEvalOutcome>> {
+    pub async fn list_for_pipeline(
+        &self,
+        pipeline_id: &str,
+    ) -> anyhow::Result<Vec<LlmEvalOutcome>> {
         let sql = self.q(
             "SELECT eval_name, prompt_version, score, passed, message FROM llm_eval_results \
              WHERE pipeline_id = ? ORDER BY eval_name, recorded_at",
@@ -145,13 +148,15 @@ impl LlmEvalResultStore {
         };
         Ok(rows
             .into_iter()
-            .map(|(eval_name, prompt_version, score, passed, message)| LlmEvalOutcome {
-                eval_name,
-                prompt_version: prompt_version as u32,
-                score,
-                passed,
-                message,
-            })
+            .map(
+                |(eval_name, prompt_version, score, passed, message)| LlmEvalOutcome {
+                    eval_name,
+                    prompt_version: prompt_version as u32,
+                    score,
+                    passed,
+                    message,
+                },
+            )
             .collect())
     }
 }
@@ -172,7 +177,9 @@ mod tests {
 
     #[tokio::test]
     async fn record_all_persists_every_case_individually() {
-        let store = LlmEvalResultStore::connect("sqlite::memory:").await.unwrap();
+        let store = LlmEvalResultStore::connect("sqlite::memory:")
+            .await
+            .unwrap();
         let results = vec![outcome("golden-1", 1, 0.9), outcome("golden-2", 1, 0.1)];
         store.record_all("pipe-1", 42, &results).await.unwrap();
 
@@ -188,7 +195,9 @@ mod tests {
 
     #[tokio::test]
     async fn record_all_is_append_only_across_runs() {
-        let store = LlmEvalResultStore::connect("sqlite::memory:").await.unwrap();
+        let store = LlmEvalResultStore::connect("sqlite::memory:")
+            .await
+            .unwrap();
         store
             .record_all("pipe-1", 1, &[outcome("golden-1", 1, 0.9)])
             .await
@@ -208,7 +217,9 @@ mod tests {
 
     #[tokio::test]
     async fn record_all_preserves_the_answer_text() {
-        let store = LlmEvalResultStore::connect("sqlite::memory:").await.unwrap();
+        let store = LlmEvalResultStore::connect("sqlite::memory:")
+            .await
+            .unwrap();
         let mut r = outcome("golden-1", 1, 0.1);
         r.message = Some("wrong answer".to_string());
         store.record_all("pipe-1", 1, &[r]).await.unwrap();

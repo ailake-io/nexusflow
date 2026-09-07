@@ -92,7 +92,12 @@ impl PromptTemplateStore {
     /// as a constraint-violation error on the losing insert, not a silent
     /// overwrite — acceptable here since prompt creation is a low-frequency
     /// admin action, not a hot path needing serialized-write throughput.
-    pub async fn create(&self, name: &str, template: &str, author: &str) -> Result<u32, sqlx::Error> {
+    pub async fn create(
+        &self,
+        name: &str,
+        template: &str,
+        author: &str,
+    ) -> Result<u32, sqlx::Error> {
         let next_version = self.latest_version(name).await?.unwrap_or(0) + 1;
         let sql = self.q(
             "INSERT INTO prompt_templates (name, version, template, created_by) VALUES (?, ?, ?, ?)",
@@ -206,13 +211,15 @@ impl PromptTemplateStore {
         };
         Ok(rows
             .into_iter()
-            .map(|(name, version, template, created_at, created_by)| PromptTemplate {
-                name,
-                version: version as u32,
-                template,
-                created_at,
-                created_by,
-            })
+            .map(
+                |(name, version, template, created_at, created_by)| PromptTemplate {
+                    name,
+                    version: version as u32,
+                    template,
+                    created_at,
+                    created_by,
+                },
+            )
             .collect())
     }
 }

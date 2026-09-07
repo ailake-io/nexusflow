@@ -1269,7 +1269,12 @@ async fn update_pipeline_handler(
 /// already committed): logged via `tracing::warn!` and swallowed, same
 /// posture as `alerts.rs`'s fire-and-forget notifications.
 #[cfg(feature = "version-history")]
-async fn commit_pipeline_history(state: &AppState, spec: &PipelineSpec, author: &str, message: &str) {
+async fn commit_pipeline_history(
+    state: &AppState,
+    spec: &PipelineSpec,
+    author: &str,
+    message: &str,
+) {
     let ciphertext = pipeline_store::encode_spec(spec, &state.secrets);
     let path = format!("pipelines/{}.json", spec.pipeline_id);
     match state
@@ -1418,7 +1423,9 @@ async fn diff_pipeline_versions_handler(
             let new_spec = load_pipeline_spec_at_commit(&state, against, &path).await?;
             pipeline_store::redact_for_diff(&new_spec)
         }
-        None => pipeline_store::redact_for_diff(&state.pipelines.get_spec(&id, &state.secrets).await?),
+        None => {
+            pipeline_store::redact_for_diff(&state.pipelines.get_spec(&id, &state.secrets).await?)
+        }
     };
     let old_json = pipeline_store::redact_for_diff(&old_spec);
     Ok(Json(serde_json::json!({

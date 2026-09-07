@@ -443,8 +443,15 @@ impl PipelineStore {
                     .await?
             }
         };
-        let (ciphertext, created_at, updated_at, created_by, updated_by, last_run_status, last_run_at) =
-            row.ok_or_else(|| PipelineStoreError::NotFound(id.to_string()))?;
+        let (
+            ciphertext,
+            created_at,
+            updated_at,
+            created_by,
+            updated_by,
+            last_run_status,
+            last_run_at,
+        ) = row.ok_or_else(|| PipelineStoreError::NotFound(id.to_string()))?;
         let spec = decode_spec(&ciphertext, cipher)?;
         Ok(summarize(
             spec,
@@ -544,7 +551,15 @@ impl PipelineStore {
         };
         rows.into_iter()
             .map(
-                |(ciphertext, created_at, updated_at, created_by, updated_by, last_run_status, last_run_at)| {
+                |(
+                    ciphertext,
+                    created_at,
+                    updated_at,
+                    created_by,
+                    updated_by,
+                    last_run_status,
+                    last_run_at,
+                )| {
                     let spec = decode_spec(&ciphertext, cipher)?;
                     Ok(summarize(
                         spec,
@@ -891,9 +906,8 @@ pub(crate) fn decode_spec(
 /// requires those extra fields).
 #[cfg(feature = "version-history")]
 pub(crate) fn redact_for_diff(spec: &PipelineSpec) -> serde_json::Value {
-    let to_json = |n: &nexus_core::NodeSpec| {
-        serde_json::json!({ "connector": n.connector, "name": n.name })
-    };
+    let to_json =
+        |n: &nexus_core::NodeSpec| serde_json::json!({ "connector": n.connector, "name": n.name });
     serde_json::json!({
         "pipeline_id": spec.pipeline_id,
         "sources": spec.sources.iter().map(to_json).collect::<Vec<_>>(),
@@ -999,7 +1013,10 @@ mod tests {
     async fn summary_never_contains_config() {
         let store = PipelineStore::connect("sqlite::memory:").await.unwrap();
         let cipher = cipher();
-        store.create(&sample_spec("p1"), &cipher, "alice").await.unwrap();
+        store
+            .create(&sample_spec("p1"), &cipher, "alice")
+            .await
+            .unwrap();
 
         let summary = store.get_summary("p1", &cipher).await.unwrap();
         assert_eq!(summary.sources[0].connector, "postgres");
@@ -1043,7 +1060,10 @@ mod tests {
     async fn spec_is_encrypted_at_rest_not_plaintext() {
         let store = PipelineStore::connect("sqlite::memory:").await.unwrap();
         let cipher = cipher();
-        store.create(&sample_spec("p1"), &cipher, "alice").await.unwrap();
+        store
+            .create(&sample_spec("p1"), &cipher, "alice")
+            .await
+            .unwrap();
 
         let MetadataPool::Sqlite(pool) = &store.pool else {
             unreachable!("this test always connects via sqlite::memory:")
@@ -1062,11 +1082,17 @@ mod tests {
     async fn update_replaces_spec() {
         let store = PipelineStore::connect("sqlite::memory:").await.unwrap();
         let cipher = cipher();
-        store.create(&sample_spec("p1"), &cipher, "alice").await.unwrap();
+        store
+            .create(&sample_spec("p1"), &cipher, "alice")
+            .await
+            .unwrap();
 
         let mut updated = sample_spec("p1");
         updated.sinks[0].connector = "postgres".to_string();
-        store.update("p1", &updated, &cipher, "alice").await.unwrap();
+        store
+            .update("p1", &updated, &cipher, "alice")
+            .await
+            .unwrap();
 
         let summary = store.get_summary("p1", &cipher).await.unwrap();
         assert_eq!(summary.sinks[0].connector, "postgres");
@@ -1117,7 +1143,10 @@ mod tests {
     async fn delete_removes_pipeline() {
         let store = PipelineStore::connect("sqlite::memory:").await.unwrap();
         let cipher = cipher();
-        store.create(&sample_spec("p1"), &cipher, "alice").await.unwrap();
+        store
+            .create(&sample_spec("p1"), &cipher, "alice")
+            .await
+            .unwrap();
 
         store.delete("p1").await.unwrap();
         assert!(matches!(
@@ -1265,7 +1294,10 @@ mod tests {
         assert!(matches!(store.pool, MetadataPool::Postgres(_)));
         let cipher = cipher();
 
-        store.create(&sample_spec("p1"), &cipher, "alice").await.unwrap();
+        store
+            .create(&sample_spec("p1"), &cipher, "alice")
+            .await
+            .unwrap();
         assert!(matches!(
             store.create(&sample_spec("p1"), &cipher, "alice").await,
             Err(PipelineStoreError::AlreadyExists(_))
@@ -1276,7 +1308,10 @@ mod tests {
 
         let mut updated = sample_spec("p1");
         updated.sinks[0].connector = "postgres".to_string();
-        store.update("p1", &updated, &cipher, "alice").await.unwrap();
+        store
+            .update("p1", &updated, &cipher, "alice")
+            .await
+            .unwrap();
         assert_eq!(
             store.get_summary("p1", &cipher).await.unwrap().sinks[0].connector,
             "postgres"

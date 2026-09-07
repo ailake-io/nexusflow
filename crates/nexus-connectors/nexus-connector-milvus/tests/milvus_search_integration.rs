@@ -8,7 +8,9 @@ use arrow_schema::{DataType, Field, Schema};
 use milvus::client::Client as MilvusClient;
 use milvus::index::{IndexParams, IndexType, MetricType};
 use milvus::schema::{CollectionSchemaBuilder, FieldSchema};
-use nexus_ai::embedding::{append_embedding_column, EmbeddingModel, EmbeddingModelConfig, ModelConfig};
+use nexus_ai::embedding::{
+    append_embedding_column, EmbeddingModel, EmbeddingModelConfig, ModelConfig,
+};
 use nexus_connector_milvus::{MilvusConnectorConfig, MilvusSearchClient, MilvusSink};
 use nexus_core::Sink;
 use std::collections::HashMap;

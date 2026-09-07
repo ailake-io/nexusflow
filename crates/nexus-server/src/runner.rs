@@ -1562,8 +1562,15 @@ async fn maybe_run_llm_eval(
 ) {
     if let Some(llm_spec) = spec.llm.as_ref() {
         if !llm_spec.eval.is_empty() {
-            run_llm_eval(llm_spec, run_id, &spec.pipeline_id, log, llm_eval_store, prompt_templates)
-                .await;
+            run_llm_eval(
+                llm_spec,
+                run_id,
+                &spec.pipeline_id,
+                log,
+                llm_eval_store,
+                prompt_templates,
+            )
+            .await;
         }
     }
 }
@@ -1625,7 +1632,10 @@ async fn run_llm_eval(
             message: Some(o.answer),
         })
         .collect();
-    if let Err(e) = llm_eval_store.record_all(pipeline_id, run_id, &outcomes).await {
+    if let Err(e) = llm_eval_store
+        .record_all(pipeline_id, run_id, &outcomes)
+        .await
+    {
         log_error(log, format!("failed to persist llm eval results: {e}")).await;
     }
 }
@@ -1704,14 +1714,26 @@ mod tests {
                 .await;
         }
 
-        let prompt_templates = PromptTemplateStore::connect("sqlite::memory:").await.unwrap();
-        let eval_store = LlmEvalResultStore::connect("sqlite::memory:").await.unwrap();
-        prompt_templates
-            .create("eval-prompt", "STYLE_GOOD: what is the capital of {country}?", "alice")
+        let prompt_templates = PromptTemplateStore::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let eval_store = LlmEvalResultStore::connect("sqlite::memory:")
             .await
             .unwrap();
         prompt_templates
-            .create("eval-prompt", "STYLE_BAD: what is the capital of {country}?", "alice")
+            .create(
+                "eval-prompt",
+                "STYLE_GOOD: what is the capital of {country}?",
+                "alice",
+            )
+            .await
+            .unwrap();
+        prompt_templates
+            .create(
+                "eval-prompt",
+                "STYLE_BAD: what is the capital of {country}?",
+                "alice",
+            )
             .await
             .unwrap();
 
@@ -1754,8 +1776,24 @@ mod tests {
             eval_scoring: nexus_core::EvalScoringMode::TokenSimilarity,
         };
 
-        run_llm_eval(&make_spec(1), 1, "pipe-1", None, &eval_store, &prompt_templates).await;
-        run_llm_eval(&make_spec(2), 2, "pipe-1", None, &eval_store, &prompt_templates).await;
+        run_llm_eval(
+            &make_spec(1),
+            1,
+            "pipe-1",
+            None,
+            &eval_store,
+            &prompt_templates,
+        )
+        .await;
+        run_llm_eval(
+            &make_spec(2),
+            2,
+            "pipe-1",
+            None,
+            &eval_store,
+            &prompt_templates,
+        )
+        .await;
 
         let results = eval_store.list_for_pipeline("pipe-1").await.unwrap();
         let avg_for_version = |v: u32| {
@@ -1768,8 +1806,14 @@ mod tests {
         };
         let avg_v1 = avg_for_version(1);
         let avg_v2 = avg_for_version(2);
-        assert!(avg_v1 > 0.9, "v1's average score was {avg_v1}, expected near 1.0");
-        assert!(avg_v2 < 0.1, "v2's average score was {avg_v2}, expected near 0.0");
+        assert!(
+            avg_v1 > 0.9,
+            "v1's average score was {avg_v1}, expected near 1.0"
+        );
+        assert!(
+            avg_v2 < 0.1,
+            "v2's average score was {avg_v2}, expected near 0.0"
+        );
         assert!(
             (avg_v1 - avg_v2).abs() > 0.5,
             "prompt version swap must measurably move the average score: v1={avg_v1} v2={avg_v2}"
@@ -1787,7 +1831,10 @@ mod tests {
     /// key) only exists under `#[cfg(test)]`, so it's exercised directly
     /// in `capability_registry.rs`'s tests instead; this test only proves
     /// the wiring (right condition, right slug), not `covers()` itself.
-    #[cfg(all(feature = "llm", any(feature = "embeddings", feature = "embeddings-api")))]
+    #[cfg(all(
+        feature = "llm",
+        any(feature = "embeddings", feature = "embeddings-api")
+    ))]
     #[tokio::test]
     async fn reactive_rag_cdc_combination_is_denied_without_a_covering_license() {
         let checkpoints = CheckpointStore::connect("sqlite::memory:").await.unwrap();
@@ -1795,7 +1842,8 @@ mod tests {
             crate::pipeline_schema_store::PipelineSchemaStore::connect("sqlite::memory:")
                 .await
                 .unwrap();
-        let alerts = crate::alerts::AlertNotifier::new(crate::alerts::AlertConfig::default(), false);
+        let alerts =
+            crate::alerts::AlertNotifier::new(crate::alerts::AlertConfig::default(), false);
 
         let spec: PipelineSpec = serde_json::from_value(serde_json::json!({
             "pipeline_id": "reactive-rag-gate-test",
@@ -1878,12 +1926,16 @@ mod tests {
             crate::pipeline_schema_store::PipelineSchemaStore::connect("sqlite::memory:")
                 .await
                 .unwrap();
-        let alerts = crate::alerts::AlertNotifier::new(crate::alerts::AlertConfig::default(), false);
+        let alerts =
+            crate::alerts::AlertNotifier::new(crate::alerts::AlertConfig::default(), false);
         let prompt_templates =
             crate::prompt_template_store::PromptTemplateStore::connect("sqlite::memory:")
                 .await
                 .unwrap();
-        prompt_templates.create("linear-eval-prompt", "Q: {question}", "alice").await.unwrap();
+        prompt_templates
+            .create("linear-eval-prompt", "Q: {question}", "alice")
+            .await
+            .unwrap();
         let llm_eval_store =
             crate::llm_eval_result_store::LlmEvalResultStore::connect("sqlite::memory:")
                 .await
@@ -1925,8 +1977,15 @@ mod tests {
         )
         .await;
 
-        let results = llm_eval_store.list_for_pipeline("linear-eval-test").await.unwrap();
-        assert_eq!(results.len(), 1, "eval must run even on the non-transform path");
+        let results = llm_eval_store
+            .list_for_pipeline("linear-eval-test")
+            .await
+            .unwrap();
+        assert_eq!(
+            results.len(),
+            1,
+            "eval must run even on the non-transform path"
+        );
         assert_eq!(results[0].eval_name, "golden-1");
         assert!(results[0].passed, "score was {}", results[0].score);
     }
@@ -1955,12 +2014,16 @@ mod tests {
             crate::pipeline_schema_store::PipelineSchemaStore::connect("sqlite::memory:")
                 .await
                 .unwrap();
-        let alerts = crate::alerts::AlertNotifier::new(crate::alerts::AlertConfig::default(), false);
+        let alerts =
+            crate::alerts::AlertNotifier::new(crate::alerts::AlertConfig::default(), false);
         let prompt_templates =
             crate::prompt_template_store::PromptTemplateStore::connect("sqlite::memory:")
                 .await
                 .unwrap();
-        prompt_templates.create("cdc-eval-prompt", "Q: {question}", "alice").await.unwrap();
+        prompt_templates
+            .create("cdc-eval-prompt", "Q: {question}", "alice")
+            .await
+            .unwrap();
         let llm_eval_store =
             crate::llm_eval_result_store::LlmEvalResultStore::connect("sqlite::memory:")
                 .await
@@ -2010,8 +2073,15 @@ mod tests {
         )
         .await;
 
-        let results = llm_eval_store.list_for_pipeline("cdc-eval-test").await.unwrap();
-        assert_eq!(results.len(), 1, "eval must run on the streaming CDC path too");
+        let results = llm_eval_store
+            .list_for_pipeline("cdc-eval-test")
+            .await
+            .unwrap();
+        assert_eq!(
+            results.len(),
+            1,
+            "eval must run on the streaming CDC path too"
+        );
         assert_eq!(results[0].eval_name, "golden-1");
         assert!(results[0].passed, "score was {}", results[0].score);
     }

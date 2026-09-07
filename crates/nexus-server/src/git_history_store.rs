@@ -105,8 +105,10 @@ impl GitHistoryStore {
         let content = content.to_vec();
         let message = message.to_string();
         let author = author.to_string();
-        tokio::task::spawn_blocking(move || this.commit_blob_sync(&path, &content, &message, &author))
-            .await?
+        tokio::task::spawn_blocking(move || {
+            this.commit_blob_sync(&path, &content, &message, &author)
+        })
+        .await?
     }
 
     fn commit_blob_sync(
@@ -200,7 +202,11 @@ impl GitHistoryStore {
     /// configured *and* licensed for the `git-history-github-sync`
     /// capability — this method itself has no opinion on licensing, it
     /// just pushes.
-    pub async fn push_to_remote(&self, remote_url: &str, token: &str) -> Result<(), GitHistoryError> {
+    pub async fn push_to_remote(
+        &self,
+        remote_url: &str,
+        token: &str,
+    ) -> Result<(), GitHistoryError> {
         let this = self.clone();
         let remote_url = remote_url.to_string();
         let token = token.to_string();
@@ -217,7 +223,10 @@ impl GitHistoryStore {
         });
         let mut push_options = git2::PushOptions::new();
         push_options.remote_callbacks(callbacks);
-        remote.push(&[format!("{BRANCH_REF}:{BRANCH_REF}")], Some(&mut push_options))?;
+        remote.push(
+            &[format!("{BRANCH_REF}:{BRANCH_REF}")],
+            Some(&mut push_options),
+        )?;
         Ok(())
     }
 
@@ -292,7 +301,13 @@ fn insert_blob_at_path(
             .and_then(|t| t.get_name(head))
             .filter(|e| e.kind() == Some(git2::ObjectType::Tree))
             .and_then(|e| repo.find_tree(e.id()).ok());
-        let new_subtree_oid = build(repo, existing_subtree.as_ref(), rest, file_name, content_oid)?;
+        let new_subtree_oid = build(
+            repo,
+            existing_subtree.as_ref(),
+            rest,
+            file_name,
+            content_oid,
+        )?;
         builder.insert(head, new_subtree_oid, git2::FileMode::Tree.into())?;
         builder.write()
     }
@@ -375,15 +390,26 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(store.history_for("pipelines/p1.json").await.unwrap().len(), 2);
-        assert_eq!(store.history_for("pipelines/p2.json").await.unwrap().len(), 1);
+        assert_eq!(
+            store.history_for("pipelines/p1.json").await.unwrap().len(),
+            2
+        );
+        assert_eq!(
+            store.history_for("pipelines/p2.json").await.unwrap().len(),
+            1
+        );
     }
 
     #[tokio::test]
     async fn unrelated_prefixes_coexist_in_the_same_tree() {
         let (store, _dir) = store();
         store
-            .commit_blob("pipelines/p1.json", b"pipeline content", "create p1", "alice")
+            .commit_blob(
+                "pipelines/p1.json",
+                b"pipeline content",
+                "create p1",
+                "alice",
+            )
             .await
             .unwrap();
         store
@@ -397,21 +423,23 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            store.blob_at(
-                &store.history_for("pipelines/p1.json").await.unwrap()[0].commit,
-                "pipelines/p1.json"
-            )
-            .await
-            .unwrap(),
+            store
+                .blob_at(
+                    &store.history_for("pipelines/p1.json").await.unwrap()[0].commit,
+                    "pipelines/p1.json"
+                )
+                .await
+                .unwrap(),
             b"pipeline content"
         );
         assert_eq!(
-            store.blob_at(
-                &store.history_for("prompts/summarize/v1.txt").await.unwrap()[0].commit,
-                "prompts/summarize/v1.txt"
-            )
-            .await
-            .unwrap(),
+            store
+                .blob_at(
+                    &store.history_for("prompts/summarize/v1.txt").await.unwrap()[0].commit,
+                    "prompts/summarize/v1.txt"
+                )
+                .await
+                .unwrap(),
             b"prompt content"
         );
     }
@@ -434,7 +462,9 @@ mod tests {
     #[tokio::test]
     async fn blob_at_unknown_commit_errors() {
         let (store, _dir) = store();
-        let err = store.blob_at("0".repeat(40).as_str(), "pipelines/p1.json").await;
+        let err = store
+            .blob_at("0".repeat(40).as_str(), "pipelines/p1.json")
+            .await;
         assert!(matches!(err, Err(GitHistoryError::CommitNotFound(_))));
     }
 
@@ -454,7 +484,11 @@ mod tests {
         }
         let reopened = GitHistoryStore::open(&repo_path).unwrap();
         assert_eq!(
-            reopened.history_for("pipelines/p1.json").await.unwrap().len(),
+            reopened
+                .history_for("pipelines/p1.json")
+                .await
+                .unwrap()
+                .len(),
             1
         );
     }

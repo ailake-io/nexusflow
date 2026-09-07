@@ -19,4 +19,10 @@ useDefault = true
 description = "license.rs test_support::TEST_PRIVATE_KEY_PEM — documented non-secret test fixture"
 regexes = [
   '''MC4CAQAwBQYDK2VwBCIEIPByldYeti11Ln8Z2hkQXRrST\+PoTsO/sycPsIAI24gm''',
+  # anthropic_client.rs's own unauthorized-response test — `api_key_env`
+  # is the *name* of an env var the client reads a real key from at
+  # runtime, never a literal key value. "generic-api-key" only fires
+  # because this test string happens to look like an assignment (`...KEY_2"
+  # .to_string()`); nothing here is secret.
+  '''NEXUS_TEST_ANTHROPIC_KEY_2''',
 ]

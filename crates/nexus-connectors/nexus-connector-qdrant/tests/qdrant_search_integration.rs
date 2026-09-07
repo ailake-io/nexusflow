@@ -4,7 +4,9 @@
 
 use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
-use nexus_ai::embedding::{append_embedding_column, EmbeddingModel, EmbeddingModelConfig, ModelConfig};
+use nexus_ai::embedding::{
+    append_embedding_column, EmbeddingModel, EmbeddingModelConfig, ModelConfig,
+};
 use nexus_connector_qdrant::{QdrantConnectorConfig, QdrantSearchClient, QdrantSink};
 use nexus_core::Sink;
 use qdrant_client::qdrant::{CreateCollectionBuilder, Distance, VectorParamsBuilder};
@@ -29,7 +31,9 @@ async fn search_returns_the_most_similar_point_first() {
         .expect("qdrant grpc port");
     let url = format!("http://127.0.0.1:{grpc_port}");
 
-    let setup_client = Qdrant::from_url(&url).build().expect("qdrant client builds");
+    let setup_client = Qdrant::from_url(&url)
+        .build()
+        .expect("qdrant client builds");
     setup_client
         .create_collection(
             CreateCollectionBuilder::new("docs")

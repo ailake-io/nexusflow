@@ -106,15 +106,23 @@ pub async fn run_eval_cases(
             .collect();
         let prompt = build_prompt(template, &values);
         let response = match backend {
-            LlmBackend::Api(client) => client.call(&prompt, spec.max_tokens, spec.temperature).await,
+            LlmBackend::Api(client) => {
+                client
+                    .call(&prompt, spec.max_tokens, spec.temperature)
+                    .await
+            }
             LlmBackend::Anthropic(client) => {
-                client.call(&prompt, spec.max_tokens, spec.temperature).await
+                client
+                    .call(&prompt, spec.max_tokens, spec.temperature)
+                    .await
             }
         };
         let outcome = match response {
             Ok(resp) => {
                 let score = match spec.eval_scoring {
-                    EvalScoringMode::TokenSimilarity => score_answer(&case.expected_answer, &resp.text),
+                    EvalScoringMode::TokenSimilarity => {
+                        score_answer(&case.expected_answer, &resp.text)
+                    }
                     EvalScoringMode::LlmJudge => {
                         judge_score(&case.expected_answer, &resp.text, backend, spec.max_tokens)
                             .await
@@ -267,9 +275,15 @@ mod tests {
             .await;
 
         let mut good_inputs = std::collections::BTreeMap::new();
-        good_inputs.insert("question".to_string(), "what is the capital of france?".to_string());
+        good_inputs.insert(
+            "question".to_string(),
+            "what is the capital of france?".to_string(),
+        );
         let mut bad_inputs = std::collections::BTreeMap::new();
-        bad_inputs.insert("question".to_string(), "what is the capital of japan?".to_string());
+        bad_inputs.insert(
+            "question".to_string(),
+            "what is the capital of japan?".to_string(),
+        );
 
         let spec = spec_with_eval(
             server.uri(),
@@ -291,7 +305,10 @@ mod tests {
         let outcomes = run_eval_cases(&spec, "Answer: {question}", &backend).await;
         assert_eq!(outcomes.len(), 2);
 
-        let good = outcomes.iter().find(|o| o.eval_name == "good-case").unwrap();
+        let good = outcomes
+            .iter()
+            .find(|o| o.eval_name == "good-case")
+            .unwrap();
         assert!(good.passed, "score was {}", good.score);
         assert_eq!(good.score, 1.0);
 
@@ -329,7 +346,10 @@ mod tests {
             .await;
 
         let mut inputs = std::collections::BTreeMap::new();
-        inputs.insert("question".to_string(), "what is the capital of france?".to_string());
+        inputs.insert(
+            "question".to_string(),
+            "what is the capital of france?".to_string(),
+        );
         let spec = spec_with_eval_scoring(
             server.uri(),
             vec![LlmEvalCase {
@@ -374,7 +394,10 @@ mod tests {
             .await;
 
         let mut inputs = std::collections::BTreeMap::new();
-        inputs.insert("question".to_string(), "what is the capital of france?".to_string());
+        inputs.insert(
+            "question".to_string(),
+            "what is the capital of france?".to_string(),
+        );
         let spec = spec_with_eval_scoring(
             server.uri(),
             vec![LlmEvalCase {

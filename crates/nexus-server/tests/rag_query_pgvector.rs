@@ -1,4 +1,8 @@
-#![cfg(all(feature = "llm", any(feature = "embeddings", feature = "embeddings-api"), feature = "pgvector"))]
+#![cfg(all(
+    feature = "llm",
+    any(feature = "embeddings", feature = "embeddings-api"),
+    feature = "pgvector"
+))]
 
 //! `POST /rag/query` against a `pgvector` sink, end to end through the real
 //! HTTP API (`build_app`) — the first vector store other than LanceDB
@@ -37,7 +41,9 @@ async fn login(app: Router, username: &str, password: &str) -> String {
         .await
         .unwrap();
     let status = response.status();
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     assert_eq!(
         status,
         StatusCode::OK,
@@ -62,7 +68,9 @@ async fn post_json(app: Router, uri: &str, token: &str, body: &Value) -> (Status
         .await
         .unwrap();
     let status = response.status();
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let body: Value = serde_json::from_slice(&bytes).unwrap_or_else(|_| {
         panic!(
             "POST {uri} response body wasn't JSON (status {status}): {}",
@@ -116,11 +124,16 @@ async fn rag_query_answers_using_a_pgvector_sink() {
         .start()
         .await
         .expect("pgvector postgres starts");
-    let host_port = postgres.get_host_port_ipv4(5432).await.expect("postgres host port");
+    let host_port = postgres
+        .get_host_port_ipv4(5432)
+        .await
+        .expect("postgres host port");
     let uri = format!("host=127.0.0.1 port={host_port} user=nexus password=nexus dbname=nexus");
 
     let pg_uri = format!("postgres://nexus:nexus@127.0.0.1:{host_port}/nexus");
-    let pg_pool = sqlx::PgPool::connect(&pg_uri).await.expect("connects to postgres");
+    let pg_pool = sqlx::PgPool::connect(&pg_uri)
+        .await
+        .expect("connects to postgres");
     sqlx::raw_sql(
         "CREATE EXTENSION IF NOT EXISTS vector; \
          CREATE TABLE docs (id BIGINT PRIMARY KEY, chunk TEXT, embedding VECTOR(384)); \
@@ -142,12 +155,16 @@ async fn rag_query_answers_using_a_pgvector_sink() {
         .mount(&llm_server)
         .await;
 
-    let checkpoint_db_path = std::env::temp_dir()
-        .join(format!("nexus_rag_pgvector_test_checkpoints_{}.db", std::process::id()));
+    let checkpoint_db_path = std::env::temp_dir().join(format!(
+        "nexus_rag_pgvector_test_checkpoints_{}.db",
+        std::process::id()
+    ));
     let checkpoint_db_url = format!("sqlite://{}", checkpoint_db_path.display());
     let _ = std::fs::remove_file(&checkpoint_db_path);
 
-    let app = build_app(&test_server_config(checkpoint_db_url)).await.expect("app builds");
+    let app = build_app(&test_server_config(checkpoint_db_url))
+        .await
+        .expect("app builds");
     let token = login(app.clone(), "admin", "test-password").await;
 
     let (status, body) = post_json(

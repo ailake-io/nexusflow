@@ -39,10 +39,9 @@ impl ChromaSearchClient {
             request = request.header("Authorization", auth);
         }
         let response = with_timeout(cfg.timeout_seconds, "chroma get_collection", async {
-            request
-                .send()
-                .await
-                .map_err(|e| NexusError::Connector(format!("chroma get_collection request failed: {e}")))
+            request.send().await.map_err(|e| {
+                NexusError::Connector(format!("chroma get_collection request failed: {e}"))
+            })
         })
         .await?;
         if !response.status().is_success() {
@@ -116,7 +115,10 @@ impl ChromaSearchClient {
         // Every field is nested one level (one array per query embedding —
         // there's exactly one here) — `[0]` unwraps that outer layer.
         let ids = payload["ids"][0].as_array().cloned().unwrap_or_default();
-        let metadatas = payload["metadatas"][0].as_array().cloned().unwrap_or_default();
+        let metadatas = payload["metadatas"][0]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
 
         let mut hits = Vec::with_capacity(ids.len());
         for (id, metadata) in ids.iter().zip(metadatas.iter()) {

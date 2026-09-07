@@ -73,15 +73,13 @@ impl GitRemoteConfigStore {
         cipher: &SecretCipher,
     ) -> Result<(), sqlx::Error> {
         let token_ciphertext = cipher.encrypt(token);
-        let sql = self.q(
-            r#"
+        let sql = self.q(r#"
             INSERT INTO git_remote_config (id, remote_url, token_ciphertext) VALUES (1, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 remote_url = excluded.remote_url,
                 token_ciphertext = excluded.token_ciphertext,
                 updated_at = excluded.updated_at
-            "#,
-        );
+            "#);
         match &self.pool {
             MetadataPool::Sqlite(p) => {
                 sqlx::query(sqlx::AssertSqlSafe(sql))
@@ -150,16 +148,24 @@ mod tests {
 
     #[tokio::test]
     async fn no_remote_configured_means_none() {
-        let store = GitRemoteConfigStore::connect("sqlite::memory:").await.unwrap();
+        let store = GitRemoteConfigStore::connect("sqlite::memory:")
+            .await
+            .unwrap();
         assert!(store.get(&cipher()).await.unwrap().is_none());
     }
 
     #[tokio::test]
     async fn set_then_get_round_trips_and_the_token_is_encrypted_at_rest() {
-        let store = GitRemoteConfigStore::connect("sqlite::memory:").await.unwrap();
+        let store = GitRemoteConfigStore::connect("sqlite::memory:")
+            .await
+            .unwrap();
         let cipher = cipher();
         store
-            .set("https://github.com/acme/pipelines.git", "ghp_secrettoken", &cipher)
+            .set(
+                "https://github.com/acme/pipelines.git",
+                "ghp_secrettoken",
+                &cipher,
+            )
             .await
             .unwrap();
 
@@ -180,7 +186,9 @@ mod tests {
 
     #[tokio::test]
     async fn set_twice_replaces_the_single_row_not_appends() {
-        let store = GitRemoteConfigStore::connect("sqlite::memory:").await.unwrap();
+        let store = GitRemoteConfigStore::connect("sqlite::memory:")
+            .await
+            .unwrap();
         let cipher = cipher();
         store
             .set("https://github.com/acme/old.git", "token-1", &cipher)
@@ -198,7 +206,9 @@ mod tests {
 
     #[tokio::test]
     async fn delete_clears_the_config() {
-        let store = GitRemoteConfigStore::connect("sqlite::memory:").await.unwrap();
+        let store = GitRemoteConfigStore::connect("sqlite::memory:")
+            .await
+            .unwrap();
         let cipher = cipher();
         store
             .set("https://github.com/acme/pipelines.git", "token", &cipher)

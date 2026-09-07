@@ -75,8 +75,9 @@ async fn rag_query_handler(
         .llm
         .as_ref()
         .ok_or_else(|| ApiError::bad_request("pipeline has no llm config, required for RAG"))?;
-    const SUPPORTED_VECTOR_SINKS: [&str; 6] =
-        ["lancedb", "qdrant", "milvus", "pgvector", "pinecone", "chromadb"];
+    const SUPPORTED_VECTOR_SINKS: [&str; 6] = [
+        "lancedb", "qdrant", "milvus", "pgvector", "pinecone", "chromadb",
+    ];
     let sink_node = spec
         .sinks
         .iter()
@@ -109,28 +110,58 @@ async fn rag_query_handler(
     let (context_keys, context_parts): (Vec<String>, Vec<String>) =
         match sink_node.connector.as_str() {
             "lancedb" => {
-                search_lancedb(&sink_node.config, &embedding_spec.source_column, query_vector, top_k)
-                    .await?
+                search_lancedb(
+                    &sink_node.config,
+                    &embedding_spec.source_column,
+                    query_vector,
+                    top_k,
+                )
+                .await?
             }
             "qdrant" => {
-                search_qdrant(&sink_node.config, &embedding_spec.source_column, query_vector, top_k)
-                    .await?
+                search_qdrant(
+                    &sink_node.config,
+                    &embedding_spec.source_column,
+                    query_vector,
+                    top_k,
+                )
+                .await?
             }
             "milvus" => {
-                search_milvus(&sink_node.config, &embedding_spec.source_column, query_vector, top_k)
-                    .await?
+                search_milvus(
+                    &sink_node.config,
+                    &embedding_spec.source_column,
+                    query_vector,
+                    top_k,
+                )
+                .await?
             }
             "pgvector" => {
-                search_pgvector(&sink_node.config, &embedding_spec.source_column, query_vector, top_k)
-                    .await?
+                search_pgvector(
+                    &sink_node.config,
+                    &embedding_spec.source_column,
+                    query_vector,
+                    top_k,
+                )
+                .await?
             }
             "pinecone" => {
-                search_pinecone(&sink_node.config, &embedding_spec.source_column, query_vector, top_k)
-                    .await?
+                search_pinecone(
+                    &sink_node.config,
+                    &embedding_spec.source_column,
+                    query_vector,
+                    top_k,
+                )
+                .await?
             }
             "chromadb" => {
-                search_chromadb(&sink_node.config, &embedding_spec.source_column, query_vector, top_k)
-                    .await?
+                search_chromadb(
+                    &sink_node.config,
+                    &embedding_spec.source_column,
+                    query_vector,
+                    top_k,
+                )
+                .await?
             }
             other => unreachable!("SUPPORTED_VECTOR_SINKS filtered to a known name, got {other:?}"),
         };
@@ -227,8 +258,9 @@ async fn search_lancedb(
 ) -> Result<(Vec<String>, Vec<String>), ApiError> {
     use arrow_cast::display::array_value_to_string;
 
-    let cfg: nexus_connector_lancedb::LanceDbConnectorConfig = serde_json::from_value(sink_config.clone())
-        .map_err(|e| ApiError::internal(format!("invalid lancedb sink config: {e}")))?;
+    let cfg: nexus_connector_lancedb::LanceDbConnectorConfig =
+        serde_json::from_value(sink_config.clone())
+            .map_err(|e| ApiError::internal(format!("invalid lancedb sink config: {e}")))?;
     let client = nexus_connector_lancedb::LanceDbSearchClient::connect(&cfg)
         .await
         .map_err(ApiError::internal)?;
@@ -276,9 +308,11 @@ async fn search_qdrant(
     query_vector: Vec<f32>,
     top_k: usize,
 ) -> Result<(Vec<String>, Vec<String>), ApiError> {
-    let cfg: nexus_connector_qdrant::QdrantConnectorConfig = serde_json::from_value(sink_config.clone())
-        .map_err(|e| ApiError::internal(format!("invalid qdrant sink config: {e}")))?;
-    let client = nexus_connector_qdrant::QdrantSearchClient::connect(&cfg).map_err(ApiError::internal)?;
+    let cfg: nexus_connector_qdrant::QdrantConnectorConfig =
+        serde_json::from_value(sink_config.clone())
+            .map_err(|e| ApiError::internal(format!("invalid qdrant sink config: {e}")))?;
+    let client =
+        nexus_connector_qdrant::QdrantSearchClient::connect(&cfg).map_err(ApiError::internal)?;
     Ok(client
         .search(query_vector, source_column, top_k)
         .await
@@ -305,8 +339,9 @@ async fn search_milvus(
     query_vector: Vec<f32>,
     top_k: usize,
 ) -> Result<(Vec<String>, Vec<String>), ApiError> {
-    let cfg: nexus_connector_milvus::MilvusConnectorConfig = serde_json::from_value(sink_config.clone())
-        .map_err(|e| ApiError::internal(format!("invalid milvus sink config: {e}")))?;
+    let cfg: nexus_connector_milvus::MilvusConnectorConfig =
+        serde_json::from_value(sink_config.clone())
+            .map_err(|e| ApiError::internal(format!("invalid milvus sink config: {e}")))?;
     let client = nexus_connector_milvus::MilvusSearchClient::connect(&cfg)
         .await
         .map_err(ApiError::internal)?;
@@ -336,13 +371,19 @@ async fn search_pgvector(
     query_vector: Vec<f32>,
     top_k: usize,
 ) -> Result<(Vec<String>, Vec<String>), ApiError> {
-    let cfg: nexus_connector_pgvector::PgVectorConnectorConfig = serde_json::from_value(sink_config.clone())
-        .map_err(|e| ApiError::internal(format!("invalid pgvector sink config: {e}")))?;
+    let cfg: nexus_connector_pgvector::PgVectorConnectorConfig =
+        serde_json::from_value(sink_config.clone())
+            .map_err(|e| ApiError::internal(format!("invalid pgvector sink config: {e}")))?;
     let client = nexus_connector_pgvector::PgVectorSearchClient::connect(&cfg)
         .await
         .map_err(ApiError::internal)?;
     Ok(client
-        .search(query_vector, &cfg.embedding_column, source_column, top_k as i64)
+        .search(
+            query_vector,
+            &cfg.embedding_column,
+            source_column,
+            top_k as i64,
+        )
         .await
         .map_err(ApiError::internal)?
         .into_iter()
@@ -367,9 +408,11 @@ async fn search_pinecone(
     query_vector: Vec<f32>,
     top_k: usize,
 ) -> Result<(Vec<String>, Vec<String>), ApiError> {
-    let cfg: nexus_connector_pinecone::PineconeConnectorConfig = serde_json::from_value(sink_config.clone())
-        .map_err(|e| ApiError::internal(format!("invalid pinecone sink config: {e}")))?;
-    let client = nexus_connector_pinecone::PineconeSearchClient::connect(&cfg).map_err(ApiError::internal)?;
+    let cfg: nexus_connector_pinecone::PineconeConnectorConfig =
+        serde_json::from_value(sink_config.clone())
+            .map_err(|e| ApiError::internal(format!("invalid pinecone sink config: {e}")))?;
+    let client = nexus_connector_pinecone::PineconeSearchClient::connect(&cfg)
+        .map_err(ApiError::internal)?;
     Ok(client
         .search(query_vector, source_column, top_k)
         .await
@@ -396,8 +439,9 @@ async fn search_chromadb(
     query_vector: Vec<f32>,
     top_k: usize,
 ) -> Result<(Vec<String>, Vec<String>), ApiError> {
-    let cfg: nexus_connector_chromadb::ChromaConnectorConfig = serde_json::from_value(sink_config.clone())
-        .map_err(|e| ApiError::internal(format!("invalid chromadb sink config: {e}")))?;
+    let cfg: nexus_connector_chromadb::ChromaConnectorConfig =
+        serde_json::from_value(sink_config.clone())
+            .map_err(|e| ApiError::internal(format!("invalid chromadb sink config: {e}")))?;
     let client = nexus_connector_chromadb::ChromaSearchClient::connect(&cfg)
         .await
         .map_err(ApiError::internal)?;

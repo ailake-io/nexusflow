@@ -4,7 +4,9 @@
 
 use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
-use nexus_ai::embedding::{append_embedding_column, EmbeddingModel, EmbeddingModelConfig, ModelConfig};
+use nexus_ai::embedding::{
+    append_embedding_column, EmbeddingModel, EmbeddingModelConfig, ModelConfig,
+};
 use nexus_connector_chromadb::{ChromaConnectorConfig, ChromaSearchClient, ChromaSink};
 use nexus_core::Sink;
 use std::sync::Arc;

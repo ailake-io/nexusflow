@@ -54,8 +54,14 @@ async fn search_extracts_id_and_source_text_from_matches() {
         .expect("search succeeds");
 
     assert_eq!(hits.len(), 2);
-    assert_eq!(hits[0], ("1".to_string(), "nexusflow moves data fast".to_string()));
-    assert_eq!(hits[1], ("2".to_string(), "the weather is sunny".to_string()));
+    assert_eq!(
+        hits[0],
+        ("1".to_string(), "nexusflow moves data fast".to_string())
+    );
+    assert_eq!(
+        hits[1],
+        ("2".to_string(), "the weather is sunny".to_string())
+    );
 }
 
 #[tokio::test]
