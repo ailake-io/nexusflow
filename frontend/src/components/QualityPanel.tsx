@@ -15,9 +15,11 @@ import { useI18n } from '@/lib/i18n'
 import { usePipelines } from '@/hooks/usePipelines'
 import {
   getDbtTestResults,
+  getLlmEvalResults,
   getQualityCheckResults,
   listRuns,
   type DbtTestOutcome,
+  type LlmEvalOutcome,
   type QualityCheckOutcome,
   type RunRecord,
 } from '@/lib/api'
@@ -80,6 +82,27 @@ function groupByCheck(results: QualityCheckOutcome[]): QualityCheckGroup[] {
   })
 }
 
+/** Same shape again, one row per golden `eval_name` — a case's history
+ * spans prompt versions, which is the whole point (Marco L7): the Quality
+ * tab is where a prompt-version regression becomes visible. */
+interface LlmEvalGroup {
+  evalName: string
+  history: LlmEvalOutcome[]
+}
+
+function groupByEvalName(results: LlmEvalOutcome[]): LlmEvalGroup[] {
+  const order: string[] = []
+  const byName = new Map<string, LlmEvalOutcome[]>()
+  for (const r of results) {
+    if (!byName.has(r.eval_name)) {
+      byName.set(r.eval_name, [])
+      order.push(r.eval_name)
+    }
+    byName.get(r.eval_name)!.push(r)
+  }
+  return order.map((evalName) => ({ evalName, history: byName.get(evalName)! }))
+}
+
 /**
  * "Quality" tab: row-count trend + dbt test history for one saved pipeline
  * at a time. Both sources already exist — `listRuns` (rows written, from
@@ -96,6 +119,7 @@ export function QualityPanel() {
   const [runs, setRuns] = useState<RunRecord[]>([])
   const [testResults, setTestResults] = useState<DbtTestOutcome[]>([])
   const [qualityResults, setQualityResults] = useState<QualityCheckOutcome[]>([])
+  const [llmEvalResults, setLlmEvalResults] = useState<LlmEvalOutcome[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -113,12 +137,14 @@ export function QualityPanel() {
       listRuns(token, selectedId),
       getDbtTestResults(token, selectedId),
       getQualityCheckResults(token, selectedId),
+      getLlmEvalResults(token, selectedId),
     ])
-      .then(([runsResult, testsResult, qualityResult]) => {
+      .then(([runsResult, testsResult, qualityResult, llmEvalResult]) => {
         if (cancelled) return
         setRuns([...runsResult].reverse()) // API returns newest-first; chart wants oldest-first
         setTestResults(testsResult)
         setQualityResults(qualityResult)
+        setLlmEvalResults(llmEvalResult)
         setError(null)
       })
       .catch((err: unknown) => {
@@ -145,6 +171,7 @@ export function QualityPanel() {
 
   const testGroups = useMemo(() => groupByTest(testResults), [testResults])
   const qualityGroups = useMemo(() => groupByCheck(qualityResults), [qualityResults])
+  const llmEvalGroups = useMemo(() => groupByEvalName(llmEvalResults), [llmEvalResults])
 
   return (
     <div className="h-full overflow-auto p-6">
@@ -297,6 +324,50 @@ export function QualityPanel() {
                         </div>
                       </div>
                       {latest.status !== 'pass' && latest.message && (
+                        <p className="mt-2 text-xs text-red-400">
+                          {t('quality.latestMessage')}: {latest.message}
+                        </p>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-lg border border-white/10 bg-card p-4">
+            <div className="mb-3 text-xs font-medium text-muted-foreground">
+              {t('quality.llmEval')}
+            </div>
+            {llmEvalGroups.length === 0 ? (
+              <div className="flex h-16 items-center text-xs text-muted-foreground">
+                {t('quality.noLlmEval')}
+              </div>
+            ) : (
+              <div className="flex flex-col gap-3">
+                {llmEvalGroups.map((group) => {
+                  const latest = group.history[group.history.length - 1]
+                  return (
+                    <div
+                      key={group.evalName}
+                      className="rounded-md border border-white/5 bg-white/[0.02] p-3"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-mono text-xs text-foreground">
+                          {group.evalName} (v{latest.prompt_version})
+                        </span>
+                        <div className="flex items-center gap-1.5">
+                          {group.history.map((r, i) => (
+                            <StatusBadge
+                              key={i}
+                              variant={r.passed ? 'success' : 'failed'}
+                            >
+                              {r.score.toFixed(2)}
+                            </StatusBadge>
+                          ))}
+                        </div>
+                      </div>
+                      {!latest.passed && latest.message && (
                         <p className="mt-2 text-xs text-red-400">
                           {t('quality.latestMessage')}: {latest.message}
                         </p>

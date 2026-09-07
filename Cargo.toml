@@ -33,6 +33,9 @@ embed-ui = ["nexus-server/embed-ui"]
 embeddings = ["nexus-server/embeddings"]
 # Embedding pipeline stage backed by an external HTTP API.
 embeddings-api = ["nexus-server/embeddings-api"]
+# Git-backed version history for Canvas pipelines/prompts (see
+# nexus-server/Cargo.toml's own doc comment on this feature).
+version-history = ["nexus-server/version-history"]
 # Forwards nexus-server's per-connector features (see that crate's own
 # Cargo.toml for why each one exists) so `cargo build -p nexusflow
 # --features X` reaches the crate that actually declares X.

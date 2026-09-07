@@ -21,8 +21,9 @@ O sistema conta com uma interface gráfica visual baseada em nós (*Node-based C
 * **Conectividade Fast-Path (ADBC):** `adbc_core`, `adbc_driver_manager` (Postgres/SQLite hoje; Arrow Flight SQL é aspiracional, nenhum conector implementado ainda)
 * **Conectividade Híbrida (Fallback/Bridging):** `odbc-api`, `mongodb`, `rdkafka`, `reqwest`, `redis`, `async-nats`, `lapin` (RabbitMQ)
 * **Conectividade Data Lake:** `deltalake`, `iceberg-rust`, `parquet`
-* **Conectividade Vetorial (AI):** SDKs (`qdrant-client`, `milvus-sdk-rust`, `lancedb`, `pgvector`, Pinecone)
+* **Conectividade Vetorial (AI):** SDKs (`qdrant-client`, `milvus-sdk-rust`, `lancedb`, `pgvector`, Pinecone) — todos com capacidade de busca (não só escrita) desde o LLMOps (§4.5)
 * **Engine de Transformação & AI:** `datafusion` (SQL em memória), `ort` (ONNX Runtime via CPU/CUDA/Metal)
+* **LLMOps:** `reqwest` (chamadas OpenAI-compatible e Anthropic Messages API nativa, sem SDK de LLM dedicado)
 * **Async Runtime & Observabilidade:** `tokio` (com `mpsc`), `tracing`, `opentelemetry`
 * **API Server & Metadados:** `axum` (REST & WebSockets), `sqlx` (Postgres/SQLite), `jsonwebtoken`, `aes-gcm`
 
@@ -140,6 +141,14 @@ Módulo intermediário que converte colunas de texto em vetores float32 e anexa 
 * **Modo Padrão (Sem dbt):** Movimentação com transformação leve SQL em memória via DataFusion.
 * **Modo Padrão ELT (Com dbt Opcional):** Após a carga dos dados brutos no destino, o backend Rust invoca via subprocesso assíncrono o `dbt-core` (`dbt run/build`) para transformações no Data Warehouse.
 * **Modo ETL real (opcional, extensão do ELT):** Se `DbtConfig.output` estiver setado, o backend lê de volta o resultado transformado pelo dbt (do mesmo warehouse) e grava em `PipelineSpec.post_dbt_sinks` — `[Source] → [carga bruta] → [dbt transforma] → [lê de volta] → [Sink final]` num único `run`, sem precisar encadear um segundo pipeline manualmente. Ver `ARCHITECTURE.md §13`.
+
+### 4.5. LLMOps (Node LLM, RAG e Avaliação)
+Implementado por completo na branch `feature/llmops` (ainda não mergeada em `develop`) — plano marco a marco em `docs/LLMOPS_IMPLEMENTATION_PLAN.md`, detalhe arquitetural em `ARCHITECTURE.md §17`.
+* **Node `llm` (pipeline em lote):** 1 chamada por linha, backend `Api` (qualquer endpoint OpenAI-compatible — OpenAI, Ollama, Kimi/Moonshot etc.) ou `Anthropic` (Messages API nativa). Custo/tokens agregados por run, cache de resposta via Redis (chave por hash do prompt+params), prompt versionado (`PromptTemplateStore`, `POST/GET /prompts` — nunca sobrescreve, `PromptRef{name, version}`).
+* **RAG (`POST /rag/query`):** ad-hoc, fora do engine de batch — reusa `embedding`+`llm` de um pipeline salvo. Suporta os 6 destinos vetoriais que o NexusFlow já grava (LanceDB, Qdrant, Milvus, pgvector, Pinecone, ChromaDB) — cada um com capacidade de busca própria (`search.rs`), antes só existia escrita. Cada resposta gera um registro rastreável até a linha/chunk de origem (`GET /lineage/generation/{id}`).
+* **RAG reativo:** combinação `*-cdc` source + `embedding` sem node `transform` — uma mudança real no banco de origem vira vetor atualizado automaticamente, sem precisar de run manual/agendado.
+* **Avaliação sistemática:** golden dataset (`LlmNodeSpec.eval`) re-rodado a cada run, scoring por similaridade de token (padrão) ou LLM-como-juiz (`EvalScoringMode::LlmJudge`), resultado visível no `QualityPanel.tsx`.
+* **Empacotamento:** node `llm`/custo/cache/prompt/eval e o próprio `POST /rag/query` são OSS. Pagos: `GET /lineage/generation/{id}` e a combinação CDC+embedding do RAG reativo — únicas capacidades do NexusFlow gateadas por license que **não** são um conector plugável (o código já roda sempre no binário público; ver `ARCHITECTURE.md §17` pro porquê disso mudar como o slug é registrado).
 
 ---
 

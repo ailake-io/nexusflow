@@ -3,13 +3,15 @@
 > Plano de implementação técnica (marcos, arquivos, critério de pronto)
 > da parte de LLMOps deste levantamento: `docs/LLMOPS_IMPLEMENTATION_PLAN.md`.
 
-> **Status: levantamento/ideação (2026-09-05), nada implementado ainda.**
-> Este documento registra uma discussão exploratória sobre estender o
-> NexusFlow (hoje um framework de movimentação/transformação de dados) em
-> direção a MLOps (tracking/registry de modelo) e LLMOps (observabilidade de
-> chamadas LLM/RAG). Nenhum destes itens está no `ROADMAP.md` como fase
-> comprometida — isso acontece só quando/se o usuário decidir priorizar
-> algum item daqui.
+> **Status (2026-09-07):** os pilares de **LLMOps** descritos aqui foram
+> todos implementados — ver `docs/LLMOPS_IMPLEMENTATION_PLAN.md` (marcos
+> L1-L8 + 2 rodadas extra) e `ARCHITECTURE.md §17`, na branch
+> `feature/llmops` (ainda não mergeada em `develop`). Os pilares de
+> **MLOps** (tracking/registry de modelo) continuam só levantamento/
+> ideação — nada implementado, nenhum item comprometido no `ROADMAP.md`.
+> Este documento registra a discussão exploratória original sobre
+> estender o NexusFlow em direção às duas frentes; o conteúdo abaixo é
+> mantido como contexto histórico da decisão, não como status atual.
 
 ## Por que isso é barato de considerar
 
@@ -45,37 +47,41 @@ problema estrutural que "rodar um pipeline de dados" já resolve:
 Ordenado por esforço crescente (do mais barato, que só reaproveita infra
 existente, ao mais caro, que é domínio novo):
 
-### 1. Tracing de chamadas LLM — **mais barato**
+### 1. Tracing de chamadas LLM — **mais barato** — ✅ implementado (Marco L1)
 Node novo `llm` (irmão do node `embedding` já existente, mesmo backend
 `api` compatível com OpenAI/vLLM/Ollama que `nexus-ai` já tem). Cada
 chamada loga prompt/resposta/tokens/latência como linha estruturada via
 `RunLogger` — mesmo mecanismo do `ARCHITECTURE.md §15`, zero storage
 novo.
 
-### 2. Custo/tokens — quase de graça junto com o item 1
+### 2. Custo/tokens — quase de graça junto com o item 1 — ✅ implementado (Marco L2)
 Somar `tokens_used`/`cost_estimate` (tokens × preço por modelo,
 configurável) no mesmo frame de progresso WebSocket que já leva
 `hardware_stats`. Agregado no histórico de runs (`PipelineSummary`) do
 mesmo jeito que linhas/bytes já são.
 
-### 3. Cache semântico/exato de resposta
+### 3. Cache semântico/exato de resposta — ✅ implementado (Marco L3, modo exato — semântico fora de escopo)
 Cache por hash do prompt+params. O conector `redis` já existe no
 workspace (hoje só modo Streams) — um modo KV simples (`GET`/`SETEX`)
 seria extensão pequena, não conector novo.
 
-### 4. Versionamento de prompt
+### 4. Versionamento de prompt — ✅ implementado (Marco L4)
 Precisa de abstração nova: um "catálogo de prompt" (nome + versão +
 template + variáveis), registrado de forma parecida com o
 `ConnectorRegistry` (`nexus-core::registry`, macro `inventory`) — só que
 o catálogo aqui seria dados (tabela nova), não código Rust registrado em
 compile-time, já que prompt muda em runtime sem precisar de rebuild.
 
-### 5. Avaliação de RAG (recall@k, relevância de chunk)
+### 5. Avaliação de RAG (recall@k, relevância de chunk) — ❌ não implementado
+
+Distinto do item 6 abaixo: isso é medir a *busca* (recall@k contra
+ground truth), não a resposta final do LLM. O Marco L7 implementou o
+item 6 (golden dataset → score da resposta), não este.
 Reaproveita o pipeline de embedding + os 6 conectores vetoriais já
 implementados — roda um conjunto de queries conhecidas contra o vector
 store, compara contra ground truth. A lógica de scoring em si é nova.
 
-### 6. Avaliação sistemática (golden dataset, LLM-as-judge, regressão)
+### 6. Avaliação sistemática (golden dataset, LLM-as-judge, regressão) — ✅ implementado (Marco L7 + follow-up)
 Mesmo padrão de storage do item de teste dbt (`dbt_test_result_store.rs`)
 generalizado: teste = pergunta golden + resposta esperada + score
 (calculado por comparação direta ou delegando a outra chamada LLM como
@@ -83,12 +89,12 @@ generalizado: teste = pergunta golden + resposta esperada + score
 mesmo lugar que `runner.rs` já chama `column_lineage`/quality checks
 (ver o plano de linhagem/qualidade desta mesma sessão).
 
-### 7. Guardrails (PII, jailbreak, filtro de conteúdo) — **mais caro**
+### 7. Guardrails (PII, jailbreak, filtro de conteúdo) — **mais caro** — ❌ não implementado
 Node novo tipo "transform" entre chamadas LLM, delegando a um
 classificador (regra local ou outro modelo). Domínio genuinamente novo,
 nenhuma infra hoje cobre isso.
 
-### 8. Feedback loop humano (👍/👎 ligado a uma geração específica)
+### 8. Feedback loop humano (👍/👎 ligado a uma geração específica) — ❌ não implementado
 Endpoint novo (`POST /pipelines/{id}/runs/{run_id}/feedback` ou similar)
 + tabela nova, pra depois virar dataset de avaliação/fine-tune. Esforço
 médio — é CRUD simples, mas é uma capacidade que não existe em nenhuma
@@ -105,7 +111,7 @@ mas não sabem de onde o dado que virou contexto/RAG veio. O NexusFlow já
 de observabilidade pura consegue replicar sem virar também uma
 ferramenta de dados:
 
-### 1. Linhagem completa até a geração — o diferencial mais forte
+### 1. Linhagem completa até a geração — o diferencial mais forte — ✅ implementado (Marco L5)
 
 "Essa alucinação veio do chunk #47 do documento X, ingerido da tabela
 Postgres Y em 2026-09-01, com o modelo de embedding Z v3" — rastreando
@@ -122,7 +128,7 @@ específica → geração específica — isso é uma junção nova no grafo de
 linhagem (hoje o grafo liga pipeline→recurso e coluna→coluna, não
 linha→geração de LLM), não é "só adicionar um node".
 
-### 2. RAG reativo via CDC que já existe
+### 2. RAG reativo via CDC que já existe — ✅ implementado (Marco L6)
 
 A maioria dos sistemas RAG fica com índice desatualizado até alguém
 rodar um re-embed manual. O NexusFlow já tem CDC nativo (Postgres WAL,
@@ -208,17 +214,23 @@ Nem tudo faz sentido pro NexusFlow:
 Ordem de custo crescente, cada item reaproveitando o anterior:
 
 ```
-1. LLMOps #1 (tracing)         — reaproveita RunLogStore
-2. LLMOps #2 (custo/tokens)    — reaproveita o frame WebSocket de #1
-3. LLMOps #3 (cache)           — reaproveita o conector redis
-4. MLOps Tracking              — estende pipeline_runs (paralelo aos 3 acima)
-5. LLMOps #4 (prompt versioning)   — abstração nova, mas pequena
-6. LLMOps #6 (avaliação sistemática) — reaproveita o padrão de dbt test
-7. LLMOps #5 (avaliação de RAG)      — lógica de scoring nova
-8. MLOps Model Registry         — storage + API + UI novos
-9. LLMOps #8 (feedback humano)  — CRUD novo
-10. LLMOps #7 (guardrails)      — domínio novo, sem infra reaproveitável
+1. LLMOps #1 (tracing)         — reaproveita RunLogStore                  [x] Marco L1
+2. LLMOps #2 (custo/tokens)    — reaproveita o frame WebSocket de #1      [x] Marco L2
+3. LLMOps #3 (cache)           — reaproveita o conector redis            [x] Marco L3
+4. MLOps Tracking              — estende pipeline_runs (paralelo aos 3 acima) [ ]
+5. LLMOps #4 (prompt versioning)   — abstração nova, mas pequena         [x] Marco L4
+6. LLMOps #6 (avaliação sistemática) — reaproveita o padrão de dbt test  [x] Marco L7
+7. LLMOps #5 (avaliação de RAG)      — lógica de scoring nova            [ ]
+8. MLOps Model Registry         — storage + API + UI novos               [ ]
+9. LLMOps #8 (feedback humano)  — CRUD novo                              [ ]
+10. LLMOps #7 (guardrails)      — domínio novo, sem infra reaproveitável [ ]
 ```
+
+Fora desta ordem original, também implementados: linhagem row→geração
+e RAG reativo via CDC (Marcos L5/L6, "diferencial real" acima) e
+empacotamento enterprise (Marco L8) — não estavam nesta lista de
+priorização porque foram desenhados só depois, em
+`docs/LLMOPS_IMPLEMENTATION_PLAN.md`.
 
 **Não fazer:** MLflow Projects (baixo valor), Model Serving (fora de
 escopo de produto — outra categoria de ferramenta).

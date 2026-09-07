@@ -193,6 +193,17 @@ licenciamento e `docs/ENTERPRISE_CONNECTORS.md` pro catálogo/priorização.
   Elasticsearch/OpenSearch, Weaviate, Azure AI Search, Vertex AI Vector
   Search — ver `docs/DOCKER_LOCAL_TESTING.md` desse repo pra lista
   completa com campos/exemplo de config por conector.
+- [x] **Bloco 5 — Gate de capabilities não-conector (LLMOps Marco L8)**:
+  `"llm-lineage-tracking"` (`GET /lineage/generation/{id}`) e
+  `"reactive-rag-cdc"` (`*-cdc` source + `embedding` no passthrough)
+  reaproveitam o enforcement do Bloco 1 (`check_connector_license`), mas
+  registrados via `submit_enterprise_connector!` dentro do próprio
+  `nexus-server` (`capability_registry.rs`), não num crate privado —
+  esse código já roda sempre no binário público, diferente de um
+  conector real que só existe quando o crate enterprise está linkado.
+  `ConnectorCapability` ganhou uma 4ª variante (`Capability`) só pra
+  esses dois, filtrada de `GET /connectors` (nunca vira node type no
+  Canvas). Ver `docs/ENTERPRISE_LICENSING.md §5`.
 - [ ] **Bloco 4 — Storefront mínimo**: página de venda + checkout, mesmo que
   simples (Mercado Pago Checkout Pro cobre a parte de pagamento sem UI
   custom pra dado de cartão).
@@ -422,3 +433,24 @@ efêmero da sessão original, resumo aqui):
 - **`GHSA-2f9f-gq7v-9h6m` (Apache Thrift, "Memory Allocation with Excessive Size Value", corrigido em `thrift` 0.23.0) — aceito, sem `--ignore` no `cargo-audit` porque não existe `RUSTSEC-ID` pra isso (só aparece como Dependabot alert no GitHub, dispensado como `tolerable_risk` em 2026-09-02).** Rastreado via `cargo tree -i thrift@0.17.0 --all-features`: o `parquet` que o workspace usa (58.4.0) **não depende mais do crate `thrift`** — a rota vulnerável é 100% via `nexus-connector-ailake`, que puxa os crates externos `ailake-catalog`/`ailake-parquet` (pacote separado do mesmo projeto `ailake-io/ai-lakehouse`, fixado em `0.1.12`), que ainda usam `parquet 52.2.0` com o `thrift` velho internamente — sem release mais nova desses crates pra atualizar. Fix real precisa sair de lá, não deste repo. Exploração exigiria um arquivo Parquet malicioso alcançável por um source/sink `ailake` — já atrás do mesmo tier de confiança (`Write`) que outros conectores locais documentados em `ARCHITECTURE.md §10`.
 - **`arrow-array`/`arrow-schema` fixados em `58.4.0` e `adbc_core`/`adbc_driver_manager`/`adbc_ffi` em `0.23.0` (não a última, `0.24.0`) em todo o workspace** — **atualização 2026-09-02**: verificado via `cargo update` (só resolução de dependências, não compilado/testado) que `datafusion` 55.0.0 (mais nova que a 54.1.0 pinada hoje) já resolve limpo contra `arrow-array`/`arrow-schema`/`parquet` 59.x — a metade do bloqueio original ("datafusion ainda não suporta arrow 59+") não é mais verdade. Não confirmado ainda se `adbc_core`/`adbc_driver_manager`/`adbc_ffi` 0.24.0 também resolve nesse mesmo grafo (não testado). Migração real (editar os ~30 `Cargo.toml` que fixam a versão, `cargo check`/`test`/`clippy` em cada conector) ainda não feita — só a checagem de resolução.
 - **CDC nativo (`*-cdc`) combinado com um node de transform SQL ainda passa por `PipelineEngine::drain_sources`** — materializa tudo em memória antes de aplicar o SQL via DataFusion, o que nunca termina pra um source CDC em volume realista (WAL/binlog/change-stream não têm fim natural). O resume automático da Fase 18 e o streaming per-micro-batch só cobrem o caminho "passthrough" (sem transform, exatamente 1 source CDC + 1 sink). Não é regressão — nunca funcionou —, mas achado ao verificar o mecanismo de resume, antes não documentado. Ver `ARCHITECTURE.md §7`.
+
+---
+
+## Fase 26 — LLMOps: node `llm`, RAG e avaliação sistemática
+
+Branch `feature/llmops` (ainda não mergeada em `develop`, sem PR aberto). Plano marco a marco em `docs/LLMOPS_IMPLEMENTATION_PLAN.md`, ideação original em `docs/MLOPS_LLMOPS_PLAN.md`, resumo arquitetural em `ARCHITECTURE.md §17`.
+
+- [x] **Marco L1 — Node `llm` + tracing básico**: 1 chamada por linha, backend `Api` (qualquer endpoint OpenAI-compatible) ou `Anthropic` (Messages API nativa, adicionado como emenda ao L1). Log estruturado por chamada, nunca prompt/resposta cru por padrão.
+- [x] **Marco L2 — Custo/tokens agregado**: tokens/custo por run, exposto em `GET /pipelines/{id}/runs`.
+- [x] **Marco L3 — Cache de resposta**: Redis, chave por hash(modelo+prompt+params), TTL configurável.
+- [x] **Marco L4 — Versionamento de prompt**: `PromptTemplateStore` (`POST`/`GET /prompts`) — cada save é uma versão nova, nunca sobrescreve.
+- [x] **Marco L5 — Linhagem row→geração**: `POST /rag/query` (RAG ad-hoc, fora do engine de batch) + `GET /lineage/generation/{id}`. Primeira capacidade de busca vetorial do repo — todo conector vetorial (LanceDB/Qdrant/Milvus/pgvector/Pinecone/ChromaDB) só tinha sink antes disso.
+- [x] **Marco L6 — RAG reativo via CDC**: `embedding` destravado no caminho passthrough — combinação `*-cdc` source + `embedding` sem node `transform` (antes só funcionava sem CDC).
+- [x] **Marco L7 — Avaliação sistemática**: golden dataset (`LlmNodeSpec.eval`) re-rodado a cada run, score por similaridade de token, persistido em `llm_eval_results`, visível no `QualityPanel.tsx`.
+- [x] **Marco L8 — Empacotamento enterprise**: `GET /lineage/generation/{id}` e a combinação CDC+embedding (L6) viram pagos, reaproveitando o mecanismo de license já existente (`ROADMAP.md` Fase 12 Bloco 5) — `POST /rag/query` em si continua OSS pra qualquer vetor store.
+- [x] **L7 — follow-up** (fora do plano original): eval passa a rodar em todo caminho de execução (`run_linear_pipeline`/passthrough e `run_streaming_cdc_pipeline`, não só `run_transform_pipeline`); scoring "LLM como juiz" (`EvalScoringMode::LlmJudge`) como alternativa ao token-similarity, com fallback automático se a nota não parsear.
+- [x] **RAG multi-vetor** (fora do plano original): `POST /rag/query` deixa de ser só LanceDB — Qdrant, Milvus, pgvector, Pinecone e ChromaDB ganharam capacidade de busca própria (`search.rs` em cada crate de conector). Testado com container real (embedding real + banco real) pra Qdrant/Milvus/pgvector/ChromaDB; Pinecone via mock HTTP (único sem self-host).
+
+**Achados reais durante a verificação** (não só desenvolvimento): notificações de tarefa em background se mostraram não confiáveis nesta sessão — "completed"/exit 0 reportado pra processos que na real tinham morrido sem rodar nada, escondendo por um tempo 2 bugs reais do Marco L8 (`schemars` só em `[dev-dependencies]` quando `capability_registry.rs` precisa dele sempre; `ConnectorCapability::Capability` sem qualificar `nexus_core::`) e um bug do L7 original (teste de scoring com duas frases cuja similaridade batia exatamente no threshold de pass/fail). Todos corrigidos depois de rodar tudo em foreground com timeout explícito.
+
+**Critério de pronto:** todos os 8 marcos + 2 rodadas extra implementados e testados (unitário + integração real via testcontainers onde fazia sentido — Redis, Postgres/pgvector, Qdrant, Milvus, ChromaDB; mock HTTP só pra Anthropic/OpenAI-compatible e Pinecone). **Atingido** — commits `3976b12`..`7fa9c93` na branch `feature/llmops`, pushed, ainda sem merge em `develop`.

@@ -110,6 +110,14 @@ function RunRow({
             })}
           </span>
         )}
+        {run.llm_stats && (
+          <span>
+            {t('pipelines.history.llmCost', {
+              tokens: run.llm_stats.tokens_prompt + run.llm_stats.tokens_completion,
+              cost: run.llm_stats.cost_estimate.toFixed(4),
+            })}
+          </span>
+        )}
         <button
           type="button"
           onClick={toggleLogs}

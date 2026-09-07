@@ -3,9 +3,25 @@ use crate::error::NexusError;
 use crate::traits::{Sink, Source, Transform};
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
+use futures::future::BoxFuture;
 use futures::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
+
+/// Applied to every batch between read and write on the passthrough path
+/// (LLMOPS_IMPLEMENTATION_PLAN.md Marco L6) — e.g. chunk+embed a CDC
+/// source's batches before they reach the sink, without needing a
+/// `transform` node (which would force `drain_sources`, and a CDC source's
+/// stream never naturally drains — see `ARCHITECTURE.md §7`). Defined here,
+/// not in nexus-ai, because nexus-core can't depend on nexus-ai (CLAUDE.md
+/// §8.3) — the closure itself is built and owned by the caller
+/// (`nexus-server::runner`), this crate just calls it as an opaque
+/// `RecordBatch -> RecordBatch` step. A transform can change row count
+/// (chunking expands 1 row into N) — the rest of the writer loop already
+/// counts/checkpoints whatever was actually written, not what was read, so
+/// that's not a special case here.
+pub type BatchTransform =
+    Box<dyn Fn(RecordBatch) -> BoxFuture<'static, Result<RecordBatch, NexusError>> + Send + Sync>;
 
 /// One partition's Source+Sink pair, ready to run. Partitioning is the unit
 /// of parallelism — see ARCHITECTURE.md §4.
@@ -110,11 +126,12 @@ impl PipelineEngine {
         Self { channel_capacity }
     }
 
-    #[tracing::instrument(skip(self, handle, progress), fields(partition_id = %handle.partition_id))]
+    #[tracing::instrument(skip(self, handle, progress, batch_transform), fields(partition_id = %handle.partition_id))]
     pub async fn run_partition(
         &self,
         handle: PartitionHandle,
         progress: Option<ProgressSender>,
+        batch_transform: Option<BatchTransform>,
     ) -> Result<PartitionStats, NexusError> {
         let PartitionHandle {
             partition_id,
@@ -150,6 +167,14 @@ impl PipelineEngine {
             let mut bytes_written = 0usize;
 
             while let Some(batch) = rx.recv().await {
+                // Applied before the row/byte counts below are computed —
+                // a transform can change row count (chunking expands 1 row
+                // into N), so stats/checkpoints reflect what was actually
+                // written, not what was read (Marco L6).
+                let batch = match &batch_transform {
+                    Some(f) => f(batch).await?,
+                    None => batch,
+                };
                 let batch_rows = batch.num_rows();
                 let batch_bytes = batch.get_array_memory_size();
                 rows_written += batch_rows;
@@ -233,7 +258,7 @@ impl PipelineEngine {
             let progress = progress.clone();
             set.spawn(async move {
                 PipelineEngine::new(capacity)
-                    .run_partition(partition, progress)
+                    .run_partition(partition, progress, None)
                     .await
             });
         }
@@ -537,6 +562,7 @@ mod tests {
                     sink: Box::new(sink),
                 },
                 None,
+                None,
             )
             .await
             .expect("partition runs successfully");
@@ -550,6 +576,60 @@ mod tests {
             1,
             "checkpoint committed once per partition, not per batch"
         );
+    }
+
+    /// LLMOPS_IMPLEMENTATION_PLAN.md Marco L6 — the whole point of
+    /// `batch_transform` is letting the passthrough path (which CDC
+    /// sources use) run something like chunk+embed without a `transform`
+    /// node. A transform that expands 1 row into N (chunking's real shape)
+    /// must be reflected in `rows_written`/what the sink actually
+    /// received, not the pre-transform row count.
+    #[tokio::test]
+    async fn run_partition_applies_batch_transform_and_counts_its_output_rows() {
+        let source = VecSource {
+            schema: test_schema(),
+            batches: vec![test_batch(vec![1, 2]), test_batch(vec![3])],
+        };
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let sink = RecordingSink {
+            received: received.clone(),
+            checkpoints: Arc::new(Mutex::new(Vec::new())),
+        };
+
+        // Doubles every row (id, id) — simulates chunking's row-expansion
+        // shape without needing a real embedding backend in this test.
+        let transform: BatchTransform = Box::new(|batch: RecordBatch| {
+            Box::pin(async move {
+                let ids = batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int64Array>()
+                    .unwrap();
+                let doubled: Vec<i64> = ids.values().iter().flat_map(|v| [*v, *v]).collect();
+                Ok(test_batch(doubled))
+            })
+        });
+
+        let engine = PipelineEngine::new(8);
+        let stats = engine
+            .run_partition(
+                PartitionHandle {
+                    partition_id: "p0".to_string(),
+                    source: Box::new(source),
+                    sink: Box::new(sink),
+                },
+                None,
+                Some(transform),
+            )
+            .await
+            .expect("partition runs successfully");
+
+        // 2 input rows -> 4 output, 1 input row -> 2 output: 6 total, not 3.
+        assert_eq!(stats.rows_written, 6);
+        let received = received.lock().unwrap();
+        assert_eq!(received.len(), 2);
+        assert_eq!(received[0].num_rows(), 4);
+        assert_eq!(received[1].num_rows(), 2);
     }
 
     /// Simulates a CDC source: reports its position via `position_handle`,
@@ -613,6 +693,7 @@ mod tests {
                     sink: Box::new(sink),
                 },
                 None,
+                None,
             )
             .await
             .expect("partition runs successfully");
@@ -640,6 +721,7 @@ mod tests {
                     source: Box::new(source),
                     sink: Box::new(sink),
                 },
+                None,
                 None,
             )
             .await
@@ -688,6 +770,7 @@ mod tests {
                     sink: Box::new(FailingSink),
                 },
                 None,
+                None,
             )
             .await
             .expect_err("sink failure must propagate");
@@ -735,6 +818,7 @@ mod tests {
                     }),
                     sink: Box::new(RecordingSink::default()),
                 },
+                None,
                 None,
             )
             .await
@@ -869,6 +953,7 @@ mod tests {
                     sink: Box::new(RecordingSink::default()),
                 },
                 Some(tx),
+                None,
             )
             .await
             .expect("partition runs successfully");

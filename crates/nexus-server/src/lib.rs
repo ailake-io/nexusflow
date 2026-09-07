@@ -2,6 +2,7 @@ mod alerts;
 mod auth;
 mod auth_store;
 mod browse;
+mod capability_registry;
 mod checkpoint_store;
 mod connectors;
 mod crypto;
@@ -13,16 +14,37 @@ mod dns_guard;
 #[cfg(feature = "embed-ui")]
 mod embedded_ui;
 mod error;
+#[cfg(feature = "version-history")]
+mod git_history_store;
+#[cfg(feature = "version-history")]
+mod git_remote_config_store;
 mod hardware_stats;
 mod license;
 mod license_store;
 mod lineage;
+mod llm_eval_result_store;
+mod llm_generation_store;
 pub mod migrate;
+mod pipeline_run_llm_stats_store;
 mod pipeline_schema_store;
 mod pipeline_store;
 mod progress;
+mod prompt_template_store;
 mod python_transform;
 mod quality_check_store;
+#[cfg(all(
+    feature = "llm",
+    any(feature = "embeddings", feature = "embeddings-api"),
+    any(
+        feature = "lancedb",
+        feature = "qdrant",
+        feature = "milvus",
+        feature = "pgvector",
+        feature = "pinecone",
+        feature = "chromadb"
+    )
+))]
+mod rag;
 mod rate_limit;
 mod resource_stats;
 mod run_log_store;
@@ -105,6 +127,21 @@ struct AppState {
     // see `dbt_test_results`'s note above for why it's unconditional here.
     #[allow(dead_code)]
     quality_checks: quality_check_store::QualityCheckStore,
+    // Written by `apply_llm_stage`'s `#[cfg(feature = "llm")]` block, but
+    // read unconditionally by `list_runs_handler` (empty table when the
+    // feature is off, not a compile-time concern) — no `#[allow(dead_code)]`
+    // needed here unlike `dbt_test_results`/`quality_checks` above.
+    llm_stats: pipeline_run_llm_stats_store::PipelineRunLlmStatsStore,
+    prompt_templates: prompt_template_store::PromptTemplateStore,
+    // Written by `run_llm_eval`'s `#[cfg(feature = "llm")]` block (Marco
+    // L7), read unconditionally by `list_llm_eval_results_handler` — same
+    // reasoning as `llm_stats` above.
+    llm_eval_results: llm_eval_result_store::LlmEvalResultStore,
+    // Only written/read by `rag.rs`'s `#[cfg(all(feature = "llm", ...))]`
+    // module (Marco L5) — kept unconditional on AppState, same reasoning
+    // as `dbt_test_results`/`quality_checks` above.
+    #[allow(dead_code)]
+    llm_generations: llm_generation_store::LlmGenerationStore,
     progress: ProgressHub,
     alerts: AlertNotifier,
     login_rate_limiter: std::sync::Arc<rate_limit::LoginRateLimiter>,
@@ -113,6 +150,19 @@ struct AppState {
     trust_proxy_headers: bool,
     /// `NEXUS_ALLOW_INTERNAL_HOSTS` — see `PipelineSpec::validate_security_with`.
     allow_internal_hosts: bool,
+    /// Embedded git history for pipeline/prompt artifacts (git-versioning
+    /// follow-up to LLMOPS_IMPLEMENTATION_PLAN.md's L4/L7) — see
+    /// `git_history_store.rs`. `Clone` is cheap (just a `PathBuf` behind
+    /// an `Arc`), same reasoning as every other store field here.
+    #[cfg(feature = "version-history")]
+    git_history: git_history_store::GitHistoryStore,
+    /// Optional external GitHub mirror config for `git_history` above
+    /// ("caso o usuário queira" — Part 4 of the git-versioning follow-up
+    /// plan). `None`-shaped by an empty table, not an `Option` field —
+    /// same "absent row means off" contract as `AppState.alerts`'
+    /// channels.
+    #[cfg(feature = "version-history")]
+    git_remote: git_remote_config_store::GitRemoteConfigStore,
 }
 
 impl From<PipelineStoreError> for ApiError {
@@ -209,6 +259,25 @@ fn router(state: AppState) -> Router {
         // `browse_fs_handler`'s doc comment for why no extra sandbox is
         // layered underneath this.
         .route("/system/browse-fs", get(browse_fs_handler))
+        // Prompt templates (LLMOPS_IMPLEMENTATION_PLAN.md Marco L4) — same
+        // tier as editing a pipeline's config, since an `llm` node's
+        // `PromptRef` points at one of these.
+        .route(
+            "/prompts",
+            get(list_prompts_handler).post(create_prompt_handler),
+        );
+    // Rollback creates a *new* commit/version (never rewrites history) via
+    // the same `update`/`create` path as an ordinary save — same trust bar
+    // as editing the pipeline directly. Split out of the chain above so
+    // this route still picks up the `.layer()`s applied right below,
+    // whether or not the feature is compiled in (see
+    // `git_history_store.rs`'s module doc comment).
+    #[cfg(feature = "version-history")]
+    let write_protected = write_protected.route(
+        "/pipelines/{id}/versions/{commit}/rollback",
+        post(rollback_pipeline_handler),
+    );
+    let write_protected = write_protected
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_role::<AppState>,
@@ -238,11 +307,39 @@ fn router(state: AppState) -> Router {
             "/pipelines/{id}/quality-checks",
             get(list_quality_check_results_handler),
         )
+        .route(
+            "/pipelines/{id}/llm-eval-results",
+            get(list_llm_eval_results_handler),
+        )
         // Whole-catalog graph, not a per-pipeline secret — the handler
         // below only ever hands back connector names + allowlisted
         // resource identifiers, never raw config (see lineage.rs).
         .route("/lineage", get(lineage_handler))
-        .route("/lineage/{id}/schema", get(pipeline_schema_handler))
+        .route("/lineage/{id}/schema", get(pipeline_schema_handler));
+    // Version history is read-only browsing (diffs run through the same
+    // secret-safe `PipelineSummary` shape as `get_pipeline_handler`, never
+    // raw connector config) — same `Read` tier as everything else in this
+    // group. Split out of the chain (see `write_protected`'s rollback
+    // route above for why) so it still picks up the `.layer()`s below.
+    #[cfg(feature = "version-history")]
+    let read_protected = read_protected
+        .route(
+            "/pipelines/{id}/versions",
+            get(list_pipeline_versions_handler),
+        )
+        .route(
+            "/pipelines/{id}/versions/{commit}/diff",
+            get(diff_pipeline_versions_handler),
+        )
+        .route(
+            "/prompts/{name}/versions",
+            get(list_prompt_versions_handler),
+        )
+        .route(
+            "/prompts/{name}/versions/{version}/diff",
+            get(diff_prompt_versions_handler),
+        );
+    let read_protected = read_protected
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_role::<AppState>,
@@ -263,7 +360,19 @@ fn router(state: AppState) -> Router {
         .route(
             "/license",
             post(install_license_handler).get(license_status_handler),
-        )
+        );
+    // Configuring the optional GitHub push mirror is the same trust bar
+    // as installing the license itself — both gate an enterprise
+    // capability and, here, also hand the server a credential with write
+    // access to an external repo. Split out of the chain (see
+    // `write_protected`'s rollback route earlier for why) so it still
+    // picks up the `.layer()`s below.
+    #[cfg(feature = "version-history")]
+    let admin_protected = admin_protected.route(
+        "/settings/git-remote",
+        put(set_git_remote_handler).delete(delete_git_remote_handler),
+    );
+    let admin_protected = admin_protected
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_role::<AppState>,
@@ -291,6 +400,23 @@ fn router(state: AppState) -> Router {
         ))
         .layer(Extension(Role::Read));
 
+    // Cloned before `state` is moved into `.with_state(state)` below —
+    // `rag::routes` (Marco L5, cfg-gated) needs its own `AppState` to
+    // build its sub-router, merged in after the main app is stateless.
+    #[cfg(all(
+        feature = "llm",
+        any(feature = "embeddings", feature = "embeddings-api"),
+        any(
+            feature = "lancedb",
+            feature = "qdrant",
+            feature = "milvus",
+            feature = "pgvector",
+            feature = "pinecone",
+            feature = "chromadb"
+        )
+    ))]
+    let rag_state = state.clone();
+
     let app = Router::new()
         .route("/health", get(health))
         // Unauthenticated like /health — Prometheus scrapers don't carry a
@@ -313,6 +439,20 @@ fn router(state: AppState) -> Router {
         .merge(write_protected)
         .merge(read_protected)
         .with_state(state);
+
+    #[cfg(all(
+        feature = "llm",
+        any(feature = "embeddings", feature = "embeddings-api"),
+        any(
+            feature = "lancedb",
+            feature = "qdrant",
+            feature = "milvus",
+            feature = "pgvector",
+            feature = "pinecone",
+            feature = "chromadb"
+        )
+    ))]
+    let app = app.merge(rag::routes(rag_state));
 
     // Only wired in for the single-binary build (Marco 11) — without the
     // feature, an unmatched route just gets axum's default 404, same as
@@ -380,6 +520,10 @@ async fn list_connectors_handler(
     let active_license = state.license_store.active().await.ok().flatten();
     Json(
         ConnectorRegistry::all()
+            // `Capability`-kind descriptors (Marco L8) are license-check
+            // targets, not real connectors — never expose them as a node
+            // type the Canvas could try to add to a DAG.
+            .filter(|d| d.capability != nexus_core::ConnectorCapability::Capability)
             .map(|d| ConnectorCatalogEntry {
                 name: d.name,
                 capability: d.capability,
@@ -625,6 +769,9 @@ async fn execute_pipeline_run(
         &state.alerts,
         run_id,
         &state.quality_checks,
+        &state.llm_stats,
+        &state.prompt_templates,
+        &state.llm_eval_results,
     )
     .await;
     state.progress.finish(run_id).await;
@@ -814,6 +961,7 @@ async fn record_run_failure(
 
 async fn create_pipeline_handler(
     State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
     Json(spec): Json<PipelineSpec>,
 ) -> Result<(StatusCode, Json<PipelineSummary>), ApiError> {
     spec.validate()
@@ -825,7 +973,18 @@ async fn create_pipeline_handler(
         connectors::validate_pipeline_configs(&spec, active_license.as_ref())
             .map_err(|e| ApiError::bad_request(e.to_string()))?;
     }
-    state.pipelines.create(&spec, &state.secrets).await?;
+    state
+        .pipelines
+        .create(&spec, &state.secrets, &claims.sub)
+        .await?;
+    #[cfg(feature = "version-history")]
+    commit_pipeline_history(
+        &state,
+        &spec,
+        &claims.sub,
+        &format!("create pipeline {}", spec.pipeline_id),
+    )
+    .await;
     let summary = state
         .pipelines
         .get_summary(&spec.pipeline_id, &state.secrets)
@@ -1021,6 +1180,7 @@ async fn preview_adhoc_handler(
         transform: None,
         sinks: Vec::new(),
         embedding: None,
+        llm: None,
         python: None,
         channel_capacity: 100,
         partitions: 1,
@@ -1063,6 +1223,7 @@ fn find_node_by_resolved_name<'a>(spec: &'a PipelineSpec, name: &str) -> Option<
 
 async fn update_pipeline_handler(
     State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
     Path(id): Path<String>,
     Json(spec): Json<PipelineSpec>,
 ) -> Result<Json<PipelineSummary>, ApiError> {
@@ -1081,10 +1242,352 @@ async fn update_pipeline_handler(
         connectors::validate_pipeline_configs(&spec, active_license.as_ref())
             .map_err(|e| ApiError::bad_request(e.to_string()))?;
     }
-    state.pipelines.update(&id, &spec, &state.secrets).await?;
+    state
+        .pipelines
+        .update(&id, &spec, &state.secrets, &claims.sub)
+        .await?;
+    #[cfg(feature = "version-history")]
+    commit_pipeline_history(
+        &state,
+        &spec,
+        &claims.sub,
+        &format!("update pipeline {}", spec.pipeline_id),
+    )
+    .await;
     Ok(Json(
         state.pipelines.get_summary(&id, &state.secrets).await?,
     ))
+}
+
+/// Mirrors a just-persisted `PipelineSpec` save into `state.git_history`,
+/// at `pipelines/{id}.json`. Content is the same `spec_ciphertext` the SQL
+/// row already carries (`pipeline_store::encode_spec`, re-encrypted here
+/// under the same key) — never the decrypted JSON, so the git history
+/// never becomes a second, unrevocable place connector secrets leak to
+/// (see CLAUDE.md §5). Best-effort: a failure here is a real gap in
+/// history — but it must never fail the save itself (the SQL write above
+/// already committed): logged via `tracing::warn!` and swallowed, same
+/// posture as `alerts.rs`'s fire-and-forget notifications.
+#[cfg(feature = "version-history")]
+async fn commit_pipeline_history(state: &AppState, spec: &PipelineSpec, author: &str, message: &str) {
+    let ciphertext = pipeline_store::encode_spec(spec, &state.secrets);
+    let path = format!("pipelines/{}.json", spec.pipeline_id);
+    match state
+        .git_history
+        .commit_blob(&path, ciphertext.as_bytes(), message, author)
+        .await
+    {
+        Ok(_) => maybe_push_git_history_to_remote(state).await,
+        Err(e) => tracing::warn!(
+            pipeline_id = %spec.pipeline_id,
+            error = %e,
+            "failed to record git version history for this pipeline save"
+        ),
+    }
+}
+
+/// If a GitHub remote is configured (`PUT /settings/git-remote`) *and* the
+/// active license covers `git-history-github-sync`, mirrors `main` to it
+/// in the background — Part 4 of the git-versioning follow-up plan,
+/// "caso o usuário queira". Both the license check and the push itself
+/// are best-effort and fire-and-forget: neither ever holds up or fails
+/// the pipeline/prompt save that triggered it, same posture as
+/// `alerts.rs`'s notifications and `commit_pipeline_history` above. Not
+/// gated by license at all when no remote is configured — this is a
+/// no-op, not a check that needs to run either way.
+#[cfg(feature = "version-history")]
+async fn maybe_push_git_history_to_remote(state: &AppState) {
+    let Ok(Some(remote)) = state.git_remote.get(&state.secrets).await else {
+        return;
+    };
+    let active_license = state.license_store.active().await.unwrap_or(None);
+    if connectors::check_connector_license("git-history-github-sync", active_license.as_ref())
+        .is_err()
+    {
+        return;
+    }
+    let git_history = state.git_history.clone();
+    tokio::spawn(async move {
+        if let Err(e) = git_history
+            .push_to_remote(&remote.remote_url, &remote.token)
+            .await
+        {
+            tracing::warn!(
+                error = %e,
+                "failed to push git version history to the configured GitHub remote"
+            );
+        }
+    });
+}
+
+#[cfg(feature = "version-history")]
+#[derive(Debug, Deserialize)]
+struct SetGitRemoteRequest {
+    /// e.g. `https://github.com/acme/pipelines.git`.
+    remote_url: String,
+    /// A GitHub personal access token (or App installation token) with
+    /// push access to `remote_url` — sent over HTTPS as `x-access-token`
+    /// (see `git_history_store::GitHistoryStore::push_to_remote`).
+    /// Encrypted at rest, never returned by any endpoint.
+    token: String,
+}
+
+/// `PUT /settings/git-remote` — configures (or replaces) the optional
+/// GitHub mirror for `git_history`. Does not itself check the
+/// `git-history-github-sync` license (that check happens per-push, in
+/// `maybe_push_git_history_to_remote`) — an unlicensed remote can be
+/// configured ahead of time, it just won't be pushed to until a covering
+/// license is installed.
+#[cfg(feature = "version-history")]
+async fn set_git_remote_handler(
+    State(state): State<AppState>,
+    Json(body): Json<SetGitRemoteRequest>,
+) -> Result<StatusCode, ApiError> {
+    if body.remote_url.trim().is_empty() {
+        return Err(ApiError::bad_request("remote_url must not be empty"));
+    }
+    if body.token.trim().is_empty() {
+        return Err(ApiError::bad_request("token must not be empty"));
+    }
+    state
+        .git_remote
+        .set(&body.remote_url, &body.token, &state.secrets)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /settings/git-remote` — turns the push mirror back off.
+/// `git_history` itself (the embedded local repo) is entirely unaffected —
+/// this only stops the best-effort push, never touches history already
+/// recorded.
+#[cfg(feature = "version-history")]
+async fn delete_git_remote_handler(State(state): State<AppState>) -> Result<StatusCode, ApiError> {
+    state
+        .git_remote
+        .delete()
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `GET /pipelines/{id}/versions` — every commit that changed this
+/// pipeline, newest first. Metadata only (author/message/timestamp), no
+/// spec content — `.../diff` is where the actual (redacted) content
+/// comparison happens.
+#[cfg(feature = "version-history")]
+async fn list_pipeline_versions_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<git_history_store::VersionMeta>>, ApiError> {
+    let path = format!("pipelines/{id}.json");
+    Ok(Json(
+        state
+            .git_history
+            .history_for(&path)
+            .await
+            .map_err(ApiError::internal)?,
+    ))
+}
+
+#[cfg(feature = "version-history")]
+#[derive(Debug, Deserialize)]
+struct PipelineDiffParams {
+    /// Commit to diff against — defaults to the pipeline's current, live
+    /// state (same shape `GET /pipelines/{id}` returns) when omitted.
+    against: Option<String>,
+}
+
+/// `GET /pipelines/{id}/versions/{commit}/diff?against={commit}` — a
+/// unified text diff between two snapshots of a pipeline. Never touches
+/// raw `NodeSpec.config` (which may carry connector secrets): both sides
+/// are reduced to the same redacted shape `PipelineSummary` already
+/// exposes over the API (`pipeline_store::redact_for_diff`) before being
+/// diffed, so this can only ever reveal what `GET /pipelines/{id}`
+/// already would.
+#[cfg(feature = "version-history")]
+async fn diff_pipeline_versions_handler(
+    State(state): State<AppState>,
+    Path((id, commit)): Path<(String, String)>,
+    Query(params): Query<PipelineDiffParams>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let path = format!("pipelines/{id}.json");
+    let old_spec = load_pipeline_spec_at_commit(&state, &commit, &path).await?;
+    let new_json = match &params.against {
+        Some(against) => {
+            let new_spec = load_pipeline_spec_at_commit(&state, against, &path).await?;
+            pipeline_store::redact_for_diff(&new_spec)
+        }
+        None => pipeline_store::redact_for_diff(&state.pipelines.get_spec(&id, &state.secrets).await?),
+    };
+    let old_json = pipeline_store::redact_for_diff(&old_spec);
+    Ok(Json(serde_json::json!({
+        "diff": unified_text_diff(&old_json, &new_json),
+    })))
+}
+
+/// `POST /pipelines/{id}/versions/{commit}/rollback` — restores the
+/// pipeline to an old commit's content by writing it through the exact
+/// same `PipelineStore::update` path a normal save uses, under the
+/// current caller's name. This *creates a new commit* on top of history
+/// (`"rollback pipeline {id} to {commit}"`); it never rewrites or resets
+/// the git ref — same "immutable log" posture as checkpoints elsewhere in
+/// this codebase.
+#[cfg(feature = "version-history")]
+async fn rollback_pipeline_handler(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Path((id, commit)): Path<(String, String)>,
+) -> Result<Json<PipelineSummary>, ApiError> {
+    let path = format!("pipelines/{id}.json");
+    let old_spec = load_pipeline_spec_at_commit(&state, &commit, &path).await?;
+    if old_spec.pipeline_id != id {
+        return Err(ApiError::bad_request(format!(
+            "commit {commit:?} does not belong to pipeline {id:?}"
+        )));
+    }
+    old_spec
+        .validate()
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    state
+        .pipelines
+        .update(&id, &old_spec, &state.secrets, &claims.sub)
+        .await?;
+    commit_pipeline_history(
+        &state,
+        &old_spec,
+        &claims.sub,
+        &format!("rollback pipeline {id} to {commit}"),
+    )
+    .await;
+    Ok(Json(
+        state.pipelines.get_summary(&id, &state.secrets).await?,
+    ))
+}
+
+/// Shared by the diff and rollback handlers above: reads the ciphertext
+/// blob at `commit`/`path` out of git history and decrypts it back into a
+/// `PipelineSpec`, mapping every failure mode (bad commit, path not in
+/// that commit, corrupt/undecryptable ciphertext) to a clear 404/500
+/// instead of a panic.
+#[cfg(feature = "version-history")]
+async fn load_pipeline_spec_at_commit(
+    state: &AppState,
+    commit: &str,
+    path: &str,
+) -> Result<PipelineSpec, ApiError> {
+    let bytes = state
+        .git_history
+        .blob_at(commit, path)
+        .await
+        .map_err(|e| ApiError::not_found(e.to_string()))?;
+    let ciphertext = String::from_utf8(bytes)
+        .map_err(|e| ApiError::internal(format!("corrupt git history blob: {e}")))?;
+    pipeline_store::decode_spec(&ciphertext, &state.secrets).map_err(ApiError::from)
+}
+
+/// `GET /prompts/{name}/versions` — every version of `name` (already
+/// tracked by `PromptTemplateStore` itself, LLMOPS_IMPLEMENTATION_PLAN.md
+/// Marco L4) enriched with the git author/commit that recorded it. Each
+/// version lives at its own never-overwritten path
+/// (`prompts/{name}/v{n}.txt`), so `history_for` always resolves to
+/// exactly one commit per version — `None` only for a version saved
+/// before this feature existed (git history didn't exist yet to record
+/// it).
+#[cfg(feature = "version-history")]
+#[derive(Debug, Serialize)]
+struct PromptVersionInfo {
+    version: u32,
+    created_at: String,
+    author: Option<String>,
+    commit: Option<String>,
+}
+
+#[cfg(feature = "version-history")]
+async fn list_prompt_versions_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<Vec<PromptVersionInfo>>, ApiError> {
+    let all = state
+        .prompt_templates
+        .list()
+        .await
+        .map_err(ApiError::internal)?;
+    let mut out = Vec::new();
+    for p in all.into_iter().filter(|p| p.name == name) {
+        let path = format!("prompts/{}/v{}.txt", p.name, p.version);
+        let commit_meta = state
+            .git_history
+            .history_for(&path)
+            .await
+            .map_err(ApiError::internal)?
+            .into_iter()
+            .next();
+        out.push(PromptVersionInfo {
+            version: p.version,
+            created_at: p.created_at,
+            author: commit_meta.as_ref().map(|c| c.author.clone()),
+            commit: commit_meta.map(|c| c.commit),
+        });
+    }
+    Ok(Json(out))
+}
+
+#[cfg(feature = "version-history")]
+#[derive(Debug, Deserialize)]
+struct PromptDiffParams {
+    /// Version to diff against — defaults to the newest version when
+    /// omitted (same "None means latest" convention as the pipeline diff
+    /// endpoint above).
+    against: Option<u32>,
+}
+
+/// `GET /prompts/{name}/versions/{version}/diff?against={version}` — plain
+/// text diff between two versions' template text. Reads straight from
+/// `PromptTemplateStore::resolve` (already the source of truth for prompt
+/// text) — unlike the pipeline diff endpoint, this never needs to touch
+/// git history at all, since prompt versions are never overwritten in SQL
+/// either. Prompts carry no secrets (CLAUDE.md §5 is about connector
+/// config, not prompt text), so this is a plain, unredacted text diff.
+#[cfg(feature = "version-history")]
+async fn diff_prompt_versions_handler(
+    State(state): State<AppState>,
+    Path((name, version)): Path<(String, u32)>,
+    Query(params): Query<PromptDiffParams>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let old_text = state
+        .prompt_templates
+        .resolve(&name, Some(version))
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::not_found(format!("prompt {name:?} has no version {version}")))?;
+    let new_text = state
+        .prompt_templates
+        .resolve(&name, params.against)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| match params.against {
+            Some(v) => ApiError::not_found(format!("prompt {name:?} has no version {v}")),
+            None => ApiError::not_found(format!("prompt {name:?} not found")),
+        })?;
+    Ok(Json(serde_json::json!({
+        "diff": similar::TextDiff::from_lines(&old_text, &new_text)
+            .unified_diff()
+            .to_string(),
+    })))
+}
+
+/// Shared unified-diff renderer for the two JSON-shaped (redacted)
+/// pipeline snapshots `diff_pipeline_versions_handler` compares — both
+/// sides are pretty-printed first so the diff reads as one line per
+/// field, not one giant single-line JSON blob.
+#[cfg(feature = "version-history")]
+fn unified_text_diff(old: &serde_json::Value, new: &serde_json::Value) -> String {
+    let old_text = serde_json::to_string_pretty(old).unwrap_or_default();
+    let new_text = serde_json::to_string_pretty(new).unwrap_or_default();
+    similar::TextDiff::from_lines(&old_text, &new_text)
+        .unified_diff()
+        .to_string()
 }
 
 async fn delete_pipeline_handler(
@@ -1133,7 +1636,21 @@ async fn list_runs_handler(
     Query(pagination): Query<Pagination>,
 ) -> Result<Json<Vec<RunRecord>>, ApiError> {
     let (limit, offset) = pagination.validated()?;
-    Ok(Json(state.pipelines.list_runs(&id, limit, offset).await?))
+    let mut runs = state.pipelines.list_runs(&id, limit, offset).await?;
+    // `list_runs` never joins llm_stats itself (separate store/table, see
+    // `RunRecord.llm_stats`'s doc comment) — filled in here, one lookup per
+    // run in the page (bounded by `limit`, same cost class as the dbt/
+    // stats JSON already parsed per row above).
+    for run in &mut runs {
+        if let Ok(Some(stats)) = state.llm_stats.get(run.id).await {
+            run.llm_stats = Some(serde_json::json!({
+                "tokens_prompt": stats.tokens_prompt,
+                "tokens_completion": stats.tokens_completion,
+                "cost_estimate": stats.cost_estimate,
+            }));
+        }
+    }
+    Ok(Json(runs))
 }
 
 /// Every recorded dbt test result for this pipeline, grouped by test —
@@ -1169,6 +1686,25 @@ async fn list_quality_check_results_handler(
     Ok(Json(
         state
             .quality_checks
+            .list_for_pipeline(&id)
+            .await
+            .map_err(ApiError::internal)?,
+    ))
+}
+
+/// Every recorded golden-dataset eval result for this pipeline
+/// (LLMOPS_IMPLEMENTATION_PLAN.md Marco L7) — scored per run against the
+/// `llm` node's current prompt version, evaluated by `run_llm_eval` on the
+/// `run_transform_pipeline` path (`llm_eval_result_store.rs`). Companion to
+/// `list_dbt_test_results_handler`/`list_quality_check_results_handler`;
+/// the Quality tab renders all three, tagged by source.
+async fn list_llm_eval_results_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<llm_eval_result_store::LlmEvalOutcome>>, ApiError> {
+    Ok(Json(
+        state
+            .llm_eval_results
             .list_for_pipeline(&id)
             .await
             .map_err(ApiError::internal)?,
@@ -1439,6 +1975,73 @@ async fn license_status_handler(
 }
 
 #[derive(Deserialize)]
+struct CreatePromptRequest {
+    name: String,
+    template: String,
+}
+
+#[derive(Serialize)]
+struct CreatePromptResponse {
+    name: String,
+    version: u32,
+}
+
+/// Always inserts a new version — see `PromptTemplateStore::create`'s doc
+/// comment for why this never overwrites (LLMOPS_IMPLEMENTATION_PLAN.md
+/// Marco L4).
+async fn create_prompt_handler(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Json(body): Json<CreatePromptRequest>,
+) -> Result<Json<CreatePromptResponse>, ApiError> {
+    if body.name.trim().is_empty() {
+        return Err(ApiError::bad_request("name must not be empty"));
+    }
+    if body.template.trim().is_empty() {
+        return Err(ApiError::bad_request("template must not be empty"));
+    }
+    let version = state
+        .prompt_templates
+        .create(&body.name, &body.template, &claims.sub)
+        .await
+        .map_err(ApiError::internal)?;
+    #[cfg(feature = "version-history")]
+    {
+        let path = format!("prompts/{}/v{}.txt", body.name, version);
+        let message = format!("create prompt {} v{}", body.name, version);
+        match state
+            .git_history
+            .commit_blob(&path, body.template.as_bytes(), &message, &claims.sub)
+            .await
+        {
+            Ok(_) => maybe_push_git_history_to_remote(&state).await,
+            Err(e) => tracing::warn!(
+                name = %body.name,
+                version,
+                error = %e,
+                "failed to record git version history for this prompt save"
+            ),
+        }
+    }
+    Ok(Json(CreatePromptResponse {
+        name: body.name,
+        version,
+    }))
+}
+
+async fn list_prompts_handler(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<prompt_template_store::PromptTemplate>>, ApiError> {
+    Ok(Json(
+        state
+            .prompt_templates
+            .list()
+            .await
+            .map_err(ApiError::internal)?,
+    ))
+}
+
+#[derive(Deserialize)]
 struct UpdateRoleRequest {
     role: Role,
 }
@@ -1503,9 +2106,10 @@ async fn progress_ws_handler(
         .strip_prefix("nexusflow-")
         .ok_or_else(|| ApiError::unauthorized("expected nexusflow-<token> protocol"))?;
     let (progress_rx, log_rx) = authorize_progress_subscription(&state, token, run_id).await?;
+    let llm_stats = state.llm_stats.clone();
     Ok(ws
         .protocols([proto.clone()])
-        .on_upgrade(move |socket| forward_progress(socket, progress_rx, log_rx)))
+        .on_upgrade(move |socket| forward_progress(socket, progress_rx, log_rx, run_id, llm_stats)))
 }
 
 /// Split out from `progress_ws_handler` so it's callable directly from a
@@ -1549,6 +2153,8 @@ async fn forward_progress(
     mut socket: WebSocket,
     mut rx: tokio::sync::broadcast::Receiver<nexus_core::ProgressEvent>,
     mut log_rx: tokio::sync::broadcast::Receiver<RunLogEvent>,
+    run_id: i64,
+    llm_stats: pipeline_run_llm_stats_store::PipelineRunLlmStatsStore,
 ) {
     let mut hardware = hardware_stats::HardwareMonitor::new();
     let mut hardware_ticker = tokio::time::interval(HARDWARE_STATS_INTERVAL);
@@ -1557,6 +2163,13 @@ async fn forward_progress(
     // to the client is discarded rather than shipped as a misleading 0%.
     hardware_ticker.tick().await;
     hardware.sample();
+    // Same interval as hardware_stats, separate ticker (LLMOPS_IMPLEMENTATION_PLAN.md
+    // Marco L2) — a DB read per tick instead of an in-memory sample, but
+    // negligible for one indexed row every 2s on a single active run.
+    // Skipped entirely (no frame sent) when the run has no llm node, unlike
+    // hardware_stats which is unconditionally useful for every run.
+    let mut llm_stats_ticker = tokio::time::interval(HARDWARE_STATS_INTERVAL);
+    llm_stats_ticker.tick().await;
 
     loop {
         tokio::select! {
@@ -1604,6 +2217,19 @@ async fn forward_progress(
                     .expect("HardwareStats always serializes");
                 if socket.send(Message::Text(json.into())).await.is_err() {
                     break;
+                }
+            }
+            _ = llm_stats_ticker.tick() => {
+                if let Ok(Some(stats)) = llm_stats.get(run_id).await {
+                    let json = serde_json::to_string(&serde_json::json!({ "llm_stats": {
+                        "tokens_prompt": stats.tokens_prompt,
+                        "tokens_completion": stats.tokens_completion,
+                        "cost_estimate": stats.cost_estimate,
+                    } }))
+                    .expect("llm stats always serialize");
+                    if socket.send(Message::Text(json.into())).await.is_err() {
+                        break;
+                    }
                 }
             }
             incoming = socket.recv() => {
@@ -1655,6 +2281,11 @@ pub struct ServerConfig {
     /// above: trusting `X-Forwarded-For` weakens the login rate limiter
     /// unless a reverse proxy is confirmed to own that header.
     pub trust_proxy_headers: bool,
+    /// `NEXUS_GIT_HISTORY_PATH` — where the embedded bare git repo backing
+    /// pipeline/prompt version history lives (see `git_history_store.rs`).
+    /// Defaults to a path next to the pipelines database.
+    #[cfg(feature = "version-history")]
+    pub git_history_path: String,
 }
 
 async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
@@ -1683,6 +2314,16 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         pipeline_schema_store::PipelineSchemaStore::connect(&config.pipelines_database_url).await?;
     let quality_checks =
         quality_check_store::QualityCheckStore::connect(&config.pipelines_database_url).await?;
+    let llm_stats = pipeline_run_llm_stats_store::PipelineRunLlmStatsStore::connect(
+        &config.pipelines_database_url,
+    )
+    .await?;
+    let prompt_templates =
+        prompt_template_store::PromptTemplateStore::connect(&config.pipelines_database_url).await?;
+    let llm_generations =
+        llm_generation_store::LlmGenerationStore::connect(&config.pipelines_database_url).await?;
+    let llm_eval_results =
+        llm_eval_result_store::LlmEvalResultStore::connect(&config.pipelines_database_url).await?;
     if let Some((username, password)) = &config.bootstrap_admin {
         auth_store.seed_admin_if_empty(username, password).await?;
     }
@@ -1694,6 +2335,12 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
     );
     let secrets = SecretCipher::from_hex_key(&config.encryption_key_hex)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
+    #[cfg(feature = "version-history")]
+    let git_history = git_history_store::GitHistoryStore::open(&config.git_history_path)?;
+    #[cfg(feature = "version-history")]
+    let git_remote =
+        git_remote_config_store::GitRemoteConfigStore::connect(&config.pipelines_database_url)
+            .await?;
     Ok(AppState {
         checkpoints,
         auth_store,
@@ -1707,6 +2354,10 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         dbt_test_results,
         pipeline_schemas,
         quality_checks,
+        llm_stats,
+        prompt_templates,
+        llm_generations,
+        llm_eval_results,
         progress: ProgressHub::default(),
         alerts: AlertNotifier::new(
             AlertConfig {
@@ -1721,6 +2372,10 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         login_rate_limiter: std::sync::Arc::new(rate_limit::LoginRateLimiter::default()),
         allow_internal_hosts: config.allow_internal_hosts,
         trust_proxy_headers: config.trust_proxy_headers,
+        #[cfg(feature = "version-history")]
+        git_history,
+        #[cfg(feature = "version-history")]
+        git_remote,
     })
 }
 
@@ -1857,6 +2512,9 @@ pub async fn run() -> anyhow::Result<()> {
              and bypass per-IP login rate limiting entirely."
         );
     }
+    #[cfg(feature = "version-history")]
+    let git_history_path = std::env::var("NEXUS_GIT_HISTORY_PATH")
+        .unwrap_or_else(|_| "nexusflow-version-history.git".to_string());
 
     let state = build_state(&ServerConfig {
         checkpoint_database_url: database_url,
@@ -1873,6 +2531,8 @@ pub async fn run() -> anyhow::Result<()> {
         webhook_url,
         allow_internal_hosts,
         trust_proxy_headers,
+        #[cfg(feature = "version-history")]
+        git_history_path,
     })
     .await?;
 
@@ -1959,6 +2619,16 @@ mod tests {
     use axum::response::IntoResponse;
     use tower::ServiceExt;
 
+    /// Fresh, isolated bare repo per call — `test_state()`/`rate_limited_state()`
+    /// each get their own so parallel `#[tokio::test]`s never share one.
+    /// Leaked on purpose (`.keep()`): these are short-lived test processes,
+    /// same trade-off other tests make with real filesystem fixtures.
+    #[cfg(feature = "version-history")]
+    fn test_git_history() -> git_history_store::GitHistoryStore {
+        let dir = tempfile::tempdir().unwrap().keep();
+        git_history_store::GitHistoryStore::open(dir.join("history.git")).unwrap()
+    }
+
     async fn test_state() -> AppState {
         let auth_store = AuthStore::connect("sqlite::memory:").await.unwrap();
         auth_store
@@ -1990,6 +2660,22 @@ mod tests {
             quality_checks: quality_check_store::QualityCheckStore::connect("sqlite::memory:")
                 .await
                 .unwrap(),
+            llm_stats: pipeline_run_llm_stats_store::PipelineRunLlmStatsStore::connect(
+                "sqlite::memory:",
+            )
+            .await
+            .unwrap(),
+            prompt_templates: prompt_template_store::PromptTemplateStore::connect(
+                "sqlite::memory:",
+            )
+            .await
+            .unwrap(),
+            llm_generations: llm_generation_store::LlmGenerationStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
+            llm_eval_results: llm_eval_result_store::LlmEvalResultStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
             progress: ProgressHub::default(),
             alerts: AlertNotifier::new(AlertConfig::default(), false),
             login_rate_limiter: std::sync::Arc::new(rate_limit::LoginRateLimiter::new(
@@ -1998,6 +2684,12 @@ mod tests {
             )),
             allow_internal_hosts: false,
             trust_proxy_headers: false,
+            #[cfg(feature = "version-history")]
+            git_history: test_git_history(),
+            #[cfg(feature = "version-history")]
+            git_remote: git_remote_config_store::GitRemoteConfigStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
         }
     }
 
@@ -2118,6 +2810,7 @@ mod tests {
                     source: Box::new(OneBatchSource(Some(batch))),
                     sink: Box::new(NullSink),
                 },
+                None,
                 None,
             )
             .await
@@ -2545,7 +3238,154 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["unique_id"], "test.proj.not_null_orders_id");
         assert_eq!(results[0]["status"], "fail");
-        assert_eq!(results[0]["message"], "3 rows failed");
+    }
+
+    // --- Marco L8: llm-lineage-tracking / reactive-rag-cdc enterprise gate ---
+
+    #[cfg(all(
+        feature = "llm",
+        any(feature = "embeddings", feature = "embeddings-api"),
+        any(
+            feature = "lancedb",
+            feature = "qdrant",
+            feature = "milvus",
+            feature = "pgvector",
+            feature = "pinecone",
+            feature = "chromadb"
+        )
+    ))]
+    #[tokio::test]
+    async fn generation_lineage_is_forbidden_without_a_covering_license() {
+        let state = test_state().await;
+        let read_token = bearer(&state, Role::Read);
+        // Seeded directly — this test is about the license gate in front
+        // of the handler, not about producing a real generation via RAG
+        // (already covered by `reactive_rag_cdc_pipeline.rs`/
+        // `lancedb_search_integration.rs`).
+        let id = state
+            .llm_generations
+            .record(llm_generation_store::NewGeneration {
+                pipeline_id: "p1",
+                question: "what is nexusflow?",
+                answer: "a data movement framework",
+                prompt_name: "rag-prompt",
+                prompt_version: 1,
+                model: "gpt-test",
+                tokens_prompt: 10,
+                tokens_completion: 5,
+                resource_id: None,
+                context_keys: &[],
+            })
+            .await
+            .unwrap();
+        let app = router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/lineage/generation/{id}"))
+                    .header("authorization", &read_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "no license installed — the generation exists (id is real), so a non-403 \
+             status here would mean the license check isn't actually gating this handler"
+        );
+    }
+
+    #[cfg(all(
+        feature = "llm",
+        any(feature = "embeddings", feature = "embeddings-api"),
+        any(
+            feature = "lancedb",
+            feature = "qdrant",
+            feature = "milvus",
+            feature = "pgvector",
+            feature = "pinecone",
+            feature = "chromadb"
+        )
+    ))]
+    #[tokio::test]
+    async fn generation_lineage_is_visible_with_a_covering_license() {
+        use crate::license::test_support::{claims, sign};
+
+        let state = test_state().await;
+        state
+            .license_store
+            .install(&sign(&claims(vec!["llm-lineage-tracking"])))
+            .await
+            .unwrap();
+        let read_token = bearer(&state, Role::Read);
+        let id = state
+            .llm_generations
+            .record(llm_generation_store::NewGeneration {
+                pipeline_id: "p1",
+                question: "what is nexusflow?",
+                answer: "a data movement framework",
+                prompt_name: "rag-prompt",
+                prompt_version: 1,
+                model: "gpt-test",
+                tokens_prompt: 10,
+                tokens_completion: 5,
+                resource_id: None,
+                context_keys: &[],
+            })
+            .await
+            .unwrap();
+        let app = router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/lineage/generation/{id}"))
+                    .header("authorization", &read_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = body_json(response).await;
+        assert_eq!(body["question"], "what is nexusflow?");
+    }
+
+    #[tokio::test]
+    async fn connectors_catalog_never_exposes_capability_only_slugs() {
+        // `llm-lineage-tracking`/`reactive-rag-cdc` (Marco L8,
+        // `capability_registry.rs`) are license-check targets, not real
+        // connectors — they must never show up as a node type the Canvas
+        // could try to add to a DAG.
+        let state = test_state().await;
+        let read_token = bearer(&state, Role::Read);
+        let app = router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/connectors")
+                    .header("authorization", &read_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let entries = body_json(response).await;
+        let names: Vec<&str> = entries
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["name"].as_str().unwrap())
+            .collect();
+        assert!(!names.contains(&"llm-lineage-tracking"));
+        assert!(!names.contains(&"reactive-rag-cdc"));
     }
 
     #[tokio::test]
@@ -2829,6 +3669,273 @@ mod tests {
         let list = body_json(response).await;
         assert_eq!(list.as_array().unwrap().len(), 1);
         assert_eq!(list[0]["pipeline_id"], "p1");
+    }
+
+    /// `sample_pipeline` above, but with a distinguishable sink connector —
+    /// the version-history tests below diff/rollback on exactly this
+    /// field to prove they're reading the *old* content back, not just
+    /// re-fetching the current one.
+    #[cfg(feature = "version-history")]
+    fn sample_pipeline_with_sink(id: &str, sink_connector: &str) -> serde_json::Value {
+        let mut spec = sample_pipeline(id);
+        spec["sinks"][0]["connector"] = serde_json::json!(sink_connector);
+        spec
+    }
+
+    #[cfg(feature = "version-history")]
+    #[tokio::test]
+    async fn pipeline_versions_lists_one_entry_per_save_newest_first() {
+        let state = test_state().await;
+        let write_token = bearer(&state, Role::Write);
+        let read_token = bearer(&state, Role::Read);
+        let app = router(state);
+
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                "/pipelines",
+                &write_token,
+                sample_pipeline_with_sink("p1", "sqlite"),
+            ))
+            .await
+            .unwrap();
+        app.clone()
+            .oneshot(json_request(
+                "PUT",
+                "/pipelines/p1",
+                &write_token,
+                sample_pipeline_with_sink("p1", "postgres"),
+            ))
+            .await
+            .unwrap();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/pipelines/p1/versions")
+                    .header("authorization", read_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let versions = body_json(response).await;
+        let versions = versions.as_array().unwrap();
+        assert_eq!(versions.len(), 2);
+        assert_eq!(versions[0]["message"], "update pipeline p1", "newest first");
+        assert_eq!(versions[1]["message"], "create pipeline p1");
+    }
+
+    #[cfg(feature = "version-history")]
+    #[tokio::test]
+    async fn pipeline_diff_reports_the_sink_connector_change() {
+        let state = test_state().await;
+        let write_token = bearer(&state, Role::Write);
+        let read_token = bearer(&state, Role::Read);
+        let app = router(state);
+
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                "/pipelines",
+                &write_token,
+                sample_pipeline_with_sink("p1", "sqlite"),
+            ))
+            .await
+            .unwrap();
+        app.clone()
+            .oneshot(json_request(
+                "PUT",
+                "/pipelines/p1",
+                &write_token,
+                sample_pipeline_with_sink("p1", "postgres"),
+            ))
+            .await
+            .unwrap();
+
+        let versions = body_json(
+            app.clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/pipelines/p1/versions")
+                        .header("authorization", &read_token)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
+        )
+        .await;
+        let create_commit = versions[1]["commit"].as_str().unwrap();
+
+        // No `?against=` — diffs the old commit against the pipeline's
+        // current (latest) state.
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/pipelines/p1/versions/{create_commit}/diff"))
+                    .header("authorization", read_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = body_json(response).await;
+        let diff = body["diff"].as_str().unwrap();
+        assert!(diff.contains("sqlite"), "diff:\n{diff}");
+        assert!(diff.contains("postgres"), "diff:\n{diff}");
+        assert!(
+            !diff.contains("postgres://user:pw@host/db"),
+            "diff must never leak connector config/secrets:\n{diff}"
+        );
+    }
+
+    #[cfg(feature = "version-history")]
+    #[tokio::test]
+    async fn pipeline_rollback_restores_old_content_as_a_new_commit() {
+        let state = test_state().await;
+        let write_token = bearer(&state, Role::Write);
+        let read_token = bearer(&state, Role::Read);
+        let app = router(state);
+
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                "/pipelines",
+                &write_token,
+                sample_pipeline_with_sink("p1", "sqlite"),
+            ))
+            .await
+            .unwrap();
+        app.clone()
+            .oneshot(json_request(
+                "PUT",
+                "/pipelines/p1",
+                &write_token,
+                sample_pipeline_with_sink("p1", "postgres"),
+            ))
+            .await
+            .unwrap();
+
+        let versions = body_json(
+            app.clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/pipelines/p1/versions")
+                        .header("authorization", &read_token)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
+        )
+        .await;
+        let create_commit = versions[1]["commit"].as_str().unwrap().to_string();
+
+        let rollback = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/pipelines/p1/versions/{create_commit}/rollback"))
+                    .header("authorization", &write_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rollback.status(), StatusCode::OK);
+        let summary = body_json(rollback).await;
+        assert_eq!(
+            summary["sinks"][0]["connector"], "sqlite",
+            "rollback restored the original sink connector"
+        );
+
+        // Rollback is a new commit, not a history rewrite — 3 entries now,
+        // not 2.
+        let versions_after = body_json(
+            app.oneshot(
+                Request::builder()
+                    .uri("/pipelines/p1/versions")
+                    .header("authorization", read_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        let versions_after = versions_after.as_array().unwrap();
+        assert_eq!(versions_after.len(), 3);
+        assert!(versions_after[0]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("rollback pipeline p1 to"));
+    }
+
+    #[cfg(feature = "version-history")]
+    #[tokio::test]
+    async fn prompt_versions_and_diff_track_authors_and_text_changes() {
+        let state = test_state().await;
+        let write_token = bearer(&state, Role::Write);
+        let read_token = bearer(&state, Role::Read);
+        let app = router(state);
+
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                "/prompts",
+                &write_token,
+                serde_json::json!({"name": "greet", "template": "Hello v1"}),
+            ))
+            .await
+            .unwrap();
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                "/prompts",
+                &write_token,
+                serde_json::json!({"name": "greet", "template": "Hello v2"}),
+            ))
+            .await
+            .unwrap();
+
+        let versions = body_json(
+            app.clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/prompts/greet/versions")
+                        .header("authorization", &read_token)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
+        )
+        .await;
+        let versions = versions.as_array().unwrap();
+        assert_eq!(versions.len(), 2);
+        assert!(versions.iter().all(|v| v["commit"].is_string()));
+
+        let diff = body_json(
+            app.oneshot(
+                Request::builder()
+                    .uri("/prompts/greet/versions/1/diff?against=2")
+                    .header("authorization", read_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        let diff_text = diff["diff"].as_str().unwrap();
+        assert!(diff_text.contains("-Hello v1"), "diff:\n{diff_text}");
+        assert!(diff_text.contains("+Hello v2"), "diff:\n{diff_text}");
     }
 
     #[tokio::test]
@@ -3580,11 +4687,33 @@ mod tests {
             quality_checks: quality_check_store::QualityCheckStore::connect("sqlite::memory:")
                 .await
                 .unwrap(),
+            llm_stats: pipeline_run_llm_stats_store::PipelineRunLlmStatsStore::connect(
+                "sqlite::memory:",
+            )
+            .await
+            .unwrap(),
+            prompt_templates: prompt_template_store::PromptTemplateStore::connect(
+                "sqlite::memory:",
+            )
+            .await
+            .unwrap(),
+            llm_generations: llm_generation_store::LlmGenerationStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
+            llm_eval_results: llm_eval_result_store::LlmEvalResultStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
             progress: ProgressHub::default(),
             alerts: AlertNotifier::new(AlertConfig::default(), false),
             login_rate_limiter: limiter,
             allow_internal_hosts: false,
             trust_proxy_headers,
+            #[cfg(feature = "version-history")]
+            git_history: test_git_history(),
+            #[cfg(feature = "version-history")]
+            git_remote: git_remote_config_store::GitRemoteConfigStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
         }
     }
 

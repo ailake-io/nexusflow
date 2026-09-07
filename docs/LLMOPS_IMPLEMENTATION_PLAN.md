@@ -3,9 +3,16 @@
 > Complementa `docs/MLOPS_LLMOPS_PLAN.md` (levantamento/ideação, pilares e
 > priorização). Este documento é o "como": marcos concretos, arquivos/
 > crates tocados, e critério de pronto por marco — mesmo padrão de
-> `IMPLEMENTATION_PLAN.md` pro resto do sistema. **Nada implementado
-> ainda (2026-09-06)** — planejamento antes de codar, não roadmap
-> comprometido.
+> `IMPLEMENTATION_PLAN.md` pro resto do sistema.
+>
+> **Status (2026-09-07): todos os 8 marcos implementados**, na branch
+> `feature/llmops` (ainda não mergeada em `develop`, sem PR aberto — ver
+> `ARCHITECTURE.md §17` pro resumo arquitetural). Mais 2 rodadas fora do
+> plano original, pedidas depois do L8: L7 ganhou scoring "LLM como
+> juiz" e passou a rodar em todo caminho de execução (não só
+> `run_transform_pipeline`); RAG (L5) deixou de ser LanceDB-only e
+> passou a suportar os 6 destinos vetoriais do NexusFlow — ver seções
+> "L7 — follow-up" e "RAG multi-vetor" no final deste documento.
 
 ## Ordem dos marcos
 
@@ -14,20 +21,23 @@ de infraestrutura existente (mais barato → mais caro), não por valor de
 negócio isolado — mesma lógica do `IMPLEMENTATION_PLAN.md` original.
 
 ```
-Marco L1 — Node `llm` + tracing básico
-Marco L2 — Custo/tokens agregado
-Marco L3 — Cache de resposta
-Marco L4 — Versionamento de prompt
-Marco L5 — Linhagem row→geração (diferencial #1)
+Marco L1 — Node `llm` + tracing básico                          [x]
+Marco L2 — Custo/tokens agregado                                 [x]
+Marco L3 — Cache de resposta                                     [x]
+Marco L4 — Versionamento de prompt                                [x]
+Marco L5 — Linhagem row→geração (diferencial #1)                  [x]
 Marco L6 — RAG reativo via CDC (diferencial #2), precisa de um fix real
-           no `run_partition` do engine — ver desenho concreto na seção
-Marco L7 — Avaliação sistemática (golden dataset)
-Marco L8 — Empacotamento enterprise
+           no `run_partition` do engine — ver desenho concreto na seção [x]
+Marco L7 — Avaliação sistemática (golden dataset)                 [x]
+Marco L8 — Empacotamento enterprise                               [x]
 ```
 
 ---
 
 ## Marco L1 — Node `llm` + tracing básico
+
+**Status:** ✅ implementado (`3976b12`) + backend nativo Anthropic
+adicionado depois (`9c5a619`, emenda ao L1 — não um marco novo).
 
 **Objetivo:** um node de pipeline que chama um LLM (endpoint compatível
 com OpenAI, mesmo backend `api` que `nexus-ai::embedding` já usa) e loga
@@ -81,6 +91,8 @@ com tokens/latência reais.
 
 ## Marco L2 — Custo/tokens agregado
 
+**Status:** ✅ implementado (`d11b036`).
+
 **Objetivo:** ver custo total de LLM por pipeline/run, não só por
 chamada individual (que já fica nos logs desde o L1).
 
@@ -105,6 +117,8 @@ custo agregado bate com a soma manual, aparece no histórico.
 
 ## Marco L3 — Cache de resposta
 
+**Status:** ✅ implementado (`dc4c6f4`).
+
 **Objetivo:** não pagar/esperar de novo pela mesma chamada.
 
 - `LlmNodeSpec` ganha `cache: Option<LlmCacheSpec> { backend: "redis",
@@ -126,6 +140,8 @@ conector com estado externo deste repo).
 ---
 
 ## Marco L4 — Versionamento de prompt
+
+**Status:** ✅ implementado (`0821952`).
 
 **Objetivo:** trocar o texto de um prompt sem editar o `PipelineSpec` a
 mão toda vez, e saber qual versão gerou qual resposta.
@@ -154,6 +170,10 @@ com `version: None` pega a mais nova automaticamente; rodando com
 ---
 
 ## Marco L5 — Linhagem row→geração (diferencial #1)
+
+**Status:** ✅ implementado (`442ae14`) — depois estendido de LanceDB
+pra 6 destinos vetoriais, ver seção "RAG multi-vetor" no final deste
+documento.
 
 **Objetivo:** "essa geração veio de qual linha/chunk/fonte".
 
@@ -198,6 +218,8 @@ chunks/linhas de origem usados como contexto.
 ---
 
 ## Marco L6 — RAG reativo via CDC (diferencial #2)
+
+**Status:** ✅ implementado (`19ab8af`).
 
 **Objetivo:** mudança na fonte dispara re-embed automático das linhas
 afetadas, mantendo o índice vetorial fresco.
@@ -300,6 +322,11 @@ o pipeline.
 
 ## Marco L7 — Avaliação sistemática (golden dataset)
 
+**Status:** ✅ implementado (`b20864c`) — depois estendido (scoring
+LLM-juiz + eval em todo caminho de execução, não só
+`run_transform_pipeline`), ver seção "L7 — follow-up" no final deste
+documento.
+
 **Objetivo:** golden question + resposta esperada → score, regressão
 automática quando prompt/modelo muda.
 
@@ -322,6 +349,12 @@ no `QualityPanel.tsx`.
 ---
 
 ## Marco L8 — Empacotamento enterprise
+
+**Status:** ✅ implementado (`962c4ec`). Corte final (validado com o
+usuário, diferente da "proposta a validar" original abaixo): **OSS** =
+L1-L4 + L7; **Enterprise** = L5 (`GET /lineage/generation/{id}`) + L6
+(combinação `*-cdc` + `embedding`) — `POST /rag/query` em si continua
+OSS pra qualquer vetor store, só a linhagem da geração é paga.
 
 **Objetivo:** decidir o que fica OSS e o que vira pago, usando o
 mecanismo que `docs/MLOPS_LLMOPS_PLAN.md` já descreveu (reaproveitar
@@ -351,6 +384,58 @@ expõe normalmente — mesmo teste de padrão que já existe pra conector
 pago (`check_connector_license`, ver `connectors.rs`'s testes).
 
 ---
+
+## L7 — follow-up (fora do plano original)
+
+**Status:** ✅ implementado (`41c268d`), pedido pelo usuário depois do
+L8 fechado. Fecha os 2 itens que o L7 original deixou como "fora de
+escopo desta rodada":
+
+1. **Eval em todo caminho de execução.** Golden-dataset é independente
+   do dado real processado (chama o LLM ad-hoc com os `inputs` fixos do
+   próprio caso golden) — não precisava que o node `llm` em lote
+   funcionasse naquele caminho pra rodar. `maybe_run_llm_eval`
+   (`runner.rs`) passou a ser chamado também em `run_linear_pipeline`
+   (cobre o fallback `run_passthrough_pipeline` também, único call
+   site) e `run_streaming_cdc_pipeline`, não só `run_transform_pipeline`.
+2. **Scoring "LLM como juiz".** `LlmNodeSpec.eval_scoring:
+   EvalScoringMode` — `TokenSimilarity` (default, igual antes) ou
+   `LlmJudge`: reaproveita o mesmo `LlmBackend` que respondeu a
+   pergunta pra uma segunda chamada, com um prompt de grading fixo
+   pedindo nota 0-10; se a chamada falhar ou a nota não parsear, cai
+   pro `score_answer` (token-similarity) em vez de zerar o caso.
+
+## RAG multi-vetor (fora do plano original)
+
+**Status:** ✅ implementado (`7fa9c93`), pedido pelo usuário junto com o
+follow-up do L7 acima. `POST /rag/query` (L5) só aceitava sink
+`lancedb` — decisão explícita de escopo do L5 original ("Qdrant/pgvector
+search — só LanceDB por ora"). Estendido pros 5 outros destinos
+vetoriais que o NexusFlow já suporta em escrita: Qdrant, Milvus,
+pgvector, Pinecone e ChromaDB.
+
+Cada um ganhou um `search.rs` novo no seu crate de conector (mesmo
+molde do `LanceDbSearchClient` do L5) — primeira capacidade de leitura
+que cada um desses conectores já teve (todos eram sink-only). Só
+LanceDB é nativamente Arrow (`Vec<RecordBatch>`); os outros 5 devolvem
+`(chave, texto)` direto, o formato natural de um vetor store não-Arrow
+(pontos/JSON/linhas SQL) — forçar `RecordBatch` neles seria trabalho
+sem propósito real. `rag.rs` virou um dispatch por nome de conector,
+cada braço não-LanceDB atrás do próprio feature flag Cargo (função stub
+clara quando a feature está off, não erro de compilação).
+
+Testado com container real (embedding real + banco real) pra
+Qdrant/Milvus/pgvector/ChromaDB; só Pinecone usa mock HTTP, único sem
+opção self-hosted/Docker.
+
+Bugs achados nesta rodada (não introduzidos por ela, já existiam desde
+o L8): `schemars` só em `[dev-dependencies]` do `nexus-server`, mas
+`capability_registry.rs` (código real do L8) precisa dele sempre;
+`ConnectorCapability::Capability` sem qualificar `nexus_core::`;
+`mod rag`/rotas de RAG exigiam a feature `lancedb` mesmo pra outros
+vetores; o gate de license do `reactive-rag-cdc` rodava depois de
+carregar o modelo de embedding (rede real) em vez de antes. Todos
+corrigidos no mesmo commit — ver `ARCHITECTURE.md §17`.
 
 ## Resumo de dependências entre marcos
 
@@ -382,6 +467,8 @@ precisa ter algo real pra gatear por license, não um esqueleto vazio.
   `llm`.
 - `ARCHITECTURE.md §15` — `RunLogStore`/`RunLogger`, base do tracing do
   Marco L1.
+- `ARCHITECTURE.md §17` — resumo arquitetural de todo o LLMOps já
+  implementado (node `llm`, RAG multi-vetor, avaliação, empacotamento).
 - `crates/nexus-server/src/runner.rs` — `apply_embedding_stage` (linha
   ~1220), molde direto pro `apply_llm_stage` do Marco L1; linhas 303/754
   confirmam a restrição de `embedding` fora do caminho passthrough que

@@ -11,6 +11,7 @@ import {
   Waypoints,
   BadgeCheck,
   BarChart3,
+  BookText,
 } from 'lucide-react'
 import { useAuth } from '@/lib/auth-context'
 import { useI18n } from '@/lib/i18n'
@@ -29,6 +30,7 @@ const ResourcesPanel = lazy(() => import('@/components/ResourcesPanel'))
 const LineagePanel = lazy(() => import('@/components/LineagePanel'))
 const QualityPanel = lazy(() => import('@/components/QualityPanel'))
 const DataPreviewPanel = lazy(() => import('@/components/DataPreviewPanel'))
+const PromptLibrary = lazy(() => import('@/components/PromptLibrary'))
 
 type View =
   | 'canvas'
@@ -39,6 +41,7 @@ type View =
   | 'lineage'
   | 'quality'
   | 'preview'
+  | 'prompts'
   | 'admin'
 
 function ViewFallback() {
@@ -85,6 +88,7 @@ function App() {
     { id: 'lineage', label: t('nav.lineage'), icon: Waypoints },
     { id: 'quality', label: t('nav.quality'), icon: BadgeCheck },
     { id: 'preview', label: t('nav.preview'), icon: BarChart3 },
+    { id: 'prompts', label: t('nav.prompts'), icon: BookText },
     // Client-side gating only decides visibility of the nav item — the
     // /users routes are Admin-enforced server-side regardless (auth.rs).
     ...(role === 'admin'
@@ -175,6 +179,7 @@ function App() {
             {view === 'lineage' && <LineagePanel />}
             {view === 'quality' && <QualityPanel />}
             {view === 'preview' && <DataPreviewPanel />}
+            {view === 'prompts' && <PromptLibrary />}
             {view === 'admin' && <UsersPanel />}
           </Suspense>
         </div>

@@ -3,9 +3,11 @@
 
 mod config;
 mod rows;
+mod search;
 mod sink;
 
 pub use config::QdrantConnectorConfig;
+pub use search::QdrantSearchClient;
 pub use sink::QdrantSink;
 
 nexus_core::submit_connector!(

@@ -32,6 +32,12 @@ embeddings = ["dep:nexus-ai", "nexus-ai/cpu"]
 # tokenizers in the binary. Independent of `embeddings`; both can be on at
 # once so a `PipelineSpec.embedding.model` of either backend tag works.
 embeddings-api = ["dep:nexus-ai", "nexus-ai/api"]
+# LLM pipeline stage (LLMOPS_IMPLEMENTATION_PLAN.md Marco L1): calls an
+# OpenAI-compatible chat completions endpoint via nexus-ai's `llm` feature.
+# Deliberately independent of `embeddings`/`embeddings-api` — a binary may
+# want one without the other, same reasoning as those two being independent
+# of each other.
+llm = ["dep:nexus-ai", "nexus-ai/llm"]
 # Single-binary deployment (Marco 11, CLAUDE.md §7): embeds frontend/dist
 # into the binary via rust-embed and serves it (with SPA fallback) for any
 # GET that doesn't match an API route. Off by default because rust-embed's
@@ -42,6 +48,17 @@ embeddings-api = ["dep:nexus-ai", "nexus-ai/api"]
 # build` to have happened first. Build the frontend, then
 # `cargo build --features embed-ui`, to get the real single binary.
 embed-ui = ["dep:rust-embed"]
+# Git-backed version history for pipelines and prompt templates created in
+# the Canvas (docs/... git-versioning follow-up to LLMOPS_IMPLEMENTATION_PLAN.md
+# Marco L4/L7): every `PipelineStore::create`/`update` and
+# `PromptTemplateStore::create` also commits its content to an embedded,
+# local `git2` (libgit2) repo — no GitHub account needed, see
+# `git_history_store.rs`. `vendored-libgit2` builds libgit2 from source
+# instead of requiring it on the host, keeping this consistent with the
+# rest of the workspace's static-compile posture (CLAUDE.md §7). Off by
+# default: pulls in a C dependency + build time, same reasoning as
+# `embeddings`/`llm` above.
+version-history = ["dep:git2", "dep:similar"]
 
 # Each connector under crates/nexus-connectors/ is its own crate, gated
 # behind its own Cargo feature (ARCHITECTURE.md §3/CLAUDE.md §3: "compile
@@ -62,7 +79,7 @@ connectors-all = [
     "mongodb", "mysql", "kafka", "mqtt", "rest", "odbc", "milvus", "qdrant", "lancedb",
     "pgvector", "pinecone", "chromadb", "deltalake", "iceberg", "parquet",
     "ailake", "csv", "clickhouse", "duckdb", "redis", "nats", "rabbitmq",
-    "embeddings", "embeddings-api",
+    "embeddings", "embeddings-api", "llm",
     "postgres-cdc", "mysql-cdc", "deltalake-cdc", "iceberg-cdc", "ailake-cdc",
 ]
 # Same as connectors-all but without the heavy ONNX/embedding dependencies.
@@ -181,6 +198,11 @@ lettre = { version = "0.11.19", default-features = false, features = [
     "builder",
 ] }
 reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls"] }
+# Real (not dev-only) dependency: `capability_registry.rs`'s
+# `submit_enterprise_connector!` calls (Marco L8) need `JsonSchema`
+# resolvable in ordinary lib code, not just in test fixtures — those two
+# marker configs are compiled into every binary, not `#[cfg(test)]`.
+schemars = "1.2.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 thiserror = "2.0.19"
@@ -220,26 +242,45 @@ opentelemetry-prometheus = "0.32.0"
 prometheus = "0.14.0"
 rust-embed = { version = "8.12.0", optional = true, features = ["mime-guess"] }
 arrow-array = "58.4.0"
+arrow-cast = "58.4.0"
 arrow-json = "58.4.0"
 arrow-schema = "58.4.0"
 futures-util = "0.3.33"
+# `futures::future::BoxFuture` — only used by `runner.rs`'s
+# `run_passthrough_pipeline` to build the `BatchTransform` closure
+# (LLMOPS_IMPLEMENTATION_PLAN.md Marco L6). `futures-util` above doesn't
+# re-export it under the same path; already a real (non-dev) dependency
+# of nexus-core for the same reason.
+futures = "0.3.33"
+# Only used by `runner.rs`'s `RedisLlmCache` (LLMOPS_IMPLEMENTATION_PLAN.md
+# Marco L3, features "llm"+"redis") to implement nexus-ai's `LlmCache`
+# trait — a proc-macro dependency, negligible compile-time cost, so not
+# worth its own Cargo feature gate.
+async-trait = "0.1.91"
 # Only used by the `python-transform` feature, to round-trip RecordBatches
 # across the process boundary to/from the python3 subprocess.
 parquet = { version = "58.4.0", optional = true }
+# Embedded git history for pipeline/prompt artifacts (`version-history`
+# feature, see `git_history_store.rs`). `vendored-libgit2` compiles
+# libgit2 from source (via the `libgit2-sys` build script), so this needs
+# no system libgit2/OpenSSL beyond a C toolchain — same "works out of the
+# box cross-platform" bar as every other optional heavy dependency here.
+git2 = { version = "0.19.0", default-features = false, features = ["vendored-libgit2"], optional = true }
+# Text diff for the version-history `.../diff` endpoints (pipeline
+# summaries and prompt template text) — no diff library exists in this
+# workspace yet.
+similar = { version = "2.7.0", optional = true, features = ["text"] }
 
 [dev-dependencies]
-async-trait = "0.1.91"
-futures = "0.3.33"
 futures-util = "0.3.33"
-# Only for connectors.rs's license-enforcement tests, which register a
-# test-only fixture connector via nexus_core::submit_enterprise_connector! —
-# that macro's derive(JsonSchema) needs the `schemars` crate name resolvable
-# by its own bare name in this crate too, a qualified path through
-# nexus_core's re-export isn't enough for the derive macro's generated code.
-schemars = "1.2.2"
+# `schemars` moved to real [dependencies] above (Marco L8) — connectors.rs's
+# test-only fixture connector (nexus_core::submit_enterprise_connector!)
+# now resolves it from there too, same bare-name requirement its own derive
+# macro has.
 sqlx = { version = "0.9.0", default-features = false, features = ["postgres", "runtime-tokio", "sqlite"] }
 tempfile = "3.27.0"
 testcontainers = "0.27.3"
 testcontainers-modules = { version = "0.15.0", features = ["postgres"] }
 tokio-tungstenite = "0.29.0"
 tower = { version = "0.5.3", features = ["util"] }
+wiremock = "0.6.5"

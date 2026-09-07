@@ -239,6 +239,167 @@ fn default_similarity_threshold() -> f32 {
     0.8
 }
 
+/// Points at a named, versioned prompt template
+/// (LLMOPS_IMPLEMENTATION_PLAN.md Marco L4) instead of embedding the
+/// template text inline — lets a prompt's wording change without editing
+/// every `PipelineSpec` that uses it, and ties every logged LLM call back
+/// to exactly which prompt version produced it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptRef {
+    pub name: String,
+    /// `None` = always resolve to the newest version at run time (unlike
+    /// `EmbeddingModelSpec::Onnx.revision`, which defaults to a fixed
+    /// "main" — a prompt's wording doesn't carry the same reproducibility
+    /// cost a swapped ONNX model binary would, so "latest" is a reasonable
+    /// default here). `Some(v)` pins to that exact version regardless of
+    /// newer ones created later.
+    #[serde(default)]
+    pub version: Option<u32>,
+}
+
+/// Configuration for the optional LLM stage (LLMOPS_IMPLEMENTATION_PLAN.md
+/// Marco L1). Defined in nexus-core for the same reason as `EmbeddingSpec`
+/// above: `PipelineSpec` carries it without adding an nexus-ai dependency to
+/// the core crate; nexus-ai consumes this spec at runtime.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmNodeSpec {
+    /// Which saved prompt template to use (LLMOPS_IMPLEMENTATION_PLAN.md
+    /// Marco L4) — resolved to the actual template text at run time via
+    /// `nexus-server::prompt_template_store` (nexus-core/nexus-ai never
+    /// touch that store directly, same layering as `LlmCache`).
+    pub prompt: PromptRef,
+    /// Columns available for interpolation into the resolved prompt
+    /// template's `{column_name}` placeholders.
+    pub input_columns: Vec<String>,
+    /// Name of the new column holding the LLM's response text.
+    pub output_column: String,
+    pub model: LlmModelConfig,
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
+    #[serde(default)]
+    pub temperature: Option<f32>,
+    /// Logs the full prompt/response text in run logs, not just metadata
+    /// (token counts, latency). Off by default — prompt/response can carry
+    /// customer-sensitive data (CLAUDE.md §5), same posture as every other
+    /// log line in this codebase that touches user content.
+    #[serde(default)]
+    pub log_full_content: bool,
+    /// Response cache (LLMOPS_IMPLEMENTATION_PLAN.md Marco L3) — `None`
+    /// means every call hits the API, no caching.
+    #[serde(default)]
+    pub cache: Option<LlmCacheSpec>,
+    /// Golden dataset (LLMOPS_IMPLEMENTATION_PLAN.md Marco L7) — fixed
+    /// question/expected-answer pairs re-run every time this node's pipeline
+    /// runs, scored against the *current* prompt version/model, so a prompt
+    /// change's effect on answer quality is measurable instead of assumed.
+    /// Empty (the default) means no eval — most `llm` nodes don't need one.
+    #[serde(default)]
+    pub eval: Vec<LlmEvalCase>,
+    /// How `eval` is scored — `#[serde(default)]` keeps every spec saved
+    /// before this field existed on `TokenSimilarity`, the original L7
+    /// behavior.
+    #[serde(default)]
+    pub eval_scoring: EvalScoringMode,
+}
+
+/// Scoring strategy for `LlmNodeSpec.eval` (LLMOPS_IMPLEMENTATION_PLAN.md
+/// Marco L7 follow-up). `TokenSimilarity` (the default) is direct
+/// comparison — deterministic, no extra API call. `LlmJudge` reuses the
+/// same `LlmBackend` that answered the golden question for a *second* call
+/// that grades the answer against the expected one, at roughly double the
+/// per-case cost — trades money for judgment that isn't fooled by
+/// paraphrasing token similarity would score low.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum EvalScoringMode {
+    #[default]
+    TokenSimilarity,
+    LlmJudge,
+}
+
+/// One golden test case for Marco L7. `inputs` mirrors the batch `llm`
+/// node's own `{column_name}` interpolation (not RAG's fixed
+/// `{context}`/`{question}` convention, see `rag.rs`) — a map lets a golden
+/// case fill in whatever placeholders this node's prompt template actually
+/// references, regardless of `input_columns`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmEvalCase {
+    pub name: String,
+    pub inputs: std::collections::BTreeMap<String, String>,
+    pub expected_answer: String,
+}
+
+/// Redis-backed response cache — key is `sha256(model + prompt + max_tokens
+/// + temperature)` (`nexus_ai::llm::cache_key`), value is the raw response
+/// text. Always Redis for now (no enum with 1 variant — same reasoning
+/// `LlmModelConfig` had before it needed more than `Api`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmCacheSpec {
+    /// Redis connection URL (e.g. "redis://localhost:6379").
+    pub url: String,
+    pub ttl_seconds: u64,
+}
+
+/// Which backend serves the LLM call. No local ONNX/GGUF path — always an
+/// HTTP API, either OpenAI-shaped (`Api`, covers OpenAI itself, Ollama's
+/// `/v1` compat endpoint, Moonshot/Kimi, Groq, and most other providers
+/// that mimic the OpenAI request/response shape) or Anthropic's own native
+/// Messages API (`Anthropic` — different auth header, request/response
+/// shape, so it needs its own variant rather than fitting `Api`). Kept as
+/// a tagged enum matching `EmbeddingModelSpec`'s shape so a future backend
+/// doesn't require a breaking spec change.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "backend")]
+pub enum LlmModelConfig {
+    Api {
+        /// Base URL of an OpenAI-compatible chat completions endpoint (no
+        /// trailing `/chat/completions` — e.g. "https://api.openai.com/v1",
+        /// "http://localhost:11434/v1" for Ollama, "https://api.moonshot.cn/v1"
+        /// for Kimi).
+        base_url: String,
+        /// Model name passed through to the API request body.
+        model: String,
+        /// Name of the environment variable holding the API key on the
+        /// machine running nexus-server — never the key itself (CLAUDE.md
+        /// §5: no secret lives in the persisted DAG JSON). `None` means the
+        /// endpoint needs no auth (e.g. a local Ollama/vLLM server).
+        #[serde(default)]
+        api_key_env: Option<String>,
+        /// Price per 1,000 prompt/completion tokens, in whatever currency
+        /// the caller wants displayed (LLMOPS_IMPLEMENTATION_PLAN.md Marco
+        /// L2). No universal price table exists across providers/models —
+        /// the user supplies it. `None` means cost is never estimated for
+        /// this node (aggregate cost stays 0, tokens still tracked).
+        #[serde(default)]
+        cost_per_1k_prompt_tokens: Option<f64>,
+        #[serde(default)]
+        cost_per_1k_completion_tokens: Option<f64>,
+    },
+    /// Anthropic's native Messages API (`POST {base_url}/v1/messages`,
+    /// `x-api-key` header instead of `Authorization: Bearer`, `max_tokens`
+    /// required by the API itself unlike OpenAI's optional field) — not
+    /// OpenAI-shaped, so it can't reuse `Api` above.
+    Anthropic {
+        /// No trailing `/v1/messages` — e.g. "https://api.anthropic.com".
+        #[serde(default = "default_anthropic_base_url")]
+        base_url: String,
+        /// e.g. "claude-sonnet-5", "claude-opus-5".
+        model: String,
+        /// Name of the environment variable holding the API key — never
+        /// the key itself, same reasoning as `Api::api_key_env`. Unlike
+        /// `Api`, this is required: Anthropic's API has no "no auth" mode.
+        api_key_env: String,
+        #[serde(default)]
+        cost_per_1k_prompt_tokens: Option<f64>,
+        #[serde(default)]
+        cost_per_1k_completion_tokens: Option<f64>,
+    },
+}
+
+fn default_anthropic_base_url() -> String {
+    "https://api.anthropic.com".to_string()
+}
+
 /// Two shapes, both valid DAGs (ARCHITECTURE.md §4):
 /// - No transform: strictly linear `1 source -> 1 sink`, partitioned
 ///   execution (Marco 1's model — `PipelineEngine::run`).
@@ -255,10 +416,16 @@ pub struct PipelineSpec {
     /// before the SQL transform (if present) or before the sinks.
     #[serde(default)]
     pub embedding: Option<EmbeddingSpec>,
+    /// Optional LLM stage (LLMOPS_IMPLEMENTATION_PLAN.md Marco L1), applied
+    /// after `embedding` (if present) and before the SQL transform — e.g.
+    /// chunk -> embed -> also ask an LLM something about the original text,
+    /// both written to the same sink.
+    #[serde(default)]
+    pub llm: Option<LlmNodeSpec>,
     /// Optional Python cleaning/transformation stage, chained after the SQL
     /// `transform` (if present) and before the sinks — order is `sources ->
-    /// embedding -> transform -> python -> sinks`. When `transform` is
-    /// `None`, `python` still requires exactly 1 source/1 sink (same
+    /// embedding -> llm -> transform -> python -> sinks`. When `transform`
+    /// is `None`, `python` still requires exactly 1 source/1 sink (same
     /// constraint as the transform-less linear path — see `validate()`),
     /// since there's no SQL stage to fan multiple sources into one table
     /// first.
@@ -508,6 +675,69 @@ impl PipelineSpec {
             }
         }
 
+        if let Some(llm) = &self.llm {
+            if llm.prompt.name.trim().is_empty() {
+                return Err(NexusError::Schema(
+                    "llm.prompt.name must not be empty".into(),
+                ));
+            }
+            if llm.prompt.version == Some(0) {
+                return Err(NexusError::Schema(
+                    "llm.prompt.version must be > 0 (versions start at 1)".into(),
+                ));
+            }
+            if llm.output_column.trim().is_empty() {
+                return Err(NexusError::Schema(
+                    "llm.output_column must not be empty".into(),
+                ));
+            }
+            let (base_url, model) = match &llm.model {
+                LlmModelConfig::Api {
+                    base_url, model, ..
+                } => (base_url, model),
+                LlmModelConfig::Anthropic {
+                    base_url,
+                    model,
+                    api_key_env,
+                    ..
+                } => {
+                    if api_key_env.trim().is_empty() {
+                        return Err(NexusError::Schema(
+                            "llm.model.api_key_env must not be empty".into(),
+                        ));
+                    }
+                    (base_url, model)
+                }
+            };
+            if base_url.trim().is_empty() {
+                return Err(NexusError::Schema(
+                    "llm.model.base_url must not be empty".into(),
+                ));
+            }
+            if model.trim().is_empty() {
+                return Err(NexusError::Schema(
+                    "llm.model.model must not be empty".into(),
+                ));
+            }
+            if let Some(temperature) = llm.temperature {
+                if !(0.0..=2.0).contains(&temperature) {
+                    return Err(NexusError::Schema(
+                        "llm.temperature must be between 0.0 and 2.0".into(),
+                    ));
+                }
+            }
+            if let Some(cache) = &llm.cache {
+                if cache.url.trim().is_empty() {
+                    return Err(NexusError::Schema("llm.cache.url must not be empty".into()));
+                }
+                if cache.ttl_seconds == 0 {
+                    return Err(NexusError::Schema(
+                        "llm.cache.ttl_seconds must be > 0".into(),
+                    ));
+                }
+            }
+        }
+
         if !self.post_dbt_sinks.is_empty() {
             let has_output = self.dbt.as_ref().is_some_and(|d| d.output.is_some());
             if !has_output {
@@ -618,6 +848,9 @@ impl PipelineSpec {
         if let Some(embedding) = &self.embedding {
             validate_embedding_security(&embedding.model, allow_internal_hosts)?;
         }
+        if let Some(llm) = &self.llm {
+            validate_llm_security(&llm.model, allow_internal_hosts)?;
+        }
         if let Some(alerts) = &self.alerts {
             validate_alerts_security(alerts, allow_internal_hosts)?;
         }
@@ -695,6 +928,33 @@ fn validate_embedding_security(
                         "embedding.model.base_url points to an internal host".into(),
                     ));
                 }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Same SSRF guard as `validate_embedding_security`, for `llm.model.base_url`
+/// — an identical user-supplied outbound-request URL, same risk.
+fn validate_llm_security(
+    model: &LlmModelConfig,
+    allow_internal_hosts: bool,
+) -> Result<(), NexusError> {
+    let base_url = match model {
+        LlmModelConfig::Api { base_url, .. } => base_url,
+        LlmModelConfig::Anthropic { base_url, .. } => base_url,
+    };
+    if base_url.starts_with('/') {
+        return Err(NexusError::Schema(
+            "llm.model.base_url must not be an absolute path".into(),
+        ));
+    }
+    if !allow_internal_hosts {
+        if let Some(host) = http_host(base_url) {
+            if is_internal_host(&host) {
+                return Err(NexusError::Schema(
+                    "llm.model.base_url points to an internal host".into(),
+                ));
             }
         }
     }

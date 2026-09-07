@@ -43,6 +43,12 @@ pub enum LineageNode {
         label: String,
         resource_type: String,
     },
+    /// One RAG answer (LLMOPS_IMPLEMENTATION_PLAN.md Marco L5) —
+    /// `id` is `"generation::{llm_generations.id}"`. Never appears in the
+    /// main `GET /lineage` graph (would grow unbounded with every ad-hoc
+    /// question ever asked) — only returned by
+    /// `GET /lineage/generation/{id}`, one generation at a time.
+    Generation { id: String, label: String },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -210,6 +216,15 @@ pub fn resource_identifier(connector: &str, config: &Value) -> Option<(ResourceK
             .map(|urn| (ResourceKind::Table, urn.to_string())),
         _ => None,
     }
+}
+
+/// Same `"resource::{connector}::{identifier}"` id every `Resource` node
+/// in the graph uses — pulled out so `rag.rs` (Marco L5) can compute the
+/// identifier for one sink's config without needing the full
+/// nodes-map-building machinery `add_resource_node` below does.
+pub(crate) fn resource_node_id(connector: &str, config: &Value) -> Option<String> {
+    let (_, identifier) = resource_identifier(connector, config)?;
+    Some(format!("resource::{connector}::{identifier}"))
 }
 
 fn add_resource_node(nodes: &mut BTreeMap<String, LineageNode>, node: &NodeSpec) -> Option<String> {
@@ -396,6 +411,7 @@ mod tests {
             transform: None,
             sinks,
             embedding: None,
+            llm: None,
             python: None,
             channel_capacity: 100,
             partitions: 1,

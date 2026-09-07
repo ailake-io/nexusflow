@@ -297,3 +297,94 @@ destino, só desperdiça trabalho numa tabela grande).
 
 Os 3 produzem `RecordBatch` com `__opcode` na mesma convenção do §5/§7 —
 mesmo `nexus_core::split_by_opcode` agnóstico à origem.
+
+## 17. LLMOps: node `llm`, RAG e avaliação sistemática
+
+Complementa o §8 (pipeline de embeddings) — nasce onde aquele termina:
+depois de chunk+embed, o node `llm` (opcional, mesmo pipeline) pode
+perguntar algo sobre o texto original, e o RAG expõe isso sob demanda
+fora do engine de batch. Plano de implementação marco a marco em
+`docs/LLMOPS_IMPLEMENTATION_PLAN.md`; resumo arquitetural aqui.
+
+**Node `llm` (pipeline em lote)**: `LlmNodeSpec` — 1 chamada HTTP por
+linha (não batch, diferente de embeddings), `input_columns`
+interpolados em `{placeholder}` no template resolvido. Dois backends:
+`LlmModelConfig::Api` (qualquer endpoint OpenAI-compatible — OpenAI,
+Ollama, Kimi/Moonshot etc.) e `LlmModelConfig::Anthropic` (Messages API
+nativa, sem modo "sem auth" — `api_key_env` obrigatório).
+`nexus_ai::llm::apply_llm` aplica no `RecordBatch`, anexando
+`output_column`; `nexus-server::runner::apply_llm_stage` orquestra a
+chamada real + log estruturado (nunca prompt/resposta cru, a menos que
+`log_full_content: true`) + persistência de custo/tokens
+(`pipeline_run_llm_stats_store.rs`).
+
+**Cache de resposta**: `LlmNodeSpec.cache: Option<LlmCacheSpec>`
+(Redis) — chave `sha256(model+prompt+max_tokens+temperature)`, TTL
+configurável. Cache hit reporta 0 tokens, ~0 latência.
+
+**Versionamento de prompt**: `PromptTemplateStore`
+(`POST`/`GET /prompts`) — cada `create()` é uma versão nova, nunca
+sobrescreve. `PromptRef{name, version: Option<u32>}` no node
+`llm`/RAG — `None` sempre resolve pra versão mais recente no momento
+do run.
+
+**RAG (`POST /rag/query`)**: fora do `PipelineSpec`/engine de batch —
+pergunta ad-hoc, uma de cada vez, reusando o `embedding`+`llm` de um
+pipeline já salvo. Fluxo: embute a pergunta com o MESMO modelo que
+gerou os vetores salvos → busca vetorial no sink → monta prompt com
+`{context}`/`{question}` (convenção própria, distinta do
+`{input_columns}` do node em lote) → chama o LLM → grava a geração
+(`llm_generations`, imutável). Suporta os 6 destinos vetoriais que o
+NexusFlow já tem em escrita — LanceDB, Qdrant, Milvus, pgvector,
+Pinecone, ChromaDB — cada um com seu próprio `search.rs` no respectivo
+crate de conector (não existia antes do LLMOps: todo conector vetorial
+só tinha sink, nunca query). LanceDB devolve `RecordBatch`
+(nativamente Arrow); os outros 5 devolvem `(chave, texto)` direto —
+não vale a pena forçar `RecordBatch` num formato que não é Arrow-nativo
+(pontos/JSON/linhas SQL).
+
+**Linhagem row→geração**: `GET /lineage/generation/{id}` — de qual
+linha/chunk uma resposta específica veio, via `LineageNode::Generation`
+(nunca aparece no grafo `GET /lineage` global, só nesse endpoint
+pontual, pra não crescer sem limite).
+
+**RAG reativo (CDC + embedding sem `transform`)**:
+`run_passthrough_pipeline` aceita `embedding` mesmo numa fonte `*-cdc`
+sem node `transform` — sem isso, uma mudança real (INSERT/UPDATE/DELETE
+via CDC) nunca virava vetor atualizado automaticamente, só um run
+manual/agendado. `BatchTransform` (`nexus-core::pipeline`) é o hook
+genérico que tornou isso possível sem acoplar o engine batch a "é
+embedding" — qualquer transformação de `RecordBatch` pode entrar ali
+no futuro.
+
+**Avaliação sistemática (golden dataset)**:
+`LlmNodeSpec.eval: Vec<LlmEvalCase>` — perguntas/respostas fixas,
+re-rodadas a cada run do pipeline (independente do dado real que
+passou, roda em qualquer caminho de execução —
+`run_transform_pipeline`, `run_linear_pipeline`/passthrough,
+`run_streaming_cdc_pipeline` — já que não depende de linha nenhuma
+processada). Scoring: `EvalScoringMode::TokenSimilarity` (Jaccard sobre
+tokens, padrão, determinístico) ou `LlmJudge` (segunda chamada ao
+mesmo `LlmBackend` julgando a resposta de 0 a 10, cai pro
+token-similarity se a nota não parsear). Resultado em
+`llm_eval_results`, visível no `QualityPanel.tsx` como 3ª origem (dbt /
+checks nativos / eval LLM).
+
+**Empacotamento enterprise (licenciamento de capability, não de
+conector)**: diferente do §11 (conector inteiro só existe no binário
+privado), duas capacidades do LLMOps são pagas mesmo vivendo sempre no
+binário público — `GET /lineage/generation/{id}` (slug
+`llm-lineage-tracking`) e a combinação CDC+embedding do RAG reativo
+(slug `reactive-rag-cdc`). Reaproveita o mesmo
+`check_connector_license`/`LicenseClaims` do §11, mas os dois slugs são
+registrados via `submit_enterprise_connector!` dentro do próprio
+`nexus-server` (`capability_registry.rs`), não num crate enterprise —
+se o registro só existisse quando um plugin privado estivesse linkado,
+o binário OSS "liberaria por padrão" (o comportamento seguro de
+`check_connector_license` quando o slug não é encontrado, correto pra
+conector real — que tem um segundo bloqueio no match arm de conexão —,
+mas não existe pra código que já roda sempre). `ConnectorCapability::Capability`
+marca esses 2 registros como não-conector, filtrados de
+`GET /connectors` pra nunca virar node type no Canvas. `POST /rag/query`
+em si continua OSS pra qualquer vetor store — só a linhagem da geração
+é paga.

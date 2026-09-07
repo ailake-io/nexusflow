@@ -17,12 +17,13 @@ pub use cdc::{project_column, split_by_opcode, CdcSplit};
 pub use checkpoint::{CheckpointCursor, Opcode, OPCODE_COLUMN};
 pub use dag::{
     is_internal_ip, AlertsConfig, ChunkingSpec, DbtCommand, DbtConfig, EmailAlertChannel,
-    EmbeddingModelSpec, EmbeddingSpec, NodeSpec, PagerDutyAlertChannel, PipelineSpec,
-    PythonTransformSpec, TransformSpec, WebhookAlertChannel,
+    EmbeddingModelSpec, EmbeddingSpec, EvalScoringMode, LlmCacheSpec, LlmEvalCase, LlmModelConfig,
+    LlmNodeSpec, NodeSpec, PagerDutyAlertChannel, PipelineSpec, PromptRef, PythonTransformSpec,
+    TransformSpec, WebhookAlertChannel,
 };
 pub use error::{with_timeout, NexusError};
 pub use pipeline::{
-    PartitionHandle, PartitionStats, PipelineEngine, ProgressEvent, ProgressSender,
+    BatchTransform, PartitionHandle, PartitionStats, PipelineEngine, ProgressEvent, ProgressSender,
     TransformPipeline,
 };
 pub use quality::{
