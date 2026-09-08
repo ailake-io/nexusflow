@@ -7,8 +7,9 @@ name: Release
 # OSS *and* every enterprise connector is linked in and license-gated — not
 # just OSS's own connectors-all — so GET /connectors lists the full catalog
 # and the Store always has enterprise connectors to sell, regardless of
-# which install path (this tarball/.deb/.rpm/AppImage, docker-publish's
-# image, or build-windows-installer.yml's .msi) someone picked. Plus the two
+# which install path (this tarball/.deb/.rpm/AppImage,
+# docker-hub-publish.yml's image, or build-windows-installer.yml's .msi)
+# someone picked. Plus the two
 # ADBC driver libraries nexus-connector-postgres/-sqlite dlopen at runtime
 # (no crates.io distribution of those exists — see
 # nexus-connector-postgres/src/driver.rs, ARCHITECTURE.md §3). Also produces
@@ -299,7 +300,7 @@ jobs:
       - run: ./scripts/build-adbc-clickhouse-driver.sh target/adbc
 
       # Every distributed artifact (this tarball, the .deb/.rpm/AppImage
-      # below, docker-publish's image, and build-windows-installer.yml's
+      # below, docker-hub-publish.yml's image, and build-windows-installer.yml's
       # .msi) now ships every enterprise connector compiled in and
       # license-gated (LICENSING.md §2/§3, docs/ENTERPRISE_LICENSING.md),
       # not just the OSS ones — so the Store always has something to sell
@@ -555,78 +556,14 @@ jobs:
             gh release upload "$tag" "$f" --clobber
           done
 
-  docker-publish:
-    if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') || github.event_name == 'workflow_dispatch'
-    needs: [determine-version, github-release]
-    runs-on: ubuntu-latest
-    timeout-minutes: 180
-    permissions:
-      contents: read
-      packages: write
-    env:
-      REGISTRY: ghcr.io
-      IMAGE_NAME: ${{ github.repository }}
-    steps:
-      # Builds from the private nexus-connectors-enterprise repo's own
-      # Dockerfile now, not this repo's — same reasoning as `build`'s
-      # equivalent step above: every published artifact ships every
-      # enterprise connector, license-gated, so the Store always has
-      # something to sell no matter which install path a user picked.
-      # `enterprise-src`'s Dockerfile clones its own pinned `nexusflow`
-      # checkout internally, so no checkout of *this* repo is needed here at
-      # all — only its Cargo.toml version (already resolved into
-      # `determine-version`'s output) and its commit sha (passed as
-      # NEXUSFLOW_REV below, so the image matches the exact commit being
-      # released) are used.
-      - name: Clone nexus-connectors-enterprise (read-only deploy key)
-        env:
-          DEPLOY_KEY: ${{ secrets.ENTERPRISE_REPO_DEPLOY_KEY }}
-        run: |
-          set -euo pipefail
-          mkdir -p -m 0700 ~/.ssh
-          # Real failure on a first real run (2026-09-05): OpenSSH failed
-          # with "error in libcrypto". Stripping CRLF alone (tried first,
-          # still failed the same way) wasn't enough — the missing piece
-          # was forcing exactly one trailing newline too, matching what
-          # actually fixed this on Windows (`.TrimEnd("`n") + "`n"` there).
-          # `$(...)` strips all trailing newlines from the captured value;
-          # `printf '%s\n'` adds back exactly one, regardless of whether
-          # the secret's raw value had zero, one, or several.
-          key="$(printf '%s' "$DEPLOY_KEY" | tr -d '\r')"
-          printf '%s\n' "$key" > ~/.ssh/enterprise_deploy_key
-          chmod 600 ~/.ssh/enterprise_deploy_key
-          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
-          GIT_SSH_COMMAND="ssh -i ~/.ssh/enterprise_deploy_key -o IdentitiesOnly=yes" \
-            git clone --depth 1 ssh://git@github.com/ailake-io/nexus-connectors-enterprise.git \
-            enterprise-src
-          rm -f ~/.ssh/enterprise_deploy_key
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata for Docker
-        id: meta
-        uses: docker/metadata-action@8e5442c4ef9f78752691e2d8f8d19755c6f78e81 # v5.5.1
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=v${{ needs.determine-version.outputs.version }}
-            type=raw,value=latest
-
-      - name: Build and push Docker image (full)
-        uses: docker/build-push-action@5cd11c3a4ced054e52742c5fd54dca954e0edd85 # v6.7.0
-        with:
-          context: enterprise-src
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            NEXUSFLOW_REV=${{ needs.determine-version.outputs.sha }}
-            ENTERPRISE_FEATURES=connectors-all
+  # Docker image publishing moved out of this workflow (2026-09-08) — see
+  # docker-hub-publish.yml. Was GHCR (ghcr.io/ailake-io/nexusflow); the
+  # image's home is now Docker Hub (thiagolange/nexusflow) instead, in its
+  # own workflow file so it doesn't share a runner slot with the rest of
+  # this release chain and can be re-run independently. That workflow
+  # triggers off this one's completion (`workflow_run: ["Release"]`) rather
+  # than duplicating `determine-version`'s Cargo.toml-bump-and-push logic —
+  # it just reads the already-determined version back out.
 
   # Keeps `develop` from drifting behind `main` after a release —
   # `determine-version` may have pushed a version-bump commit straight to
