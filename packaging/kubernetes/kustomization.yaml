@@ -5,8 +5,23 @@
 # --from-literal=...` / a real secrets manager) before applying for real.
 # hpa.yaml and pvc.yaml are optional — remove them from `resources` below if
 # you don't want autoscaling or a persistent embeddings cache. See README.md.
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
+#
+# Image tag: set it with the `images:` transformer below (or
+# `kustomize edit set image thiagolange/nexusflow=thiagolange/nexusflow:v0.1.3`)
+# instead of editing deployment.yaml directly — deployment.yaml itself pins
+# no tag on purpose (bare image name defaults to `:latest`, which this
+# transformer always overrides when set, so `kubectl apply -k` never
+# silently runs `:latest`). An earlier version of deployment.yaml used
+# shell-style `${NEXUSFLOW_VERSION:?...}` syntax here — that was misleading:
+# kustomize does not substitute environment variables into resource YAML
+# (confirmed via `kubectl kustomize .`, which prints that string back out
+# untouched), so applying without first hand-editing the image line failed
+# with an invalid image reference. Real users of this Kustomization always
+# had to know that; this transformer is the actual kustomize-native way to
+# set it.
+images:
+  - name: thiagolange/nexusflow
+    newTag: v0.1.3
 
 resources:
   - configmap.yaml
