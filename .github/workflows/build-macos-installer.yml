@@ -1,13 +1,14 @@
 name: build-macos-installer
 
-# Standalone macOS tarball build — deliberately NOT part of the CI ->
-# connectors-heavy -> Release chain (release.yml), same reasoning as
-# build-windows-installer.yml: an untested build (macOS + connectors-all
-# + every enterprise connector has never been attempted before this
-# workflow existed) shouldn't be able to fail the critical release path
-# that just became reliable (2026-09-06). release.yml's own macOS leg
-# still ships a plain-OSS tarball on every release; this workflow adds
-# the enterprise-bundled one on top, on demand.
+# macOS tarball build. Chained after the CI -> connectors-heavy -> Release
+# sequence on main (2026-09-08, at the user's explicit request) via
+# `workflow_run` below, same pattern build-windows-installer.yml uses —
+# still not a `needs:` inside release.yml itself (no cross-file `needs:`
+# exists), so a failed/cancelled Release run does not still kick this off
+# (see the job-level `if:`). This build (macOS + connectors-all + every
+# enterprise connector) has been proven against a real run since
+# 2026-09-06; release.yml's own macOS leg still ships a plain-OSS tarball
+# on every release, this workflow adds the enterprise-bundled one on top.
 #
 # Homebrew formula (packaging/macos/nexusflow.rb) expects exactly the
 # artifact this produces: nexusflow-macos-arm64.tar.gz attached to a
@@ -23,6 +24,14 @@ on:
           artifact, without publishing it anywhere.
         required: false
         type: string
+  # Automatic path: runs after Release finishes on main, same commit
+  # Release just tagged — always attaches the tarball to that release (the
+  # "leave blank" artifact-only path above only applies to the manual
+  # dispatch case, see "Resolve version" step below).
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+    branches: [main]
 
 permissions:
   contents: write
@@ -33,6 +42,7 @@ env:
 jobs:
   build-macos-installer:
     name: build-macos-installer
+    if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') || github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     # Same two-full-cargo-builds-back-to-back shape as
     # build-windows-installer.yml (plain OSS, then the enterprise binary
@@ -42,6 +52,29 @@ jobs:
     timeout-minutes: 240
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+
+      # Manual dispatch keeps its existing behavior exactly (empty `version`
+      # input means "just build, upload as an artifact, don't touch any
+      # release" — see the two `if:`s below). The automatic path
+      # (workflow_run after Release) has no input to take, so it derives
+      # the tag itself from Cargo.toml, same logic
+      # build-windows-installer.yml and docker-hub-publish.yml already use
+      # for the same reason — and always attaches to that release, since
+      # in that path the release is known to already exist (Release just
+      # published it).
+      - name: Resolve version
+        id: resolve-version
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.version }}"
+          else
+            version="$(grep -A3 '^\[workspace.package\]' Cargo.toml | grep '^version' | head -1 | cut -d '"' -f2)"
+            tag="v$version"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
@@ -145,7 +178,7 @@ jobs:
       # storage quota, don't depend on it when publishing straight from
       # disk is an option).
       - uses: actions/upload-artifact@834a144ee995460fba8ed112a2fc961b36a5ec5a # v4.4.3
-        if: inputs.version == ''
+        if: steps.resolve-version.outputs.tag == ''
         with:
           name: nexusflow-macos-installer
           path: nexusflow-macos-arm64.tar.gz
@@ -154,8 +187,8 @@ jobs:
       # unlike build-windows-installer.yml's self-hosted-turned-hosted
       # Windows box, no separate install step needed here.
       - name: Attach to release
-        if: inputs.version != ''
+        if: steps.resolve-version.outputs.tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.version }}
+          RELEASE_TAG: ${{ steps.resolve-version.outputs.tag }}
         run: gh release upload "$RELEASE_TAG" nexusflow-macos-arm64.tar.gz --clobber

@@ -1,18 +1,19 @@
 name: build-windows-installer
 
-# Standalone .msi build — deliberately NOT part of the CI -> connectors-heavy
-# -> Release chain (release.yml). Moved off the dedicated self-hosted
-# Windows box to hosted `windows-latest` 2026-09-05 (repo went public same
-# day, no more self-hosted NexusFlow Actions) — the vcpkg/OpenSSL setup
-# that used to be a manual one-time step on that host is now an explicit
-# `vcpkg install` step below, run fresh each time against the vcpkg
-# GitHub's windows-latest image ships pre-installed
-# (`$env:VCPKG_INSTALLATION_ROOT`). Not yet proven against a real run as of
-# this commit — nexus-connector-mysql's mysql_cdc only supports native
-# OpenSSL (no rustls option), which is what originally failed here before
-# vcpkg was set up. This workflow only ever runs when a human explicitly
-# triggers it (workflow_dispatch), never on push/PR, and never blocks or is
-# blocked by CI/connectors-heavy/Release.
+# .msi build. Chained after the CI -> connectors-heavy -> Release sequence
+# on main (2026-09-08, at the user's explicit request) via `workflow_run`
+# below — still not a `needs:` inside release.yml itself (there's no
+# cross-file `needs:`), so a failed/cancelled Release run does not still
+# kick this off (see the job-level `if:`). Moved off the dedicated
+# self-hosted Windows box to hosted `windows-latest` 2026-09-05 (repo went
+# public same day, no more self-hosted NexusFlow Actions) — the
+# vcpkg/OpenSSL setup that used to be a manual one-time step on that host
+# is now an explicit `vcpkg install` step below, run fresh each time
+# against the vcpkg GitHub's windows-latest image ships pre-installed
+# (`$env:VCPKG_INSTALLATION_ROOT`). Proven against real runs since
+# (nexus-connector-mysql's mysql_cdc only supports native OpenSSL, no
+# rustls option, which is what originally failed here before vcpkg was
+# set up).
 on:
   workflow_dispatch:
     inputs:
@@ -24,6 +25,14 @@ on:
           artifact, without publishing it anywhere.
         required: false
         type: string
+  # Automatic path: runs after Release finishes on main, same commit
+  # Release just tagged — always attaches the .msi to that release (the
+  # "leave blank" artifact-only path above only applies to the manual
+  # dispatch case, see "Resolve version" step below).
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+    branches: [main]
 
 permissions:
   contents: write
@@ -34,6 +43,7 @@ env:
 jobs:
   build-windows-installer:
     name: build-windows-installer
+    if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') || github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
     # 60 min wasn't enough on a real run (2026-09-05): the plain-OSS
     # `cargo build --release --features embed-ui,connectors-all` alone ran
@@ -49,6 +59,35 @@ jobs:
         shell: pwsh
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+
+      # Manual dispatch keeps its existing behavior exactly (empty `version`
+      # input means "just build, upload as an artifact, don't touch any
+      # release" — see the two `if:`s below). The automatic path
+      # (workflow_run after Release) has no input to take, so it derives
+      # the tag itself from Cargo.toml — same "read workspace.package's
+      # version, prefix with v" logic docker-hub-publish.yml already uses
+      # for the same reason — and always attaches to that release, since
+      # in that path the release is known to already exist (Release just
+      # published it).
+      - name: Resolve version
+        id: resolve-version
+        shell: pwsh
+        run: |
+          $dispatchVersion = "${{ inputs.version }}"
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $tag = $dispatchVersion
+          } else {
+            $content = Get-Content Cargo.toml -Raw
+            if ($content -match '\[workspace\.package\][^\[]*?version\s*=\s*"([^"]+)"') {
+              $tag = "v$($Matches[1])"
+            } else {
+              Write-Error "could not find version under [workspace.package] in Cargo.toml"
+              exit 1
+            }
+          }
+          echo "tag=$tag" >> $env:GITHUB_OUTPUT
 
       # Same install-if-missing PowerShell block connectors-heavy.yml uses on
       # this runner (WSL's bash shadows Git Bash in PATH there, which
@@ -267,7 +306,7 @@ jobs:
       # step failing outright once already blocked an otherwise-successful
       # build from finishing.
       - uses: actions/upload-artifact@834a144ee995460fba8ed112a2fc961b36a5ec5a # v4.4.3
-        if: inputs.version == ''
+        if: steps.resolve-version.outputs.tag == ''
         with:
           name: nexusflow-windows-installer
           path: ${{ steps.msi.outputs.path }}
@@ -280,7 +319,7 @@ jobs:
       # official release zip directly instead — same "pinned version +
       # sha256 check" pattern as the appimagetool download in ci.yml.
       - name: Install GitHub CLI
-        if: inputs.version != ''
+        if: steps.resolve-version.outputs.tag != ''
         run: |
           if (!(Get-Command gh.exe -ErrorAction SilentlyContinue)) {
             $ghVersion = "2.98.0"
@@ -300,9 +339,9 @@ jobs:
       # given — otherwise the artifact above is the whole output, a human
       # downloads and publishes it by hand whenever ready.
       - name: Attach to release
-        if: inputs.version != ''
+        if: steps.resolve-version.outputs.tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.version }}
+          RELEASE_TAG: ${{ steps.resolve-version.outputs.tag }}
           MSI_PATH: ${{ steps.msi.outputs.path }}
         run: gh release upload "$env:RELEASE_TAG" "$env:MSI_PATH" --clobber
