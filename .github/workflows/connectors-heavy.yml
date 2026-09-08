@@ -2,11 +2,12 @@ name: connectors-heavy
 
 on:
   workflow_dispatch:
+  # Runs on every push to develop, not just ones touching
+  # crates/nexus-connectors/** — changed 2026-09-08 at the user's explicit
+  # request (this heavy suite must fire on every push/merge to develop,
+  # full stop, not conditionally on which paths changed).
   push:
     branches: [develop]
-    paths:
-      - 'crates/nexus-connectors/**'
-      - '.github/workflows/connectors-heavy.yml'
   # On main, this is step 2 of a deliberate 3-stage chain: CI -> connectors-heavy
   # -> Release (see release.yml's matching workflow_run trigger for step 3).
   # `workflow_run` is the only way to sequence separate workflow files —
