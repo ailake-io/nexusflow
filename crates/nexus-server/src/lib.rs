@@ -2526,14 +2526,27 @@ pub async fn run() -> anyhow::Result<()> {
     // `version-history` on in a built image before the LLMOps Store
     // integration (see docs/ENTERPRISE_LICENSING.md), so this went
     // undetected: the server crashed on boot ("Permission denied") the
-    // first time the feature was actually exercised end-to-end. `$HOME`
-    // (`/home/nexusflow` in the image) is already created and chowned to
-    // this user for exactly this kind of runtime-writable, not-necessarily-
-    // persisted state — same directory nexus-ai's ONNX model cache uses.
+    // first time the feature was actually exercised end-to-end.
+    //
+    // First fix attempt used "$HOME/nexusflow-version-history.git" — wrong
+    // too, verified empirically: this image's minimal runtime environment
+    // never exports HOME at all (useradd -r creates no home entry that a
+    // non-login process inherits), so it silently fell through to the same
+    // "." fallback and crashed the same way. `std::env::temp_dir()`
+    // resolves via $TMPDIR with a hardcoded "/tmp" fallback — always
+    // exists, always writable, no environment precondition at all. Same
+    // "doesn't need to survive a container recreate" posture already used
+    // for this deployment's sqlite metadata DBs in local testbeds
+    // (docker-compose.nexusflow-test.yml's NEXUS_CHECKPOINT_DB, etc.) — a
+    // deployment that wants the git history to persist across restarts
+    // sets NEXUS_GIT_HISTORY_PATH to a mounted volume, same as it already
+    // must for sqlite-backed metadata.
     #[cfg(feature = "version-history")]
     let git_history_path = std::env::var("NEXUS_GIT_HISTORY_PATH").unwrap_or_else(|_| {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        format!("{home}/nexusflow-version-history.git")
+        std::env::temp_dir()
+            .join("nexusflow-version-history.git")
+            .to_string_lossy()
+            .into_owned()
     });
 
     let state = build_state(&ServerConfig {
