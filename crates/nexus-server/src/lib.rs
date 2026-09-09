@@ -2519,9 +2519,22 @@ pub async fn run() -> anyhow::Result<()> {
              and bypass per-IP login rate limiting entirely."
         );
     }
+    // Default used to be a bare relative path ("nexusflow-version-history.git",
+    // resolved against the process's CWD) — inside the published image that's
+    // "/" (no WORKDIR set in the runtime stage), owned by root, not writable
+    // by the non-root `nexusflow` user (uid 1001). Nothing had ever turned
+    // `version-history` on in a built image before the LLMOps Store
+    // integration (see docs/ENTERPRISE_LICENSING.md), so this went
+    // undetected: the server crashed on boot ("Permission denied") the
+    // first time the feature was actually exercised end-to-end. `$HOME`
+    // (`/home/nexusflow` in the image) is already created and chowned to
+    // this user for exactly this kind of runtime-writable, not-necessarily-
+    // persisted state — same directory nexus-ai's ONNX model cache uses.
     #[cfg(feature = "version-history")]
-    let git_history_path = std::env::var("NEXUS_GIT_HISTORY_PATH")
-        .unwrap_or_else(|_| "nexusflow-version-history.git".to_string());
+    let git_history_path = std::env::var("NEXUS_GIT_HISTORY_PATH").unwrap_or_else(|_| {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        format!("{home}/nexusflow-version-history.git")
+    });
 
     let state = build_state(&ServerConfig {
         checkpoint_database_url: database_url,
