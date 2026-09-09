@@ -432,6 +432,12 @@ export const translations = {
       billingTitle: 'Billing details (for checkout)',
       billingEmailPlaceholder: 'Email to receive the license key',
       buy: 'Buy — {price}',
+      capabilitiesTitle: 'LLMOps',
+      capability: {
+        generationTraceability: 'Generation Traceability (RAG)',
+        reactiveRag: 'Reactive RAG (CDC + auto-embedding)',
+        gitHistorySync: 'Git History → GitHub Sync',
+      },
     },
     dag: {
       errors: {
@@ -895,6 +901,12 @@ export const translations = {
       billingTitle: 'Dados de cobrança (pro checkout)',
       billingEmailPlaceholder: 'Email pra receber a license key',
       buy: 'Comprar — {price}',
+      capabilitiesTitle: 'LLMOps',
+      capability: {
+        generationTraceability: 'Rastreabilidade de Geração (RAG)',
+        reactiveRag: 'RAG Reativo (CDC + embedding automático)',
+        gitHistorySync: 'Sincronização de Histórico Git → GitHub',
+      },
     },
     dag: {
       errors: {
