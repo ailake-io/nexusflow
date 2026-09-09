@@ -16,11 +16,11 @@ Documento único de backlog técnico. Consolida:
 | Severidade | Quantidade | Risco resumido |
 |---|---|---|
 | Crítico | 0 | Todos os itens críticos originais foram resolvidos ou mitigados. |
-| Alto | 2 | Imagem Docker `:full` não publicada; revision ONNX não fixada. |
-| Moderado | 14 | SSRF via DNS, DeltaSink mascarando erros, docs de CDC/enterprise desatualizadas, i18n de erros no DAG, isolamento de runners. |
+| Alto | 1 | Revision ONNX não fixada (A09, imagem Docker, resolvido — ver §4). |
+| Moderado | 13 | SSRF via DNS, DeltaSink mascarando erros, docs de CDC/enterprise desatualizadas, i18n de erros no DAG, isolamento de runners (M30, Docker Hub, resolvido — ver §5). |
 | Baixo | 16 | Dívida técnica diversa (índices, cache headers, validações de schema, typos/docs). |
 
-**Conclusão imediata:** o projeto está estável para release de Linux x86_64 (tarball/.deb/.rpm/AppImage). Os principais riscos residuais são documentação prometendo imagem Docker que ainda não é publicada (A09/M30) e o `DeltaSink` mascarando erros de abertura de tabela (M09).
+**Conclusão imediata:** o projeto está estável para release de Linux x86_64 (tarball/.deb/.rpm/AppImage), com imagem Docker publicada de verdade no Docker Hub desde 2026-09-08 (A09/M30 resolvidos). O principal risco residual de Alto impacto é a revision ONNX não fixada (A08); de Moderado, o `DeltaSink` mascarando erros de abertura de tabela (M09).
 
 ---
 
@@ -31,7 +31,6 @@ Documento único de backlog técnico. Consolida:
 | ID | Problema | Evidência | Impacto | Ação recomendada |
 |---|---|---|---|---|
 | **A08** | **Revisão do modelo ONNX não é configurável**, contradiz `ARCHITECTURE.md` que promete revision fixada. | `ARCHITECTURE.md:117`; `crates/nexus-ai/src/embedding/pipeline.rs:68` | Reprodutibilidade quebrada; modelo pode mudar silenciosamente. | Adicionar campo `revision` ao `EmbeddingModelSpec` ou corrigir a doc. |
-| **A09** | **Imagem Docker publicada não tem `connectors-all`** e release não publica imagem Docker, contradizindo guias do usuário. | `docs/USER_GUIDE.md:35`; `docs/GETTING_STARTED.md:78`; `.github/workflows/release.yml`; `Dockerfile:22` | Documentação promete imagem `:full`/multi-registry que não existe. | Publicar imagem com `FEATURES=embed-ui,connectors-all` no GHCR ou corrigir docs. |
 
 ### 2.2 Moderados
 
@@ -48,7 +47,6 @@ Documento único de backlog técnico. Consolida:
 | **M27** | **Features `embeddings`/`embeddings-api`/`*-cdc` não são forwardadas pelo crate raiz.** | `Cargo.toml` raiz:20-47 | Adicionar forwards ou documentar a limitação. |
 | **M28** | **Chunking "semantic" documentado mas não selecionável no DAG.** | `CLAUDE.md:127`; `ARCHITECTURE.md:113`; `ROADMAP.md:63`; `crates/nexus-ai/src/chunking.rs:155`; `crates/nexus-core/src/dag.rs:127-139` | Adicionar variante ao `ChunkingSpec` ou marcar como biblioteca-only. |
 | **M29** | **`ENTERPRISE_LICENSING.md` desatualizado**: menciona `LicenseStore::is_connector_licensed` e rotas como implementadas; a função não existe. | `docs/ENTERPRISE_LICENSING.md:3,63-64` | Corrigir doc para refletir estado real: gate de catálogo pronto, gate de runtime e serviço de pagamento pendentes. |
-| **M30** | **Docker Hub ainda descrito como publicação ativa** em `CLAUDE.md`/`ROADMAP`. | `CLAUDE.md:163`; `ROADMAP.md:16,94` | Atualizar para "GHCR quando configurado; imagem Docker não publicada automaticamente no release atual". |
 | **M31** | **`install.sh` anuncia macOS** sem assets correspondentes no release. | `docs/GETTING_STARTED.md:36`; `scripts/install.sh:2,34` | Restringir script a Linux-x86_64-only por ora. |
 | **M37** | **Runners self-hosted sem isolamento para PRs.** | `.github/workflows/ci.yml` | Usar GitHub-hosted para PRs, adicionar environment de aprovação, ou documentar risco (repo privado hoje). |
 | **B31** | **`pipeline_store.rs` não cria índices** explícitos além da PK. | `crates/nexus-server/src/pipeline_store.rs:120-148` | Adicionar `CREATE INDEX` em `pipeline_runs.pipeline_id`, `pipelines.id`, etc. |
@@ -169,6 +167,7 @@ Os itens abaixo foram bloqueadores na revisão anterior e foram corrigidos:
 | **A06** | Exemplo de embedding quebrava. | `docs/GETTING_STARTED.md:96-115` — exemplo corrigido. |
 | **A07** | `NEXUS_ALLOW_INTERNAL_HOSTS` não documentado. | `docs/GETTING_STARTED.md:140` — na tabela de env vars. |
 | **A10** | Job `docker-image` vazava container. | `.github/workflows/ci.yml:159-162` — `docker rm -f` + `trap`. |
+| **A09** | Imagem Docker publicada não tinha `connectors-all`, release não publicava imagem. | Resolvido em duas etapas: imagem passou a publicar com `FEATURES=embed-ui,connectors-all` (inicialmente no GHCR), depois migrada por completo pro **Docker Hub** (`thiagolange/nexusflow`) em 2026-09-08 — `.github/workflows/docker-hub-publish.yml`, GHCR removido de `release.yml`. |
 
 ---
 
@@ -201,6 +200,7 @@ Os itens abaixo foram bloqueadores na revisão anterior e foram corrigidos:
 | **M35** | CI não rodava em PRs. | `ci.yml:6` — `pull_request`. |
 | **M36** | `.deb`/`.rpm` sem systemd. | `package-deb.sh`, `package-rpm.sh` — unit, usuário, postinst. |
 | **M38** | Tags flutuantes no Dockerfile. | `Dockerfile:15,24,35,44` — pin por digest. |
+| **M30** | Docker Hub descrito como pendente em `CLAUDE.md`/`ROADMAP.md` enquanto era GHCR que estava ativo. | Resolvido em 2026-09-08 — GHCR foi de fato descontinuado, publicação real migrou pro Docker Hub (`thiagolange/nexusflow`), docs atualizadas em todos os arquivos que mencionavam GHCR. |
 
 ---
 

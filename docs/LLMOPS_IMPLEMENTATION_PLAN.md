@@ -5,14 +5,18 @@
 > crates tocados, e critério de pronto por marco — mesmo padrão de
 > `IMPLEMENTATION_PLAN.md` pro resto do sistema.
 >
-> **Status (2026-09-07): todos os 8 marcos implementados**, na branch
-> `feature/llmops` (ainda não mergeada em `develop`, sem PR aberto — ver
-> `ARCHITECTURE.md §17` pro resumo arquitetural). Mais 2 rodadas fora do
-> plano original, pedidas depois do L8: L7 ganhou scoring "LLM como
-> juiz" e passou a rodar em todo caminho de execução (não só
-> `run_transform_pipeline`); RAG (L5) deixou de ser LanceDB-only e
-> passou a suportar os 6 destinos vetoriais do NexusFlow — ver seções
-> "L7 — follow-up" e "RAG multi-vetor" no final deste documento.
+> **Status (2026-09-07): todos os 8 marcos implementados e mergeados em
+> `develop`** (`518cfa3`, PR #79 — ver `ARCHITECTURE.md §17-18` pro
+> resumo arquitetural). Mais 3 rodadas fora do plano original: L7 ganhou
+> scoring "LLM como juiz" e passou a rodar em todo caminho de execução
+> (não só `run_transform_pipeline`); RAG (L5) deixou de ser LanceDB-only
+> e passou a suportar os 6 destinos vetoriais do NexusFlow; e, em
+> 2026-09-08/09, as 3 capabilities pagas (L8, incluindo
+> `git-history-github-sync`, ver `ARCHITECTURE.md §18`) viraram produtos
+> compráveis na Store, com 2 bugs reais de "vendável mas nunca
+> compilável/executável de fato" achados e corrigidos no processo — ver
+> seções "L7 — follow-up", "RAG multi-vetor" e `ROADMAP.md` Fase 26 pro
+> detalhe de cada uma.
 
 ## Ordem dos marcos
 
@@ -382,6 +386,21 @@ mecanismo que `docs/MLOPS_LLMOPS_PLAN.md` já descreveu (reaproveitar
 ausente); binário enterprise com license cobrindo `llm-lineage-tracking`
 expõe normalmente — mesmo teste de padrão que já existe pra conector
 pago (`check_connector_license`, ver `connectors.rs`'s testes).
+
+**Atualização 2026-09-08/09**: um terceiro slug de capability
+(`git-history-github-sync`, mirror do versionamento git pro GitHub —
+implementado no mesmo `518cfa3` mas fora do escopo original deste
+marco, ver `ARCHITECTURE.md §18`) foi incluído na mesma venda pela
+Store, junto com Excel (primeiro conector real testado via Stripe
+checkout). Achado e corrigido no processo: essa terceira capability
+era tecnicamente vendável mas **impossível de compilar em qualquer
+binário já publicado** (feature Cargo nunca forwardada do repo
+enterprise) e, mesmo depois de corrigido isso, **crashava no boot** da
+imagem publicada por causa de um path default não gravável. Ver
+`docs/ENTERPRISE_LICENSING.md` e `ARCHITECTURE.md §18` pro detalhe
+completo — o "critério de pronto" de 2026-09-07 acima não pegava esse
+tipo de falha porque testava só `cargo test`, nunca o binário
+publicado de verdade rodando com a feature ligada.
 
 ---
 
