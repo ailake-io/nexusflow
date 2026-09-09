@@ -372,19 +372,79 @@ checks nativos / eval LLM).
 
 **Empacotamento enterprise (licenciamento de capability, não de
 conector)**: diferente do §11 (conector inteiro só existe no binário
-privado), duas capacidades do LLMOps são pagas mesmo vivendo sempre no
-binário público — `GET /lineage/generation/{id}` (slug
-`llm-lineage-tracking`) e a combinação CDC+embedding do RAG reativo
-(slug `reactive-rag-cdc`). Reaproveita o mesmo
-`check_connector_license`/`LicenseClaims` do §11, mas os dois slugs são
-registrados via `submit_enterprise_connector!` dentro do próprio
-`nexus-server` (`capability_registry.rs`), não num crate enterprise —
-se o registro só existisse quando um plugin privado estivesse linkado,
-o binário OSS "liberaria por padrão" (o comportamento seguro de
+privado), três capacidades são pagas mesmo vivendo sempre no binário
+público — `GET /lineage/generation/{id}` (slug `llm-lineage-tracking`),
+a combinação CDC+embedding do RAG reativo (slug `reactive-rag-cdc`) e o
+mirror de histórico git pro GitHub (slug `git-history-github-sync`, ver
+§18). Reaproveita o mesmo `check_connector_license`/`LicenseClaims` do
+§11, mas os três slugs são registrados via
+`submit_enterprise_connector!` dentro do próprio `nexus-server`
+(`capability_registry.rs`), não num crate enterprise — se o registro só
+existisse quando um plugin privado estivesse linkado, o binário OSS
+"liberaria por padrão" (o comportamento seguro de
 `check_connector_license` quando o slug não é encontrado, correto pra
 conector real — que tem um segundo bloqueio no match arm de conexão —,
 mas não existe pra código que já roda sempre). `ConnectorCapability::Capability`
-marca esses 2 registros como não-conector, filtrados de
+marca esses 3 registros como não-conector, filtrados de
 `GET /connectors` pra nunca virar node type no Canvas. `POST /rag/query`
 em si continua OSS pra qualquer vetor store — só a linhagem da geração
 é paga.
+
+**Venda via Store (2026-09-08/09)**: os 3 slugs acima viraram produtos
+compráveis na Store (`frontend/src/components/Store.tsx`), cadastrados
+como 3 itens separados (não um pacote único) no `nexus-licensing`
+(repo privado, ver `docs/ENTERPRISE_LICENSING.md`) — mesmo checkout
+Stripe já validado ponta a ponta pro conector Excel, sem nenhuma
+mudança de backend: `nexus-licensing`'s `products.connector_slug` já
+era string livre, e o JWT `connectors: [...]` já cobre qualquer slug,
+conector ou capability, do mesmo jeito. Como esses 3 nunca aparecem em
+`GET /connectors` (parágrafo acima), a lista de itens vendáveis fica
+hardcoded em `LLMOPS_CAPABILITIES` dentro do próprio `Store.tsx`,
+cruzada com `license.connectors` (não com o campo `licensed`, que só
+existe pras entradas vindas de `GET /connectors`).
+
+## 18. Versionamento de pipelines/prompts em git embutido, mirror pro GitHub
+
+Feature `version-history` (`dep:git2` + `dep:similar`, vendored —
+libgit2 buildado da fonte, mesma postura estática do resto do
+workspace), implementada junto com o LLMOps (commit `518cfa3`, "e
+versionamento git") mas nunca documentada aqui até agora. Todo
+`PipelineStore::create`/`update` e `PromptTemplateStore::create` também
+comita seu conteúdo num repo git local embutido (`git_history_store.rs`,
+sem GitHub necessário — funciona 100% OSS, offline).
+
+**Mirror opcional pro GitHub**: `PUT /settings/git-remote` configura
+(ou troca) uma URL+token; a partir daí, cada commit local também tenta
+um push best-effort em background (`maybe_push_git_history_to_remote`)
+— nunca bloqueia nem falha o save que disparou. Esse push é a única
+parte paga: roda só se a license ativa cobrir `git-history-github-sync`
+(mesmo `check_connector_license` do §17); sem cobertura, a função
+simplesmente retorna sem tentar nada — sem erro HTTP, sem log de
+warning (só o log de falha de push de verdade tem `tracing::warn!`).
+`PUT`/`DELETE /settings/git-remote` em si não checam license nenhuma —
+dá pra configurar o remote sem cobertura, ele só fica sem efeito até
+uma license cobrir o slug.
+
+**Bugs reais achados em 2026-09-08/09** (ninguém tinha ligado
+`version-history` num binário publicado antes disso — a feature
+existia desde `518cfa3` mas nunca foi de fato compilada em nada que
+saísse pra fora):
+- `nexus-connectors-enterprise`'s `bin/Cargo.toml` nunca expunha
+  `llm`/`version-history` como feature própria, e `version-history`
+  nem entrava no `connectors-all` deste repo (`nexus-server/Cargo.toml`)
+  — ou seja, a capability era vendável mas fisicamente impossível de
+  compilar em qualquer binário já publicado. Corrigido nos dois repos
+  (`connectors-all`/`connectors-all-no-embeddings` de `nexus-server` e
+  o passthrough de features em `bin/Cargo.toml`).
+- Default de `NEXUS_GIT_HISTORY_PATH` era um caminho relativo
+  (`"nexusflow-version-history.git"`, resolvido contra o CWD do
+  processo) — na imagem publicada isso é `/`, dono root, sem permissão
+  de escrita pro usuário não-root (`nexusflow`, uid 1001). Primeira
+  tentativa de correção (`$HOME/...`) também falhou — essa imagem
+  mínima nunca exporta `$HOME` pra um processo não-interativo. Fix
+  final: `std::env::temp_dir()` (resolve via `$TMPDIR`, cai pra `/tmp`
+  hardcoded) — não depende de nenhuma env var, sempre existe, sempre
+  gravável. Mesma postura de "não precisa sobreviver a um restart" já
+  usada pros bancos sqlite de teste local; um deployment que queira o
+  histórico persistente aponta `NEXUS_GIT_HISTORY_PATH` pra um volume
+  montado, do mesmo jeito que já precisa fazer pro sqlite de metadados.

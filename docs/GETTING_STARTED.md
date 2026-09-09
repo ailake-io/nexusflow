@@ -76,7 +76,7 @@ Escolha uma das opções abaixo. Todas sobem o mesmo binário: um único process
 
 ### Docker (mais simples)
 
-Imagem publicada no GHCR (já com todos os 31 conectores):
+Imagem publicada no Docker Hub (já com todos os 31 conectores) — GHCR foi descontinuado em 2026-09-08:
 
 ```bash
 # volume nomeado nasce root-owned; o container roda como uid 1001 (não-root) —
@@ -94,7 +94,7 @@ docker run -d --name nexusflow -p 8080:8080 \
   -e NEXUS_AUTH_DB="sqlite:///data/nexusflow-auth.db" \
   -e NEXUS_PIPELINES_DB="sqlite:///data/nexusflow-pipelines.db" \
   -v nexusflow_data:/data \
-  ghcr.io/ailake-io/nexusflow:latest
+  thiagolange/nexusflow:latest
 ```
 
 Build local (imagem por padrão só liga postgres/sqlite, igual ao binário nativo — ver seção 2 abaixo):
@@ -167,7 +167,7 @@ export NEXUS_ADMIN_PASSWORD="troque-isto"
 
 ## 2. Habilitando conectores
 
-Isso só se aplica a quem builda a partir do source (seção 1, "Build a partir do source") — os binários pré-buildados (script de instalação, `.deb`/AppImage/rpm) e a imagem Docker publicada no GHCR já vêm com `connectors-all` ligado, ver seção 1.
+Isso só se aplica a quem builda a partir do source (seção 1, "Build a partir do source") — os binários pré-buildados (script de instalação, `.deb`/AppImage/rpm) e a imagem Docker publicada no Docker Hub já vêm com `connectors-all` ligado, ver seção 1.
 
 Por padrão um `cargo build` sem flags só liga `postgres` e `sqlite`. A feature `connectors-all` habilita as outras **27 features de conector** (29 nomes no catálogo, pois `rest` registra tanto `rest` quanto `webhook`, e `mongodb` registra `mongodb`+`mongodb-cdc` sem feature própria pra CDC): mongodb, mysql (batch, via `mysql_async`), kafka (source+sink), mqtt, rest, webhook, odbc, milvus, qdrant, lancedb, pgvector, pinecone, chromadb, deltalake, iceberg, parquet, ailake, csv, clickhouse (ADBC, sink append-only), duckdb (ADBC, upsert real), redis (Streams), nats (core pub/sub), rabbitmq (AMQP 0-9-1) e os 6 CDCs nativos (postgres-cdc, mongodb-cdc, mysql-cdc, deltalake-cdc, iceberg-cdc, ailake-cdc). Cada um só entra no binário se sua feature for pedida:
 
@@ -259,8 +259,11 @@ cargo run --release -p nexus-server --bin migrate-metadata --features postgres -
 Manifests de referência (Deployment/Service/PVC/HPA/ConfigMap/Secret) em
 `packaging/kubernetes/` (`kubectl apply -k packaging/kubernetes/`), stack file
 de Docker Swarm em `packaging/swarm/` (`docker stack deploy`) — ver o `README.md`
-de cada um. Não são Helm chart nem testados num cluster gerenciado real, são
-ponto de partida validado offline.
+de cada um. Não são Helm chart. Kubernetes foi validado num **minikube real**
+em 2026-09-06/07 (multi-réplica com Postgres compartilhado, health probes,
+HPA+metrics-server funcionando) — ainda não testado num cluster gerenciado
+real (EKS/GKE/AKS). Docker Swarm continua ponto de partida validado só
+offline.
 
 ## 4. Primeiro acesso
 
