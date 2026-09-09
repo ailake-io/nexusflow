@@ -17,7 +17,7 @@ Documento único de backlog técnico. Consolida:
 |---|---|---|
 | Crítico | 0 | Todos os itens críticos originais foram resolvidos ou mitigados. |
 | Alto | 1 | Revision ONNX não fixada (A09, imagem Docker, resolvido — ver §4). |
-| Moderado | 13 | SSRF via DNS, DeltaSink mascarando erros, docs de CDC/enterprise desatualizadas, i18n de erros no DAG, isolamento de runners (M30, Docker Hub, resolvido — ver §5). |
+| Moderado | 12 | SSRF via DNS, DeltaSink mascarando erros, docs de CDC/enterprise desatualizadas, i18n de erros no DAG, isolamento de runners (M30/M31, resolvidos — ver §5). |
 | Baixo | 16 | Dívida técnica diversa (índices, cache headers, validações de schema, typos/docs). |
 
 **Conclusão imediata:** o projeto está estável para release de Linux x86_64 (tarball/.deb/.rpm/AppImage), com imagem Docker publicada de verdade no Docker Hub desde 2026-09-08 (A09/M30 resolvidos). O principal risco residual de Alto impacto é a revision ONNX não fixada (A08); de Moderado, o `DeltaSink` mascarando erros de abertura de tabela (M09).
@@ -47,7 +47,6 @@ Documento único de backlog técnico. Consolida:
 | **M27** | **Features `embeddings`/`embeddings-api`/`*-cdc` não são forwardadas pelo crate raiz.** | `Cargo.toml` raiz:20-47 | Adicionar forwards ou documentar a limitação. |
 | **M28** | **Chunking "semantic" documentado mas não selecionável no DAG.** | `CLAUDE.md:127`; `ARCHITECTURE.md:113`; `ROADMAP.md:63`; `crates/nexus-ai/src/chunking.rs:155`; `crates/nexus-core/src/dag.rs:127-139` | Adicionar variante ao `ChunkingSpec` ou marcar como biblioteca-only. |
 | **M29** | **`ENTERPRISE_LICENSING.md` desatualizado**: menciona `LicenseStore::is_connector_licensed` e rotas como implementadas; a função não existe. | `docs/ENTERPRISE_LICENSING.md:3,63-64` | Corrigir doc para refletir estado real: gate de catálogo pronto, gate de runtime e serviço de pagamento pendentes. |
-| **M31** | **`install.sh` anuncia macOS** sem assets correspondentes no release. | `docs/GETTING_STARTED.md:36`; `scripts/install.sh:2,34` | Restringir script a Linux-x86_64-only por ora. |
 | **M37** | **Runners self-hosted sem isolamento para PRs.** | `.github/workflows/ci.yml` | Usar GitHub-hosted para PRs, adicionar environment de aprovação, ou documentar risco (repo privado hoje). |
 | **B31** | **`pipeline_store.rs` não cria índices** explícitos além da PK. | `crates/nexus-server/src/pipeline_store.rs:120-148` | Adicionar `CREATE INDEX` em `pipeline_runs.pipeline_id`, `pipelines.id`, etc. |
 
