@@ -22,15 +22,16 @@ entra na chain automática pra não arriscar o release principal com um
 build ainda não validado (mesmo racional do Windows já ter um workflow
 separado do zero).
 
-`.github/workflows/build-macos-installer.yml` (`workflow_dispatch`
-manual) builda o binário **enterprise-bundled** completo — mesmo truque
-do Windows (clonar `nexus-connectors-enterprise` + `[patch]` de Cargo
-apontando pro checkout OSS já baixado, sem precisar de Docker, que não
-existe em runner macOS hospedado). Rodá-lo com `-f version=vX.Y.Z`
-**sobrescreve** o `nexusflow-macos-arm64.tar.gz` que o release automático
-já publicou (mesmo nome de arquivo, `--clobber`) — resultado final: o
-asset publicado na release passa a ser o enterprise-bundled, igual ao
-que Linux/Windows já entregam.
+`.github/workflows/build-macos-installer.yml` builda o binário
+**enterprise-bundled** completo — mesmo truque do Windows (clonar
+`nexus-connectors-enterprise` + `[patch]` de Cargo apontando pro
+checkout OSS já baixado, sem precisar de Docker, que não existe em
+runner macOS hospedado). Desde 2026-09-08 dispara sozinho (`workflow_run`
+em `Release`, branch `main`) além do `workflow_dispatch` manual — em
+qualquer um dos dois casos, sobrescreve o `nexusflow-macos-arm64.tar.gz`
+que o release automático já publicou (mesmo nome de arquivo,
+`--clobber`) — resultado final: o asset publicado na release é sempre o
+enterprise-bundled, igual ao que Linux/Windows já entregam.
 
 Bug real encontrado e corrigido no primeiro run: faltava o step `cargo
 build --release -p nexusflow` (builda o OSS puro) antes do step que
