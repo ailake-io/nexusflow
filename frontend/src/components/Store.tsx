@@ -19,6 +19,35 @@ import {
 type Currency = 'brl' | 'usd'
 
 /**
+ * The three LLMOps capability slugs (`capability_registry.rs`,
+ * LLMOPS_IMPLEMENTATION_PLAN.md Marco L8) — license-check targets for
+ * features that live in *this* public binary, not connector crates.
+ * `GET /connectors` deliberately never lists them (`ConnectorCapability::
+ * Capability` is filtered out server-side, `lib.rs`'s
+ * `list_connectors_handler` — the Canvas must never offer them as a
+ * pipeline node), so unlike `enterpriseConnectors` below this list is
+ * static here and cross-checked against `license.connectors` directly
+ * instead of a `licensed` flag from the API. Sold as separate line items
+ * (`nexus-licensing` products, one `connector_slug` per capability) —
+ * `createCheckout` already accepts multiple `product_ids` in one purchase
+ * if a buyer wants more than one, but each keeps its own price/on-off
+ * state, e.g. Generation Traceability is not bundled into the others.
+ *
+ * `llm-lineage-tracking`'s label is "Generation Traceability (RAG)", not
+ * "Data Quality & Lineage" — it only gates `GET /lineage/generation/{id}`
+ * (which prompt/model/row produced one specific RAG answer, `rag.rs`'s
+ * `generation_detail_handler`). The Quality tab (`quality_check_store.rs`)
+ * and the base pipeline-lineage graph (`GET /lineage`) stay OSS, ungated —
+ * a broader label here would make a buyer think they're paying for those
+ * too.
+ */
+const LLMOPS_CAPABILITIES: { slug: string; labelKey: string }[] = [
+  { slug: 'llm-lineage-tracking', labelKey: 'store.capability.generationTraceability' },
+  { slug: 'reactive-rag-cdc', labelKey: 'store.capability.reactiveRag' },
+  { slug: 'git-history-github-sync', labelKey: 'store.capability.gitHistorySync' },
+]
+
+/**
  * Store tab (ROADMAP.md Fase 12): lists enterprise connectors, marks which
  * ones the installed license already covers ("Adquirido"), and lets an
  * Admin install a license key (`POST /license`, same route/RBAC as
@@ -33,6 +62,10 @@ type Currency = 'brl' | 'usd'
  * `docs/ENTERPRISE_CONNECTORS.md`), so there's no separate "coming soon"
  * section left to show; a static placeholder list here would just repeat
  * what's already real above it.
+ *
+ * "LLMOps" is a second, separate section below it: those three slugs
+ * aren't connectors at all (see `LLMOPS_CAPABILITIES` above), so they
+ * can't come from the same `enterpriseConnectors` list.
  */
 export function Store() {
   const { t } = useI18n()
@@ -234,6 +267,59 @@ export function Store() {
                   <div className="flex items-center justify-between">
                     <span className="font-medium text-foreground">{c.name}</span>
                     {c.licensed ? (
+                      <span className="flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-400">
+                        <CheckCircle2 className="h-3 w-3" /> {t('store.acquired')}
+                      </span>
+                    ) : (
+                      <span className="flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-400">
+                        <Lock className="h-3 w-3" /> {t('store.locked')}
+                      </span>
+                    )}
+                  </div>
+                  {product && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="mt-3 w-full"
+                      disabled={buyingSlug === product.connector_slug || !buyerEmail.trim()}
+                      onClick={() => handleBuy(product.connector_slug)}
+                    >
+                      {buyingSlug === product.connector_slug ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <ShoppingCart className="h-3.5 w-3.5" />
+                      )}
+                      {t('store.buy', {
+                        price:
+                          currency === 'brl'
+                            ? `R$ ${(product.price_cents_brl / 100).toFixed(2)}`
+                            : `US$ ${(product.price_cents_usd / 100).toFixed(2)}`,
+                      })}
+                    </Button>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {licensingConfigured && (
+        <div className="mb-8">
+          <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            {t('store.capabilitiesTitle')}
+          </h2>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {LLMOPS_CAPABILITIES.map((cap) => {
+              const acquired = license?.connectors.includes(cap.slug) ?? false
+              const product = !acquired
+                ? products.find((p) => p.connector_slug === cap.slug && p.active)
+                : undefined
+              return (
+                <div key={cap.slug} className="rounded-xl border border-white/10 bg-card p-4">
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium text-foreground">{t(cap.labelKey)}</span>
+                    {acquired ? (
                       <span className="flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-400">
                         <CheckCircle2 className="h-3 w-3" /> {t('store.acquired')}
                       </span>
