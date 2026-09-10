@@ -3,6 +3,7 @@ pub mod cdc;
 pub mod checkpoint;
 pub mod dag;
 pub mod error;
+pub mod infra_registry;
 pub mod pipeline;
 pub mod quality;
 pub mod record_batch_builder;
@@ -22,6 +23,10 @@ pub use dag::{
     TransformSpec, WebhookAlertChannel,
 };
 pub use error::{with_timeout, NexusError};
+pub use infra_registry::{
+    GeneratedFiles, InfraEdge, InfraGenerateFn, InfraGenerator, InfraGraph, InfraModuleDescriptor,
+    InfraNode,
+};
 pub use pipeline::{
     BatchTransform, PartitionHandle, PartitionStats, PipelineEngine, ProgressEvent, ProgressSender,
     TransformPipeline,

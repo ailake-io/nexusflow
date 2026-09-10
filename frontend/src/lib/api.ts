@@ -94,6 +94,58 @@ export function listConnectors(token: string): Promise<ConnectorDescriptor[]> {
   return request<ConnectorDescriptor[]>('/connectors', {}, token)
 }
 
+/** Matches nexus-server::infra::InfraModuleDto, as returned by
+ * GET /infra/modules — empty array in any build without the enterprise
+ * `nexus-infra-terraform` crate linked in, or without a license covering
+ * `infra-terraform-generator` (single gate for the whole Infra tab, unlike
+ * the Store's per-connector `licensed` flag — see `docs/ENTERPRISE_LICENSING.md`). */
+export interface InfraModuleDescriptor {
+  id: string
+  name: string
+  category: string
+  provider: string
+  config_schema: ConnectorConfigSchema
+  outputs: string[]
+}
+
+export function listInfraModules(token: string): Promise<InfraModuleDescriptor[]> {
+  return request<InfraModuleDescriptor[]>('/infra/modules', {}, token)
+}
+
+/** Matches nexus-core::InfraNode/InfraEdge/InfraGraph exactly
+ * (crates/nexus-core/src/infra_registry.rs) — the POST /infra/generate
+ * request body. */
+export interface InfraNode {
+  id: string
+  module: string
+  config: Record<string, unknown>
+}
+
+export interface InfraEdge {
+  from: string
+  to: string
+  output: string
+  input: string
+}
+
+export interface InfraGraph {
+  nodes: InfraNode[]
+  edges: InfraEdge[]
+}
+
+/** Matches nexus-core::GeneratedFiles — file name to full `.tf` content. */
+export interface GeneratedFiles {
+  files: Record<string, string>
+}
+
+export function generateInfra(token: string, graph: InfraGraph): Promise<GeneratedFiles> {
+  return request<GeneratedFiles>(
+    '/infra/generate',
+    { method: 'POST', body: JSON.stringify(graph) },
+    token,
+  )
+}
+
 /** Matches nexus-server::preview_adhoc_handler's response
  * (POST /connectors/preview) — same shape GET /pipelines/{id}/preview
  * returns, just for a bare connector/config pair instead of a saved
