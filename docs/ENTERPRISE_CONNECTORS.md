@@ -38,16 +38,28 @@ Ponto de partida do usuário: Excel, Oracle, Snowflake, ClickHouse, BigQuery, Re
 
 ## 3. Marketing / Ads / Analytics (alto volume, padrão Fivetran/Airbyte)
 
+> **2026-09-10**: os 5 conectores de ads (Google/Meta/LinkedIn/TikTok/X)
+> têm crate implementado no repo privado, mas foram **retirados de
+> `connectors-all`/`connectors-all-no-embeddings`** (`bin/Cargo.toml`) —
+> nenhum deles foi validado contra uma conta de ads real ainda (Google
+> Ads chegou mais perto: OAuth configurado, travou no penúltimo passo
+> por um atraso de segurança de 6 dias na conta Google usada pro teste,
+> não é bug do conector; os outros 4 nem começaram). Não entram em
+> nenhum binário publicado (Docker Hub, `.msi`, tarball macOS,
+> `.deb`/`.rpm`/AppImage) até passar num teste real, um de cada vez —
+> ver `docs/PENDING_REAL_ACCOUNT_VALIDATION.md`. "Implementado" abaixo
+> significa "crate existe e compila", não "incluído no build padrão".
+
 | Conector | Por quê é pago |
 |---|---|
 | **Google Analytics (GA4)** ✅ implementado | Conector mais usado em stacks de marketing analytics |
-| **Google Ads** ✅ implementado | Par natural do GA4 |
-| **Meta Ads** (Facebook/Instagram) ✅ implementado | Mesma categoria, alto volume de contas pequenas/médias |
-| **LinkedIn Ads** ✅ implementado | Nicho B2B, ticket médio |
-| **X Ads** ✅ implementado | Mesma categoria de marketing analytics, volume menor que Meta/Google mas cliente já paga por ferramenta de ads que cobre a plataforma |
+| **Google Ads** ✅ implementado, ⛔ excluído do build padrão até teste real | Par natural do GA4 |
+| **Meta Ads** (Facebook/Instagram) ✅ implementado, ⛔ excluído do build padrão até teste real | Mesma categoria, alto volume de contas pequenas/médias |
+| **LinkedIn Ads** ✅ implementado, ⛔ excluído do build padrão até teste real (também precisa de aprovação MDP discricionária do LinkedIn) | Nicho B2B, ticket médio |
+| **X Ads** ✅ implementado, ⛔ excluído do build padrão até teste real | Mesma categoria de marketing analytics, volume menor que Meta/Google mas cliente já paga por ferramenta de ads que cobre a plataforma |
 | **Stripe** ✅ implementado (read-only por design — nunca ganha sink, transação financeira real fica fora de escopo) | Dados financeiros/billing, alta demanda em SaaS |
 | **Shopify** ✅ implementado | E-commerce, alto volume |
-| **TikTok Ads** ✅ implementado (não estava na lista original, construído por analogia ao Meta Ads/GA4) | Mesma categoria de marketing analytics, alto volume |
+| **TikTok Ads** ✅ implementado, ⛔ excluído do build padrão até teste real (não estava na lista original, construído por analogia ao Meta Ads/GA4) | Mesma categoria de marketing analytics, alto volume |
 | **YouTube Analytics** ✅ implementado (idem, não estava na lista original) | Mesma categoria, complementa GA4/Google Ads no ecossistema Google |
 
 ## 4. Arquivos de escritório / produtividade
