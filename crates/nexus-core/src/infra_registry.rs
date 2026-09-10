@@ -53,6 +53,14 @@ pub struct InfraGraph {
     pub nodes: Vec<InfraNode>,
     #[serde(default)]
     pub edges: Vec<InfraEdge>,
+    /// Provider-level settings (region, etc.) that go in the generated
+    /// `providers.tf` rather than any one module — e.g.
+    /// `{"aws": {"region": "us-east-1"}}`. Free-form JSON (not a fixed
+    /// struct) so a future GCP/Azure provider block doesn't need a
+    /// nexus-core release to add its own shape. `None`/absent keys fall
+    /// back to the enterprise crate's own sensible defaults.
+    #[serde(default)]
+    pub provider: serde_json::Value,
 }
 
 /// `BTreeMap`, not `HashMap` — deterministic file ordering in the JSON

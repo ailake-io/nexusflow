@@ -131,6 +131,9 @@ export interface InfraEdge {
 export interface InfraGraph {
   nodes: InfraNode[]
   edges: InfraEdge[]
+  /** Provider-level settings (e.g. `{"aws": {"region": "us-east-1"}}`) that
+   * go in the generated `providers.tf` rather than any one module. */
+  provider: Record<string, unknown>
 }
 
 /** Matches nexus-core::GeneratedFiles — file name to full `.tf` content. */

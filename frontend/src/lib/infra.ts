@@ -28,7 +28,11 @@ export interface InfraEdgeData extends Record<string, unknown> {
   input: string
 }
 
-export function toInfraGraph(nodes: InfraNode[], edges: Edge[]): InfraGraph {
+export function toInfraGraph(
+  nodes: InfraNode[],
+  edges: Edge[],
+  provider: Record<string, unknown> = {},
+): InfraGraph {
   return {
     nodes: nodes.map((n) => ({
       id: n.id,
@@ -39,6 +43,7 @@ export function toInfraGraph(nodes: InfraNode[], edges: Edge[]): InfraGraph {
       const data = (e.data as InfraEdgeData | undefined) ?? { output: '', input: '' }
       return { from: e.source, to: e.target, output: data.output, input: data.input }
     }),
+    provider,
   }
 }
 

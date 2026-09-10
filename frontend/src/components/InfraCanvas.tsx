@@ -269,6 +269,7 @@ function CanvasInner() {
   const [generating, setGenerating] = useState(false)
   const [generateError, setGenerateError] = useState<string | null>(null)
   const [generated, setGenerated] = useState<GeneratedFiles | null>(null)
+  const [region, setRegion] = useState('us-east-1')
 
   const onNodesChange: OnNodesChange<InfraNodeType> = useCallback(
     (changes) => setNodes((current) => applyNodeChanges(changes, current)),
@@ -321,7 +322,7 @@ function CanvasInner() {
     setGenerating(true)
     setGenerateError(null)
     try {
-      const graph = toInfraGraph(nodes, edges)
+      const graph = toInfraGraph(nodes, edges, { aws: { region } })
       const files = await generateInfra(token, graph)
       setGenerated(files)
     } catch (err) {
@@ -345,10 +346,21 @@ function CanvasInner() {
           <h1 className="text-sm font-semibold text-foreground">{t('infra.title')}</h1>
           <p className="text-xs text-muted-foreground">{t('infra.subtitle')}</p>
         </div>
-        <Button size="sm" onClick={handleGenerate} disabled={generating || nodes.length === 0}>
-          {generating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
-          {t('infra.generate')}
-        </Button>
+        <div className="flex items-center gap-2">
+          <label className="text-xs text-muted-foreground" htmlFor="infra-region">
+            {t('infra.region')}
+          </label>
+          <Input
+            id="infra-region"
+            value={region}
+            onChange={(e) => setRegion(e.target.value)}
+            className="h-7 w-28 text-xs"
+          />
+          <Button size="sm" onClick={handleGenerate} disabled={generating || nodes.length === 0}>
+            {generating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+            {t('infra.generate')}
+          </Button>
+        </div>
       </div>
       {generateError && (
         <div className="flex items-center gap-2 border-b border-red-500/20 bg-red-500/10 px-4 py-2 text-xs text-red-400">
