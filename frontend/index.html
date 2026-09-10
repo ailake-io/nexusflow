@@ -4,9 +4,27 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      connect-src includes %VITE_LICENSING_API_URL% (Vite's built-in
+      index.html env interpolation, no plugin needed — same var
+      api.ts's isLicensingConfigured()/licensingRequest() already read
+      from import.meta.env) so the Store's cross-origin calls to
+      nexus-licensing aren't silently blocked by this page's own CSP.
+      Real bug found 2026-09-10: the Stripe checkout flow was fully
+      wired (VITE_LICENSING_API_URL baked in, backend reachable,
+      correct ALLOWED_ORIGINS/CORS on the nexus-licensing side) but
+      every `listLicensingProducts()`/`createCheckout()` call still
+      failed browser-side with a bare "Failed to fetch" — CSP blocks a
+      disallowed connect-src target before the request ever reaches
+      the network layer, so it doesn't even show up as a failed
+      network request, only as this generic fetch rejection. When the
+      var is unset (default OSS build), this interpolates to an empty
+      string — a harmless no-op token in the list, same as if the
+      clause weren't there.
+    -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; connect-src 'self' ws: wss:; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self';"
+      content="default-src 'self'; connect-src 'self' ws: wss: %VITE_LICENSING_API_URL%; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self';"
     />
     <title>NexusFlow</title>
   </head>
