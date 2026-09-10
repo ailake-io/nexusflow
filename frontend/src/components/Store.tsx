@@ -48,6 +48,27 @@ const LLMOPS_CAPABILITIES: { slug: string; labelKey: string }[] = [
 ]
 
 /**
+ * Ads connectors pulled out of `connectors-all`/`connectors-all-no-embeddings`
+ * (`nexus-connectors-enterprise`'s `bin/Cargo.toml`) on 2026-09-10 — none
+ * validated against a real ad account yet (`docs/ENTERPRISE_CONNECTORS.md`
+ * §3, `docs/PENDING_REAL_ACCOUNT_VALIDATION.md`). The crates still exist and
+ * compile standalone, they just aren't in any binary shipped to a customer
+ * right now, so `GET /connectors` never lists them — same reasoning as
+ * `LLMOPS_CAPABILITIES` above (static list here, not derived from the API),
+ * but rendered as a plain "Em breve" badge, no buy flow: there's no license
+ * slug to gate and no product to sell for a connector that isn't compiled
+ * into the binary at all. Remove an entry here the same day it goes back
+ * into `connectors-all` after passing a real test.
+ */
+const ADS_CONNECTORS_COMING_SOON: { slug: string; name: string }[] = [
+  { slug: 'google-ads', name: 'Google Ads' },
+  { slug: 'meta-ads', name: 'Meta Ads' },
+  { slug: 'linkedin-ads', name: 'LinkedIn Ads' },
+  { slug: 'tiktok-ads', name: 'TikTok Ads' },
+  { slug: 'x-ads', name: 'X Ads' },
+]
+
+/**
  * Store tab (ROADMAP.md Fase 12): lists enterprise connectors, marks which
  * ones the installed license already covers ("Adquirido"), and lets an
  * Admin install a license key (`POST /license`, same route/RBAC as
@@ -58,12 +79,11 @@ const LLMOPS_CAPABILITIES: { slug: string; labelKey: string }[] = [
  *
  * "Disponíveis agora" lists every connector the running binary actually
  * has registered with `requires_license` (`GET /connectors`) — as of
- * 2026-09-08 that's the full enterprise catalog (37 crates, see
- * `docs/ENTERPRISE_CONNECTORS.md`), so there's no separate "coming soon"
- * section left to show; a static placeholder list here would just repeat
- * what's already real above it.
+ * 2026-09-10 that's the enterprise catalog minus the 5 ads connectors
+ * (see `ADS_CONNECTORS_COMING_SOON` above), which do get their own static
+ * "Em breve" section since they're real, just not shippable yet.
  *
- * "LLMOps" is a second, separate section below it: those three slugs
+ * "LLMOps" is a third, separate section below it: those three slugs
  * aren't connectors at all (see `LLMOPS_CAPABILITIES` above), so they
  * can't come from the same `enterpriseConnectors` list.
  */
@@ -303,6 +323,24 @@ export function Store() {
           </div>
         </div>
       )}
+
+      <div className="mb-8">
+        <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          {t('store.comingSoon')}
+        </h2>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {ADS_CONNECTORS_COMING_SOON.map((c) => (
+            <div key={c.slug} className="rounded-xl border border-white/10 bg-card p-4 opacity-70">
+              <div className="flex items-center justify-between">
+                <span className="font-medium text-foreground">{c.name}</span>
+                <span className="flex items-center gap-1 rounded-full bg-white/5 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                  {t('store.comingSoonBadge')}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
 
       {licensingConfigured && (
         <div className="mb-8">

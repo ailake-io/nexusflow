@@ -432,6 +432,8 @@ export const translations = {
       billingTitle: 'Billing details (for checkout)',
       billingEmailPlaceholder: 'Email to receive the license key',
       buy: 'Buy — {price}',
+      comingSoon: 'Coming soon',
+      comingSoonBadge: 'Coming soon',
       capabilitiesTitle: 'LLMOps',
       capability: {
         generationTraceability: 'Generation Traceability (RAG)',
@@ -901,6 +903,8 @@ export const translations = {
       billingTitle: 'Dados de cobrança (pro checkout)',
       billingEmailPlaceholder: 'Email pra receber a license key',
       buy: 'Comprar — {price}',
+      comingSoon: 'Em breve',
+      comingSoonBadge: 'Em breve',
       capabilitiesTitle: 'LLMOps',
       capability: {
         generationTraceability: 'Rastreabilidade de Geração (RAG)',
