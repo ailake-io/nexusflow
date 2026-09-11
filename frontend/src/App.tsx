@@ -12,6 +12,7 @@ import {
   BadgeCheck,
   BarChart3,
   BookText,
+  Cloud,
 } from 'lucide-react'
 import { useAuth } from '@/lib/auth-context'
 import { useI18n } from '@/lib/i18n'
@@ -26,6 +27,7 @@ const PipelinesList = lazy(() => import('@/components/PipelinesList'))
 const PipelineStatusBoard = lazy(() => import('@/components/PipelineStatusBoard'))
 const UsersPanel = lazy(() => import('@/components/UsersPanel'))
 const Store = lazy(() => import('@/components/Store'))
+const InfraCanvas = lazy(() => import('@/components/InfraCanvas'))
 const ResourcesPanel = lazy(() => import('@/components/ResourcesPanel'))
 const LineagePanel = lazy(() => import('@/components/LineagePanel'))
 const QualityPanel = lazy(() => import('@/components/QualityPanel'))
@@ -37,6 +39,7 @@ type View =
   | 'pipelines'
   | 'status'
   | 'store'
+  | 'infra'
   | 'resources'
   | 'lineage'
   | 'quality'
@@ -84,6 +87,7 @@ function App() {
     { id: 'pipelines', label: t('nav.pipelines'), icon: List },
     { id: 'status', label: t('nav.status'), icon: Activity },
     { id: 'store', label: t('nav.store'), icon: StoreIcon },
+    { id: 'infra', label: t('nav.infra'), icon: Cloud },
     { id: 'resources', label: t('nav.resources'), icon: Gauge },
     { id: 'lineage', label: t('nav.lineage'), icon: Waypoints },
     { id: 'quality', label: t('nav.quality'), icon: BadgeCheck },
@@ -175,6 +179,7 @@ function App() {
             {view === 'pipelines' && <PipelinesList onEdit={handleEdit} />}
             {view === 'status' && <PipelineStatusBoard />}
             {view === 'store' && <Store />}
+            {view === 'infra' && <InfraCanvas />}
             {view === 'resources' && <ResourcesPanel />}
             {view === 'lineage' && <LineagePanel />}
             {view === 'quality' && <QualityPanel />}

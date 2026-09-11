@@ -19,6 +19,7 @@ mod git_history_store;
 #[cfg(feature = "version-history")]
 mod git_remote_config_store;
 mod hardware_stats;
+mod infra;
 mod license;
 mod license_store;
 mod lineage;
@@ -417,6 +418,12 @@ fn router(state: AppState) -> Router {
     ))]
     let rag_state = state.clone();
 
+    // Cloned unconditionally (unlike `rag_state` above) — `infra::routes`
+    // is never feature-gated, see that module's doc comment for why (the
+    // enterprise crate it delegates to is an inventory-collected plugin,
+    // not a Cargo feature this crate depends on).
+    let infra_state = state.clone();
+
     let app = Router::new()
         .route("/health", get(health))
         // Unauthenticated like /health — Prometheus scrapers don't carry a
@@ -453,6 +460,8 @@ fn router(state: AppState) -> Router {
         )
     ))]
     let app = app.merge(rag::routes(rag_state));
+
+    let app = app.merge(infra::routes(infra_state));
 
     // Only wired in for the single-binary build (Marco 11) — without the
     // feature, an unmatched route just gets axum's default 404, same as

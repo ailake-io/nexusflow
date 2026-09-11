@@ -60,6 +60,18 @@ embed-ui = ["dep:rust-embed"]
 # `embeddings`/`llm` above.
 version-history = ["dep:git2", "dep:similar"]
 
+# Swaps the embedded license-verification public key for a deliberately
+# public test keypair (see license.rs's doc comment) — lets a local
+# `nexus-licensing` dev instance, which signs with that same public
+# private key rather than ever holding the real one, issue licenses this
+# binary actually verifies end to end. **Never enable this for a real
+# release build**: anyone who reads this source can forge a "valid"
+# license against a binary built with it. Deliberately absent from
+# `connectors-all` below and from every real distribution build — only
+# ever passed explicitly (e.g. a local `nexusflow-enterprise:test-license`
+# image) for testing the license/purchase flow itself.
+test-license-key = []
+
 # Each connector under crates/nexus-connectors/ is its own crate, gated
 # behind its own Cargo feature (ARCHITECTURE.md §3/CLAUDE.md §3: "compile
 # time, tamanho de binário e a fronteira OSS/enterprise exigem que cada
