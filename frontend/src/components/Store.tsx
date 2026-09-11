@@ -62,8 +62,8 @@ const LLMOPS_CAPABILITIES: { slug: string; labelKey: string }[] = [
  */
 const ADS_CONNECTORS_COMING_SOON: { slug: string; name: string }[] = [
   { slug: 'google-ads', name: 'Google Ads' },
-  { slug: 'meta-ads', name: 'Meta Ads' },
   { slug: 'linkedin-ads', name: 'LinkedIn Ads' },
+  { slug: 'meta-ads', name: 'Meta Ads' },
   { slug: 'tiktok-ads', name: 'TikTok Ads' },
   { slug: 'x-ads', name: 'X Ads' },
 ]
