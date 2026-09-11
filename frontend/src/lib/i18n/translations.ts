@@ -410,6 +410,11 @@ export const translations = {
       mapKey: 'key',
       mapValue: 'value',
       browse: 'Browse…',
+      uploadFile: 'Upload file(s)',
+      uploadFolder: 'Upload folder',
+      uploading: 'Uploading…',
+      uploadError: 'Upload failed',
+      dropHint: 'or drop a file/folder here',
     },
     fileBrowser: {
       title: 'Browse server files',
@@ -903,6 +908,11 @@ export const translations = {
       mapKey: 'chave',
       mapValue: 'valor',
       browse: 'Procurar…',
+      uploadFile: 'Enviar arquivo(s)',
+      uploadFolder: 'Enviar pasta',
+      uploading: 'Enviando…',
+      uploadError: 'Falha no envio',
+      dropHint: 'ou arraste um arquivo/pasta aqui',
     },
     fileBrowser: {
       title: 'Procurar arquivos do servidor',

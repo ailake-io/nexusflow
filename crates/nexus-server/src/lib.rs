@@ -53,12 +53,14 @@ mod runner;
 mod scheduler;
 mod server_metrics;
 pub mod telemetry;
+mod upload;
+mod upload_cleanup;
 
 use alerts::{AlertConfig, AlertNotifier};
 use auth::{require_role, Claims, JwtCodec, Role, TokenBlocklist};
 use auth_store::AuthStore;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Extension, FromRef, Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Extension, FromRef, Path, Query, State};
 use axum::http::StatusCode;
 use axum::middleware;
 use axum::response::Response;
@@ -204,6 +206,16 @@ impl FromRef<AppState> for SecretCipher {
     }
 }
 
+/// `/system/upload`'s own body-size limit, split into its own tiny router
+/// so `DefaultBodyLimit::max` applies only to this one route — merged into
+/// `write_protected` before that group's `require_role`/`Role::Write`
+/// layers, so it still inherits the same auth as every other write route.
+fn upload_router() -> Router<AppState> {
+    Router::new()
+        .route("/system/upload", post(upload::upload_handler))
+        .layer(DefaultBodyLimit::max(upload::MAX_UPLOAD_BYTES))
+}
+
 /// Builds the Axum app. Kept separate from `run()` so it's testable via
 /// `tower::ServiceExt::oneshot` without binding a real socket.
 fn router(state: AppState) -> Router {
@@ -260,6 +272,13 @@ fn router(state: AppState) -> Router {
         // `browse_fs_handler`'s doc comment for why no extra sandbox is
         // layered underneath this.
         .route("/system/browse-fs", get(browse_fs_handler))
+        // Backs the Canvas "Enviar arquivo(s)"/"Enviar pasta" buttons and
+        // the path field's dropzone (same components as browse-fs above) —
+        // the only route that actually receives file bytes from the
+        // browser. Body-size limit for this one route is layered on
+        // separately below (see `upload_router`), not applied to the rest
+        // of `write_protected`.
+        .merge(upload_router())
         // Prompt templates (LLMOPS_IMPLEMENTATION_PLAN.md Marco L4) — same
         // tier as editing a pipeline's config, since an `llm` node's
         // `PromptRef` points at one of these.
@@ -2602,6 +2621,11 @@ pub async fn run() -> anyhow::Result<()> {
     // resource_stats.rs) — same "only the real boot path" rule as the
     // scheduler above.
     resource_stats::spawn(state.clone());
+
+    // Sweeps NEXUS_UPLOAD_DIR of batches past their TTL (see
+    // upload_cleanup.rs) — same "only the real boot path" rule as above;
+    // uploaded files otherwise have no lifecycle at all.
+    upload_cleanup::spawn(state.clone());
 
     let app = router(state);
 
