@@ -20,17 +20,16 @@ use serde::{Deserialize, Serialize};
 /// Rotating this constant invalidates every license signed under the old
 /// key, so treat a change here as a breaking event for existing customers.
 ///
-/// Swapped out for `test_support::TEST_PUBLIC_KEY_PEM` under `#[cfg(test)]`
-/// (below) so every test in this crate that signs a license with
-/// `test_support::sign` — a key whose private half is deliberately public,
-/// see that module's doc comment — verifies against a key it actually
-/// matches, without ever needing the real private key in this repo.
-#[cfg(not(test))]
+/// Swapped out for the deliberately-public `dev_key::PUBLIC_KEY_PEM`
+/// under `#[cfg(test)]` or the opt-in `test-license-key` Cargo feature
+/// (see that module's and that feature's doc comments) — never on by
+/// default, and never something a real release build should enable.
+#[cfg(not(any(test, feature = "test-license-key")))]
 const LICENSE_PUBLIC_KEY_PEM: &str = "-----BEGIN PUBLIC KEY-----\n\
 MCowBQYDK2VwAyEApAng7Ch5LpOWjGWRO3+cUGtypkLWChoDFTE9eVaS4kY=\n\
 -----END PUBLIC KEY-----\n";
-#[cfg(test)]
-const LICENSE_PUBLIC_KEY_PEM: &str = test_support::TEST_PUBLIC_KEY_PEM;
+#[cfg(any(test, feature = "test-license-key"))]
+const LICENSE_PUBLIC_KEY_PEM: &str = dev_key::PUBLIC_KEY_PEM;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LicenseClaims {
@@ -77,29 +76,35 @@ pub fn verify(jwt: &str) -> Result<LicenseClaims, LicenseError> {
     Ok(data.claims)
 }
 
+/// Deliberately-public Ed25519 keypair — both halves committed here in
+/// this OSS repo's git history, which is the opposite of secret.
+/// `PUBLIC_KEY_PEM` is what `LICENSE_PUBLIC_KEY_PEM` resolves to under
+/// `#[cfg(test)]` or `feature = "test-license-key"`; `PRIVATE_KEY_PEM` is
+/// only ever used by `test_support::sign` below and by a local
+/// `nexus-licensing` dev instance's own `LICENSE_SIGNING_PRIVATE_KEY_PEM`
+/// env var (never this repo) — **never use this key for a real license**.
+#[cfg(any(test, feature = "test-license-key"))]
+mod dev_key {
+    pub(crate) const PUBLIC_KEY_PEM: &str = "-----BEGIN PUBLIC KEY-----\n\
+MCowBQYDK2VwAyEAG4CuT0Rpk474C57eMF+CfZ57VDtFORdcDtc7c64eBTM=\n\
+-----END PUBLIC KEY-----\n";
+    #[cfg(test)]
+    pub(crate) const PRIVATE_KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----\n\
+MC4CAQAwBQYDK2VwBCIEIPByldYeti11Ln8Z2hkQXRrST+PoTsO/sycPsIAI24gm\n\
+-----END PRIVATE KEY-----\n";
+}
+
 #[cfg(test)]
 pub(crate) mod test_support {
-    //! Signing key paired with `LICENSE_PUBLIC_KEY_PEM` above, for tests
-    //! only. **Never use this key for a real license** — the private half
-    //! lives in this OSS repo's git history, which is the opposite of
-    //! secret.
+    //! Signing helper for this crate's own unit tests, paired with
+    //! `dev_key` above.
+    use super::dev_key;
     use super::LicenseClaims;
     use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 
-    const TEST_PRIVATE_KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----\n\
-MC4CAQAwBQYDK2VwBCIEIPByldYeti11Ln8Z2hkQXRrST+PoTsO/sycPsIAI24gm\n\
------END PRIVATE KEY-----\n";
-    /// Public half of `TEST_PRIVATE_KEY_PEM` above — this is what
-    /// `LICENSE_PUBLIC_KEY_PEM` resolves to under `#[cfg(test)]`, so
-    /// `verify()` accepts licenses signed by `sign()` in every test in
-    /// this crate.
-    pub(crate) const TEST_PUBLIC_KEY_PEM: &str = "-----BEGIN PUBLIC KEY-----\n\
-MCowBQYDK2VwAyEAG4CuT0Rpk474C57eMF+CfZ57VDtFORdcDtc7c64eBTM=\n\
------END PUBLIC KEY-----\n";
-
     pub fn sign(claims: &LicenseClaims) -> String {
-        let key =
-            EncodingKey::from_ed_pem(TEST_PRIVATE_KEY_PEM.as_bytes()).expect("valid test PEM");
+        let key = EncodingKey::from_ed_pem(dev_key::PRIVATE_KEY_PEM.as_bytes())
+            .expect("valid test PEM");
         encode(&Header::new(Algorithm::EdDSA), claims, &key).expect("signing test claims")
     }
 
