@@ -1,12 +1,89 @@
-import { useState } from 'react'
-import { FolderOpen } from 'lucide-react'
+import { useRef, useState } from 'react'
+import type { ChangeEvent, DragEvent } from 'react'
+import { FolderOpen, Upload, FolderUp } from 'lucide-react'
 import { useI18n } from '@/lib/i18n'
-import type { JsonSchemaNode } from '@/lib/api'
+import { uploadFiles, type FileToUpload, type JsonSchemaNode } from '@/lib/api'
+import { useAuth } from '@/lib/auth-context'
 import { FieldHint } from '@/components/FieldHint'
 import { FileBrowserDialog } from '@/components/FileBrowserDialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Button } from '@/components/ui/button'
+
+// Non-standard but broadly supported (Chrome/Edge/Safari; partial in
+// Firefox) File and Directory Entries API — lets a dropped *folder* be
+// walked recursively into its real files instead of `DataTransfer.files`
+// silently containing nothing for it. TS's DOM lib only types
+// `webkitGetAsEntry` loosely, so the entry shapes below are declared by
+// hand for the two members actually used.
+interface FileSystemEntryLike {
+  isFile: boolean
+  isDirectory: boolean
+  name: string
+  file(success: (file: File) => void, error: (err: unknown) => void): void
+  createReader(): {
+    readEntries(
+      success: (entries: FileSystemEntryLike[]) => void,
+      error: (err: unknown) => void,
+    ): void
+  }
+}
+
+async function readAllDirectoryEntries(
+  entry: FileSystemEntryLike,
+): Promise<FileSystemEntryLike[]> {
+  const reader = entry.createReader()
+  const all: FileSystemEntryLike[] = []
+  // readEntries() only returns a bounded batch per call in some browsers —
+  // must be called repeatedly until it returns empty to get everything.
+  for (;;) {
+    const batch = await new Promise<FileSystemEntryLike[]>((resolve, reject) =>
+      reader.readEntries(resolve, reject),
+    )
+    if (batch.length === 0) break
+    all.push(...batch)
+  }
+  return all
+}
+
+async function walkEntry(entry: FileSystemEntryLike, prefix: string): Promise<FileToUpload[]> {
+  if (entry.isFile) {
+    const file = await new Promise<File>((resolve, reject) => entry.file(resolve, reject))
+    return [{ file, relativePath: `${prefix}${entry.name}` }]
+  }
+  if (entry.isDirectory) {
+    const children = await readAllDirectoryEntries(entry)
+    const nested = await Promise.all(
+      children.map((child) => walkEntry(child, `${prefix}${entry.name}/`)),
+    )
+    return nested.flat()
+  }
+  return []
+}
+
+/** Resolves everything dropped onto a dropzone into a flat file list ready
+ *  for `uploadFiles` — recurses into dropped folders via the Entries API
+ *  when the browser supports it, and falls back to the flat
+ *  `DataTransfer.files` list (no folder recursion, but never empty-handed)
+ *  when it doesn't. */
+async function collectDroppedFiles(dataTransfer: DataTransfer): Promise<FileToUpload[]> {
+  const entries = Array.from(dataTransfer.items)
+    .map((item) => {
+      const withEntry = item as DataTransferItem & {
+        webkitGetAsEntry?: () => FileSystemEntryLike | null
+      }
+      return typeof withEntry.webkitGetAsEntry === 'function'
+        ? withEntry.webkitGetAsEntry()
+        : null
+    })
+    .filter((entry): entry is FileSystemEntryLike => entry !== null)
+
+  if (entries.length === 0) {
+    return Array.from(dataTransfer.files).map((file) => ({ file }))
+  }
+  const nested = await Promise.all(entries.map((entry) => walkEntry(entry, '')))
+  return nested.flat()
+}
 
 // Field names recognized as a server-side filesystem path across every
 // file-based connector's config — csv/parquet's `path`, sqlite's
@@ -61,12 +138,56 @@ interface SchemaFormProps {
  */
 export function SchemaForm({ schema, defs, value, onChange, idPrefix }: SchemaFormProps) {
   const { t } = useI18n()
+  const { token } = useAuth()
   const properties = schema.properties ?? {}
   const required = new Set(schema.required ?? [])
   const [browsingField, setBrowsingField] = useState<string | null>(null)
+  const [uploadingField, setUploadingField] = useState<string | null>(null)
+  const [uploadError, setUploadError] = useState<{ key: string; message: string } | null>(null)
+  const pendingUploadKey = useRef<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const folderInputRef = useRef<HTMLInputElement>(null)
 
   const setField = (key: string, fieldValue: JsonValue) => {
     onChange({ ...value, [key]: fieldValue })
+  }
+
+  const runUpload = async (key: string, files: FileToUpload[]) => {
+    if (files.length === 0 || !token) return
+    setUploadError(null)
+    setUploadingField(key)
+    try {
+      const result = await uploadFiles(token, files)
+      setField(key, result.path)
+    } catch (err) {
+      setUploadError({
+        key,
+        message: err instanceof Error ? err.message : String(err),
+      })
+    } finally {
+      setUploadingField(null)
+    }
+  }
+
+  // Shared by both hidden inputs below — which field a click was for is
+  // tracked in `pendingUploadKey` (set right before `.click()`) since a
+  // form can have more than one file-path field, but there's only one
+  // pair of hidden inputs shared across all of them.
+  const onHiddenInputChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const key = pendingUploadKey.current
+    const fileList = e.target.files
+    e.target.value = '' // otherwise re-picking the exact same file/folder wouldn't re-fire onChange
+    if (!key || !fileList || fileList.length === 0) return
+    const files: FileToUpload[] = Array.from(fileList).map((file) => ({
+      file,
+      relativePath: file.webkitRelativePath || undefined,
+    }))
+    void runUpload(key, files)
+  }
+
+  const onFieldDrop = (key: string) => (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    void collectDroppedFiles(e.dataTransfer).then((files) => runUpload(key, files))
   }
 
   // `uri`/`connection_string` is every connector's legacy single-field
@@ -82,6 +203,25 @@ export function SchemaForm({ schema, defs, value, onChange, idPrefix }: SchemaFo
 
   return (
     <div className="flex flex-col gap-3">
+      {/* Shared by every file-path field below — which field a click was
+          for is tracked in pendingUploadKey, set right before .click(). */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={onHiddenInputChange}
+      />
+      <input
+        ref={folderInputRef}
+        type="file"
+        // @ts-expect-error -- non-standard but supported by every real
+        // browser Canvas users actually run this app in; not in TS's DOM lib.
+        webkitdirectory=""
+        multiple
+        className="hidden"
+        onChange={onHiddenInputChange}
+      />
       {Object.entries(properties).map(([key, rawFieldSchema]) => {
         if (isLegacyUriOverride(key)) return null
         const fieldSchema = resolveRef(rawFieldSchema, defs)
@@ -196,18 +336,26 @@ export function SchemaForm({ schema, defs, value, onChange, idPrefix }: SchemaFo
         }
 
         // Default: plain string field. File-path-shaped fields (see
-        // FILE_PATH_FIELD_NAMES above) get an extra "Browse…" button that
-        // opens a server-side directory picker instead of requiring the
-        // path to be typed blind.
+        // FILE_PATH_FIELD_NAMES above) get a "Browse…" button (server-side
+        // directory picker), two "upload" buttons (real bytes from the
+        // browser via POST /system/upload — one file/multi-file, one whole
+        // folder, separate inputs because a browser won't let one <input>
+        // toggle `webkitdirectory` dynamically), and the field row itself
+        // becomes a dropzone for a dragged file or folder.
         const isFilePathField = FILE_PATH_FIELD_NAMES.has(key)
         const isSecretField = SECRET_FIELD_NAME_RE.test(key)
+        const isUploadingThisField = uploadingField === key
         return (
           <div key={key}>
             <div className="flex items-center gap-1.5">
               <Label htmlFor={fieldId}>{label}</Label>
               {fieldSchema.description && <FieldHint text={fieldSchema.description} />}
             </div>
-            <div className="mt-1.5 flex items-center gap-2">
+            <div
+              className="mt-1.5 flex items-center gap-2"
+              onDragOver={isFilePathField ? (e) => e.preventDefault() : undefined}
+              onDrop={isFilePathField ? onFieldDrop(key) : undefined}
+            >
               <Input
                 id={fieldId}
                 type={isSecretField ? 'password' : 'text'}
@@ -215,19 +363,58 @@ export function SchemaForm({ schema, defs, value, onChange, idPrefix }: SchemaFo
                 value={(value[key] as string) ?? ''}
                 onChange={(e) => setField(key, e.target.value)}
                 className="flex-1"
+                disabled={isUploadingThisField}
               />
               {isFilePathField && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setBrowsingField(key)}
-                >
-                  <FolderOpen className="h-3.5 w-3.5" />
-                  {t('schemaForm.browse')}
-                </Button>
+                <>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setBrowsingField(key)}
+                  >
+                    <FolderOpen className="h-3.5 w-3.5" />
+                    {t('schemaForm.browse')}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={isUploadingThisField}
+                    onClick={() => {
+                      pendingUploadKey.current = key
+                      fileInputRef.current?.click()
+                    }}
+                  >
+                    <Upload className="h-3.5 w-3.5" />
+                    {t('schemaForm.uploadFile')}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={isUploadingThisField}
+                    onClick={() => {
+                      pendingUploadKey.current = key
+                      folderInputRef.current?.click()
+                    }}
+                  >
+                    <FolderUp className="h-3.5 w-3.5" />
+                    {t('schemaForm.uploadFolder')}
+                  </Button>
+                </>
               )}
             </div>
+            {isFilePathField && (
+              <p className="mt-1 text-[10px] text-muted-foreground/70">
+                {isUploadingThisField ? t('schemaForm.uploading') : t('schemaForm.dropHint')}
+              </p>
+            )}
+            {isFilePathField && uploadError?.key === key && (
+              <p className="mt-1 text-[10px] text-red-400">
+                {t('schemaForm.uploadError')}: {uploadError.message}
+              </p>
+            )}
             {isFilePathField && (
               <FileBrowserDialog
                 open={browsingField === key}

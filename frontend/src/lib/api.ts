@@ -68,7 +68,11 @@ export function onUnauthorized(handler: () => void) {
 async function request<T>(path: string, init: RequestInit = {}, token?: string): Promise<T> {
   const headers = new Headers(init.headers)
   if (token) headers.set('authorization', `Bearer ${token}`)
-  if (init.body) headers.set('content-type', 'application/json')
+  // A FormData body (uploadFiles below) must NOT get this — the browser
+  // sets its own multipart/form-data content-type with the boundary the
+  // server needs to parse it; forcing application/json here would break
+  // every upload.
+  if (init.body && !(init.body instanceof FormData)) headers.set('content-type', 'application/json')
 
   const response = await fetch(path, { ...init, headers })
   if (!response.ok) {
@@ -708,6 +712,44 @@ export function browseFilesystem(token: string, path?: string): Promise<BrowseLi
   if (path) params.set('path', path)
   const query = params.toString()
   return request<BrowseListing>(`/system/browse-fs${query ? `?${query}` : ''}`, {}, token)
+}
+
+/** Matches nexus-server::upload::UploadResult, as returned by
+ *  POST /system/upload. */
+export interface UploadResult {
+  path: string
+}
+
+/** One file to upload — `relativePath` (from `File.webkitRelativePath`
+ *  when the file came from a folder pick/drop) preserves the folder
+ *  structure server-side; omitted for a plain single/multi file pick. */
+export interface FileToUpload {
+  file: File
+  relativePath?: string
+}
+
+/** Uploads one or more files in a single request (backs the Canvas "Enviar
+ *  arquivo(s)"/"Enviar pasta" buttons and the path field's dropzone —
+ *  `SchemaForm.tsx`). Every file lands under one new directory server-side;
+ *  the returned `path` is that file's own path (single file) or the shared
+ *  directory (multiple files) — either way, ready to drop straight into a
+ *  connector's `path`/`file_path` config field via `setField`. Bypasses
+ *  `request()`'s JSON body handling entirely (FormData, not JSON) but
+ *  reuses its same error/401 shape by delegating status-code handling the
+ *  same way. */
+export async function uploadFiles(token: string, files: FileToUpload[]): Promise<UploadResult> {
+  const formData = new FormData()
+  for (const { file, relativePath } of files) {
+    formData.append('files', file, relativePath ?? file.name)
+  }
+  const headers = new Headers({ authorization: `Bearer ${token}` })
+  const response = await fetch('/system/upload', { method: 'POST', body: formData, headers })
+  if (!response.ok) {
+    const body = await response.json().catch(() => null)
+    if (response.status === 401 && unauthorizedHandler) unauthorizedHandler()
+    throw new ApiError(response.status, body?.error ?? response.statusText)
+  }
+  return response.json() as Promise<UploadResult>
 }
 
 export function deletePipeline(token: string, pipelineId: string): Promise<void> {

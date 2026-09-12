@@ -151,7 +151,9 @@ rabbitmq = ["dep:nexus-connector-rabbitmq", "nexus-connector-rabbitmq/client"]
 aes-gcm = "0.10.3"
 anyhow = "1.0.104"
 argon2 = "0.5.3"
-axum = { version = "0.8.9", features = ["ws"] }
+# "multipart" backs POST /system/upload (upload.rs) — the only route that
+# needs it; every other route is plain JSON.
+axum = { version = "0.8.9", features = ["ws", "multipart"] }
 # Neither crypto backend is enabled by default in jsonwebtoken 11 — without
 # picking one, encode/decode panics at runtime ("Could not automatically
 # determine the process-level CryptoProvider"). rust_crypto is pure Rust
@@ -229,6 +231,10 @@ tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "s
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 url = "2.5.8"
+# Groups the files of one POST /system/upload request under a single
+# directory name (upload.rs) — a folder upload becomes one real directory
+# server-side instead of colliding filenames across requests.
+uuid = { version = "1.11.0", features = ["v4"] }
 # OTel trace export (Marco 9 task #19) — off by default (see telemetry.rs).
 # This crate only asks for "trace" directly; "metrics" (task #20, used via
 # opentelemetry::global::set_meter_provider in telemetry.rs) comes in

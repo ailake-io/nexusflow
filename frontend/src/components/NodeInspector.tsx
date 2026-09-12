@@ -238,6 +238,17 @@ export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps
             id="transform-sql"
             value={data.sql}
             onChange={(e) => onChange(node.id, { sql: e.target.value })}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={async (e) => {
+              e.preventDefault()
+              const file = e.dataTransfer.files[0]
+              if (!file) return
+              try {
+                onChange(node.id, { sql: await file.text() })
+              } catch {
+                window.alert(t('canvas.transformUploadError'))
+              }
+            }}
             rows={16}
             spellCheck={false}
             placeholder={t('canvas.sqlPlaceholder')}
@@ -354,6 +365,17 @@ export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps
                 id="python-script"
                 value={data.script}
                 onChange={(e) => onChange(node.id, { script: e.target.value })}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={async (e) => {
+                  e.preventDefault()
+                  const file = e.dataTransfer.files[0]
+                  if (!file) return
+                  try {
+                    onChange(node.id, { script: await file.text() })
+                  } catch {
+                    window.alert(t('canvas.pythonUploadError'))
+                  }
+                }}
                 rows={16}
                 spellCheck={false}
                 placeholder={t('canvas.pythonScriptPlaceholder')}
