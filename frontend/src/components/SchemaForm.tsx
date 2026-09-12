@@ -69,7 +69,13 @@ async function walkEntry(entry: FileSystemEntryLike, prefix: string): Promise<Fi
 async function collectDroppedFiles(dataTransfer: DataTransfer): Promise<FileToUpload[]> {
   const entries = Array.from(dataTransfer.items)
     .map((item) => {
-      const withEntry = item as DataTransferItem & {
+      // Cast through `unknown` deliberately: some TS DOM lib versions
+      // already declare `webkitGetAsEntry` themselves (returning the much
+      // wider standard `FileSystemEntry`), which conflicts structurally
+      // with the minimal `FileSystemEntryLike` shape actually used below —
+      // going through `unknown` sidesteps that mismatch instead of fighting
+      // whichever DOM lib version happens to be installed.
+      const withEntry = item as unknown as {
         webkitGetAsEntry?: () => FileSystemEntryLike | null
       }
       return typeof withEntry.webkitGetAsEntry === 'function'
