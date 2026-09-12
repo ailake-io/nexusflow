@@ -6,6 +6,7 @@ mod capability_registry;
 mod checkpoint_store;
 mod connectors;
 mod crypto;
+mod data_catalog;
 mod db;
 mod dbt;
 mod dbt_lineage_store;
@@ -121,6 +122,7 @@ struct AppState {
     resource_stats: resource_stats::ResourceStatsStore,
     dbt_lineage: dbt_lineage_store::DbtLineageStore,
     pipeline_schemas: pipeline_schema_store::PipelineSchemaStore,
+    data_catalog: data_catalog::CatalogStore,
     // Only read from `execute_pipeline_run`'s `#[cfg(feature = "dbt")]`
     // block — kept on `AppState` unconditionally so build_state/test_state
     // don't need their own feature-gated construction path.
@@ -285,6 +287,18 @@ fn router(state: AppState) -> Router {
         .route(
             "/prompts",
             get(list_prompts_handler).post(create_prompt_handler),
+        )
+        // Data catalog (Fase 25) — editing a dataset's description/owner/
+        // tags or a column's description/PII flag is the same trust bar as
+        // editing a pipeline's config; `dataset_key` (and the `{column}`
+        // path param below) may contain `/` and must be percent-encoded by
+        // the caller (e.g. `encodeURIComponent`) — axum decodes a single
+        // path segment, so an unencoded `/` would otherwise be parsed as
+        // extra path segments.
+        .route("/catalog/datasets/{key}", put(update_catalog_dataset_handler))
+        .route(
+            "/catalog/datasets/{key}/columns/{column}",
+            put(update_catalog_column_handler),
         );
     // Rollback creates a *new* commit/version (never rewrites history) via
     // the same `update`/`create` path as an ordinary save — same trust bar
@@ -335,7 +349,12 @@ fn router(state: AppState) -> Router {
         // below only ever hands back connector names + allowlisted
         // resource identifiers, never raw config (see lineage.rs).
         .route("/lineage", get(lineage_handler))
-        .route("/lineage/{id}/schema", get(pipeline_schema_handler));
+        .route("/lineage/{id}/schema", get(pipeline_schema_handler))
+        // Data catalog (Fase 25) — browsing/searching datasets is a `Read`
+        // action, same tier as `/lineage` above.
+        .route("/catalog/datasets", get(list_catalog_datasets_handler))
+        .route("/catalog/datasets/{key}", get(get_catalog_dataset_handler))
+        .route("/catalog/tags", get(list_catalog_tags_handler));
     // Version history is read-only browsing (diffs run through the same
     // secret-safe `PipelineSummary` shape as `get_pipeline_handler`, never
     // raw connector config) — same `Read` tier as everything else in this
@@ -928,6 +947,24 @@ async fn execute_pipeline_run(
                 .await
             {
                 tracing::warn!(error = %e, "failed to record successful pipeline run");
+            }
+            // Data catalog discovery (Fase 25) — best-effort, same posture
+            // as the schema/quality-check persistence above: a failure here
+            // must never fail an otherwise-successful run. Reuses whatever
+            // schema this run already captured, so it never touches
+            // pipeline_schemas itself or blocks on a second query when
+            // capture didn't happen this round.
+            let captured_schema = state
+                .pipeline_schemas
+                .get(&spec.pipeline_id)
+                .await
+                .unwrap_or(None);
+            if let Err(e) = state
+                .data_catalog
+                .record_from_pipeline(&spec, captured_schema.as_ref())
+                .await
+            {
+                tracing::warn!(error = %e, "failed to update data catalog");
             }
             server_metrics::record_run_outcome(&spec.pipeline_id, "success", started.elapsed());
             state.alerts.notify_pipeline_run(
@@ -1812,6 +1849,111 @@ async fn pipeline_schema_handler(
         .map(Json)
 }
 
+/// `GET /catalog/datasets?q=&tag=&connector=&owner=&has_pii=` — Fase 25's
+/// data catalog. Every filter is optional and AND-combined (see
+/// `data_catalog::CatalogFilter`'s doc comment for why filtering happens in
+/// Rust, not SQL).
+async fn list_catalog_datasets_handler(
+    State(state): State<AppState>,
+    Query(filter): Query<data_catalog::CatalogFilter>,
+) -> Result<Json<Vec<data_catalog::CatalogDataset>>, ApiError> {
+    state
+        .data_catalog
+        .list(&filter)
+        .await
+        .map_err(ApiError::internal)
+        .map(Json)
+}
+
+/// `GET /catalog/datasets/{key}` — one dataset's full metadata + columns.
+/// 404 when no pipeline has ever touched this resource (`key` never got
+/// registered by `record_from_pipeline`).
+async fn get_catalog_dataset_handler(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+) -> Result<Json<data_catalog::CatalogDataset>, ApiError> {
+    state
+        .data_catalog
+        .get(&key)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::not_found(format!("no dataset {key:?} in the catalog")))
+        .map(Json)
+}
+
+/// `GET /catalog/tags` — distinct tags across every dataset, for a
+/// tag-filter dropdown.
+async fn list_catalog_tags_handler(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<String>>, ApiError> {
+    state
+        .data_catalog
+        .list_tags()
+        .await
+        .map_err(ApiError::internal)
+        .map(Json)
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateCatalogDatasetRequest {
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    owner: Option<String>,
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
+/// `PUT /catalog/datasets/{key}` — sets description/owner/tags. 404 when
+/// `key` isn't a known dataset (never auto-creates one from a bare edit —
+/// `record_from_pipeline` is the only path that registers a dataset).
+async fn update_catalog_dataset_handler(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+    Json(body): Json<UpdateCatalogDatasetRequest>,
+) -> Result<StatusCode, ApiError> {
+    let updated = state
+        .data_catalog
+        .update_dataset_metadata(&key, body.description, body.owner, body.tags)
+        .await
+        .map_err(ApiError::internal)?;
+    if updated {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::not_found(format!("no dataset {key:?} in the catalog")))
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateCatalogColumnRequest {
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    pii_flag: bool,
+}
+
+/// `PUT /catalog/datasets/{key}/columns/{column}` — sets a column's
+/// description and PII flag (manual only, Fase 25 decision: no automatic
+/// heuristic). 404 when the dataset itself isn't known yet; unlike the
+/// dataset-level endpoint above, a column *may* be annotated before it's
+/// ever been observed by a run.
+async fn update_catalog_column_handler(
+    State(state): State<AppState>,
+    Path((key, column)): Path<(String, String)>,
+    Json(body): Json<UpdateCatalogColumnRequest>,
+) -> Result<StatusCode, ApiError> {
+    let updated = state
+        .data_catalog
+        .update_column_metadata(&key, &column, body.description, body.pii_flag)
+        .await
+        .map_err(ApiError::internal)?;
+    if updated {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::not_found(format!("no dataset {key:?} in the catalog")))
+    }
+}
+
 #[derive(Deserialize)]
 struct ResourceStatsQuery {
     /// `<number><unit>` (`5m`/`45m`/`3h`/`12d`, ...) — free-form, not just
@@ -2347,6 +2489,8 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         dbt_test_result_store::DbtTestResultStore::connect(&config.pipelines_database_url).await?;
     let pipeline_schemas =
         pipeline_schema_store::PipelineSchemaStore::connect(&config.pipelines_database_url).await?;
+    let data_catalog =
+        data_catalog::CatalogStore::connect(&config.pipelines_database_url).await?;
     let quality_checks =
         quality_check_store::QualityCheckStore::connect(&config.pipelines_database_url).await?;
     let llm_stats = pipeline_run_llm_stats_store::PipelineRunLlmStatsStore::connect(
@@ -2388,6 +2532,7 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         dbt_lineage,
         dbt_test_results,
         pipeline_schemas,
+        data_catalog,
         quality_checks,
         llm_stats,
         prompt_templates,
@@ -2723,6 +2868,9 @@ mod tests {
             )
             .await
             .unwrap(),
+            data_catalog: data_catalog::CatalogStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
             quality_checks: quality_check_store::QualityCheckStore::connect("sqlite::memory:")
                 .await
                 .unwrap(),
@@ -4750,6 +4898,9 @@ mod tests {
             )
             .await
             .unwrap(),
+            data_catalog: data_catalog::CatalogStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
             quality_checks: quality_check_store::QualityCheckStore::connect("sqlite::memory:")
                 .await
                 .unwrap(),
