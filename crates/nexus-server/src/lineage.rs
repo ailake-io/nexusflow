@@ -422,6 +422,7 @@ mod tests {
             dependency_mode: nexus_core::DependencyMode::Any,
             alerts: None,
             quality_checks: Vec::new(),
+            anomaly_alerts: false,
             draft: false,
         }
     }

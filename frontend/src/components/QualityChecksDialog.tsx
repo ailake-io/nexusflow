@@ -19,6 +19,7 @@ const KIND_OPTIONS: QualityCheckKind['kind'][] = [
   'min',
   'max',
   'accepted_values',
+  'row_count',
 ]
 
 function defaultKind(kind: QualityCheckKind['kind']): QualityCheckKind {
@@ -29,6 +30,8 @@ function defaultKind(kind: QualityCheckKind['kind']): QualityCheckKind {
       return { kind: 'max', max: 0 }
     case 'accepted_values':
       return { kind: 'accepted_values', values: [] }
+    case 'row_count':
+      return { kind: 'row_count' }
     default:
       return { kind }
   }
@@ -86,15 +89,26 @@ export function QualityChecksDialog({
           {list.map((c, i) => (
             <fieldset key={i} className="rounded-lg border border-white/10 p-3">
               <div className="flex items-start gap-2">
-                <div className="flex-1">
-                  <Label className="text-xs">{t('quality.checksDialogColumn')}</Label>
-                  <Input
-                    value={c.column}
-                    placeholder="id"
-                    onChange={(e) => updateCheck(i, { column: e.target.value })}
-                    className="mt-1"
-                  />
-                </div>
+                {c.check.kind === 'row_count' ? (
+                  <div className="flex-1">
+                    <Label className="text-xs text-muted-foreground">
+                      {t('quality.checksDialogColumn')}
+                    </Label>
+                    <p className="mt-1 text-xs italic text-muted-foreground">
+                      {t('quality.checksDialogRowCountNoColumn')}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="flex-1">
+                    <Label className="text-xs">{t('quality.checksDialogColumn')}</Label>
+                    <Input
+                      value={c.column}
+                      placeholder="id"
+                      onChange={(e) => updateCheck(i, { column: e.target.value })}
+                      className="mt-1"
+                    />
+                  </div>
+                )}
                 <div className="flex-1">
                   <Label className="text-xs">{t('quality.checksDialogKind')}</Label>
                   <select
@@ -145,6 +159,48 @@ export function QualityChecksDialog({
                     }
                     className="mt-1"
                   />
+                </div>
+              )}
+              {c.check.kind === 'row_count' && (
+                <div className="mt-2 flex gap-2">
+                  <div className="flex-1">
+                    <Label className="text-xs">{t('quality.checksDialogMin')}</Label>
+                    <Input
+                      type="number"
+                      value={c.check.min ?? ''}
+                      placeholder={t('quality.checksDialogUnbounded')}
+                      onChange={(e) => {
+                        const kind = c.check as Extract<QualityCheckKind, { kind: 'row_count' }>
+                        updateCheck(i, {
+                          check: {
+                            kind: 'row_count',
+                            min: e.target.value === '' ? undefined : Number(e.target.value),
+                            max: kind.max,
+                          },
+                        })
+                      }}
+                      className="mt-1"
+                    />
+                  </div>
+                  <div className="flex-1">
+                    <Label className="text-xs">{t('quality.checksDialogMax')}</Label>
+                    <Input
+                      type="number"
+                      value={c.check.max ?? ''}
+                      placeholder={t('quality.checksDialogUnbounded')}
+                      onChange={(e) => {
+                        const kind = c.check as Extract<QualityCheckKind, { kind: 'row_count' }>
+                        updateCheck(i, {
+                          check: {
+                            kind: 'row_count',
+                            min: kind.min,
+                            max: e.target.value === '' ? undefined : Number(e.target.value),
+                          },
+                        })
+                      }}
+                      className="mt-1"
+                    />
+                  </div>
                 </div>
               )}
               {c.check.kind === 'accepted_values' && (

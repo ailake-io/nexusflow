@@ -267,6 +267,8 @@ export const translations = {
       checksDialogMin: 'Minimum value',
       checksDialogMax: 'Maximum value',
       checksDialogAcceptedValues: 'Accepted values (comma-separated)',
+      checksDialogRowCountNoColumn: 'Applies to the whole output, not a single column.',
+      checksDialogUnbounded: 'unbounded',
       checksDialogAdd: 'Add check',
       checksDialogRemove: 'Remove check',
       checkKind: {
@@ -275,6 +277,20 @@ export const translations = {
         min: 'Minimum',
         max: 'Maximum',
         accepted_values: 'Accepted values',
+        row_count: 'Row count',
+      },
+      anomaly: {
+        title: 'Anomaly',
+        volumeTrend: 'Row count trend',
+        latestValue: '{value} rows (run #{runId})',
+        baseline: 'Baseline: {mean} ± {stddev} over {count} run(s)',
+        notEnoughHistory: 'Not enough run history yet to detect anomalies.',
+        noAnomaly: 'Within expected range.',
+        warning: 'Warning: unusual row count for this run.',
+        critical: 'Critical: row count far outside the normal range.',
+        alertsToggle: 'Alert on anomaly',
+        alertsToggleHint:
+          'Sends an alert through this pipeline\'s configured channels when a run\'s row count is a statistical outlier.',
       },
     },
     preview: {
@@ -827,6 +843,8 @@ export const translations = {
       checksDialogMin: 'Valor mínimo',
       checksDialogMax: 'Valor máximo',
       checksDialogAcceptedValues: 'Valores aceitos (separados por vírgula)',
+      checksDialogRowCountNoColumn: 'Aplica-se à saída inteira, não a uma coluna específica.',
+      checksDialogUnbounded: 'sem limite',
       checksDialogAdd: 'Adicionar check',
       checksDialogRemove: 'Remover check',
       checkKind: {
@@ -835,6 +853,20 @@ export const translations = {
         min: 'Mínimo',
         max: 'Máximo',
         accepted_values: 'Valores aceitos',
+        row_count: 'Contagem de linhas',
+      },
+      anomaly: {
+        title: 'Anomalia',
+        volumeTrend: 'Tendência de contagem de linhas',
+        latestValue: '{value} linhas (run #{runId})',
+        baseline: 'Baseline: {mean} ± {stddev} em {count} run(s)',
+        notEnoughHistory: 'Ainda não há histórico suficiente de runs pra detectar anomalias.',
+        noAnomaly: 'Dentro do esperado.',
+        warning: 'Aviso: contagem de linhas incomum nesse run.',
+        critical: 'Crítico: contagem de linhas bem fora do normal.',
+        alertsToggle: 'Alertar em anomalia',
+        alertsToggleHint:
+          'Envia um alerta pelos canais configurados desse pipeline quando a contagem de linhas de um run é um outlier estatístico.',
       },
     },
     preview: {

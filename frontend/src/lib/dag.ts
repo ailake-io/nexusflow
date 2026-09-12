@@ -21,6 +21,10 @@ export type QualityCheckKind =
   | { kind: 'min'; min: number }
   | { kind: 'max'; max: number }
   | { kind: 'accepted_values'; values: string[] }
+  /** Fase 27 — checks the pipeline's total output row count, not a named
+   *  column (`QualityCheckSpec.column` is ignored for this kind). Either
+   *  bound optional; `undefined` means unbounded on that side. */
+  | { kind: 'row_count'; min?: number; max?: number }
 
 /** Matches nexus-core::QualityCheckSpec exactly. */
 export interface QualityCheckSpec {
@@ -123,6 +127,11 @@ export interface PipelineSpec {
    * Transform node (see nexus_core::quality's doc comment). Empty/unset
    * means no checks configured. */
   quality_checks?: QualityCheckSpec[]
+  /** Opt-in (Fase 27): fire an alert (through `alerts` above) when this
+   * pipeline's output row count is a statistical outlier against its own
+   * run history. `false`/unset means row-count history is still tracked,
+   * just never alerts on it. */
+  anomaly_alerts?: boolean
   /** When true, the spec is saved as a draft and the server skips validation
    * of connector configs/embedding/dbt. Drafts cannot be executed. */
   draft?: boolean
@@ -284,6 +293,7 @@ export interface PipelineMeta {
   dependencyMode?: 'any' | 'all'
   alerts?: AlertsConfig
   qualityChecks?: QualityCheckSpec[]
+  anomalyAlerts?: boolean
 }
 
 /**
@@ -405,6 +415,7 @@ export function toPipelineSpec(
   if (meta.qualityChecks && meta.qualityChecks.length > 0) {
     spec.quality_checks = meta.qualityChecks
   }
+  if (meta.anomalyAlerts) spec.anomaly_alerts = true
   if (allowDraft) spec.draft = true
   return spec
 }

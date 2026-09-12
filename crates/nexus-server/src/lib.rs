@@ -1,4 +1,5 @@
 mod alerts;
+mod anomaly_detector;
 mod auth;
 mod auth_store;
 mod browse;
@@ -29,6 +30,7 @@ mod llm_generation_store;
 pub mod migrate;
 mod pipeline_dependencies;
 mod pipeline_run_llm_stats_store;
+mod pipeline_run_volume_store;
 mod pipeline_schema_store;
 mod pipeline_store;
 mod progress;
@@ -86,6 +88,14 @@ const DEFAULT_PAGE_LIMIT: i64 = 50;
 const MAX_PAGE_LIMIT: i64 = 1000;
 const DEFAULT_PREVIEW_LIMIT: usize = 50;
 const MAX_PREVIEW_LIMIT: usize = 500;
+/// How many prior runs' row counts form the anomaly-detection baseline
+/// (Fase 27) — comfortably above `anomaly_detector::MIN_HISTORY_FOR_DETECTION`
+/// so the baseline still has some size to it once a rolling window is in
+/// effect, but small enough that an intentional, sustained volume change
+/// (a new data source added upstream, e.g.) ages out of the baseline
+/// within a reasonable number of runs instead of getting permanently
+/// diluted by ancient history.
+const ANOMALY_HISTORY_WINDOW: i64 = 20;
 
 /// Query parameters for paginated list endpoints.
 #[derive(Debug, Deserialize)]
@@ -125,6 +135,7 @@ struct AppState {
     pipeline_schemas: pipeline_schema_store::PipelineSchemaStore,
     data_catalog: data_catalog::CatalogStore,
     pipeline_dependency_state: pipeline_dependencies::DependencyStateStore,
+    pipeline_run_volume: pipeline_run_volume_store::PipelineRunVolumeStore,
     // Only read from `execute_pipeline_run`'s `#[cfg(feature = "dbt")]`
     // block — kept on `AppState` unconditionally so build_state/test_state
     // don't need their own feature-gated construction path.
@@ -346,6 +357,13 @@ fn router(state: AppState) -> Router {
         .route(
             "/pipelines/{id}/llm-eval-results",
             get(list_llm_eval_results_handler),
+        )
+        // Proactive observability / anomaly detection (Fase 27) —
+        // read-only, same tier as the quality-checks route above.
+        .route("/pipelines/{id}/anomalies", get(pipeline_anomalies_handler))
+        .route(
+            "/pipelines/{id}/volume-trend",
+            get(pipeline_volume_trend_handler),
         )
         // Whole-catalog graph, not a per-pipeline secret — the handler
         // below only ever hands back connector names + allowlisted
@@ -1013,6 +1031,46 @@ async fn execute_pipeline_run(
             {
                 tracing::warn!(error = %e, "failed to trigger dependency-based downstream runs");
             }
+            // Proactive observability / anomaly detection (Fase 27) —
+            // best-effort, same posture as every other post-success hook
+            // above. History is fetched *before* recording this run, so it
+            // naturally excludes the run being evaluated (the baseline,
+            // not a self-comparison).
+            let volume_history = state
+                .pipeline_run_volume
+                .recent(&spec.pipeline_id, ANOMALY_HISTORY_WINDOW)
+                .await
+                .unwrap_or_default();
+            if let Err(e) = state
+                .pipeline_run_volume
+                .record(&spec.pipeline_id, run_id, total_rows as i64)
+                .await
+            {
+                tracing::warn!(error = %e, "failed to record run volume");
+            }
+            if spec.anomaly_alerts {
+                let history: Vec<f64> = volume_history
+                    .iter()
+                    .map(|s| s.rows_written as f64)
+                    .collect();
+                if let Some(severity) =
+                    anomaly_detector::detect_anomaly(&history, total_rows as f64)
+                {
+                    let (mean, stddev) = anomaly_detector::mean_and_stddev(&history);
+                    let message = format!(
+                        "row count {total_rows} vs. baseline mean {mean:.1} (stddev {stddev:.1}) \
+                         over the last {} run(s)",
+                        history.len()
+                    );
+                    state.alerts.notify_anomaly(
+                        spec.alerts.as_ref(),
+                        &spec.pipeline_id,
+                        run_id,
+                        severity,
+                        &message,
+                    );
+                }
+            }
             server_metrics::record_run_outcome(&spec.pipeline_id, "success", started.elapsed());
             state.alerts.notify_pipeline_run(
                 spec.alerts.as_ref(),
@@ -1308,6 +1366,7 @@ async fn preview_adhoc_handler(
         dependency_mode: nexus_core::DependencyMode::Any,
         alerts: None,
         quality_checks: Vec::new(),
+        anomaly_alerts: false,
         draft: false,
     };
     probe_spec
@@ -1818,6 +1877,98 @@ async fn list_quality_check_results_handler(
         state
             .quality_checks
             .list_for_pipeline(&id)
+            .await
+            .map_err(ApiError::internal)?,
+    ))
+}
+
+/// One tracked metric's current anomaly status (Fase 27) — today, always
+/// exactly `rows_written` (0 entries if the pipeline hasn't run enough
+/// times yet to have both a latest run and any history at all). A `Vec`
+/// rather than a single object so a second tracked metric can be added
+/// later without a breaking response-shape change.
+#[derive(Serialize)]
+struct AnomalyStatus {
+    metric: &'static str,
+    latest_run_id: i64,
+    latest_value: i64,
+    baseline_mean: f64,
+    baseline_stddev: f64,
+    /// How many prior runs fed `baseline_mean`/`baseline_stddev` — below
+    /// `anomaly_detector::MIN_HISTORY_FOR_DETECTION`, `severity` is always
+    /// `null` (not enough history to say anything yet, not "no anomaly").
+    history_size: usize,
+    severity: Option<anomaly_detector::AnomalySeverity>,
+}
+
+/// `GET /pipelines/{id}/anomalies` — whether the most recent run's row
+/// count is a statistical outlier against this pipeline's own history.
+/// Read-only status computed on demand (same posture as `/lineage`), not
+/// gated by `PipelineSpec.anomaly_alerts` — that flag only controls
+/// whether a detected anomaly also fires an alert, this endpoint always
+/// reports what it finds.
+async fn pipeline_anomalies_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<AnomalyStatus>>, ApiError> {
+    let samples = state
+        .pipeline_run_volume
+        .recent(&id, ANOMALY_HISTORY_WINDOW + 1)
+        .await
+        .map_err(ApiError::internal)?;
+    // Need at least one prior run to form any baseline at all — the
+    // "not enough history" case itself is reported via `severity: null`
+    // once there's a latest run to report on, but with zero history
+    // there's nothing to report on yet, period.
+    let Some((latest, history_samples)) = samples.split_last() else {
+        return Ok(Json(Vec::new()));
+    };
+    let history: Vec<f64> = history_samples
+        .iter()
+        .map(|s| s.rows_written as f64)
+        .collect();
+    let severity = anomaly_detector::detect_anomaly(&history, latest.rows_written as f64);
+    let (baseline_mean, baseline_stddev) = anomaly_detector::mean_and_stddev(&history);
+    Ok(Json(vec![AnomalyStatus {
+        metric: "rows_written",
+        latest_run_id: latest.run_id,
+        latest_value: latest.rows_written,
+        baseline_mean,
+        baseline_stddev,
+        history_size: history.len(),
+        severity,
+    }]))
+}
+
+#[derive(Deserialize)]
+struct VolumeTrendQuery {
+    #[serde(default = "default_volume_trend_limit")]
+    limit: i64,
+}
+
+fn default_volume_trend_limit() -> i64 {
+    50
+}
+
+const MAX_VOLUME_TREND_LIMIT: i64 = 500;
+
+/// `GET /pipelines/{id}/volume-trend?limit=` — raw per-run row counts,
+/// oldest-first, for the Quality tab's trend chart. Deliberately per-run
+/// rather than time-bucketed like `GET /system/resource-stats`: a run is a
+/// discrete event, not a continuous signal sampled on a clock, so bucketing
+/// it into time windows (`resource_stats::bucket_samples`) would just
+/// average away the exact per-run values the chart and the anomaly
+/// baseline both actually want.
+async fn pipeline_volume_trend_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<VolumeTrendQuery>,
+) -> Result<Json<Vec<pipeline_run_volume_store::VolumeSample>>, ApiError> {
+    let limit = query.limit.clamp(1, MAX_VOLUME_TREND_LIMIT);
+    Ok(Json(
+        state
+            .pipeline_run_volume
+            .recent(&id, limit)
             .await
             .map_err(ApiError::internal)?,
     ))
@@ -2660,6 +2811,10 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         &config.pipelines_database_url,
     )
     .await?;
+    let pipeline_run_volume = pipeline_run_volume_store::PipelineRunVolumeStore::connect(
+        &config.pipelines_database_url,
+    )
+    .await?;
     let quality_checks =
         quality_check_store::QualityCheckStore::connect(&config.pipelines_database_url).await?;
     let llm_stats = pipeline_run_llm_stats_store::PipelineRunLlmStatsStore::connect(
@@ -2703,6 +2858,7 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         pipeline_schemas,
         data_catalog,
         pipeline_dependency_state,
+        pipeline_run_volume,
         quality_checks,
         llm_stats,
         prompt_templates,
@@ -3042,6 +3198,11 @@ mod tests {
                 .await
                 .unwrap(),
             pipeline_dependency_state: pipeline_dependencies::DependencyStateStore::connect(
+                "sqlite::memory:",
+            )
+            .await
+            .unwrap(),
+            pipeline_run_volume: pipeline_run_volume_store::PipelineRunVolumeStore::connect(
                 "sqlite::memory:",
             )
             .await
@@ -5077,6 +5238,11 @@ mod tests {
                 .await
                 .unwrap(),
             pipeline_dependency_state: pipeline_dependencies::DependencyStateStore::connect(
+                "sqlite::memory:",
+            )
+            .await
+            .unwrap(),
+            pipeline_run_volume: pipeline_run_volume_store::PipelineRunVolumeStore::connect(
                 "sqlite::memory:",
             )
             .await

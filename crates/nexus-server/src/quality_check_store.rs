@@ -39,12 +39,42 @@ impl QualityCheckStore {
                 )
                 .execute(p)
                 .await?;
+                // Same additive-migration pattern as
+                // `pipeline_schema_store.rs`'s `last_drift` column (Fase
+                // 27) — no `ADD COLUMN IF NOT EXISTS` on older SQLite, so
+                // this just runs it and ignores the error ("column
+                // already exists" on a second/later boot). Both nullable:
+                // pre-existing rows have neither, and `violation_count`
+                // itself is legitimately absent for the "column not
+                // found" config-error case (see `QualityCheckOutcome`'s
+                // doc comment).
+                let _ = sqlx::query(
+                    "ALTER TABLE quality_check_results ADD COLUMN violation_count BIGINT",
+                )
+                .execute(p)
+                .await;
+                let _ =
+                    sqlx::query("ALTER TABLE quality_check_results ADD COLUMN sample_size BIGINT")
+                        .execute(p)
+                        .await;
             }
             MetadataPool::Postgres(p) => {
                 sqlx::query(create).execute(p).await?;
                 sqlx::query(
                     "CREATE INDEX IF NOT EXISTS idx_quality_check_results_pipeline_id \
                      ON quality_check_results(pipeline_id)",
+                )
+                .execute(p)
+                .await?;
+                sqlx::query(
+                    "ALTER TABLE quality_check_results \
+                     ADD COLUMN IF NOT EXISTS violation_count BIGINT",
+                )
+                .execute(p)
+                .await?;
+                sqlx::query(
+                    "ALTER TABLE quality_check_results \
+                     ADD COLUMN IF NOT EXISTS sample_size BIGINT",
                 )
                 .execute(p)
                 .await?;
@@ -63,8 +93,8 @@ impl QualityCheckStore {
     ) -> anyhow::Result<()> {
         let recorded_at = chrono::Utc::now().to_rfc3339();
         let sql = self.q("INSERT INTO quality_check_results \
-             (pipeline_id, run_id, column_name, check_name, status, message, recorded_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)");
+             (pipeline_id, run_id, column_name, check_name, status, message, recorded_at, violation_count, sample_size) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
         for r in results {
             match &self.pool {
                 MetadataPool::Sqlite(p) => {
@@ -76,6 +106,8 @@ impl QualityCheckStore {
                         .bind(&r.status)
                         .bind(&r.message)
                         .bind(&recorded_at)
+                        .bind(r.violation_count)
+                        .bind(r.sample_size)
                         .execute(p)
                         .await?;
                 }
@@ -88,6 +120,8 @@ impl QualityCheckStore {
                         .bind(&r.status)
                         .bind(&r.message)
                         .bind(&recorded_at)
+                        .bind(r.violation_count)
+                        .bind(r.sample_size)
                         .execute(p)
                         .await?;
                 }
@@ -103,10 +137,18 @@ impl QualityCheckStore {
         pipeline_id: &str,
     ) -> anyhow::Result<Vec<QualityCheckOutcome>> {
         let sql = self.q(
-            "SELECT column_name, check_name, status, message FROM quality_check_results \
-             WHERE pipeline_id = ? ORDER BY recorded_at",
+            "SELECT column_name, check_name, status, message, violation_count, sample_size \
+             FROM quality_check_results WHERE pipeline_id = ? ORDER BY recorded_at",
         );
-        let rows: Vec<(String, String, String, Option<String>)> = match &self.pool {
+        #[allow(clippy::type_complexity)]
+        let rows: Vec<(
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<i64>,
+            Option<i64>,
+        )> = match &self.pool {
             MetadataPool::Sqlite(p) => {
                 sqlx::query_as(sqlx::AssertSqlSafe(sql))
                     .bind(pipeline_id)
@@ -122,12 +164,21 @@ impl QualityCheckStore {
         };
         Ok(rows
             .into_iter()
-            .map(|(column, check, status, message)| QualityCheckOutcome {
-                column,
-                check,
-                status,
-                message,
-            })
+            .map(
+                |(column, check, status, message, violation_count, sample_size)| {
+                    QualityCheckOutcome {
+                        column,
+                        check,
+                        status,
+                        message,
+                        violation_count,
+                        // Rows written before this column existed have no
+                        // sample size on record — `0` is the honest answer
+                        // ("unknown"), not a guess at what it might have been.
+                        sample_size: sample_size.unwrap_or(0),
+                    }
+                },
+            )
             .collect())
     }
 }
@@ -142,6 +193,8 @@ mod tests {
             check: check.to_string(),
             status: status.to_string(),
             message: None,
+            violation_count: Some(0),
+            sample_size: 10,
         }
     }
 
@@ -193,6 +246,33 @@ mod tests {
 
         let stored = store.list_for_pipeline("pipe-1").await.unwrap();
         assert_eq!(stored[0].message.as_deref(), Some("3 null values found"));
+    }
+
+    #[tokio::test]
+    async fn record_all_persists_violation_count_and_sample_size() {
+        let store = QualityCheckStore::connect("sqlite::memory:").await.unwrap();
+        let mut r = outcome("id", "not_null", "fail");
+        r.violation_count = Some(3);
+        r.sample_size = 42;
+        store.record_all("pipe-1", 1, &[r]).await.unwrap();
+
+        let stored = store.list_for_pipeline("pipe-1").await.unwrap();
+        assert_eq!(stored[0].violation_count, Some(3));
+        assert_eq!(stored[0].sample_size, 42);
+    }
+
+    #[tokio::test]
+    async fn record_all_persists_none_violation_count() {
+        let store = QualityCheckStore::connect("sqlite::memory:").await.unwrap();
+        let mut r = outcome("id", "not_null", "fail");
+        r.violation_count = None;
+        store.record_all("pipe-1", 1, &[r]).await.unwrap();
+
+        let stored = store.list_for_pipeline("pipe-1").await.unwrap();
+        assert_eq!(
+            stored[0].violation_count, None,
+            "the 'column not found' config-error case has no violation count"
+        );
     }
 
     #[tokio::test]

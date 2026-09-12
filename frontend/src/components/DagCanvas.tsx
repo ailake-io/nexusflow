@@ -333,6 +333,7 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
       dependencyMode: spec.dependency_mode,
       alerts: spec.alerts,
       qualityChecks: spec.quality_checks,
+      anomalyAlerts: spec.anomaly_alerts,
     })
   }, [])
 

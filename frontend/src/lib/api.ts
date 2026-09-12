@@ -454,6 +454,12 @@ export interface QualityCheckOutcome {
   check: string
   status: 'pass' | 'fail'
   message: string | null
+  /** Structured violation count (Fase 27) — `null` for the "column not
+   *  found" config-error case, `0` on pass, `n` on a real violation count.
+   *  Prefer this over parsing `message` for aggregation/trending. */
+  violation_count: number | null
+  /** Total output rows this check was evaluated against. */
+  sample_size: number
 }
 
 export function getQualityCheckResults(
@@ -462,6 +468,58 @@ export function getQualityCheckResults(
 ): Promise<QualityCheckOutcome[]> {
   return request<QualityCheckOutcome[]>(
     `/pipelines/${encodeURIComponent(pipelineId)}/quality-checks`,
+    {},
+    token,
+  )
+}
+
+/** Matches nexus-server::anomaly_detector::AnomalySeverity. */
+export type AnomalySeverity = 'warning' | 'critical'
+
+/** Matches nexus-server::AnomalyStatus, as returned by
+ *  `GET /pipelines/{id}/anomalies` (Fase 27). Empty array means either the
+ *  pipeline has never run, or there's no prior run to form a baseline
+ *  against yet — `severity: null` (with a real `history_size`) means there
+ *  IS a baseline, it's just below the detector's minimum history size, or
+ *  the latest value simply isn't an outlier. */
+export interface AnomalyStatus {
+  metric: string
+  latest_run_id: number
+  latest_value: number
+  baseline_mean: number
+  baseline_stddev: number
+  history_size: number
+  severity: AnomalySeverity | null
+}
+
+export function getPipelineAnomalies(
+  token: string,
+  pipelineId: string,
+): Promise<AnomalyStatus[]> {
+  return request<AnomalyStatus[]>(
+    `/pipelines/${encodeURIComponent(pipelineId)}/anomalies`,
+    {},
+    token,
+  )
+}
+
+/** Matches nexus-server::pipeline_run_volume_store::VolumeSample, as
+ *  returned by `GET /pipelines/{id}/volume-trend` — oldest-first, raw
+ *  per-run row counts (not time-bucketed, unlike `ResourceStatsBucket`:
+ *  a run is a discrete event, not a continuous sampled signal). */
+export interface VolumeSample {
+  run_id: number
+  recorded_at: string
+  rows_written: number
+}
+
+export function getVolumeTrend(
+  token: string,
+  pipelineId: string,
+  limit = 50,
+): Promise<VolumeSample[]> {
+  return request<VolumeSample[]>(
+    `/pipelines/${encodeURIComponent(pipelineId)}/volume-trend?limit=${limit}`,
     {},
     token,
   )

@@ -16,8 +16,10 @@ import { usePipelines } from '@/hooks/usePipelines'
 import {
   getDbtTestResults,
   getLlmEvalResults,
+  getPipelineAnomalies,
   getQualityCheckResults,
   listRuns,
+  type AnomalyStatus,
   type DbtTestOutcome,
   type LlmEvalOutcome,
   type QualityCheckOutcome,
@@ -25,6 +27,7 @@ import {
 } from '@/lib/api'
 import { EmptyState } from '@/components/EmptyState'
 import { StatusBadge } from '@/components/ui/status-badge'
+import { AnomalyBanner } from '@/components/AnomalyBanner'
 
 function totalRowsWritten(run: RunRecord): number {
   return (run.stats ?? []).reduce((sum, s) => sum + s.rows_written, 0)
@@ -120,6 +123,7 @@ export function QualityPanel() {
   const [testResults, setTestResults] = useState<DbtTestOutcome[]>([])
   const [qualityResults, setQualityResults] = useState<QualityCheckOutcome[]>([])
   const [llmEvalResults, setLlmEvalResults] = useState<LlmEvalOutcome[]>([])
+  const [anomalies, setAnomalies] = useState<AnomalyStatus[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -138,13 +142,15 @@ export function QualityPanel() {
       getDbtTestResults(token, selectedId),
       getQualityCheckResults(token, selectedId),
       getLlmEvalResults(token, selectedId),
+      getPipelineAnomalies(token, selectedId),
     ])
-      .then(([runsResult, testsResult, qualityResult, llmEvalResult]) => {
+      .then(([runsResult, testsResult, qualityResult, llmEvalResult, anomaliesResult]) => {
         if (cancelled) return
         setRuns([...runsResult].reverse()) // API returns newest-first; chart wants oldest-first
         setTestResults(testsResult)
         setQualityResults(qualityResult)
         setLlmEvalResults(llmEvalResult)
+        setAnomalies(anomaliesResult)
         setError(null)
       })
       .catch((err: unknown) => {
@@ -254,6 +260,19 @@ export function QualityPanel() {
               </div>
             )}
           </div>
+
+          {anomalies.length > 0 && (
+            <div>
+              <div className="mb-2 text-xs font-medium text-muted-foreground">
+                {t('quality.anomaly.title')}
+              </div>
+              <div className="flex flex-col gap-2">
+                {anomalies.map((a) => (
+                  <AnomalyBanner key={a.metric} status={a} />
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="rounded-lg border border-white/10 bg-card p-4">
             <div className="mb-3 text-xs font-medium text-muted-foreground">

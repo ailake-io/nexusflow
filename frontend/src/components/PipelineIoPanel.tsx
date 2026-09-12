@@ -335,6 +335,8 @@ export function PipelineIoPanel({
         onOpenChange={setAlertsOpen}
         alerts={meta.alerts}
         onChange={(alerts) => onMetaChange({ ...meta, alerts })}
+        anomalyAlerts={meta.anomalyAlerts}
+        onAnomalyAlertsChange={(anomalyAlerts) => onMetaChange({ ...meta, anomalyAlerts })}
       />
       <QualityChecksDialog
         open={qualityChecksOpen}
