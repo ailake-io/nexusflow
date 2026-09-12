@@ -27,6 +27,7 @@ mod lineage;
 mod llm_eval_result_store;
 mod llm_generation_store;
 pub mod migrate;
+mod pipeline_dependencies;
 mod pipeline_run_llm_stats_store;
 mod pipeline_schema_store;
 mod pipeline_store;
@@ -123,6 +124,7 @@ struct AppState {
     dbt_lineage: dbt_lineage_store::DbtLineageStore,
     pipeline_schemas: pipeline_schema_store::PipelineSchemaStore,
     data_catalog: data_catalog::CatalogStore,
+    pipeline_dependency_state: pipeline_dependencies::DependencyStateStore,
     // Only read from `execute_pipeline_run`'s `#[cfg(feature = "dbt")]`
     // block — kept on `AppState` unconditionally so build_state/test_state
     // don't need their own feature-gated construction path.
@@ -354,7 +356,18 @@ fn router(state: AppState) -> Router {
         // action, same tier as `/lineage` above.
         .route("/catalog/datasets", get(list_catalog_datasets_handler))
         .route("/catalog/datasets/{key}", get(get_catalog_dataset_handler))
-        .route("/catalog/tags", get(list_catalog_tags_handler));
+        .route("/catalog/tags", get(list_catalog_tags_handler))
+        // Cross-pipeline orchestration (Fase 26) — browsing dependency
+        // relationships is a `Read` action, same tier as `/lineage` above.
+        .route(
+            "/pipelines/{id}/dependents",
+            get(list_pipeline_dependents_handler),
+        )
+        .route(
+            "/pipelines/{id}/dependencies",
+            get(get_pipeline_dependencies_handler),
+        )
+        .route("/orchestration/graph", get(orchestration_graph_handler));
     // Version history is read-only browsing (diffs run through the same
     // secret-safe `PipelineSummary` shape as `get_pipeline_handler`, never
     // raw connector config) — same `Read` tier as everything else in this
@@ -761,10 +774,37 @@ pub(crate) async fn start_pipeline_run(
 
     let supervisor = state.clone();
     let spec = spec.clone();
-    tokio::spawn(async move {
-        execute_pipeline_run(supervisor, spec, run_id, progress_tx, logger).await;
-    });
+    tokio::spawn(spawn_execute_pipeline_run(
+        supervisor, spec, run_id, progress_tx, logger,
+    ));
     Ok(run_id)
+}
+
+/// Boxes `execute_pipeline_run`'s future behind a concrete, non-recursive
+/// type (`Pin<Box<dyn Future + Send>>`) instead of spawning a bare
+/// `async move { execute_pipeline_run(...).await }` block inline.
+///
+/// This indirection is load-bearing, not stylistic: `execute_pipeline_run`
+/// (Fase 26) now calls `pipeline_dependencies::trigger_downstream`, which
+/// can itself call back into `start_pipeline_run` above to fire a
+/// dependency-triggered downstream run — which spawns *another*
+/// `execute_pipeline_run`. Spawning the bare async block directly makes
+/// rustc's Send-auto-trait check on that block's opaque type transitively
+/// depend on itself through this exact cycle
+/// (`execute_pipeline_run` -> `trigger_downstream` -> `start_pipeline_run`
+/// -> spawn `execute_pipeline_run` again), which it cannot resolve
+/// ("future cannot be sent between threads safely" — a real, verified
+/// compile error, not a hypothetical). Routing the recursive edge through
+/// this wrapper's nominal boxed return type gives rustc a concrete type to
+/// bottom out on instead of re-expanding the opaque generator type forever.
+fn spawn_execute_pipeline_run(
+    state: AppState,
+    spec: PipelineSpec,
+    run_id: i64,
+    progress_tx: ProgressSender,
+    logger: RunLogger,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+    Box::pin(execute_pipeline_run(state, spec, run_id, progress_tx, logger))
 }
 
 /// Supervisor for one pipeline run: executes the pipeline and *always*
@@ -966,6 +1006,13 @@ async fn execute_pipeline_run(
             {
                 tracing::warn!(error = %e, "failed to update data catalog");
             }
+            // Cross-pipeline orchestration (Fase 26) — best-effort, same
+            // posture as the schema/quality-check persistence above: a
+            // failure here must never fail an otherwise-successful run.
+            if let Err(e) = pipeline_dependencies::trigger_downstream(&state, &spec.pipeline_id).await
+            {
+                tracing::warn!(error = %e, "failed to trigger dependency-based downstream runs");
+            }
             server_metrics::record_run_outcome(&spec.pipeline_id, "success", started.elapsed());
             state.alerts.notify_pipeline_run(
                 spec.alerts.as_ref(),
@@ -1037,6 +1084,11 @@ async fn create_pipeline_handler(
         let active_license = state.license_store.active().await.unwrap_or(None);
         connectors::validate_pipeline_configs(&spec, active_license.as_ref())
             .map_err(|e| ApiError::bad_request(e.to_string()))?;
+        if !spec.depends_on.is_empty() {
+            let all_specs = state.pipelines.list_all_specs(&state.secrets).await?;
+            pipeline_dependencies::check_dependencies(&all_specs, &spec)
+                .map_err(ApiError::bad_request)?;
+        }
     }
     state
         .pipelines
@@ -1252,6 +1304,8 @@ async fn preview_adhoc_handler(
         dbt: None,
         post_dbt_sinks: Vec::new(),
         schedule: None,
+        depends_on: Vec::new(),
+        dependency_mode: nexus_core::DependencyMode::Any,
         alerts: None,
         quality_checks: Vec::new(),
         draft: false,
@@ -1306,6 +1360,11 @@ async fn update_pipeline_handler(
         let active_license = state.license_store.active().await.unwrap_or(None);
         connectors::validate_pipeline_configs(&spec, active_license.as_ref())
             .map_err(|e| ApiError::bad_request(e.to_string()))?;
+        if !spec.depends_on.is_empty() {
+            let all_specs = state.pipelines.list_all_specs(&state.secrets).await?;
+            pipeline_dependencies::check_dependencies(&all_specs, &spec)
+                .map_err(ApiError::bad_request)?;
+        }
     }
     state
         .pipelines
@@ -1954,6 +2013,112 @@ async fn update_catalog_column_handler(
     }
 }
 
+/// One pipeline that depends on another — used by both
+/// `GET /pipelines/{id}/dependents` (the `pipeline_id` is the dependent,
+/// `id` in the path is its upstream) and `GET /orchestration/graph`'s
+/// edges.
+#[derive(Serialize)]
+struct PipelineDependentInfo {
+    pipeline_id: String,
+    dependency_mode: nexus_core::DependencyMode,
+}
+
+/// `GET /pipelines/{id}/dependents` — every saved (non-draft) pipeline that
+/// lists `id` in its own `depends_on` (Fase 26). Empty when nothing depends
+/// on this pipeline, not an error.
+async fn list_pipeline_dependents_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<PipelineDependentInfo>>, ApiError> {
+    let all_specs = state.pipelines.list_all_specs(&state.secrets).await?;
+    Ok(Json(
+        all_specs
+            .into_iter()
+            .filter(|s| !s.draft && s.depends_on.iter().any(|d| d.upstream_pipeline_id == id))
+            .map(|s| PipelineDependentInfo {
+                pipeline_id: s.pipeline_id,
+                dependency_mode: s.dependency_mode,
+            })
+            .collect(),
+    ))
+}
+
+#[derive(Serialize)]
+struct PipelineDependenciesResponse {
+    depends_on: Vec<String>,
+    dependency_mode: nexus_core::DependencyMode,
+}
+
+/// `GET /pipelines/{id}/dependencies` — this pipeline's own upstream list
+/// and trigger mode. A thin, dependency-graph-focused slice of what
+/// `GET /pipelines/{id}` already returns in `PipelineSummary`.
+async fn get_pipeline_dependencies_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<PipelineDependenciesResponse>, ApiError> {
+    let summary = state.pipelines.get_summary(&id, &state.secrets).await?;
+    Ok(Json(PipelineDependenciesResponse {
+        depends_on: summary.depends_on,
+        dependency_mode: summary.dependency_mode,
+    }))
+}
+
+#[derive(Serialize)]
+struct OrchestrationNode {
+    pipeline_id: String,
+}
+
+#[derive(Serialize)]
+struct OrchestrationEdge {
+    from: String,
+    to: String,
+    dependency_mode: nexus_core::DependencyMode,
+}
+
+#[derive(Serialize)]
+struct OrchestrationGraph {
+    nodes: Vec<OrchestrationNode>,
+    edges: Vec<OrchestrationEdge>,
+}
+
+/// `GET /orchestration/graph` — whole-catalog pipeline-to-pipeline
+/// dependency graph (Fase 26), separate from `/lineage`'s resource-level
+/// graph. Recomputed fresh on every request from saved specs, same posture
+/// as `lineage_handler` — pipeline dependency counts are small, no reason
+/// to materialize this. Drafts are excluded, same reasoning as
+/// `lineage_handler` (an incomplete draft's `depends_on` was never
+/// validated).
+async fn orchestration_graph_handler(
+    State(state): State<AppState>,
+) -> Result<Json<OrchestrationGraph>, ApiError> {
+    let all_specs: Vec<_> = state
+        .pipelines
+        .list_all_specs(&state.secrets)
+        .await?
+        .into_iter()
+        .filter(|s| !s.draft)
+        .collect();
+    let nodes = all_specs
+        .iter()
+        .map(|s| OrchestrationNode {
+            pipeline_id: s.pipeline_id.clone(),
+        })
+        .collect();
+    let edges = all_specs
+        .iter()
+        .flat_map(|s| {
+            let downstream = s.pipeline_id.clone();
+            let mode = s.dependency_mode;
+            s.depends_on.iter().map(move |d| OrchestrationEdge {
+                from: d.upstream_pipeline_id.clone(),
+                to: downstream.clone(),
+                dependency_mode: mode,
+            })
+        })
+        .collect();
+    Ok(Json(OrchestrationGraph { nodes, edges }))
+}
+
 #[derive(Deserialize)]
 struct ResourceStatsQuery {
     /// `<number><unit>` (`5m`/`45m`/`3h`/`12d`, ...) — free-form, not just
@@ -2491,6 +2656,10 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         pipeline_schema_store::PipelineSchemaStore::connect(&config.pipelines_database_url).await?;
     let data_catalog =
         data_catalog::CatalogStore::connect(&config.pipelines_database_url).await?;
+    let pipeline_dependency_state = pipeline_dependencies::DependencyStateStore::connect(
+        &config.pipelines_database_url,
+    )
+    .await?;
     let quality_checks =
         quality_check_store::QualityCheckStore::connect(&config.pipelines_database_url).await?;
     let llm_stats = pipeline_run_llm_stats_store::PipelineRunLlmStatsStore::connect(
@@ -2533,6 +2702,7 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         dbt_test_results,
         pipeline_schemas,
         data_catalog,
+        pipeline_dependency_state,
         quality_checks,
         llm_stats,
         prompt_templates,
@@ -2871,6 +3041,11 @@ mod tests {
             data_catalog: data_catalog::CatalogStore::connect("sqlite::memory:")
                 .await
                 .unwrap(),
+            pipeline_dependency_state: pipeline_dependencies::DependencyStateStore::connect(
+                "sqlite::memory:",
+            )
+            .await
+            .unwrap(),
             quality_checks: quality_check_store::QualityCheckStore::connect("sqlite::memory:")
                 .await
                 .unwrap(),
@@ -4901,6 +5076,11 @@ mod tests {
             data_catalog: data_catalog::CatalogStore::connect("sqlite::memory:")
                 .await
                 .unwrap(),
+            pipeline_dependency_state: pipeline_dependencies::DependencyStateStore::connect(
+                "sqlite::memory:",
+            )
+            .await
+            .unwrap(),
             quality_checks: quality_check_store::QualityCheckStore::connect("sqlite::memory:")
                 .await
                 .unwrap(),

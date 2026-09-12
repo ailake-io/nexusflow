@@ -13,6 +13,7 @@ import {
   Timer,
   Bell,
   BadgeCheck,
+  GitBranch,
 } from 'lucide-react'
 import { useI18n } from '@/lib/i18n'
 import { Button } from '@/components/ui/button'
@@ -21,6 +22,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { AlertsConfigDialog } from '@/components/AlertsConfigDialog'
 import { QualityChecksDialog } from '@/components/QualityChecksDialog'
+import { DependenciesConfigDialog } from '@/components/DependenciesConfigDialog'
 import type { PipelineMeta } from '@/lib/dag'
 
 interface PipelineIoPanelProps {
@@ -66,6 +68,7 @@ export function PipelineIoPanel({
   const [saved, setSaved] = useState(false)
   const [alertsOpen, setAlertsOpen] = useState(false)
   const [qualityChecksOpen, setQualityChecksOpen] = useState(false)
+  const [dependenciesOpen, setDependenciesOpen] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleExport = () => {
@@ -225,6 +228,20 @@ export function PipelineIoPanel({
           </Button>
           <Button
             type="button"
+            variant="outline"
+            onClick={() => setDependenciesOpen(true)}
+            className="gap-1.5"
+          >
+            <GitBranch className="h-3.5 w-3.5" />
+            {t('ioPanel.dependencies')}
+            {meta.dependsOn && meta.dependsOn.length > 0 && (
+              <span className="rounded-full bg-primary/20 px-1.5 text-[10px] text-primary">
+                {meta.dependsOn.length}
+              </span>
+            )}
+          </Button>
+          <Button
+            type="button"
             variant={autoSaveEnabled ? 'default' : 'outline'}
             onClick={onToggleAutoSave}
             disabled={!meta.pipelineId.trim()}
@@ -324,6 +341,16 @@ export function PipelineIoPanel({
         onOpenChange={setQualityChecksOpen}
         checks={meta.qualityChecks}
         onChange={(qualityChecks) => onMetaChange({ ...meta, qualityChecks })}
+      />
+      <DependenciesConfigDialog
+        open={dependenciesOpen}
+        onOpenChange={setDependenciesOpen}
+        currentPipelineId={meta.pipelineId}
+        dependsOn={meta.dependsOn}
+        dependencyMode={meta.dependencyMode}
+        onChange={(dependsOn, dependencyMode) =>
+          onMetaChange({ ...meta, dependsOn, dependencyMode })
+        }
       />
     </div>
   )

@@ -648,6 +648,54 @@ export function updateCatalogColumn(
   )
 }
 
+/** Matches nexus-server::PipelineDependentInfo — one pipeline that lists
+ *  another in its own `depends_on` (Fase 26). */
+export interface PipelineDependentInfo {
+  pipeline_id: string
+  dependency_mode: 'any' | 'all'
+}
+
+export function getPipelineDependents(
+  token: string,
+  pipelineId: string,
+): Promise<PipelineDependentInfo[]> {
+  return request<PipelineDependentInfo[]>(
+    `/pipelines/${encodeURIComponent(pipelineId)}/dependents`,
+    {},
+    token,
+  )
+}
+
+/** Matches nexus-server::PipelineDependenciesResponse. */
+export interface PipelineDependenciesResponse {
+  depends_on: string[]
+  dependency_mode: 'any' | 'all'
+}
+
+export function getPipelineDependencies(
+  token: string,
+  pipelineId: string,
+): Promise<PipelineDependenciesResponse> {
+  return request<PipelineDependenciesResponse>(
+    `/pipelines/${encodeURIComponent(pipelineId)}/dependencies`,
+    {},
+    token,
+  )
+}
+
+/** Matches nexus-server::OrchestrationGraph, as returned by
+ *  `GET /orchestration/graph` — the whole-catalog pipeline-to-pipeline
+ *  dependency graph (Fase 26), separate from `/lineage`'s resource-level
+ *  graph. */
+export interface OrchestrationGraph {
+  nodes: { pipeline_id: string }[]
+  edges: { from: string; to: string; dependency_mode: 'any' | 'all' }[]
+}
+
+export function getOrchestrationGraph(token: string): Promise<OrchestrationGraph> {
+  return request<OrchestrationGraph>('/orchestration/graph', {}, token)
+}
+
 /**
  * Replays a run's execution log after the fact — works whether the run is
  * still going, already finished, or (the reason this exists) was triggered
@@ -704,6 +752,10 @@ export interface PipelineSummary {
   /** Cron expression, if this pipeline has an automatic schedule — `null`
    * means it only runs when explicitly triggered. */
   schedule: string | null
+  /** Plain upstream pipeline ids (Fase 26) — empty means no dependency-based
+   * triggering. */
+  depends_on: string[]
+  dependency_mode: 'any' | 'all'
   /** Status of the most recent run ("running" / "success" / "failed"),
    * `null` if it has never run. */
   last_run_status: 'running' | 'success' | 'failed' | null

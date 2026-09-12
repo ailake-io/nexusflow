@@ -107,6 +107,14 @@ export interface PipelineSpec {
    * the server's scheduler. Unset means the pipeline only runs when
    * explicitly triggered. */
   schedule?: string
+  /** Upstream pipeline ids this one waits on before an automatic run starts
+   * (Fase 26) — empty/unset means no dependency-based triggering.
+   * Orthogonal to `schedule` above. */
+  depends_on?: { upstream_pipeline_id: string }[]
+  /** How multiple `depends_on` entries combine — meaningless with 0 or 1
+   * entries. Matches nexus-core::DependencyMode's `#[serde(rename_all =
+   * "snake_case")]`. */
+  dependency_mode?: 'any' | 'all'
   /** Per-pipeline alert channels, additive to the global env-var-configured
    * ones. Unset means no per-pipeline channels. */
   alerts?: AlertsConfig
@@ -270,6 +278,10 @@ export interface PipelineMeta {
   channelCapacity?: number
   partitions?: number
   schedule?: string
+  /** Plain pipeline ids (canvas form of `PipelineSpec.depends_on`, which
+   * wraps each one in `{upstream_pipeline_id}`) — Fase 26. */
+  dependsOn?: string[]
+  dependencyMode?: 'any' | 'all'
   alerts?: AlertsConfig
   qualityChecks?: QualityCheckSpec[]
 }
@@ -385,6 +397,10 @@ export function toPipelineSpec(
   if (meta.channelCapacity !== undefined) spec.channel_capacity = meta.channelCapacity
   if (meta.partitions !== undefined) spec.partitions = meta.partitions
   if (meta.schedule?.trim()) spec.schedule = meta.schedule.trim()
+  if (meta.dependsOn && meta.dependsOn.length > 0) {
+    spec.depends_on = meta.dependsOn.map((upstream_pipeline_id) => ({ upstream_pipeline_id }))
+    if (meta.dependencyMode) spec.dependency_mode = meta.dependencyMode
+  }
   if (meta.alerts) spec.alerts = meta.alerts
   if (meta.qualityChecks && meta.qualityChecks.length > 0) {
     spec.quality_checks = meta.qualityChecks

@@ -315,6 +315,8 @@ mod tests {
             dbt: None,
             post_dbt_sinks: Vec::new(),
             schedule: None,
+            depends_on: Vec::new(),
+            dependency_mode: nexus_core::DependencyMode::Any,
             alerts: None,
             quality_checks: Vec::new(),
             draft: false,

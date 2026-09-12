@@ -54,6 +54,11 @@ pub struct PipelineSummary {
     /// `scheduler.rs`) — `None` means it only runs when explicitly
     /// triggered via `POST /pipelines/{id}/run`.
     pub schedule: Option<String>,
+    /// Upstream pipeline ids this one waits on (Fase 26) — empty means no
+    /// dependency-based triggering. Safe to expose as-is: just other
+    /// pipelines' ids, never a connector config/secret.
+    pub depends_on: Vec<String>,
+    pub dependency_mode: nexus_core::DependencyMode,
     /// Status of the most recent run ("running" / "success" / "failed"),
     /// `None` if it has never run — lets the Pipelines list show at a
     /// glance which scheduled/manual runs are healthy.
@@ -934,6 +939,12 @@ fn summarize(
         pipeline_id: spec.pipeline_id,
         has_transform: spec.transform.is_some(),
         schedule: spec.schedule,
+        depends_on: spec
+            .depends_on
+            .into_iter()
+            .map(|d| d.upstream_pipeline_id)
+            .collect(),
+        dependency_mode: spec.dependency_mode,
         sources: spec.sources.into_iter().map(to_summary).collect(),
         sinks: spec.sinks.into_iter().map(to_summary).collect(),
         created_at,
@@ -976,6 +987,8 @@ mod tests {
             dbt: None,
             post_dbt_sinks: Vec::new(),
             schedule: None,
+            depends_on: Vec::new(),
+            dependency_mode: nexus_core::DependencyMode::Any,
             alerts: None,
             quality_checks: Vec::new(),
             draft: false,

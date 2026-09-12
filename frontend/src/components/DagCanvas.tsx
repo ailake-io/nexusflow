@@ -329,6 +329,8 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
       channelCapacity: spec.channel_capacity,
       partitions: spec.partitions,
       schedule: spec.schedule,
+      dependsOn: spec.depends_on?.map((d) => d.upstream_pipeline_id),
+      dependencyMode: spec.dependency_mode,
       alerts: spec.alerts,
       qualityChecks: spec.quality_checks,
     })
