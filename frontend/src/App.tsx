@@ -13,6 +13,7 @@ import {
   BarChart3,
   BookText,
   Cloud,
+  GitBranch,
 } from 'lucide-react'
 import { useAuth } from '@/lib/auth-context'
 import { useI18n } from '@/lib/i18n'
@@ -30,6 +31,7 @@ const Store = lazy(() => import('@/components/Store'))
 const InfraCanvas = lazy(() => import('@/components/InfraCanvas'))
 const ResourcesPanel = lazy(() => import('@/components/ResourcesPanel'))
 const LineagePanel = lazy(() => import('@/components/LineagePanel'))
+const PipelineDependencyGraph = lazy(() => import('@/components/PipelineDependencyGraph'))
 const QualityPanel = lazy(() => import('@/components/QualityPanel'))
 const DataPreviewPanel = lazy(() => import('@/components/DataPreviewPanel'))
 const PromptLibrary = lazy(() => import('@/components/PromptLibrary'))
@@ -42,6 +44,7 @@ type View =
   | 'infra'
   | 'resources'
   | 'lineage'
+  | 'orchestration'
   | 'quality'
   | 'preview'
   | 'prompts'
@@ -90,6 +93,7 @@ function App() {
     { id: 'infra', label: t('nav.infra'), icon: Cloud },
     { id: 'resources', label: t('nav.resources'), icon: Gauge },
     { id: 'lineage', label: t('nav.lineage'), icon: Waypoints },
+    { id: 'orchestration', label: t('nav.orchestration'), icon: GitBranch },
     { id: 'quality', label: t('nav.quality'), icon: BadgeCheck },
     { id: 'preview', label: t('nav.preview'), icon: BarChart3 },
     { id: 'prompts', label: t('nav.prompts'), icon: BookText },
@@ -182,6 +186,7 @@ function App() {
             {view === 'infra' && <InfraCanvas />}
             {view === 'resources' && <ResourcesPanel />}
             {view === 'lineage' && <LineagePanel />}
+            {view === 'orchestration' && <PipelineDependencyGraph />}
             {view === 'quality' && <QualityPanel />}
             {view === 'preview' && <DataPreviewPanel />}
             {view === 'prompts' && <PromptLibrary />}

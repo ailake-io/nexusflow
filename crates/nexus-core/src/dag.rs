@@ -57,6 +57,34 @@ pub struct PythonTransformSpec {
     pub timeout_seconds: Option<u64>,
 }
 
+/// One upstream pipeline this pipeline waits on before `pipeline_dependencies.rs`
+/// (Fase 26) automatically triggers a run — a `schedule` cron expression
+/// remains the only other automatic trigger, and both can coexist on the
+/// same pipeline (whichever fires first starts a run; they don't interact).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PipelineDependency {
+    pub upstream_pipeline_id: String,
+}
+
+/// How multiple `depends_on` entries combine. Meaningless (and ignored) when
+/// `depends_on` has 0 or 1 entries.
+///
+/// - `Any`: a run starts as soon as *any one* upstream succeeds. With 2+
+///   upstreams this means the downstream can fire more than once per
+///   "round" — each upstream success is evaluated independently, there's no
+///   shared state across them.
+/// - `All`: a run starts only once *every* upstream has succeeded at least
+///   once since the last time this downstream itself fired. Needs the
+///   per-"epoch" satisfaction tracking `pipeline_dependencies.rs` persists
+///   (`nexus-core` itself has no run history to check this against).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DependencyMode {
+    #[default]
+    Any,
+    All,
+}
+
 /// Which dbt command to invoke after the raw load succeeds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -453,6 +481,15 @@ pub struct PipelineSpec {
     /// before this field existed.
     #[serde(default)]
     pub schedule: Option<String>,
+    /// Upstream pipelines this one waits on before an automatic run starts
+    /// (Fase 26) — empty (the default) means no dependency-based
+    /// triggering, same as before this field existed. Combines with
+    /// `dependency_mode` when there's more than one entry; orthogonal to
+    /// `schedule` above (a pipeline may have both, neither, or either).
+    #[serde(default)]
+    pub depends_on: Vec<PipelineDependency>,
+    #[serde(default)]
+    pub dependency_mode: DependencyMode,
     /// Per-pipeline alert channels — additive to nexus-server's global,
     /// env-var-configured channels (`alerts.rs::AlertConfig`), which keep
     /// firing exactly as before. `None` (the default) means no per-pipeline
@@ -781,6 +818,38 @@ impl PipelineSpec {
         if let Some(expr) = &self.schedule {
             crate::schedule::parse_cron_expression(expr)
                 .map_err(|e| NexusError::Schema(format!("invalid schedule: {e}")))?;
+        }
+        // Cross-pipeline cycle detection needs visibility into every other
+        // saved spec (nexus-server's `pipeline_dependencies::check_dependencies`,
+        // called from the create/update handlers) — this only checks what a
+        // single spec can know about itself: charset, and the trivial
+        // 1-node cycle of depending on itself.
+        let mut seen_upstreams = std::collections::HashSet::new();
+        for (i, dep) in self.depends_on.iter().enumerate() {
+            let upstream = dep.upstream_pipeline_id.trim();
+            if upstream.is_empty() {
+                return Err(NexusError::Schema(format!(
+                    "depends_on[{i}].upstream_pipeline_id must not be empty"
+                )));
+            }
+            if !upstream
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            {
+                return Err(NexusError::Schema(format!(
+                    "depends_on[{i}].upstream_pipeline_id must only contain ASCII letters, digits, '_' or '-'"
+                )));
+            }
+            if upstream == id {
+                return Err(NexusError::Schema(
+                    "a pipeline cannot depend on itself".into(),
+                ));
+            }
+            if !seen_upstreams.insert(upstream) {
+                return Err(NexusError::Schema(format!(
+                    "depends_on lists {upstream:?} more than once"
+                )));
+            }
         }
         Ok(())
     }
@@ -1748,5 +1817,91 @@ mod tests {
         let spec = PipelineSpec::parse(json).unwrap();
         spec.validate_security()
             .expect("external alerts channels must be accepted");
+    }
+
+    #[test]
+    fn accepts_valid_depends_on() {
+        let json = r#"{
+            "pipeline_id": "downstream",
+            "sources": [{"connector": "postgres", "config": {}}],
+            "sinks": [{"connector": "postgres", "config": {}}],
+            "depends_on": [{"upstream_pipeline_id": "upstream-1"}, {"upstream_pipeline_id": "upstream_2"}],
+            "dependency_mode": "all"
+        }"#;
+        let spec = PipelineSpec::parse(json).expect("valid depends_on must parse");
+        assert_eq!(spec.depends_on.len(), 2);
+        assert_eq!(spec.dependency_mode, DependencyMode::All);
+    }
+
+    #[test]
+    fn depends_on_mode_defaults_to_any() {
+        let json = r#"{
+            "pipeline_id": "downstream",
+            "sources": [{"connector": "postgres", "config": {}}],
+            "sinks": [{"connector": "postgres", "config": {}}],
+            "depends_on": [{"upstream_pipeline_id": "upstream-1"}]
+        }"#;
+        let spec = PipelineSpec::parse(json).unwrap();
+        assert_eq!(spec.dependency_mode, DependencyMode::Any);
+    }
+
+    #[test]
+    fn rejects_self_dependency() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "postgres", "config": {}}],
+            "sinks": [{"connector": "postgres", "config": {}}],
+            "depends_on": [{"upstream_pipeline_id": "p"}]
+        }"#;
+        let err = PipelineSpec::parse(json).expect_err("self-dependency must fail");
+        assert!(err.to_string().contains("cannot depend on itself"));
+    }
+
+    #[test]
+    fn rejects_depends_on_with_invalid_characters() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "postgres", "config": {}}],
+            "sinks": [{"connector": "postgres", "config": {}}],
+            "depends_on": [{"upstream_pipeline_id": "up/stream"}]
+        }"#;
+        let err = PipelineSpec::parse(json).expect_err("invalid upstream_pipeline_id must fail");
+        assert!(err.to_string().contains("must only contain"));
+    }
+
+    #[test]
+    fn rejects_empty_depends_on_entry() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "postgres", "config": {}}],
+            "sinks": [{"connector": "postgres", "config": {}}],
+            "depends_on": [{"upstream_pipeline_id": ""}]
+        }"#;
+        let err = PipelineSpec::parse(json).expect_err("empty upstream_pipeline_id must fail");
+        assert!(err.to_string().contains("must not be empty"));
+    }
+
+    #[test]
+    fn rejects_duplicate_depends_on_entries() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "postgres", "config": {}}],
+            "sinks": [{"connector": "postgres", "config": {}}],
+            "depends_on": [{"upstream_pipeline_id": "u"}, {"upstream_pipeline_id": "u"}]
+        }"#;
+        let err = PipelineSpec::parse(json).expect_err("duplicate depends_on entries must fail");
+        assert!(err.to_string().contains("more than once"));
+    }
+
+    #[test]
+    fn draft_pipeline_skips_depends_on_validation() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [],
+            "sinks": [],
+            "depends_on": [{"upstream_pipeline_id": "p"}],
+            "draft": true
+        }"#;
+        PipelineSpec::parse(json).expect("draft must skip depends_on validation, same as everything else");
     }
 }
