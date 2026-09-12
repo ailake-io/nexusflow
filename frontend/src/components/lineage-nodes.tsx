@@ -10,6 +10,7 @@ import {
   Database,
   Sprout,
   Camera,
+  ShieldAlert,
 } from 'lucide-react'
 import type { LineageResourceKind } from '@/lib/api'
 
@@ -29,6 +30,14 @@ export type LineageResourceNodeData = {
   label: string
   connector: string
   resourceKind: LineageResourceKind
+  /** Fase 25 — `true` when the Data Catalog has at least one column of this
+   *  resource manually flagged as PII. A resource node's id
+   *  (`"resource::{connector}::{identifier}"`) is the exact same string as
+   *  the matching `CatalogDataset.dataset_key`, so `LineagePanel` cross-
+   *  links the two by id alone, no lookup table needed. `undefined`/absent
+   *  when the catalog fetch hasn't resolved yet — never treated as "no
+   *  PII", just "unknown so far". */
+  hasPii?: boolean
 }
 
 export type LineageDbtNodeData = {
@@ -82,6 +91,9 @@ export function LineageResourceNodeView({
       <div className="flex items-center gap-2">
         <Icon className="h-3.5 w-3.5 text-amber-400" />
         <div className="truncate text-sm font-semibold text-foreground">{data.label}</div>
+        {data.hasPii && (
+          <ShieldAlert className="h-3 w-3 shrink-0 text-amber-400" aria-label="PII" />
+        )}
       </div>
       <div className="mt-0.5 truncate text-[10px] uppercase tracking-wide text-muted-foreground">
         {data.connector}

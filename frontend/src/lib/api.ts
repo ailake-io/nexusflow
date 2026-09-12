@@ -560,6 +560,94 @@ export function getPipelineSchema(token: string, pipelineId: string): Promise<Pi
   return request<PipelineSchema>(`/lineage/${encodeURIComponent(pipelineId)}/schema`, {}, token)
 }
 
+/** Matches nexus-server::data_catalog::CatalogColumn (Fase 25). `data_type`
+ *  is `null` when a column was only ever manually annotated, never actually
+ *  observed by a run. `description`/`pii_flag` are user-edited and manual
+ *  only — there's no automatic PII heuristic. */
+export interface CatalogColumn {
+  name: string
+  data_type: string | null
+  description: string | null
+  pii_flag: boolean
+}
+
+/** Matches nexus-server::data_catalog::CatalogDataset, returned by
+ *  `GET /catalog/datasets`/`GET /catalog/datasets/{key}`. `dataset_key`
+ *  shares its `"resource::{connector}::{identifier}"` shape with a lineage
+ *  `Resource` node's id (see `LineageNode`'s `resource` variant) but must be
+ *  percent-encoded when used in a URL path (it can contain `/`) —
+ *  `encodeURIComponent(datasetKey)`. */
+export interface CatalogDataset {
+  dataset_key: string
+  connector: string
+  resource_kind: LineageResourceKind
+  identifier: string
+  description: string | null
+  owner: string | null
+  tags: string[]
+  first_seen_at: string
+  last_seen_at: string
+  columns: CatalogColumn[]
+}
+
+/** Matches nexus-server::data_catalog::CatalogFilter — every field is
+ *  optional and AND-combined server-side. */
+export interface CatalogFilter {
+  q?: string
+  tag?: string
+  connector?: string
+  owner?: string
+  has_pii?: boolean
+}
+
+export function listCatalogDatasets(
+  token: string,
+  filter: CatalogFilter = {},
+): Promise<CatalogDataset[]> {
+  const params = new URLSearchParams()
+  if (filter.q) params.set('q', filter.q)
+  if (filter.tag) params.set('tag', filter.tag)
+  if (filter.connector) params.set('connector', filter.connector)
+  if (filter.owner) params.set('owner', filter.owner)
+  if (filter.has_pii !== undefined) params.set('has_pii', String(filter.has_pii))
+  const qs = params.toString()
+  return request<CatalogDataset[]>(`/catalog/datasets${qs ? `?${qs}` : ''}`, {}, token)
+}
+
+export function getCatalogDataset(token: string, datasetKey: string): Promise<CatalogDataset> {
+  return request<CatalogDataset>(`/catalog/datasets/${encodeURIComponent(datasetKey)}`, {}, token)
+}
+
+/** Distinct tags across every dataset — powers the tag-filter dropdown. */
+export function listCatalogTags(token: string): Promise<string[]> {
+  return request<string[]>('/catalog/tags', {}, token)
+}
+
+export function updateCatalogDataset(
+  token: string,
+  datasetKey: string,
+  body: { description: string | null; owner: string | null; tags: string[] },
+): Promise<void> {
+  return request<void>(
+    `/catalog/datasets/${encodeURIComponent(datasetKey)}`,
+    { method: 'PUT', body: JSON.stringify(body) },
+    token,
+  )
+}
+
+export function updateCatalogColumn(
+  token: string,
+  datasetKey: string,
+  columnName: string,
+  body: { description: string | null; pii_flag: boolean },
+): Promise<void> {
+  return request<void>(
+    `/catalog/datasets/${encodeURIComponent(datasetKey)}/columns/${encodeURIComponent(columnName)}`,
+    { method: 'PUT', body: JSON.stringify(body) },
+    token,
+  )
+}
+
 /**
  * Replays a run's execution log after the fact — works whether the run is
  * still going, already finished, or (the reason this exists) was triggered

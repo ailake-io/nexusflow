@@ -15,6 +15,7 @@ import {
   ApiError,
   getLineage,
   getPipelineSchema,
+  listCatalogDatasets,
   type LineageEdge,
   type LineageGraph,
   type LineageNode,
@@ -143,7 +144,10 @@ function computeLayout(
   return positions
 }
 
-function toFlowElements(graph: LineageGraph): { nodes: Node[]; edges: Edge[] } {
+function toFlowElements(
+  graph: LineageGraph,
+  piiDatasetKeys: Set<string>,
+): { nodes: Node[]; edges: Edge[] } {
   const positions = computeLayout(graph.nodes, graph.edges)
   const nodes: Node[] = graph.nodes.map((n) => {
     const position = positions[n.id] ?? { x: 0, y: 0 }
@@ -156,11 +160,15 @@ function toFlowElements(graph: LineageGraph): { nodes: Node[]; edges: Edge[] } {
       return { id: n.id, type: 'pipeline', position, data }
     }
     if (n.kind === 'resource') {
+      // A resource node's id is `"resource::{connector}::{identifier}"` —
+      // the exact same string as the matching Data Catalog dataset's key
+      // (Fase 25), so this cross-links by id alone, no lookup table.
       const data: LineageResourceNodeData = {
         kind: 'resource',
         label: n.label,
         connector: n.connector,
         resourceKind: n.resource_kind,
+        hasPii: piiDatasetKeys.has(n.id),
       }
       return { id: n.id, type: 'resource', position, data }
     }
@@ -334,6 +342,7 @@ function LineageGraphView() {
   const { token } = useAuth()
   const { t } = useI18n()
   const [graph, setGraph] = useState<LineageGraph | null>(null)
+  const [piiDatasetKeys, setPiiDatasetKeys] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [selectedPipelineId, setSelectedPipelineId] = useState<string | null>(null)
@@ -342,12 +351,19 @@ function LineageGraphView() {
     if (!token) return
     let cancelled = false
     setLoading(true)
-    getLineage(token)
-      .then((data) => {
-        if (!cancelled) {
-          setGraph(data)
-          setError(null)
-        }
+    Promise.all([
+      getLineage(token),
+      // Best-effort: a failure here must never block the lineage graph
+      // itself from rendering — it only loses the PII badge overlay.
+      listCatalogDatasets(token).catch(() => []),
+    ])
+      .then(([data, datasets]) => {
+        if (cancelled) return
+        setGraph(data)
+        setPiiDatasetKeys(
+          new Set(datasets.filter((d) => d.columns.some((c) => c.pii_flag)).map((d) => d.dataset_key)),
+        )
+        setError(null)
       })
       .catch((err: unknown) => {
         if (!cancelled) setError(err instanceof Error ? err.message : t('lineage.error'))
@@ -360,7 +376,10 @@ function LineageGraphView() {
     }
   }, [token, t])
 
-  const { nodes, edges } = useMemo(() => toFlowElements(graph ?? { nodes: [], edges: [] }), [graph])
+  const { nodes, edges } = useMemo(
+    () => toFlowElements(graph ?? { nodes: [], edges: [] }, piiDatasetKeys),
+    [graph, piiDatasetKeys],
+  )
 
   // Schema is fetched/shown only on demand — clicking a pipeline node opens
   // the panel; other node kinds (resource, dbt) don't react to this click.
