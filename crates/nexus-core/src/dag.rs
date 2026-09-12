@@ -504,6 +504,17 @@ pub struct PipelineSpec {
     /// same as before this field existed.
     #[serde(default)]
     pub quality_checks: Vec<crate::quality::QualityCheckSpec>,
+    /// Opt-in (Fase 27): when true, a run whose output row count is a
+    /// statistical outlier against this pipeline's own run history fires
+    /// through `alerts` above (reusing the same per-pipeline channels, not
+    /// a separate configuration surface) — see
+    /// `nexus-server::anomaly_detector::detect_anomaly`. `false` (the
+    /// default) means no anomaly-based alerting, same as before this field
+    /// existed; the pipeline's row-count history is still tracked either
+    /// way (`pipeline_run_volume_store.rs`), this only gates whether a
+    /// detected anomaly notifies anyone.
+    #[serde(default)]
+    pub anomaly_alerts: bool,
     /// When true, the spec is saved as a draft: only `pipeline_id` is
     /// validated, and connector configs/embedding/dbt are not checked.
     /// Drafts cannot be executed; they must be completed and re-saved

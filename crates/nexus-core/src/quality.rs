@@ -34,6 +34,20 @@ pub enum QualityCheckKind {
     /// Fails if any non-null value in this column (compared as its string
     /// display form) isn't one of `values`.
     AcceptedValues { values: Vec<String> },
+    /// Fails if the pipeline's total output row count is below `min` or
+    /// above `max` (either bound optional — `None` means unbounded on that
+    /// side). Unlike every other kind, this doesn't reference a real
+    /// output column — `QualityCheckSpec.column` is ignored for this kind
+    /// (Fase 27: a coarse, user-configured volume guardrail, distinct from
+    /// the automatic per-run volume tracking `pipeline_run_volume_store.rs`
+    /// feeds the anomaly detector — that one has no fixed thresholds to
+    /// configure, this one does).
+    RowCount {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        min: Option<i64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max: Option<i64>,
+    },
 }
 
 /// One check's result — same "pass"/"fail" vocabulary
@@ -53,6 +67,18 @@ pub struct QualityCheckOutcome {
     /// `accepted_values`) which unexpected values were seen, capped so a
     /// wildly-wrong column doesn't produce a multi-megabyte message.
     pub message: Option<String>,
+    /// Structured violation count (Fase 27) — `message` above stays for
+    /// human display, this is for aggregation/trending without parsing
+    /// that string. `Some(0)` on pass, `Some(n)` on a real per-row
+    /// violation count, `None` for the "column not found" config-error
+    /// case (not a row-violation count at all).
+    pub violation_count: Option<i64>,
+    /// Total output rows this check was evaluated against (same for every
+    /// check in one `evaluate_quality_checks` call, since they all see the
+    /// same `batches`) — the denominator for a violation percentage, and
+    /// enough on its own to reconstruct a pass/fail ratio over time
+    /// without re-deriving it from `pipeline_run_volume_store`.
+    pub sample_size: i64,
 }
 
 const MAX_REPORTED_VALUES: usize = 10;
@@ -126,23 +152,55 @@ fn evaluate_one(batches: &[RecordBatch], spec: &QualityCheckSpec) -> QualityChec
         QualityCheckKind::Min { .. } => "min",
         QualityCheckKind::Max { .. } => "max",
         QualityCheckKind::AcceptedValues { .. } => "accepted_values",
+        QualityCheckKind::RowCount { .. } => "row_count",
     };
-    let fail = |message: String| QualityCheckOutcome {
+    let sample_size = total_rows(batches) as i64;
+    let fail = |message: String, violation_count: i64| QualityCheckOutcome {
         column: spec.column.clone(),
         check: check_label.to_string(),
         status: "fail".to_string(),
         message: Some(message),
+        violation_count: Some(violation_count),
+        sample_size,
+    };
+    let fail_no_count = |message: String| QualityCheckOutcome {
+        column: spec.column.clone(),
+        check: check_label.to_string(),
+        status: "fail".to_string(),
+        message: Some(message),
+        violation_count: None,
+        sample_size,
     };
     let pass = || QualityCheckOutcome {
         column: spec.column.clone(),
         check: check_label.to_string(),
         status: "pass".to_string(),
         message: None,
+        violation_count: Some(0),
+        sample_size,
     };
 
-    // Zero output rows: every check here (not_null/unique/min/max/
-    // accepted_values) is vacuously true over an empty set — there's no
-    // row to have violated anything, and no schema to validate the
+    // `RowCount` operates on the whole batch set, not a named column — it
+    // never reaches the column lookup below (and doesn't need `batches`
+    // to be non-empty either: an empty pipeline output is a row count of
+    // 0, a real value to check bounds against, not "nothing to check").
+    if let QualityCheckKind::RowCount { min, max } = &spec.check {
+        let rows = total_rows(batches) as i64;
+        let below = min.is_some_and(|m| rows < m);
+        let above = max.is_some_and(|m| rows > m);
+        return if below || above {
+            fail(format!("row count {rows} out of configured bounds"), rows)
+        } else {
+            QualityCheckOutcome {
+                violation_count: Some(rows),
+                ..pass()
+            }
+        };
+    }
+
+    // Zero output rows: every remaining check here (not_null/unique/min/
+    // max/accepted_values) is vacuously true over an empty set — there's
+    // no row to have violated anything, and no schema to validate the
     // column name against either (an empty `Vec<RecordBatch>` carries no
     // schema at all, unlike a batch with 0 rows). Pass rather than fail.
     let Some(first) = batches.first() else {
@@ -154,9 +212,10 @@ fn evaluate_one(batches: &[RecordBatch], spec: &QualityCheckSpec) -> QualityChec
     // posture `resource_identifier`'s allowlist takes the opposite way
     // (there, an unmatched connector silently stays unlinked; here, a
     // user explicitly configured a check against a specific column name,
-    // so a typo should surface, not vanish).
+    // so a typo should surface, not vanish). Not a row-violation count,
+    // so `violation_count` stays `None`.
     let Some(col_idx) = column_index(first, &spec.column) else {
-        return fail(format!(
+        return fail_no_count(format!(
             "column {:?} not found in pipeline output",
             spec.column
         ));
@@ -168,17 +227,24 @@ fn evaluate_one(batches: &[RecordBatch], spec: &QualityCheckSpec) -> QualityChec
             if null_count == 0 {
                 pass()
             } else {
-                fail(format!("{null_count} row(s) with a null value"))
+                fail(
+                    format!("{null_count} row(s) with a null value"),
+                    null_count as i64,
+                )
             }
         }
         QualityCheckKind::Unique => {
             let mut seen = HashSet::new();
             let mut duplicates = Vec::new();
+            let mut violation_count = 0i64;
             for batch in batches {
                 for row in 0..batch.num_rows() {
                     if let Some(v) = display_value(batch, col_idx, row) {
-                        if !seen.insert(v.clone()) && duplicates.len() < MAX_REPORTED_VALUES {
-                            duplicates.push(v);
+                        if !seen.insert(v.clone()) {
+                            violation_count += 1;
+                            if duplicates.len() < MAX_REPORTED_VALUES {
+                                duplicates.push(v);
+                            }
                         }
                     }
                 }
@@ -186,14 +252,14 @@ fn evaluate_one(batches: &[RecordBatch], spec: &QualityCheckSpec) -> QualityChec
             if duplicates.is_empty() {
                 pass()
             } else {
-                fail(format!(
-                    "duplicate value(s) found: {}",
-                    duplicates.join(", ")
-                ))
+                fail(
+                    format!("duplicate value(s) found: {}", duplicates.join(", ")),
+                    violation_count,
+                )
             }
         }
         QualityCheckKind::Min { min } => {
-            let mut violations = 0usize;
+            let mut violations = 0i64;
             for batch in batches {
                 for row in 0..batch.num_rows() {
                     if let Some(v) = numeric_value(batch, col_idx, row) {
@@ -206,11 +272,11 @@ fn evaluate_one(batches: &[RecordBatch], spec: &QualityCheckSpec) -> QualityChec
             if violations == 0 {
                 pass()
             } else {
-                fail(format!("{violations} row(s) below minimum {min}"))
+                fail(format!("{violations} row(s) below minimum {min}"), violations)
             }
         }
         QualityCheckKind::Max { max } => {
-            let mut violations = 0usize;
+            let mut violations = 0i64;
             for batch in batches {
                 for row in 0..batch.num_rows() {
                     if let Some(v) = numeric_value(batch, col_idx, row) {
@@ -223,20 +289,21 @@ fn evaluate_one(batches: &[RecordBatch], spec: &QualityCheckSpec) -> QualityChec
             if violations == 0 {
                 pass()
             } else {
-                fail(format!("{violations} row(s) above maximum {max}"))
+                fail(format!("{violations} row(s) above maximum {max}"), violations)
             }
         }
         QualityCheckKind::AcceptedValues { values } => {
             let accepted: HashSet<&str> = values.iter().map(String::as_str).collect();
             let mut unexpected = Vec::new();
+            let mut violation_count = 0i64;
             for batch in batches {
                 for row in 0..batch.num_rows() {
                     if let Some(v) = display_value(batch, col_idx, row) {
-                        if !accepted.contains(v.as_str())
-                            && !unexpected.contains(&v)
-                            && unexpected.len() < MAX_REPORTED_VALUES
-                        {
-                            unexpected.push(v);
+                        if !accepted.contains(v.as_str()) {
+                            violation_count += 1;
+                            if !unexpected.contains(&v) && unexpected.len() < MAX_REPORTED_VALUES {
+                                unexpected.push(v);
+                            }
                         }
                     }
                 }
@@ -244,9 +311,13 @@ fn evaluate_one(batches: &[RecordBatch], spec: &QualityCheckSpec) -> QualityChec
             if unexpected.is_empty() {
                 pass()
             } else {
-                fail(format!("unexpected value(s): {}", unexpected.join(", ")))
+                fail(
+                    format!("unexpected value(s): {}", unexpected.join(", ")),
+                    violation_count,
+                )
             }
         }
+        QualityCheckKind::RowCount { .. } => unreachable!("handled above before the column lookup"),
     }
 }
 
@@ -260,7 +331,6 @@ pub fn evaluate_quality_checks(
     batches: &[RecordBatch],
     checks: &[QualityCheckSpec],
 ) -> Vec<QualityCheckOutcome> {
-    let _ = total_rows(batches); // reserved for a future row-count-based check
     checks
         .iter()
         .map(|spec| evaluate_one(batches, spec))
@@ -386,5 +456,102 @@ mod tests {
         // Zero output rows can't have violated anything — pass, not fail,
         // and not treated as a "column not found" error either.
         assert_eq!(result[0].status, "pass");
+    }
+
+    #[test]
+    fn violation_count_and_sample_size_are_structured_on_pass_and_fail() {
+        let b = batch(&[1, 2], &[1.0, 2.0], &["ok", "ok"]);
+        let spec = QualityCheckSpec {
+            column: "id".to_string(),
+            check: QualityCheckKind::NotNull,
+        };
+        let result = evaluate_quality_checks(&[b], &[spec]);
+        assert_eq!(result[0].violation_count, Some(0));
+        assert_eq!(result[0].sample_size, 2);
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
+        let b = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int64Array::from(vec![Some(1), None, None]))],
+        )
+        .unwrap();
+        let spec = QualityCheckSpec {
+            column: "id".to_string(),
+            check: QualityCheckKind::NotNull,
+        };
+        let result = evaluate_quality_checks(&[b], &[spec]);
+        assert_eq!(result[0].violation_count, Some(2));
+        assert_eq!(result[0].sample_size, 3);
+    }
+
+    #[test]
+    fn unknown_column_has_no_violation_count() {
+        let b = batch(&[1], &[1.0], &["a"]);
+        let spec = QualityCheckSpec {
+            column: "does_not_exist".to_string(),
+            check: QualityCheckKind::NotNull,
+        };
+        let result = evaluate_quality_checks(&[b], &[spec]);
+        assert_eq!(result[0].violation_count, None);
+        assert_eq!(result[0].sample_size, 1);
+    }
+
+    #[test]
+    fn row_count_passes_within_bounds() {
+        let b = batch(&[1, 2, 3], &[1.0, 2.0, 3.0], &["a", "b", "c"]);
+        let spec = QualityCheckSpec {
+            column: String::new(),
+            check: QualityCheckKind::RowCount {
+                min: Some(1),
+                max: Some(10),
+            },
+        };
+        let result = evaluate_quality_checks(&[b], &[spec]);
+        assert_eq!(result[0].status, "pass");
+        assert_eq!(result[0].violation_count, Some(3));
+        assert_eq!(result[0].sample_size, 3);
+    }
+
+    #[test]
+    fn row_count_fails_below_min() {
+        let b = batch(&[1], &[1.0], &["a"]);
+        let spec = QualityCheckSpec {
+            column: String::new(),
+            check: QualityCheckKind::RowCount {
+                min: Some(5),
+                max: None,
+            },
+        };
+        let result = evaluate_quality_checks(&[b], &[spec]);
+        assert_eq!(result[0].status, "fail");
+        assert_eq!(result[0].violation_count, Some(1));
+    }
+
+    #[test]
+    fn row_count_fails_above_max() {
+        let b = batch(&[1, 2, 3], &[1.0, 2.0, 3.0], &["a", "b", "c"]);
+        let spec = QualityCheckSpec {
+            column: String::new(),
+            check: QualityCheckKind::RowCount {
+                min: None,
+                max: Some(2),
+            },
+        };
+        let result = evaluate_quality_checks(&[b], &[spec]);
+        assert_eq!(result[0].status, "fail");
+    }
+
+    #[test]
+    fn row_count_on_empty_output_checks_zero_not_vacuous_pass() {
+        let spec = QualityCheckSpec {
+            column: String::new(),
+            check: QualityCheckKind::RowCount {
+                min: Some(1),
+                max: None,
+            },
+        };
+        let result = evaluate_quality_checks(&[], &[spec]);
+        assert_eq!(result[0].status, "fail", "0 rows is below min=1");
+        assert_eq!(result[0].violation_count, Some(0));
     }
 }

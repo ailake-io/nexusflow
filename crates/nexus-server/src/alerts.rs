@@ -218,6 +218,79 @@ impl AlertNotifier {
             });
         }
     }
+
+    /// Fires an anomaly alert (Fase 27) through whichever per-pipeline
+    /// channels are configured in `alerts` — unlike `notify_pipeline_run`
+    /// above, every configured channel fires unconditionally once this is
+    /// called (an anomaly is neither a success nor a failure, so the
+    /// `on_success`/`on_failure` toggles don't apply); gating is the
+    /// caller's job (`PipelineSpec.anomaly_alerts` opt-in, checked before
+    /// ever calling this). Same fire-and-forget/never-propagate contract
+    /// as every other channel.
+    pub fn notify_anomaly(
+        &self,
+        alerts: Option<&nexus_core::AlertsConfig>,
+        pipeline_id: &str,
+        run_id: i64,
+        severity: crate::anomaly_detector::AnomalySeverity,
+        message: &str,
+    ) {
+        let Some(alerts) = alerts else { return };
+
+        if let Some(c) = &alerts.slack {
+            let client = self.client.clone();
+            let payload = slack_anomaly_payload(pipeline_id, run_id, severity, message);
+            spawn_webhook_post(client, c.url.clone(), payload, "Slack");
+        }
+        if let Some(c) = &alerts.teams {
+            let client = self.client.clone();
+            let payload = teams_anomaly_payload(pipeline_id, run_id, severity, message);
+            spawn_webhook_post(client, c.url.clone(), payload, "Teams");
+        }
+        if let Some(c) = &alerts.webhook {
+            let client = self.client.clone();
+            let payload = generic_webhook_anomaly_payload(pipeline_id, run_id, severity, message);
+            spawn_webhook_post(client, c.url.clone(), payload, "Webhook");
+        }
+        if let Some(c) = &alerts.pagerduty {
+            let client = self.client.clone();
+            let payload =
+                pagerduty_anomaly_payload(&c.routing_key, pipeline_id, run_id, severity, message);
+            spawn_webhook_post(
+                client,
+                PAGERDUTY_EVENTS_URL.to_string(),
+                payload,
+                "PagerDuty",
+            );
+        }
+        if let Some(c) = &alerts.email {
+            let smtp_host = c.smtp_host.clone();
+            let smtp_port = c.smtp_port;
+            let username = c.username.clone();
+            let password = c.password.clone();
+            let from = c.from.clone();
+            let to = c.to.clone();
+            let pipeline_id = pipeline_id.to_string();
+            let message = message.to_string();
+            tokio::spawn(async move {
+                let email = EmailConfig {
+                    smtp_host,
+                    smtp_port,
+                    username,
+                    password,
+                    from,
+                    to,
+                };
+                match send_anomaly_email(&email, &pipeline_id, run_id, severity, &message).await {
+                    Ok(()) => crate::server_metrics::record_alert_sent("Email", "success"),
+                    Err(e) => {
+                        tracing::warn!(channel = "Email", error = %e, "failed to send alert");
+                        crate::server_metrics::record_alert_sent("Email", "failure");
+                    }
+                }
+            });
+        }
+    }
 }
 
 /// `success` selects which of a channel's two toggles applies.
@@ -543,6 +616,163 @@ fn generic_webhook_run_payload(
         "run_id": run_id,
         "message": message
     })
+}
+
+// Anomaly payload builders (Fase 27) — deliberately their own functions,
+// not a `severity`/bool-flag branch bolted onto the failure/run builders
+// above: those hardcode "failed"/"pipeline_failed" into user-facing text
+// *and* structured fields (`event`, PagerDuty `severity`) a receiver might
+// branch on, and an anomaly is neither a success nor a failure — reusing
+// them would misreport what actually happened.
+
+fn severity_label(severity: crate::anomaly_detector::AnomalySeverity) -> &'static str {
+    match severity {
+        crate::anomaly_detector::AnomalySeverity::Warning => "warning",
+        crate::anomaly_detector::AnomalySeverity::Critical => "critical",
+    }
+}
+
+fn slack_anomaly_payload(
+    pipeline_id: &str,
+    run_id: i64,
+    severity: crate::anomaly_detector::AnomalySeverity,
+    message: &str,
+) -> Value {
+    let label = severity_label(severity);
+    json!({
+        "blocks": [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": format!(
+                        ":chart_with_upwards_trend: *Anomaly detected ({label})*\n*Pipeline:* `{pipeline_id}`\n*Run:* `{run_id}`\n{message}"
+                    )
+                }
+            }
+        ]
+    })
+}
+
+fn teams_anomaly_payload(
+    pipeline_id: &str,
+    run_id: i64,
+    severity: crate::anomaly_detector::AnomalySeverity,
+    message: &str,
+) -> Value {
+    let label = severity_label(severity);
+    json!({
+        "type": "message",
+        "attachments": [
+            {
+                "contentType": "application/vnd.microsoft.card.adaptive",
+                "content": {
+                    "type": "AdaptiveCard",
+                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                    "version": "1.4",
+                    "body": [
+                        {
+                            "type": "TextBlock",
+                            "size": "Medium",
+                            "weight": "Bolder",
+                            "text": format!("📈 Anomaly detected ({label})")
+                        },
+                        {
+                            "type": "FactSet",
+                            "facts": [
+                                {"title": "Pipeline", "value": pipeline_id},
+                                {"title": "Run", "value": run_id.to_string()},
+                                {"title": "Detail", "value": message}
+                            ]
+                        }
+                    ]
+                }
+            }
+        ]
+    })
+}
+
+fn pagerduty_anomaly_payload(
+    routing_key: &str,
+    pipeline_id: &str,
+    run_id: i64,
+    severity: crate::anomaly_detector::AnomalySeverity,
+    message: &str,
+) -> Value {
+    json!({
+        "routing_key": routing_key,
+        "event_action": "trigger",
+        "dedup_key": format!("nexusflow-anomaly-{pipeline_id}-{run_id}"),
+        "payload": {
+            "summary": format!("Anomaly detected on pipeline '{pipeline_id}' run {run_id}: {message}"),
+            "source": "nexusflow",
+            "severity": severity_label(severity),
+            "custom_details": {
+                "pipeline_id": pipeline_id,
+                "run_id": run_id,
+                "message": message
+            }
+        }
+    })
+}
+
+fn generic_webhook_anomaly_payload(
+    pipeline_id: &str,
+    run_id: i64,
+    severity: crate::anomaly_detector::AnomalySeverity,
+    message: &str,
+) -> Value {
+    json!({
+        "event": "pipeline_anomaly",
+        "severity": severity_label(severity),
+        "pipeline_id": pipeline_id,
+        "run_id": run_id,
+        "message": message
+    })
+}
+
+async fn send_anomaly_email(
+    config: &EmailConfig,
+    pipeline_id: &str,
+    run_id: i64,
+    severity: crate::anomaly_detector::AnomalySeverity,
+    message: &str,
+) -> Result<(), NexusError> {
+    let label = severity_label(severity);
+    let subject = format!("[nexusflow] Anomaly detected on pipeline '{pipeline_id}' run {run_id} ({label})");
+    let body = format!(
+        "Pipeline: {pipeline_id}\nRun: {run_id}\nSeverity: {label}\n{message}\n\n---\nSent by NexusFlow"
+    );
+
+    let from: Mailbox = config
+        .from
+        .parse()
+        .map_err(|e| NexusError::Connector(format!("invalid email from address: {e}")))?;
+
+    let mut builder = Message::builder().from(from).subject(subject);
+    for to in &config.to {
+        let to: Mailbox = to
+            .parse()
+            .map_err(|e| NexusError::Connector(format!("invalid email to address: {e}")))?;
+        builder = builder.to(to);
+    }
+    let message = builder
+        .body(body)
+        .map_err(|e| NexusError::Connector(format!("failed to build email: {e}")))?;
+
+    let mut mailer = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&config.smtp_host)
+        .map_err(|e| NexusError::Connector(format!("invalid SMTP host: {e}")))?
+        .port(config.smtp_port);
+    if let (Some(username), Some(password)) = (&config.username, &config.password) {
+        mailer = mailer.credentials(Credentials::new(username.clone(), password.clone()));
+    }
+    mailer
+        .build()
+        .send(message)
+        .await
+        .map_err(|e| NexusError::Connector(format!("failed to send email: {e}")))?;
+
+    Ok(())
 }
 
 #[cfg(test)]
