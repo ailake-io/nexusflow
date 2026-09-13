@@ -152,6 +152,7 @@ fn test_server_config() -> ServerConfig {
         webhook_url: None,
         allow_internal_hosts: true,
         trust_proxy_headers: false,
+        queue_mode: false,
         #[cfg(feature = "version-history")]
         git_history_path: tempfile::tempdir()
             .unwrap()

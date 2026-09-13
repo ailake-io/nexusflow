@@ -128,6 +128,7 @@ fn test_server_config() -> ServerConfig {
         // postgres_pipeline.rs uses for its own SSRF-hardened ad-hoc run.
         allow_internal_hosts: true,
         trust_proxy_headers: false,
+        queue_mode: false,
         #[cfg(feature = "version-history")]
         git_history_path: tempfile::tempdir()
             .unwrap()
