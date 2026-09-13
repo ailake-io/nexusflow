@@ -158,6 +158,7 @@ fn test_server_config(checkpoint_database_url: String) -> ServerConfig {
         // note in postgres_pipeline.rs's test_server_config.
         allow_internal_hosts: true,
         trust_proxy_headers: false,
+        queue_mode: false,
         #[cfg(feature = "version-history")]
         git_history_path: tempfile::tempdir()
             .unwrap()

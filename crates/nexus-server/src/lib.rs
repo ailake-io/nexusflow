@@ -59,6 +59,8 @@ mod server_metrics;
 pub mod telemetry;
 mod upload;
 mod upload_cleanup;
+mod work_queue;
+mod worker;
 
 use alerts::{AlertConfig, AlertNotifier};
 use auth::{require_role, Claims, JwtCodec, Role, TokenBlocklist};
@@ -140,6 +142,12 @@ struct AppState {
     data_catalog: data_catalog::CatalogStore,
     pipeline_dependency_state: pipeline_dependencies::DependencyStateStore,
     pipeline_run_volume: pipeline_run_volume_store::PipelineRunVolumeStore,
+    /// `NEXUS_QUEUE_MODE` (Fase 29) — `Some` means this replica enqueues
+    /// pipeline runs instead of dispatching them inline, and (if the
+    /// backend is Postgres) also competes to claim queued runs via
+    /// `worker::spawn`. `None` (the default) preserves the exact pre-Fase-29
+    /// dispatch behavior. See `work_queue.rs`'s doc comment.
+    work_queue: Option<work_queue::WorkQueueStore>,
     // Only read from `execute_pipeline_run`'s `#[cfg(feature = "dbt")]`
     // block — kept on `AppState` unconditionally so build_state/test_state
     // don't need their own feature-gated construction path.
@@ -772,16 +780,19 @@ async fn run_pipeline_handler(
     Ok((StatusCode::ACCEPTED, Json(RunAccepted { run_id })))
 }
 
-/// Creates the run row and spawns the supervisor task that executes the
-/// pipeline — shared by the manual `POST /pipelines/{id}/run` handler above
-/// and `scheduler.rs`'s cron-triggered runs, so a scheduled run gets
-/// exactly the same history/dbt/alerting behavior as a manually-triggered
-/// one, not a second slightly-different code path.
+/// Creates the run row and either dispatches it for immediate execution or
+/// enqueues it (Fase 29) — shared by the manual `POST /pipelines/{id}/run`
+/// handler above, `scheduler.rs`'s cron-triggered runs, and
+/// `pipeline_dependencies.rs`'s dependency-triggered runs, so every
+/// trigger source gets exactly the same history/dbt/alerting/distribution
+/// behavior, not a second slightly-different code path.
 ///
-/// The progress channel is registered here, *before* the caller's 202
-/// response can reach the client — otherwise a client subscribing to
-/// `/runs/{run_id}/progress` immediately after the 202 could win the race
-/// against the supervisor's own `progress.start` and get a spurious 404.
+/// When `state.work_queue` is `Some` (`NEXUS_QUEUE_MODE=true`), this
+/// enqueues the run instead of dispatching it on whichever replica happens
+/// to be handling the triggering request — some replica running
+/// `worker::spawn`'s poll loop (possibly this same one) claims and
+/// actually runs it later. If enqueuing itself fails, this falls back to
+/// dispatching inline rather than losing the run silently.
 pub(crate) async fn start_pipeline_run(
     state: &AppState,
     spec: &PipelineSpec,
@@ -791,15 +802,47 @@ pub(crate) async fn start_pipeline_run(
     // still show up in `GET /pipelines/{id}/runs`, same as always-persisted
     // ones.
     let run_id = state.pipelines.start_run(&spec.pipeline_id).await?;
+
+    if let Some(queue) = &state.work_queue {
+        match queue.enqueue(&spec.pipeline_id, run_id).await {
+            Ok(()) => return Ok(run_id),
+            Err(e) => {
+                tracing::warn!(
+                    pipeline_id = %spec.pipeline_id,
+                    run_id,
+                    error = %e,
+                    "failed to enqueue pipeline run, dispatching inline instead"
+                );
+            }
+        }
+    }
+
+    dispatch_execute_pipeline_run(state, spec.clone(), run_id).await;
+    Ok(run_id)
+}
+
+/// Registers this run's progress channel and spawns the supervisor task —
+/// the actual "run this now, in this process" step, shared by
+/// `start_pipeline_run`'s inline-dispatch path above and `worker.rs`'s
+/// queue-claim loop. Progress is registered here rather than in
+/// `start_pipeline_run` (unlike before Fase 29) specifically so a queued
+/// run's live WebSocket progress attaches to whichever replica actually
+/// executes it, not the one that merely enqueued it — the two can be
+/// different processes entirely once queue mode is on.
+///
+/// The progress channel is registered *before* the caller's 202 response
+/// can reach the client on the inline-dispatch path — otherwise a client
+/// subscribing to `/runs/{run_id}/progress` immediately after the 202
+/// could win the race against the supervisor's own `progress.start` and
+/// get a spurious 404. A queued run has no such race to protect against
+/// (the 202 already went out long before any worker claims the job).
+pub(crate) async fn dispatch_execute_pipeline_run(state: &AppState, spec: PipelineSpec, run_id: i64) {
     let (progress_tx, log_tx) = state.progress.start(run_id).await;
     let logger = RunLogger::new(run_id, log_tx, state.run_logs.clone());
-
     let supervisor = state.clone();
-    let spec = spec.clone();
     tokio::spawn(spawn_execute_pipeline_run(
         supervisor, spec, run_id, progress_tx, logger,
     ));
-    Ok(run_id)
 }
 
 /// Boxes `execute_pipeline_run`'s future behind a concrete, non-recursive
@@ -2800,6 +2843,13 @@ pub struct ServerConfig {
     /// above: trusting `X-Forwarded-For` weakens the login rate limiter
     /// unless a reverse proxy is confirmed to own that header.
     pub trust_proxy_headers: bool,
+    /// `NEXUS_QUEUE_MODE` (Fase 29) — opt-in, off by default: preserves the
+    /// exact pre-Fase-29 inline-dispatch behavior unless a deployment
+    /// explicitly enables queue-based execution distribution across
+    /// replicas (Postgres backend only — see `work_queue.rs`'s doc
+    /// comment). Never required, most self-hosted single-replica
+    /// deployments have no reason to turn this on.
+    pub queue_mode: bool,
     /// `NEXUS_GIT_HISTORY_PATH` — where the embedded bare git repo backing
     /// pipeline/prompt version history lives (see `git_history_store.rs`).
     /// Defaults to a path next to the pipelines database.
@@ -2841,6 +2891,11 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         &config.pipelines_database_url,
     )
     .await?;
+    let work_queue = if config.queue_mode {
+        Some(work_queue::WorkQueueStore::connect(&config.pipelines_database_url).await?)
+    } else {
+        None
+    };
     let quality_checks =
         quality_check_store::QualityCheckStore::connect(&config.pipelines_database_url).await?;
     let llm_stats = pipeline_run_llm_stats_store::PipelineRunLlmStatsStore::connect(
@@ -2887,6 +2942,7 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         data_catalog,
         pipeline_dependency_state,
         pipeline_run_volume,
+        work_queue,
         quality_checks,
         llm_stats,
         prompt_templates,
@@ -3053,6 +3109,15 @@ pub async fn run() -> anyhow::Result<()> {
              and bypass per-IP login rate limiting entirely."
         );
     }
+    let queue_mode = std::env::var("NEXUS_QUEUE_MODE")
+        .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+    if queue_mode {
+        tracing::info!(
+            "NEXUS_QUEUE_MODE=true — pipeline runs triggered on this replica are enqueued \
+             instead of dispatched inline (Fase 29); requires a Postgres metadata backend to \
+             actually be claimed by any replica (see work_queue.rs)."
+        );
+    }
     // Default used to be a bare relative path ("nexusflow-version-history.git",
     // resolved against the process's CWD) — inside the published image that's
     // "/" (no WORKDIR set in the runtime stage), owned by root, not writable
@@ -3099,6 +3164,7 @@ pub async fn run() -> anyhow::Result<()> {
         webhook_url,
         allow_internal_hosts,
         trust_proxy_headers,
+        queue_mode,
         #[cfg(feature = "version-history")]
         git_history_path,
     })
@@ -3133,6 +3199,11 @@ pub async fn run() -> anyhow::Result<()> {
     // upload_cleanup.rs) — same "only the real boot path" rule as above;
     // uploaded files otherwise have no lifecycle at all.
     upload_cleanup::spawn(state.clone());
+
+    // Queue-based execution distribution (Fase 29, see worker.rs) — a
+    // no-op unless `NEXUS_QUEUE_MODE=true`; same "only the real boot path"
+    // rule as every other background task above.
+    worker::spawn(state.clone());
 
     let app = router(state);
 
@@ -3244,6 +3315,7 @@ mod tests {
             )
             .await
             .unwrap(),
+            work_queue: None,
             quality_checks: quality_check_store::QualityCheckStore::connect("sqlite::memory:")
                 .await
                 .unwrap(),
@@ -5285,6 +5357,7 @@ mod tests {
             )
             .await
             .unwrap(),
+            work_queue: None,
             quality_checks: quality_check_store::QualityCheckStore::connect("sqlite::memory:")
                 .await
                 .unwrap(),
