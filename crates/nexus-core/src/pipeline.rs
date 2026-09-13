@@ -23,6 +23,42 @@ use std::pin::Pin;
 pub type BatchTransform =
     Box<dyn Fn(RecordBatch) -> BoxFuture<'static, Result<RecordBatch, NexusError>> + Send + Sync>;
 
+/// Runs `first` then `second`, in that order, on every batch — lets a
+/// caller stack two independent per-batch stages (Fase 28: column masking,
+/// then Marco L6's embedding) onto the single `batch_transform` slot
+/// `PipelineEngine::run_partition` takes, instead of that slot only ever
+/// holding one stage. `None`/`None` collapses to `None` rather than an
+/// identity closure, so a pipeline using neither feature pays zero
+/// per-batch overhead, same as before either existed.
+pub fn chain_batch_transforms(
+    first: Option<BatchTransform>,
+    second: Option<BatchTransform>,
+) -> Option<BatchTransform> {
+    match (first, second) {
+        (None, None) => None,
+        (Some(f), None) => Some(f),
+        (None, Some(g)) => Some(g),
+        (Some(f), Some(g)) => {
+            // `Fn` (not `FnOnce`): this closure is called once per batch,
+            // so `f`/`g` can't be moved into the returned future directly
+            // (that would only work for the first call) — `Arc` lets each
+            // call cheaply clone a handle to the same underlying closures,
+            // same pattern `run_passthrough_pipeline` already uses for its
+            // embedding backend.
+            let f = std::sync::Arc::new(f);
+            let g = std::sync::Arc::new(g);
+            Some(Box::new(move |batch: RecordBatch| {
+                let f = f.clone();
+                let g = g.clone();
+                Box::pin(async move {
+                    let batch = f(batch).await?;
+                    g(batch).await
+                }) as BoxFuture<'static, Result<RecordBatch, NexusError>>
+            }))
+        }
+    }
+}
+
 /// One partition's Source+Sink pair, ready to run. Partitioning is the unit
 /// of parallelism — see ARCHITECTURE.md §4.
 pub struct PartitionHandle {
@@ -1043,5 +1079,64 @@ mod tests {
         };
         assert_eq!(rows_in(&sink_a_received), 5);
         assert_eq!(rows_in(&sink_b_received), 5);
+    }
+
+    fn add_one_column_transform(name: &'static str) -> BatchTransform {
+        Box::new(move |batch: RecordBatch| {
+            Box::pin(async move {
+                let mut fields: Vec<Field> = batch.schema().fields().iter().map(|f| (**f).clone()).collect();
+                fields.push(Field::new(name, DataType::Boolean, false));
+                let mut columns = batch.columns().to_vec();
+                columns.push(Arc::new(arrow_array::BooleanArray::from(vec![
+                    true;
+                    batch.num_rows()
+                ])));
+                RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+                    .map_err(|e| NexusError::Schema(e.to_string()))
+            })
+        })
+    }
+
+    #[test]
+    fn chain_batch_transforms_of_none_and_none_is_none() {
+        assert!(chain_batch_transforms(None, None).is_none());
+    }
+
+    #[tokio::test]
+    async fn chain_batch_transforms_runs_only_transform_when_the_other_is_none() {
+        let chained = chain_batch_transforms(Some(add_one_column_transform("a")), None).unwrap();
+        let out = chained(test_batch(vec![1])).await.unwrap();
+        assert_eq!(out.schema().fields().len(), 2);
+        assert_eq!(out.schema().field(1).name(), "a");
+
+        let chained = chain_batch_transforms(None, Some(add_one_column_transform("b"))).unwrap();
+        let out = chained(test_batch(vec![1])).await.unwrap();
+        assert_eq!(out.schema().field(1).name(), "b");
+    }
+
+    #[tokio::test]
+    async fn chain_batch_transforms_runs_both_in_order() {
+        let chained = chain_batch_transforms(
+            Some(add_one_column_transform("first")),
+            Some(add_one_column_transform("second")),
+        )
+        .unwrap();
+        let out = chained(test_batch(vec![1])).await.unwrap();
+        assert_eq!(out.schema().fields().len(), 3);
+        assert_eq!(out.schema().field(1).name(), "first");
+        assert_eq!(out.schema().field(2).name(), "second");
+    }
+
+    #[tokio::test]
+    async fn chained_transform_can_be_called_more_than_once() {
+        let chained = chain_batch_transforms(
+            Some(add_one_column_transform("a")),
+            Some(add_one_column_transform("b")),
+        )
+        .unwrap();
+        let out1 = chained(test_batch(vec![1])).await.unwrap();
+        let out2 = chained(test_batch(vec![2, 3])).await.unwrap();
+        assert_eq!(out1.num_rows(), 1);
+        assert_eq!(out2.num_rows(), 2);
     }
 }

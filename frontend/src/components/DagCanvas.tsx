@@ -334,6 +334,7 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
       alerts: spec.alerts,
       qualityChecks: spec.quality_checks,
       anomalyAlerts: spec.anomaly_alerts,
+      maskedColumns: spec.masking?.map((m) => m.column),
     })
   }, [])
 

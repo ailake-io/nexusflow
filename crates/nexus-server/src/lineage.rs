@@ -423,6 +423,7 @@ mod tests {
             alerts: None,
             quality_checks: Vec::new(),
             anomaly_alerts: false,
+            masking: Vec::new(),
             draft: false,
         }
     }

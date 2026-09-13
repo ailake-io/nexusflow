@@ -132,9 +132,21 @@ export interface PipelineSpec {
    * run history. `false`/unset means row-count history is still tracked,
    * just never alerts on it. */
   anomaly_alerts?: boolean
+  /** Deterministic column tokenization (Fase 28) — applied before the SQL
+   * transform (if present) and before the sink(s). Matches
+   * nexus-core::column_masking::ColumnMaskingSpec exactly. Requires
+   * NEXUS_MASKING_SALT to be configured server-side; saving a pipeline
+   * with a non-empty list here on a server without that salt set fails at
+   * save time. Empty/unset means no masking. */
+  masking?: MaskingSpec[]
   /** When true, the spec is saved as a draft and the server skips validation
    * of connector configs/embedding/dbt. Drafts cannot be executed. */
   draft?: boolean
+}
+
+/** Matches nexus-core::column_masking::ColumnMaskingSpec exactly. */
+export interface MaskingSpec {
+  column: string
 }
 
 /** Matches nexus-core::WebhookAlertChannel exactly — Slack/Teams/generic
@@ -294,6 +306,9 @@ export interface PipelineMeta {
   alerts?: AlertsConfig
   qualityChecks?: QualityCheckSpec[]
   anomalyAlerts?: boolean
+  /** Plain column names (canvas form of `PipelineSpec.masking`, which
+   * wraps each one in `{column}`) — Fase 28. */
+  maskedColumns?: string[]
 }
 
 /**
@@ -416,6 +431,9 @@ export function toPipelineSpec(
     spec.quality_checks = meta.qualityChecks
   }
   if (meta.anomalyAlerts) spec.anomaly_alerts = true
+  if (meta.maskedColumns && meta.maskedColumns.length > 0) {
+    spec.masking = meta.maskedColumns.map((column) => ({ column }))
+  }
   if (allowDraft) spec.draft = true
   return spec
 }
