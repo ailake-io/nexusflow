@@ -272,7 +272,10 @@ fn evaluate_one(batches: &[RecordBatch], spec: &QualityCheckSpec) -> QualityChec
             if violations == 0 {
                 pass()
             } else {
-                fail(format!("{violations} row(s) below minimum {min}"), violations)
+                fail(
+                    format!("{violations} row(s) below minimum {min}"),
+                    violations,
+                )
             }
         }
         QualityCheckKind::Max { max } => {
@@ -289,7 +292,10 @@ fn evaluate_one(batches: &[RecordBatch], spec: &QualityCheckSpec) -> QualityChec
             if violations == 0 {
                 pass()
             } else {
-                fail(format!("{violations} row(s) above maximum {max}"), violations)
+                fail(
+                    format!("{violations} row(s) above maximum {max}"),
+                    violations,
+                )
             }
         }
         QualityCheckKind::AcceptedValues { values } => {

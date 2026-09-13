@@ -103,8 +103,8 @@ pub(crate) mod test_support {
     use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 
     pub fn sign(claims: &LicenseClaims) -> String {
-        let key = EncodingKey::from_ed_pem(dev_key::PRIVATE_KEY_PEM.as_bytes())
-            .expect("valid test PEM");
+        let key =
+            EncodingKey::from_ed_pem(dev_key::PRIVATE_KEY_PEM.as_bytes()).expect("valid test PEM");
         encode(&Header::new(Algorithm::EdDSA), claims, &key).expect("signing test claims")
     }
 

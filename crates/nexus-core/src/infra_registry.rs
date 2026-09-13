@@ -135,7 +135,7 @@ macro_rules! submit_infra_generator {
 
 impl InfraModuleDescriptor {
     pub fn all() -> impl Iterator<Item = &'static InfraModuleDescriptor> {
-        inventory::iter::<InfraModuleDescriptor>().into_iter()
+        inventory::iter::<InfraModuleDescriptor>()
     }
 
     pub fn find(id: &str) -> Option<&'static InfraModuleDescriptor> {
@@ -148,6 +148,6 @@ impl InfraGenerator {
     /// callers should report "feature not available", not fall through to
     /// treating the license check alone as authoritative (see module doc).
     pub fn get() -> Option<&'static InfraGenerator> {
-        inventory::iter::<InfraGenerator>().into_iter().next()
+        inventory::iter::<InfraGenerator>().next()
     }
 }

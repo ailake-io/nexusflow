@@ -4,6 +4,11 @@ use crate::pipeline_schema_store::{ColumnInfo, PipelineSchema};
 use nexus_core::{NodeSpec, PipelineSpec};
 use serde::{Deserialize, Serialize};
 
+/// Raw row shape of `catalog_column_metadata` (dataset_key, column_name,
+/// data_type, description, pii_flag) — named so clippy's `type_complexity`
+/// lint doesn't fire on the query's return type.
+type ColumnMetadataRow = (String, String, Option<String>, Option<String>, bool);
+
 /// Same `"resource::{connector}::{identifier}"` shape as
 /// `lineage::resource_node_id` — deliberately recomputed here (not called
 /// directly) so this module only depends on the public `resource_identifier`
@@ -245,12 +250,10 @@ impl CatalogStore {
         };
         let key = dataset_key(&node.connector, &identifier);
 
-        let sql = self.q(
-            "INSERT INTO catalog_datasets \
+        let sql = self.q("INSERT INTO catalog_datasets \
                 (dataset_key, connector, resource_kind, identifier, first_seen_at, last_seen_at) \
              VALUES (?, ?, ?, ?, ?, ?) \
-             ON CONFLICT (dataset_key) DO UPDATE SET last_seen_at = excluded.last_seen_at",
-        );
+             ON CONFLICT (dataset_key) DO UPDATE SET last_seen_at = excluded.last_seen_at");
         let resource_kind = resource_kind_to_str(kind);
         match &self.pool {
             MetadataPool::Sqlite(p) => {
@@ -325,7 +328,11 @@ impl CatalogStore {
     }
 
     pub async fn get(&self, key: &str) -> anyhow::Result<Option<CatalogDataset>> {
-        Ok(self.load_all().await?.into_iter().find(|d| d.dataset_key == key))
+        Ok(self
+            .load_all()
+            .await?
+            .into_iter()
+            .find(|d| d.dataset_key == key))
     }
 
     /// Distinct tags across every dataset, sorted — powers a tag-filter
@@ -358,9 +365,15 @@ impl CatalogStore {
             Option<String>,
             Option<String>,
         )> = match &self.pool {
-            MetadataPool::Sqlite(p) => sqlx::query_as(sqlx::AssertSqlSafe(sql)).fetch_all(p).await?,
+            MetadataPool::Sqlite(p) => {
+                sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .fetch_all(p)
+                    .await?
+            }
             MetadataPool::Postgres(p) => {
-                sqlx::query_as(sqlx::AssertSqlSafe(sql)).fetch_all(p).await?
+                sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .fetch_all(p)
+                    .await?
             }
         };
 
@@ -368,15 +381,18 @@ impl CatalogStore {
             "SELECT dataset_key, column_name, data_type, description, pii_flag \
              FROM catalog_column_metadata",
         );
-        let col_rows: Vec<(String, String, Option<String>, Option<String>, bool)> =
-            match &self.pool {
-                MetadataPool::Sqlite(p) => {
-                    sqlx::query_as(sqlx::AssertSqlSafe(col_sql)).fetch_all(p).await?
-                }
-                MetadataPool::Postgres(p) => {
-                    sqlx::query_as(sqlx::AssertSqlSafe(col_sql)).fetch_all(p).await?
-                }
-            };
+        let col_rows: Vec<ColumnMetadataRow> = match &self.pool {
+            MetadataPool::Sqlite(p) => {
+                sqlx::query_as(sqlx::AssertSqlSafe(col_sql))
+                    .fetch_all(p)
+                    .await?
+            }
+            MetadataPool::Postgres(p) => {
+                sqlx::query_as(sqlx::AssertSqlSafe(col_sql))
+                    .fetch_all(p)
+                    .await?
+            }
+        };
 
         let mut datasets: Vec<CatalogDataset> = rows
             .into_iter()
@@ -489,14 +505,12 @@ impl CatalogStore {
         if self.get(dataset_key).await?.is_none() {
             return Ok(false);
         }
-        let sql = self.q(
-            "INSERT INTO catalog_column_metadata \
+        let sql = self.q("INSERT INTO catalog_column_metadata \
                 (dataset_key, column_name, data_type, description, pii_flag) \
              VALUES (?, ?, NULL, ?, ?) \
              ON CONFLICT (dataset_key, column_name) DO UPDATE SET \
                  description = excluded.description, \
-                 pii_flag = excluded.pii_flag",
-        );
+                 pii_flag = excluded.pii_flag");
         match &self.pool {
             MetadataPool::Sqlite(p) => {
                 sqlx::query(sqlx::AssertSqlSafe(sql))
@@ -607,10 +621,7 @@ mod tests {
         let store = CatalogStore::connect("sqlite::memory:").await.unwrap();
         let s = spec(
             vec![node("totally-unknown-connector", serde_json::json!({}))],
-            vec![node(
-                "csv",
-                serde_json::json!({"path": "/data/out.csv"}),
-            )],
+            vec![node("csv", serde_json::json!({"path": "/data/out.csv"}))],
         );
         store.record_from_pipeline(&s, None).await.unwrap();
 
@@ -644,7 +655,10 @@ mod tests {
         let b = datasets.iter().find(|d| d.identifier == "/b.csv").unwrap();
         assert!(a.columns.is_empty(), "ambiguous source, must not guess");
         assert!(b.columns.is_empty(), "ambiguous source, must not guess");
-        let out = datasets.iter().find(|d| d.identifier == "/out.csv").unwrap();
+        let out = datasets
+            .iter()
+            .find(|d| d.identifier == "/out.csv")
+            .unwrap();
         assert_eq!(out.columns.len(), 1, "sink columns are never ambiguous");
     }
 
@@ -675,7 +689,10 @@ mod tests {
             source_columns: cols(&[("email", "LargeUtf8")]),
             ..schema
         };
-        store.record_from_pipeline(&s, Some(&schema2)).await.unwrap();
+        store
+            .record_from_pipeline(&s, Some(&schema2))
+            .await
+            .unwrap();
 
         let dataset = store.get(key).await.unwrap().unwrap();
         let col = dataset.columns.iter().find(|c| c.name == "email").unwrap();

@@ -158,10 +158,16 @@ impl WorkQueueStore {
         let sql = self.q("DELETE FROM pipeline_run_queue WHERE id = ?");
         match &self.pool {
             MetadataPool::Sqlite(p) => {
-                sqlx::query(sqlx::AssertSqlSafe(sql)).bind(id).execute(p).await?;
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .bind(id)
+                    .execute(p)
+                    .await?;
             }
             MetadataPool::Postgres(p) => {
-                sqlx::query(sqlx::AssertSqlSafe(sql)).bind(id).execute(p).await?;
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .bind(id)
+                    .execute(p)
+                    .await?;
             }
         }
         Ok(())
@@ -179,9 +185,15 @@ impl WorkQueueStore {
     pub async fn requeue_stale(&self, stale_after: chrono::Duration) -> anyhow::Result<u64> {
         let sql = self.q("SELECT id, claimed_at FROM pipeline_run_queue WHERE status = 'claimed'");
         let rows: Vec<(i64, Option<String>)> = match &self.pool {
-            MetadataPool::Sqlite(p) => sqlx::query_as(sqlx::AssertSqlSafe(sql)).fetch_all(p).await?,
+            MetadataPool::Sqlite(p) => {
+                sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .fetch_all(p)
+                    .await?
+            }
             MetadataPool::Postgres(p) => {
-                sqlx::query_as(sqlx::AssertSqlSafe(sql)).fetch_all(p).await?
+                sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .fetch_all(p)
+                    .await?
             }
         };
         let cutoff = chrono::Utc::now() - stale_after;
@@ -275,7 +287,11 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         for _ in 0..5 {
             let job = store.claim_next("worker").await.unwrap().unwrap();
-            assert!(seen.insert(job.run_id), "run_id claimed twice: {}", job.run_id);
+            assert!(
+                seen.insert(job.run_id),
+                "run_id claimed twice: {}",
+                job.run_id
+            );
         }
         assert_eq!(store.claim_next("worker").await.unwrap(), None);
     }
@@ -297,7 +313,13 @@ mod tests {
 
         // Requeuing immediately after completion must not resurrect it —
         // the row is gone, not just reset to pending.
-        assert_eq!(store.requeue_stale(chrono::Duration::seconds(0)).await.unwrap(), 0);
+        assert_eq!(
+            store
+                .requeue_stale(chrono::Duration::seconds(0))
+                .await
+                .unwrap(),
+            0
+        );
     }
 
     #[tokio::test]
@@ -315,12 +337,18 @@ mod tests {
         let job = store.claim_next("worker-a").await.unwrap().unwrap();
 
         // A claim from just now is not stale under any real threshold.
-        let requeued = store.requeue_stale(chrono::Duration::minutes(10)).await.unwrap();
+        let requeued = store
+            .requeue_stale(chrono::Duration::minutes(10))
+            .await
+            .unwrap();
         assert_eq!(requeued, 0);
         assert_eq!(store.claim_next("worker-b").await.unwrap(), None);
 
         // Under a zero threshold, that same claim is immediately stale.
-        let requeued = store.requeue_stale(chrono::Duration::seconds(0)).await.unwrap();
+        let requeued = store
+            .requeue_stale(chrono::Duration::seconds(0))
+            .await
+            .unwrap();
         assert_eq!(requeued, 1);
         let reclaimed = store.claim_next("worker-b").await.unwrap().unwrap();
         assert_eq!(reclaimed.id, job.id);

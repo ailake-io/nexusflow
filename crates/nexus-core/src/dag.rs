@@ -1944,6 +1944,7 @@ mod tests {
             "depends_on": [{"upstream_pipeline_id": "p"}],
             "draft": true
         }"#;
-        PipelineSpec::parse(json).expect("draft must skip depends_on validation, same as everything else");
+        PipelineSpec::parse(json)
+            .expect("draft must skip depends_on validation, same as everything else");
     }
 }

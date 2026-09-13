@@ -105,8 +105,14 @@ mod tests {
     #[test]
     fn zero_variance_baseline_flags_any_deviation_as_warning() {
         let history = vec![100.0, 100.0, 100.0, 100.0, 100.0];
-        assert_eq!(detect_anomaly(&history, 150.0), Some(AnomalySeverity::Warning));
-        assert_eq!(detect_anomaly(&history, 50.0), Some(AnomalySeverity::Warning));
+        assert_eq!(
+            detect_anomaly(&history, 150.0),
+            Some(AnomalySeverity::Warning)
+        );
+        assert_eq!(
+            detect_anomaly(&history, 50.0),
+            Some(AnomalySeverity::Warning)
+        );
     }
 
     #[test]

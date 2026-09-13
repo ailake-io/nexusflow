@@ -36,13 +36,15 @@ pub fn check_dependencies(
         graph.insert(spec.pipeline_id.as_str(), deps);
     }
     // A brand-new pipeline (create, not update) isn't in `all_specs` yet.
-    graph.entry(candidate.pipeline_id.as_str()).or_insert_with(|| {
-        candidate
-            .depends_on
-            .iter()
-            .map(|d| d.upstream_pipeline_id.as_str())
-            .collect()
-    });
+    graph
+        .entry(candidate.pipeline_id.as_str())
+        .or_insert_with(|| {
+            candidate
+                .depends_on
+                .iter()
+                .map(|d| d.upstream_pipeline_id.as_str())
+                .collect()
+        });
 
     for dep in &candidate.depends_on {
         if !graph.contains_key(dep.upstream_pipeline_id.as_str()) {
@@ -77,10 +79,7 @@ fn detect_cycle<'a>(
     }
     if visiting.contains(node) {
         path.push(node);
-        return Err(format!(
-            "dependency cycle detected: {}",
-            path.join(" -> ")
-        ));
+        return Err(format!("dependency cycle detected: {}", path.join(" -> ")));
     }
     visiting.insert(node);
     path.push(node);
@@ -140,13 +139,11 @@ impl DependencyStateStore {
         upstream_id: &str,
     ) -> anyhow::Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
-        let sql = self.q(
-            "INSERT INTO pipeline_dependency_state \
+        let sql = self.q("INSERT INTO pipeline_dependency_state \
                 (downstream_pipeline_id, upstream_pipeline_id, satisfied_at) \
              VALUES (?, ?, ?) \
              ON CONFLICT (downstream_pipeline_id, upstream_pipeline_id) \
-             DO UPDATE SET satisfied_at = excluded.satisfied_at",
-        );
+             DO UPDATE SET satisfied_at = excluded.satisfied_at");
         match &self.pool {
             MetadataPool::Sqlite(p) => {
                 sqlx::query(sqlx::AssertSqlSafe(sql))
@@ -168,7 +165,10 @@ impl DependencyStateStore {
         Ok(())
     }
 
-    pub async fn satisfied_upstreams(&self, downstream_id: &str) -> anyhow::Result<HashSet<String>> {
+    pub async fn satisfied_upstreams(
+        &self,
+        downstream_id: &str,
+    ) -> anyhow::Result<HashSet<String>> {
         let sql = self.q(
             "SELECT upstream_pipeline_id FROM pipeline_dependency_state \
              WHERE downstream_pipeline_id = ?",
@@ -216,7 +216,10 @@ impl DependencyStateStore {
 /// Best-effort/fire-and-forget from the caller's perspective, same posture
 /// as `data_catalog`/`pipeline_schemas`: a failure here must never fail the
 /// run that just succeeded.
-pub async fn trigger_downstream(state: &AppState, succeeded_pipeline_id: &str) -> anyhow::Result<()> {
+pub async fn trigger_downstream(
+    state: &AppState,
+    succeeded_pipeline_id: &str,
+) -> anyhow::Result<()> {
     let all_specs = state.pipelines.list_all_specs(&state.secrets).await?;
     for spec in &all_specs {
         if spec.draft {
@@ -338,13 +341,14 @@ mod tests {
         let upstream = spec("a");
         let candidate = spec_with_deps("b", &["a"], DependencyMode::Any);
         // Create case: `candidate` ("b") isn't in `all_specs` yet.
-        check_dependencies(&[upstream], &candidate).expect("new pipeline depending on an existing one is valid");
+        check_dependencies(&[upstream], &candidate)
+            .expect("new pipeline depending on an existing one is valid");
     }
 
     #[test]
     fn rejects_dependency_on_unknown_pipeline() {
         let candidate = spec_with_deps("b", &["ghost"], DependencyMode::Any);
-        let err = check_dependencies(&[candidate.clone()], &candidate)
+        let err = check_dependencies(std::slice::from_ref(&candidate), &candidate)
             .expect_err("unknown upstream must be rejected");
         assert!(err.contains("unknown pipeline"));
     }
@@ -394,7 +398,9 @@ mod tests {
 
     #[tokio::test]
     async fn dependency_state_tracks_and_clears_all_mode_satisfaction() {
-        let store = DependencyStateStore::connect("sqlite::memory:").await.unwrap();
+        let store = DependencyStateStore::connect("sqlite::memory:")
+            .await
+            .unwrap();
         store.mark_satisfied("d", "a").await.unwrap();
         let satisfied = store.satisfied_upstreams("d").await.unwrap();
         assert_eq!(satisfied, HashSet::from(["a".to_string()]));
@@ -409,7 +415,9 @@ mod tests {
 
     #[tokio::test]
     async fn dependency_state_is_scoped_per_downstream() {
-        let store = DependencyStateStore::connect("sqlite::memory:").await.unwrap();
+        let store = DependencyStateStore::connect("sqlite::memory:")
+            .await
+            .unwrap();
         store.mark_satisfied("d1", "a").await.unwrap();
         store.mark_satisfied("d2", "a").await.unwrap();
         store.clear("d1").await.unwrap();

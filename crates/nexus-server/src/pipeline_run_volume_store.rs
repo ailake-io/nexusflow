@@ -144,7 +144,9 @@ mod tests {
 
     #[tokio::test]
     async fn record_and_recent_round_trip_oldest_first() {
-        let store = PipelineRunVolumeStore::connect("sqlite::memory:").await.unwrap();
+        let store = PipelineRunVolumeStore::connect("sqlite::memory:")
+            .await
+            .unwrap();
         store.record("pipe-1", 1, 100).await.unwrap();
         store.record("pipe-1", 2, 150).await.unwrap();
         store.record("pipe-1", 3, 90).await.unwrap();
@@ -160,7 +162,9 @@ mod tests {
 
     #[tokio::test]
     async fn recent_respects_limit_keeping_the_newest() {
-        let store = PipelineRunVolumeStore::connect("sqlite::memory:").await.unwrap();
+        let store = PipelineRunVolumeStore::connect("sqlite::memory:")
+            .await
+            .unwrap();
         for run_id in 1..=5 {
             store.record("pipe-1", run_id, run_id * 10).await.unwrap();
         }
@@ -173,17 +177,24 @@ mod tests {
 
     #[tokio::test]
     async fn recording_the_same_run_twice_does_not_duplicate() {
-        let store = PipelineRunVolumeStore::connect("sqlite::memory:").await.unwrap();
+        let store = PipelineRunVolumeStore::connect("sqlite::memory:")
+            .await
+            .unwrap();
         store.record("pipe-1", 1, 100).await.unwrap();
         store.record("pipe-1", 1, 999).await.unwrap();
         let samples = store.recent("pipe-1", 10).await.unwrap();
         assert_eq!(samples.len(), 1);
-        assert_eq!(samples[0].rows_written, 100, "first write wins, not overwritten");
+        assert_eq!(
+            samples[0].rows_written, 100,
+            "first write wins, not overwritten"
+        );
     }
 
     #[tokio::test]
     async fn recent_is_scoped_per_pipeline() {
-        let store = PipelineRunVolumeStore::connect("sqlite::memory:").await.unwrap();
+        let store = PipelineRunVolumeStore::connect("sqlite::memory:")
+            .await
+            .unwrap();
         store.record("pipe-1", 1, 100).await.unwrap();
         store.record("pipe-2", 1, 500).await.unwrap();
         let samples = store.recent("pipe-1", 10).await.unwrap();

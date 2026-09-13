@@ -320,7 +320,10 @@ fn router(state: AppState) -> Router {
         // the caller (e.g. `encodeURIComponent`) — axum decodes a single
         // path segment, so an unencoded `/` would otherwise be parsed as
         // extra path segments.
-        .route("/catalog/datasets/{key}", put(update_catalog_dataset_handler))
+        .route(
+            "/catalog/datasets/{key}",
+            put(update_catalog_dataset_handler),
+        )
         .route(
             "/catalog/datasets/{key}/columns/{column}",
             put(update_catalog_column_handler),
@@ -836,12 +839,20 @@ pub(crate) async fn start_pipeline_run(
 /// could win the race against the supervisor's own `progress.start` and
 /// get a spurious 404. A queued run has no such race to protect against
 /// (the 202 already went out long before any worker claims the job).
-pub(crate) async fn dispatch_execute_pipeline_run(state: &AppState, spec: PipelineSpec, run_id: i64) {
+pub(crate) async fn dispatch_execute_pipeline_run(
+    state: &AppState,
+    spec: PipelineSpec,
+    run_id: i64,
+) {
     let (progress_tx, log_tx) = state.progress.start(run_id).await;
     let logger = RunLogger::new(run_id, log_tx, state.run_logs.clone());
     let supervisor = state.clone();
     tokio::spawn(spawn_execute_pipeline_run(
-        supervisor, spec, run_id, progress_tx, logger,
+        supervisor,
+        spec,
+        run_id,
+        progress_tx,
+        logger,
     ));
 }
 
@@ -869,7 +880,13 @@ fn spawn_execute_pipeline_run(
     progress_tx: ProgressSender,
     logger: RunLogger,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
-    Box::pin(execute_pipeline_run(state, spec, run_id, progress_tx, logger))
+    Box::pin(execute_pipeline_run(
+        state,
+        spec,
+        run_id,
+        progress_tx,
+        logger,
+    ))
 }
 
 /// Supervisor for one pipeline run: executes the pipeline and *always*
@@ -1075,7 +1092,8 @@ async fn execute_pipeline_run(
             // Cross-pipeline orchestration (Fase 26) — best-effort, same
             // posture as the schema/quality-check persistence above: a
             // failure here must never fail an otherwise-successful run.
-            if let Err(e) = pipeline_dependencies::trigger_downstream(&state, &spec.pipeline_id).await
+            if let Err(e) =
+                pipeline_dependencies::trigger_downstream(&state, &spec.pipeline_id).await
             {
                 tracing::warn!(error = %e, "failed to trigger dependency-based downstream runs");
             }
@@ -2189,7 +2207,9 @@ async fn update_catalog_dataset_handler(
     if updated {
         Ok(StatusCode::NO_CONTENT)
     } else {
-        Err(ApiError::not_found(format!("no dataset {key:?} in the catalog")))
+        Err(ApiError::not_found(format!(
+            "no dataset {key:?} in the catalog"
+        )))
     }
 }
 
@@ -2219,7 +2239,9 @@ async fn update_catalog_column_handler(
     if updated {
         Ok(StatusCode::NO_CONTENT)
     } else {
-        Err(ApiError::not_found(format!("no dataset {key:?} in the catalog")))
+        Err(ApiError::not_found(format!(
+            "no dataset {key:?} in the catalog"
+        )))
     }
 }
 
@@ -2881,16 +2903,13 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         dbt_test_result_store::DbtTestResultStore::connect(&config.pipelines_database_url).await?;
     let pipeline_schemas =
         pipeline_schema_store::PipelineSchemaStore::connect(&config.pipelines_database_url).await?;
-    let data_catalog =
-        data_catalog::CatalogStore::connect(&config.pipelines_database_url).await?;
-    let pipeline_dependency_state = pipeline_dependencies::DependencyStateStore::connect(
-        &config.pipelines_database_url,
-    )
-    .await?;
-    let pipeline_run_volume = pipeline_run_volume_store::PipelineRunVolumeStore::connect(
-        &config.pipelines_database_url,
-    )
-    .await?;
+    let data_catalog = data_catalog::CatalogStore::connect(&config.pipelines_database_url).await?;
+    let pipeline_dependency_state =
+        pipeline_dependencies::DependencyStateStore::connect(&config.pipelines_database_url)
+            .await?;
+    let pipeline_run_volume =
+        pipeline_run_volume_store::PipelineRunVolumeStore::connect(&config.pipelines_database_url)
+            .await?;
     let work_queue = if config.queue_mode {
         Some(work_queue::WorkQueueStore::connect(&config.pipelines_database_url).await?)
     } else {
@@ -3109,8 +3128,8 @@ pub async fn run() -> anyhow::Result<()> {
              and bypass per-IP login rate limiting entirely."
         );
     }
-    let queue_mode = std::env::var("NEXUS_QUEUE_MODE")
-        .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+    let queue_mode =
+        std::env::var("NEXUS_QUEUE_MODE").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
     if queue_mode {
         tracing::info!(
             "NEXUS_QUEUE_MODE=true — pipeline runs triggered on this replica are enqueued \

@@ -739,7 +739,8 @@ async fn send_anomaly_email(
     message: &str,
 ) -> Result<(), NexusError> {
     let label = severity_label(severity);
-    let subject = format!("[nexusflow] Anomaly detected on pipeline '{pipeline_id}' run {run_id} ({label})");
+    let subject =
+        format!("[nexusflow] Anomaly detected on pipeline '{pipeline_id}' run {run_id} ({label})");
     let body = format!(
         "Pipeline: {pipeline_id}\nRun: {run_id}\nSeverity: {label}\n{message}\n\n---\nSent by NexusFlow"
     );

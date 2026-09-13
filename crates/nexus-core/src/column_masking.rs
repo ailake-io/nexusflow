@@ -1,6 +1,8 @@
 use crate::error::NexusError;
 use arrow_array::builder::StringBuilder;
-use arrow_array::{Array, ArrayRef, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray};
+use arrow_array::{
+    Array, ArrayRef, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray,
+};
 use arrow_schema::{DataType, Field, Schema};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
@@ -59,8 +61,8 @@ impl ColumnMasker {
     }
 
     fn token_for(&self, value: &str) -> String {
-        let mut mac =
-            HmacSha256::new_from_slice(&self.salt).expect("HMAC-SHA256 accepts a key of any length");
+        let mut mac = HmacSha256::new_from_slice(&self.salt)
+            .expect("HMAC-SHA256 accepts a key of any length");
         mac.update(value.as_bytes());
         let digest = mac.finalize().into_bytes();
         // Truncated to 16 bytes (32 hex chars) of the 32-byte digest — a
@@ -204,7 +206,11 @@ mod tests {
         assert_eq!(masked.schema().field(1).name(), "email");
         assert_eq!(*masked.schema().field(1).data_type(), DataType::Utf8);
 
-        let ids = masked.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+        let ids = masked
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
         assert_eq!(ids.value(0), 1, "unmasked column stays exactly as-is");
 
         let emails = masked
@@ -219,15 +225,15 @@ mod tests {
     #[test]
     fn same_input_produces_the_same_token_every_time() {
         let masker = ColumnMasker::new(&[spec("email")], b"test-salt");
-        let b1 = masker
-            .mask_batch(batch(&[1], &["a@example.com"]))
-            .unwrap();
-        let b2 = masker
-            .mask_batch(batch(&[99], &["a@example.com"]))
-            .unwrap();
+        let b1 = masker.mask_batch(batch(&[1], &["a@example.com"])).unwrap();
+        let b2 = masker.mask_batch(batch(&[99], &["a@example.com"])).unwrap();
         let e1 = b1.column(1).as_any().downcast_ref::<StringArray>().unwrap();
         let e2 = b2.column(1).as_any().downcast_ref::<StringArray>().unwrap();
-        assert_eq!(e1.value(0), e2.value(0), "deterministic: same value, same token");
+        assert_eq!(
+            e1.value(0),
+            e2.value(0),
+            "deterministic: same value, same token"
+        );
     }
 
     #[test]
@@ -236,7 +242,11 @@ mod tests {
         let masked = masker
             .mask_batch(batch(&[1, 2], &["a@example.com", "b@example.com"]))
             .unwrap();
-        let emails = masked.column(1).as_any().downcast_ref::<StringArray>().unwrap();
+        let emails = masked
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         assert_ne!(emails.value(0), emails.value(1));
     }
 
@@ -270,7 +280,11 @@ mod tests {
         .unwrap();
         let masker = ColumnMasker::new(&[spec("email")], b"test-salt");
         let masked = masker.mask_batch(b).unwrap();
-        let emails = masked.column(0).as_any().downcast_ref::<StringArray>().unwrap();
+        let emails = masked
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         assert!(emails.is_null(1));
     }
 
@@ -287,7 +301,11 @@ mod tests {
         let masker = ColumnMasker::new(&[], b"test-salt");
         let b = batch(&[1], &["a@example.com"]);
         let masked = masker.mask_batch(b).unwrap();
-        let emails = masked.column(1).as_any().downcast_ref::<StringArray>().unwrap();
+        let emails = masked
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         assert_eq!(emails.value(0), "a@example.com");
     }
 
@@ -307,7 +325,11 @@ mod tests {
         let b = batch(&[12345, 12345], &["a@example.com", "b@example.com"]);
         let masked = masker.mask_batch(b).unwrap();
         assert_eq!(*masked.schema().field(0).data_type(), DataType::Utf8);
-        let ids = masked.column(0).as_any().downcast_ref::<StringArray>().unwrap();
+        let ids = masked
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         assert_eq!(ids.value(0), ids.value(1), "same int value -> same token");
     }
 }

@@ -58,7 +58,11 @@ pub fn spawn(state: AppState) {
             loop {
                 match queue.claim_next(&worker_id).await {
                     Ok(Some(job)) => {
-                        let spec = match state.pipelines.get_spec(&job.pipeline_id, &state.secrets).await {
+                        let spec = match state
+                            .pipelines
+                            .get_spec(&job.pipeline_id, &state.secrets)
+                            .await
+                        {
                             Ok(spec) => spec,
                             Err(e) => {
                                 tracing::warn!(

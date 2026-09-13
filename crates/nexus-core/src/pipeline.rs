@@ -1084,12 +1084,19 @@ mod tests {
     fn add_one_column_transform(name: &'static str) -> BatchTransform {
         Box::new(move |batch: RecordBatch| {
             Box::pin(async move {
-                let mut fields: Vec<Field> = batch.schema().fields().iter().map(|f| (**f).clone()).collect();
+                let mut fields: Vec<Field> = batch
+                    .schema()
+                    .fields()
+                    .iter()
+                    .map(|f| (**f).clone())
+                    .collect();
                 fields.push(Field::new(name, DataType::Boolean, false));
                 let mut columns = batch.columns().to_vec();
                 columns.push(Arc::new(arrow_array::BooleanArray::from(vec![
                     true;
-                    batch.num_rows()
+                    batch
+                        .num_rows(
+                        )
                 ])));
                 RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
                     .map_err(|e| NexusError::Schema(e.to_string()))

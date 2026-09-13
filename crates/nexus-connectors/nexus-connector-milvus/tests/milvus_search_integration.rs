@@ -57,7 +57,10 @@ async fn search_returns_the_most_similar_row_first() {
         .await
         .expect("etcd starts");
 
-    let _minio = GenericImage::new("minio/minio", "latest")
+    // `minio/minio` on Docker Hub was pulled/deprecated in favor of
+    // quay.io — a plain `docker pull minio/minio` now 404s ("repository
+    // does not exist"), confirmed the hard way when this broke CI.
+    let _minio = GenericImage::new("quay.io/minio/minio", "latest")
         .with_wait_for(WaitFor::seconds(3))
         .with_env_var("MINIO_ACCESS_KEY", "minioadmin")
         .with_env_var("MINIO_SECRET_KEY", "minioadmin")

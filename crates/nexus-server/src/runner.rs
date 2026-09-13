@@ -94,12 +94,17 @@ fn build_masker(
 /// Wraps a `ColumnMasker` as a `BatchTransform` — cheap to call, the `Arc`
 /// is only cloned, never rebuilt, per batch, same "loaded once per run"
 /// posture `run_passthrough_pipeline`'s embedding backend already has.
-fn masking_batch_transform(masker: &std::sync::Arc<nexus_core::ColumnMasker>) -> nexus_core::BatchTransform {
+fn masking_batch_transform(
+    masker: &std::sync::Arc<nexus_core::ColumnMasker>,
+) -> nexus_core::BatchTransform {
     let masker = masker.clone();
     Box::new(move |batch: arrow_array::RecordBatch| {
         let masker = masker.clone();
         Box::pin(async move { masker.mask_batch(batch) })
-            as futures::future::BoxFuture<'static, Result<arrow_array::RecordBatch, nexus_core::NexusError>>
+            as futures::future::BoxFuture<
+                'static,
+                Result<arrow_array::RecordBatch, nexus_core::NexusError>,
+            >
     })
 }
 
@@ -237,7 +242,6 @@ fn log_progress(
 }
 
 #[tracing::instrument(skip_all, fields(pipeline_id = %spec.pipeline_id))]
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 pub async fn run_pipeline(
     spec: &PipelineSpec,
@@ -2013,6 +2017,7 @@ mod tests {
             &schema_store,
             &alerts,
             1,
+            None, // no masking salt
         )
         .await;
 
@@ -2099,6 +2104,7 @@ mod tests {
             1,
             &prompt_templates,
             &llm_eval_store,
+            None, // no masking salt
         )
         .await;
 
@@ -2195,6 +2201,7 @@ mod tests {
             1,
             &prompt_templates,
             &llm_eval_store,
+            None, // no masking salt
         )
         .await;
 
