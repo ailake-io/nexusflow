@@ -20,12 +20,14 @@ use nexus_connector_csv::{CsvConnectorConfig, CsvSink, CsvSource};
 use nexus_connector_deltalake::{DeltaCdcConfig, DeltaCdcSource};
 #[cfg(feature = "deltalake")]
 use nexus_connector_deltalake::{DeltaConnectorConfig, DeltaSink, DeltaSource};
+#[cfg(feature = "duckdb")]
+use nexus_connector_duckdb::{DuckdbConnectorConfig, DuckdbSink, DuckdbSource};
 #[cfg(feature = "iceberg-cdc")]
 use nexus_connector_iceberg::{IcebergCdcConfig, IcebergCdcSource};
 #[cfg(feature = "iceberg")]
 use nexus_connector_iceberg::{IcebergConnectorConfig, IcebergSink, IcebergSource};
 #[cfg(feature = "kafka")]
-use nexus_connector_kafka::{KafkaConnectorConfig, KafkaSource};
+use nexus_connector_kafka::{KafkaConnectorConfig, KafkaSink, KafkaSource};
 #[cfg(feature = "lancedb")]
 use nexus_connector_lancedb::{LanceDbConnectorConfig, LanceDbSink};
 #[cfg(feature = "milvus")]
@@ -40,6 +42,8 @@ use nexus_connector_mqtt::{MqttConnectorConfig, MqttSource};
 use nexus_connector_mysql::{MySqlCdcConfig, MySqlCdcSource};
 #[cfg(feature = "mysql")]
 use nexus_connector_mysql::{MySqlConnectorConfig, MySqlSink, MySqlSource};
+#[cfg(feature = "nats")]
+use nexus_connector_nats::{NatsConnectorConfig, NatsSink, NatsSource};
 #[cfg(feature = "odbc")]
 use nexus_connector_odbc::{OdbcConnectorConfig, OdbcSink, OdbcSource};
 #[cfg(feature = "parquet")]
@@ -50,6 +54,10 @@ use nexus_connector_pgvector::{PgVectorConnectorConfig, PgVectorSink};
 use nexus_connector_pinecone::{PineconeConnectorConfig, PineconeSink};
 #[cfg(feature = "qdrant")]
 use nexus_connector_qdrant::{QdrantConnectorConfig, QdrantSink};
+#[cfg(feature = "rabbitmq")]
+use nexus_connector_rabbitmq::{RabbitmqConnectorConfig, RabbitmqSink, RabbitmqSource};
+#[cfg(feature = "redis")]
+use nexus_connector_redis::{RedisConnectorConfig, RedisSink, RedisSource};
 #[cfg(feature = "rest")]
 use nexus_connector_rest::{RestConnectorConfig, RestSource, WebhookSink, WebhookSinkConfig};
 
@@ -70,16 +78,25 @@ use nexus_connector_rest::{RestConnectorConfig, RestSource, WebhookSink, Webhook
 /// design (see each crate's own src/lib.rs doc comment), not an oversight
 /// here.
 /// The single enforcement point for enterprise-connector licensing
-/// (ROADMAP.md Fase 12, Bloco 1; `docs/ENTERPRISE_LICENSING.md §5`).
+/// (ROADMAP.md Fase 12, Bloco 1; `docs/ENTERPRISE_LICENSING.md §5`) —
+/// also reused as-is (`pub(crate)`) for the two non-connector capability
+/// slugs registered by `capability_registry.rs`
+/// (LLMOPS_IMPLEMENTATION_PLAN.md Marco L8: `"llm-lineage-tracking"`,
+/// `"reactive-rag-cdc"`), which are always present in `ConnectorRegistry`
+/// (registered from this crate itself, not a plugin) so the "not found"
+/// branch below never applies to them.
 /// `ConnectorRegistry::find` looks up whatever crate registered this
 /// connector name via `submit_connector!`/`submit_enterprise_connector!`
 /// (`nexus-core/registry.rs`) — an OSS connector always has
 /// `requires_license: None` and passes here unconditionally; only a
-/// connector registered with `submit_enterprise_connector!` (no crate does
-/// yet — see that macro's own doc comment) is gated. An unknown connector
-/// name is left for the caller's own match arm to reject with its usual
-/// "unsupported connector" error, not this function.
-fn check_connector_license(
+/// connector registered with `submit_enterprise_connector!` is gated. An
+/// unknown connector name is left for the caller's own match arm to reject
+/// with its usual "unsupported connector" error, not this function — that
+/// second gate is what makes "not found → allow" safe for real connectors,
+/// but it does not exist for the two capability slugs above (see
+/// `capability_registry.rs`'s doc comment for why they're registered here
+/// instead of a private crate).
+pub(crate) fn check_connector_license(
     connector: &str,
     active_license: Option<&LicenseClaims>,
 ) -> anyhow::Result<()> {
@@ -162,6 +179,25 @@ pub fn validate_source_config(
         #[cfg(feature = "clickhouse")]
         "clickhouse" => {
             let _: ClickHouseConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "duckdb")]
+        "duckdb" => {
+            let _: DuckdbConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "redis")]
+        "redis" => {
+            let cfg: RedisConnectorConfig = serde_json::from_value(node.config.clone())?;
+            cfg.validate()?;
+        }
+        #[cfg(feature = "nats")]
+        "nats" => {
+            let cfg: NatsConnectorConfig = serde_json::from_value(node.config.clone())?;
+            cfg.validate()?;
+        }
+        #[cfg(feature = "rabbitmq")]
+        "rabbitmq" => {
+            let cfg: RabbitmqConnectorConfig = serde_json::from_value(node.config.clone())?;
+            cfg.validate()?;
         }
         #[cfg(feature = "postgres-cdc")]
         "postgres-cdc" => {
@@ -270,6 +306,26 @@ pub async fn build_source(
         "clickhouse" => {
             let cfg: ClickHouseConnectorConfig = serde_json::from_value(node.config.clone())?;
             Box::new(ClickHouseSource::connect(&cfg, None).await?)
+        }
+        #[cfg(feature = "duckdb")]
+        "duckdb" => {
+            let cfg: DuckdbConnectorConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(DuckdbSource::connect(&cfg).await?)
+        }
+        #[cfg(feature = "redis")]
+        "redis" => {
+            let cfg: RedisConnectorConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(RedisSource::connect(&cfg).await?)
+        }
+        #[cfg(feature = "nats")]
+        "nats" => {
+            let cfg: NatsConnectorConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(NatsSource::connect(&cfg).await?)
+        }
+        #[cfg(feature = "rabbitmq")]
+        "rabbitmq" => {
+            let cfg: RabbitmqConnectorConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(RabbitmqSource::connect(&cfg).await?)
         }
         #[cfg(feature = "postgres-cdc")]
         "postgres-cdc" => {
@@ -386,6 +442,29 @@ pub fn validate_sink_config(
         #[cfg(feature = "clickhouse")]
         "clickhouse" => {
             let _: ClickHouseConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "duckdb")]
+        "duckdb" => {
+            let _: DuckdbConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "kafka")]
+        "kafka" => {
+            let _: KafkaConnectorConfig = serde_json::from_value(node.config.clone())?;
+        }
+        #[cfg(feature = "redis")]
+        "redis" => {
+            let cfg: RedisConnectorConfig = serde_json::from_value(node.config.clone())?;
+            cfg.validate()?;
+        }
+        #[cfg(feature = "nats")]
+        "nats" => {
+            let cfg: NatsConnectorConfig = serde_json::from_value(node.config.clone())?;
+            cfg.validate()?;
+        }
+        #[cfg(feature = "rabbitmq")]
+        "rabbitmq" => {
+            let cfg: RabbitmqConnectorConfig = serde_json::from_value(node.config.clone())?;
+            cfg.validate()?;
         }
         other => match ConnectorRegistry::find_sink_builder(other) {
             Some(builder) => (builder.validate)(&node.config)?,
@@ -540,6 +619,31 @@ pub async fn build_sink(
         "clickhouse" => {
             let cfg: ClickHouseConnectorConfig = serde_json::from_value(node.config.clone())?;
             Box::new(ClickHouseSink::connect(&cfg, &columns).await?)
+        }
+        #[cfg(feature = "duckdb")]
+        "duckdb" => {
+            let cfg: DuckdbConnectorConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(DuckdbSink::connect(&cfg, schema).await?)
+        }
+        #[cfg(feature = "kafka")]
+        "kafka" => {
+            let cfg: KafkaConnectorConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(KafkaSink::connect(&cfg)?)
+        }
+        #[cfg(feature = "redis")]
+        "redis" => {
+            let cfg: RedisConnectorConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(RedisSink::connect(&cfg).await?)
+        }
+        #[cfg(feature = "nats")]
+        "nats" => {
+            let cfg: NatsConnectorConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(NatsSink::connect(&cfg).await?)
+        }
+        #[cfg(feature = "rabbitmq")]
+        "rabbitmq" => {
+            let cfg: RabbitmqConnectorConfig = serde_json::from_value(node.config.clone())?;
+            Box::new(RabbitmqSink::connect(&cfg).await?)
         }
         other => match ConnectorRegistry::find_sink_builder(other) {
             Some(builder) => (builder.build)(node.config.clone()).await?,

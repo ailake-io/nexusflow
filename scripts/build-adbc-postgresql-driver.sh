@@ -15,8 +15,8 @@
 #     libpq5` on Debian/Ubuntu. This is deliberate: see the CMAKE_SKIP_RPATH
 #     note below.
 #
-# Output: $OUT_DIR/libadbc_driver_manager.so and
-#         $OUT_DIR/libadbc_driver_postgresql.so
+# Output: $OUT_DIR/libadbc_driver_manager.{so,dylib} and
+#         $OUT_DIR/libadbc_driver_postgresql.{so,dylib} (dylib on macOS)
 #
 # Usage:
 #   ./scripts/build-adbc-postgresql-driver.sh [OUT_DIR]
@@ -32,6 +32,19 @@ OUT_DIR="${1:-$REPO_ROOT/target/adbc}"
 ADBC_REF="${ADBC_ADBC_REF:-apache-arrow-adbc-24}"
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
+
+# macOS support added 2026-09-05, untested on real hardware (no Mac
+# available in this environment) — CMake names the shared-library target
+# with the platform-correct suffix on its own (.dylib on macOS), so only
+# the `cp`/`nproc` lines below need OS branching, not the cmake invocation
+# itself.
+if [[ "$(uname)" == "Darwin" ]]; then
+  LIB_EXT="dylib"
+  NPROC="$(sysctl -n hw.ncpu)"
+else
+  LIB_EXT="so"
+  NPROC="$(nproc)"
+fi
 
 mkdir -p "$OUT_DIR"
 
@@ -55,10 +68,10 @@ cmake -S "$WORK_DIR/arrow-adbc/c" -B "$WORK_DIR/build" \
   -DCMAKE_SKIP_RPATH=ON
 
 echo "==> building"
-cmake --build "$WORK_DIR/build" -j"$(nproc)"
+cmake --build "$WORK_DIR/build" -j"$NPROC"
 
-cp "$WORK_DIR/build/driver_manager/libadbc_driver_manager.so" "$OUT_DIR/"
-cp "$WORK_DIR/build/driver/postgresql/libadbc_driver_postgresql.so" "$OUT_DIR/"
+cp "$WORK_DIR/build/driver_manager/libadbc_driver_manager.$LIB_EXT" "$OUT_DIR/"
+cp "$WORK_DIR/build/driver/postgresql/libadbc_driver_postgresql.$LIB_EXT" "$OUT_DIR/"
 
-echo "==> done: $OUT_DIR/libadbc_driver_manager.so"
-echo "==> done: $OUT_DIR/libadbc_driver_postgresql.so"
+echo "==> done: $OUT_DIR/libadbc_driver_manager.$LIB_EXT"
+echo "==> done: $OUT_DIR/libadbc_driver_postgresql.$LIB_EXT"

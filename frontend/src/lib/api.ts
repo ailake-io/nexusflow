@@ -68,7 +68,11 @@ export function onUnauthorized(handler: () => void) {
 async function request<T>(path: string, init: RequestInit = {}, token?: string): Promise<T> {
   const headers = new Headers(init.headers)
   if (token) headers.set('authorization', `Bearer ${token}`)
-  if (init.body) headers.set('content-type', 'application/json')
+  // A FormData body (uploadFiles below) must NOT get this — the browser
+  // sets its own multipart/form-data content-type with the boundary the
+  // server needs to parse it; forcing application/json here would break
+  // every upload.
+  if (init.body && !(init.body instanceof FormData)) headers.set('content-type', 'application/json')
 
   const response = await fetch(path, { ...init, headers })
   if (!response.ok) {
@@ -92,6 +96,61 @@ export async function login(username: string, password: string): Promise<string>
 
 export function listConnectors(token: string): Promise<ConnectorDescriptor[]> {
   return request<ConnectorDescriptor[]>('/connectors', {}, token)
+}
+
+/** Matches nexus-server::infra::InfraModuleDto, as returned by
+ * GET /infra/modules — empty array in any build without the enterprise
+ * `nexus-infra-terraform` crate linked in, or without a license covering
+ * `infra-terraform-generator` (single gate for the whole Infra tab, unlike
+ * the Store's per-connector `licensed` flag — see `docs/ENTERPRISE_LICENSING.md`). */
+export interface InfraModuleDescriptor {
+  id: string
+  name: string
+  category: string
+  provider: string
+  config_schema: ConnectorConfigSchema
+  outputs: string[]
+}
+
+export function listInfraModules(token: string): Promise<InfraModuleDescriptor[]> {
+  return request<InfraModuleDescriptor[]>('/infra/modules', {}, token)
+}
+
+/** Matches nexus-core::InfraNode/InfraEdge/InfraGraph exactly
+ * (crates/nexus-core/src/infra_registry.rs) — the POST /infra/generate
+ * request body. */
+export interface InfraNode {
+  id: string
+  module: string
+  config: Record<string, unknown>
+}
+
+export interface InfraEdge {
+  from: string
+  to: string
+  output: string
+  input: string
+}
+
+export interface InfraGraph {
+  nodes: InfraNode[]
+  edges: InfraEdge[]
+  /** Provider-level settings (e.g. `{"aws": {"region": "us-east-1"}}`) that
+   * go in the generated `providers.tf` rather than any one module. */
+  provider: Record<string, unknown>
+}
+
+/** Matches nexus-core::GeneratedFiles — file name to full `.tf` content. */
+export interface GeneratedFiles {
+  files: Record<string, string>
+}
+
+export function generateInfra(token: string, graph: InfraGraph): Promise<GeneratedFiles> {
+  return request<GeneratedFiles>(
+    '/infra/generate',
+    { method: 'POST', body: JSON.stringify(graph) },
+    token,
+  )
 }
 
 /** Matches nexus-server::preview_adhoc_handler's response
@@ -132,6 +191,33 @@ export function installLicense(token: string, licenseKey: string): Promise<Licen
   return request<LicenseStatus>(
     '/license',
     { method: 'POST', body: JSON.stringify({ license_key: licenseKey }) },
+    token,
+  )
+}
+
+/** Matches nexus-server::prompt_template_store::PromptTemplate, as
+ *  returned by GET /prompts (LLMOPS_IMPLEMENTATION_PLAN.md Marco L4). */
+export interface PromptTemplate {
+  name: string
+  version: number
+  template: string
+  created_at: string
+}
+
+export function listPrompts(token: string): Promise<PromptTemplate[]> {
+  return request<PromptTemplate[]>('/prompts', {}, token)
+}
+
+/** Always creates a new version — see `PromptTemplateStore::create`'s doc
+ *  comment for why this never overwrites an existing one. */
+export function createPrompt(
+  token: string,
+  name: string,
+  template: string,
+): Promise<{ name: string; version: number }> {
+  return request<{ name: string; version: number }>(
+    '/prompts',
+    { method: 'POST', body: JSON.stringify({ name, template }) },
     token,
   )
 }
@@ -266,6 +352,15 @@ export interface RunRecord {
   error: string | null
   stats: PartitionStats[] | null
   dbt_summary: DbtRunSummary | null
+  /** LLMOPS_IMPLEMENTATION_PLAN.md Marco L2 — `null` when the run had no
+   *  `llm` node. */
+  llm_stats: LlmRunStats | null
+}
+
+export interface LlmRunStats {
+  tokens_prompt: number
+  tokens_completion: number
+  cost_estimate: number
 }
 
 /**
@@ -289,6 +384,17 @@ export function runPipeline(
 
 export function listRuns(token: string, pipelineId: string): Promise<RunRecord[]> {
   return request<RunRecord[]>(`/pipelines/${encodeURIComponent(pipelineId)}/runs`, {}, token)
+}
+
+/** A still-`running` run can't be deleted (backend returns 409) — the
+ * caller should only offer this for a run whose status is already
+ * `success`/`failed`. */
+export function deleteRun(token: string, pipelineId: string, runId: number): Promise<void> {
+  return request<void>(
+    `/pipelines/${encodeURIComponent(pipelineId)}/runs/${runId}`,
+    { method: 'DELETE' },
+    token,
+  )
 }
 
 /** Matches nexus-server::resource_stats::ResourceStatsBucket — one averaged
@@ -333,6 +439,111 @@ export interface DbtTestOutcome {
 export function getDbtTestResults(token: string, pipelineId: string): Promise<DbtTestOutcome[]> {
   return request<DbtTestOutcome[]>(
     `/pipelines/${encodeURIComponent(pipelineId)}/dbt-tests`,
+    {},
+    token,
+  )
+}
+
+/** Matches nexus-server::quality_check_store's `QualityCheckOutcome` (via
+ *  `nexus_core::QualityCheckOutcome`), as returned by
+ *  GET /pipelines/{id}/quality-checks. Native, dbt-independent checks
+ *  (not_null/unique/min/max/accepted_values) — always registered, never
+ *  blocking a run (see `PipelineSpec.quality_checks`'s doc comment). */
+export interface QualityCheckOutcome {
+  column: string
+  check: string
+  status: 'pass' | 'fail'
+  message: string | null
+  /** Structured violation count (Fase 27) — `null` for the "column not
+   *  found" config-error case, `0` on pass, `n` on a real violation count.
+   *  Prefer this over parsing `message` for aggregation/trending. */
+  violation_count: number | null
+  /** Total output rows this check was evaluated against. */
+  sample_size: number
+}
+
+export function getQualityCheckResults(
+  token: string,
+  pipelineId: string,
+): Promise<QualityCheckOutcome[]> {
+  return request<QualityCheckOutcome[]>(
+    `/pipelines/${encodeURIComponent(pipelineId)}/quality-checks`,
+    {},
+    token,
+  )
+}
+
+/** Matches nexus-server::anomaly_detector::AnomalySeverity. */
+export type AnomalySeverity = 'warning' | 'critical'
+
+/** Matches nexus-server::AnomalyStatus, as returned by
+ *  `GET /pipelines/{id}/anomalies` (Fase 27). Empty array means either the
+ *  pipeline has never run, or there's no prior run to form a baseline
+ *  against yet — `severity: null` (with a real `history_size`) means there
+ *  IS a baseline, it's just below the detector's minimum history size, or
+ *  the latest value simply isn't an outlier. */
+export interface AnomalyStatus {
+  metric: string
+  latest_run_id: number
+  latest_value: number
+  baseline_mean: number
+  baseline_stddev: number
+  history_size: number
+  severity: AnomalySeverity | null
+}
+
+export function getPipelineAnomalies(
+  token: string,
+  pipelineId: string,
+): Promise<AnomalyStatus[]> {
+  return request<AnomalyStatus[]>(
+    `/pipelines/${encodeURIComponent(pipelineId)}/anomalies`,
+    {},
+    token,
+  )
+}
+
+/** Matches nexus-server::pipeline_run_volume_store::VolumeSample, as
+ *  returned by `GET /pipelines/{id}/volume-trend` — oldest-first, raw
+ *  per-run row counts (not time-bucketed, unlike `ResourceStatsBucket`:
+ *  a run is a discrete event, not a continuous sampled signal). */
+export interface VolumeSample {
+  run_id: number
+  recorded_at: string
+  rows_written: number
+}
+
+export function getVolumeTrend(
+  token: string,
+  pipelineId: string,
+  limit = 50,
+): Promise<VolumeSample[]> {
+  return request<VolumeSample[]>(
+    `/pipelines/${encodeURIComponent(pipelineId)}/volume-trend?limit=${limit}`,
+    {},
+    token,
+  )
+}
+
+/** Matches nexus-server::llm_eval_result_store's `LlmEvalOutcome`, as
+ *  returned by GET /pipelines/{id}/llm-eval-results. Golden-dataset scores
+ *  (LLMOPS_IMPLEMENTATION_PLAN.md Marco L7) for an `llm` node's
+ *  `eval` cases — re-run every time the pipeline runs, scored against the
+ *  prompt version active at that run, never blocking. */
+export interface LlmEvalOutcome {
+  eval_name: string
+  prompt_version: number
+  score: number
+  passed: boolean
+  message: string | null
+}
+
+export function getLlmEvalResults(
+  token: string,
+  pipelineId: string,
+): Promise<LlmEvalOutcome[]> {
+  return request<LlmEvalOutcome[]>(
+    `/pipelines/${encodeURIComponent(pipelineId)}/llm-eval-results`,
     {},
     token,
   )
@@ -394,6 +605,10 @@ export interface PipelineSchema {
   output_columns: LineageColumnInfo[]
   column_lineage: LineageColumnLineageInfo[] | null
   captured_at: string
+  /** Human-readable diff against the *previous* capture (added/removed/
+   *  retyped columns) — `null` on the first-ever capture or when the last
+   *  run's schema matched the one before it. */
+  last_drift: string | null
 }
 
 /** Fetched on demand — clicking a pipeline node in the Lineage tab, not
@@ -401,6 +616,142 @@ export interface PipelineSchema {
  *  the pipeline has never run (nothing captured yet). */
 export function getPipelineSchema(token: string, pipelineId: string): Promise<PipelineSchema> {
   return request<PipelineSchema>(`/lineage/${encodeURIComponent(pipelineId)}/schema`, {}, token)
+}
+
+/** Matches nexus-server::data_catalog::CatalogColumn (Fase 25). `data_type`
+ *  is `null` when a column was only ever manually annotated, never actually
+ *  observed by a run. `description`/`pii_flag` are user-edited and manual
+ *  only — there's no automatic PII heuristic. */
+export interface CatalogColumn {
+  name: string
+  data_type: string | null
+  description: string | null
+  pii_flag: boolean
+}
+
+/** Matches nexus-server::data_catalog::CatalogDataset, returned by
+ *  `GET /catalog/datasets`/`GET /catalog/datasets/{key}`. `dataset_key`
+ *  shares its `"resource::{connector}::{identifier}"` shape with a lineage
+ *  `Resource` node's id (see `LineageNode`'s `resource` variant) but must be
+ *  percent-encoded when used in a URL path (it can contain `/`) —
+ *  `encodeURIComponent(datasetKey)`. */
+export interface CatalogDataset {
+  dataset_key: string
+  connector: string
+  resource_kind: LineageResourceKind
+  identifier: string
+  description: string | null
+  owner: string | null
+  tags: string[]
+  first_seen_at: string
+  last_seen_at: string
+  columns: CatalogColumn[]
+}
+
+/** Matches nexus-server::data_catalog::CatalogFilter — every field is
+ *  optional and AND-combined server-side. */
+export interface CatalogFilter {
+  q?: string
+  tag?: string
+  connector?: string
+  owner?: string
+  has_pii?: boolean
+}
+
+export function listCatalogDatasets(
+  token: string,
+  filter: CatalogFilter = {},
+): Promise<CatalogDataset[]> {
+  const params = new URLSearchParams()
+  if (filter.q) params.set('q', filter.q)
+  if (filter.tag) params.set('tag', filter.tag)
+  if (filter.connector) params.set('connector', filter.connector)
+  if (filter.owner) params.set('owner', filter.owner)
+  if (filter.has_pii !== undefined) params.set('has_pii', String(filter.has_pii))
+  const qs = params.toString()
+  return request<CatalogDataset[]>(`/catalog/datasets${qs ? `?${qs}` : ''}`, {}, token)
+}
+
+export function getCatalogDataset(token: string, datasetKey: string): Promise<CatalogDataset> {
+  return request<CatalogDataset>(`/catalog/datasets/${encodeURIComponent(datasetKey)}`, {}, token)
+}
+
+/** Distinct tags across every dataset — powers the tag-filter dropdown. */
+export function listCatalogTags(token: string): Promise<string[]> {
+  return request<string[]>('/catalog/tags', {}, token)
+}
+
+export function updateCatalogDataset(
+  token: string,
+  datasetKey: string,
+  body: { description: string | null; owner: string | null; tags: string[] },
+): Promise<void> {
+  return request<void>(
+    `/catalog/datasets/${encodeURIComponent(datasetKey)}`,
+    { method: 'PUT', body: JSON.stringify(body) },
+    token,
+  )
+}
+
+export function updateCatalogColumn(
+  token: string,
+  datasetKey: string,
+  columnName: string,
+  body: { description: string | null; pii_flag: boolean },
+): Promise<void> {
+  return request<void>(
+    `/catalog/datasets/${encodeURIComponent(datasetKey)}/columns/${encodeURIComponent(columnName)}`,
+    { method: 'PUT', body: JSON.stringify(body) },
+    token,
+  )
+}
+
+/** Matches nexus-server::PipelineDependentInfo — one pipeline that lists
+ *  another in its own `depends_on` (Fase 26). */
+export interface PipelineDependentInfo {
+  pipeline_id: string
+  dependency_mode: 'any' | 'all'
+}
+
+export function getPipelineDependents(
+  token: string,
+  pipelineId: string,
+): Promise<PipelineDependentInfo[]> {
+  return request<PipelineDependentInfo[]>(
+    `/pipelines/${encodeURIComponent(pipelineId)}/dependents`,
+    {},
+    token,
+  )
+}
+
+/** Matches nexus-server::PipelineDependenciesResponse. */
+export interface PipelineDependenciesResponse {
+  depends_on: string[]
+  dependency_mode: 'any' | 'all'
+}
+
+export function getPipelineDependencies(
+  token: string,
+  pipelineId: string,
+): Promise<PipelineDependenciesResponse> {
+  return request<PipelineDependenciesResponse>(
+    `/pipelines/${encodeURIComponent(pipelineId)}/dependencies`,
+    {},
+    token,
+  )
+}
+
+/** Matches nexus-server::OrchestrationGraph, as returned by
+ *  `GET /orchestration/graph` — the whole-catalog pipeline-to-pipeline
+ *  dependency graph (Fase 26), separate from `/lineage`'s resource-level
+ *  graph. */
+export interface OrchestrationGraph {
+  nodes: { pipeline_id: string }[]
+  edges: { from: string; to: string; dependency_mode: 'any' | 'all' }[]
+}
+
+export function getOrchestrationGraph(token: string): Promise<OrchestrationGraph> {
+  return request<OrchestrationGraph>('/orchestration/graph', {}, token)
 }
 
 /**
@@ -459,6 +810,10 @@ export interface PipelineSummary {
   /** Cron expression, if this pipeline has an automatic schedule — `null`
    * means it only runs when explicitly triggered. */
   schedule: string | null
+  /** Plain upstream pipeline ids (Fase 26) — empty means no dependency-based
+   * triggering. */
+  depends_on: string[]
+  dependency_mode: 'any' | 'all'
   /** Status of the most recent run ("running" / "success" / "failed"),
    * `null` if it has never run. */
   last_run_status: 'running' | 'success' | 'failed' | null
@@ -555,6 +910,44 @@ export function browseFilesystem(token: string, path?: string): Promise<BrowseLi
   if (path) params.set('path', path)
   const query = params.toString()
   return request<BrowseListing>(`/system/browse-fs${query ? `?${query}` : ''}`, {}, token)
+}
+
+/** Matches nexus-server::upload::UploadResult, as returned by
+ *  POST /system/upload. */
+export interface UploadResult {
+  path: string
+}
+
+/** One file to upload — `relativePath` (from `File.webkitRelativePath`
+ *  when the file came from a folder pick/drop) preserves the folder
+ *  structure server-side; omitted for a plain single/multi file pick. */
+export interface FileToUpload {
+  file: File
+  relativePath?: string
+}
+
+/** Uploads one or more files in a single request (backs the Canvas "Enviar
+ *  arquivo(s)"/"Enviar pasta" buttons and the path field's dropzone —
+ *  `SchemaForm.tsx`). Every file lands under one new directory server-side;
+ *  the returned `path` is that file's own path (single file) or the shared
+ *  directory (multiple files) — either way, ready to drop straight into a
+ *  connector's `path`/`file_path` config field via `setField`. Bypasses
+ *  `request()`'s JSON body handling entirely (FormData, not JSON) but
+ *  reuses its same error/401 shape by delegating status-code handling the
+ *  same way. */
+export async function uploadFiles(token: string, files: FileToUpload[]): Promise<UploadResult> {
+  const formData = new FormData()
+  for (const { file, relativePath } of files) {
+    formData.append('files', file, relativePath ?? file.name)
+  }
+  const headers = new Headers({ authorization: `Bearer ${token}` })
+  const response = await fetch('/system/upload', { method: 'POST', body: formData, headers })
+  if (!response.ok) {
+    const body = await response.json().catch(() => null)
+    if (response.status === 401 && unauthorizedHandler) unauthorizedHandler()
+    throw new ApiError(response.status, body?.error ?? response.statusText)
+  }
+  return response.json() as Promise<UploadResult>
 }
 
 export function deletePipeline(token: string, pipelineId: string): Promise<void> {

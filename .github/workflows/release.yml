@@ -2,40 +2,52 @@ name: Release
 
 # Builds nexusflow-linux-x86_64.tar.gz and publishes it as a GitHub Release
 # asset — what scripts/install.sh downloads. The tarball is: the release
-# binary (--features embed-ui,connectors-all — every connector linked in,
-# not just the two always-on ones, so GET /connectors lists the full
-# catalog out of the box) plus the two ADBC driver libraries
-# nexus-connector-postgres/-sqlite dlopen at runtime (no crates.io
-# distribution of those exists — see nexus-connector-postgres/src/driver.rs,
-# ARCHITECTURE.md §3). Also produces real native installers (.deb/.rpm/
-# AppImage — scripts/package-{deb,rpm,appimage}.sh, staged from the same
-# release binary+ADBC build as the tarball).
+# binary, built from the private nexus-connectors-enterprise repo's
+# Dockerfile (`build` job's "Build enterprise binary" step, below) so every
+# OSS *and* every enterprise connector is linked in and license-gated — not
+# just OSS's own connectors-all — so GET /connectors lists the full catalog
+# and the Store always has enterprise connectors to sell, regardless of
+# which install path (this tarball/.deb/.rpm/AppImage,
+# docker-hub-publish.yml's image, or build-windows-installer.yml's .msi)
+# someone picked. Plus the two
+# ADBC driver libraries nexus-connector-postgres/-sqlite dlopen at runtime
+# (no crates.io distribution of those exists — see
+# nexus-connector-postgres/src/driver.rs, ARCHITECTURE.md §3). Also produces
+# real native installers (.deb/.rpm/AppImage —
+# scripts/package-{deb,rpm,appimage}.sh, staged from the same release
+# binary+ADBC build as the tarball).
 #
-# arm64, Windows, and macOS are all out of scope for now (no installer, no
-# CI build in this workflow):
-# - arm64: no self-hosted equivalent to fall back to (unlike x86_64 above),
-#   and the hosted ubuntu-24.04-arm runner is blocked by an account billing
-#   issue (Settings > Billing and plans) — confirmed hitting even plain
-#   ubuntu-latest/x86_64, not just macOS/Windows, before x86_64 got routed
-#   to self-hosted. Re-add once billing is resolved — see git history for
-#   the exact matrix entry.
-# - Windows: build-windows (cargo-wix + packaging/windows/main.wxs, on the
-#   same self-hosted machine connectors-heavy.yml uses) was here and did
-#   run, but cargo build --features connectors-all failed for real —
-#   nexus-connector-mysql's mysql_cdc dependency only supports native
-#   OpenSSL (no rustls option), and that machine has no OpenSSL/vcpkg
-#   installed. Needs manual one-time setup on that host before re-adding
-#   (see git history for the removed job's full definition).
-# - macOS: no self-hosted macOS runner exists, the hosted macos-13/14
-#   runners hit the same billing block, and Mac isn't a current priority
-#   (ROADMAP.md's Pendências ativas item 5).
+# arm64, Windows, and macOS are still out of *this* workflow's matrix as of
+# this commit (no installer/CI build produced here yet) — not billing
+# blockers anymore now that the repo is public and hosted Actions minutes
+# are free/unmetered regardless of the org's private-repo billing issue,
+# just not re-added yet as part of this specific migration pass:
+# - arm64: no matrix leg here yet — `ubuntu-24.04-arm` is a normal hosted
+#   label now, same free tier as `ubuntu-latest`. Re-add as its own matrix
+#   entry when arm64 packaging becomes a priority.
+# - Windows: `.msi` is built by the separate build-windows-installer.yml
+#   workflow, not here — see that file for its own runner/setup story
+#   (OpenSSL/vcpkg, mysql_cdc's native-TLS requirement).
+# - macOS: specs exist in `packaging/macos/` but nothing builds them in CI
+#   yet (ROADMAP.md's Pendências ativas item 5) — `macos-latest` is a normal
+#   hosted runner now, same as Windows/Linux; this is a build-recipe gap to
+#   fill, not an infra one.
 #
-# All jobs run self-hosted on the same Linux machine as ci.yml's heavy jobs
-# — hosted ubuntu-latest runners are blocked account-wide by the billing
-# issue mentioned above, so the release jobs cannot rely on them either.
-# The `concurrency` group below serializes this workflow with CI (and with
-# other release runs) so the shared machine never runs two heavy cargo builds
-# at once.
+# All jobs moved to `ubuntu-latest` 2026-09-05 (repo went public same day,
+# same migration as ci.yml — see that file's header for the fuller
+# reasoning). This is a bigger change here than in ci.yml: every job below
+# used to pass files to the next one via a plain shared directory on the
+# self-hosted machine's disk (`/tmp/nexusflow-release-artifacts/$run_id`,
+# see each "Stage ... for downstream jobs"/"Fetch staged ..." step) instead
+# of `actions/upload-artifact`/`download-artifact`, specifically to dodge
+# the org's Actions artifact storage quota on this private repo ("Artifact
+# storage quota has been hit... recalculated every 6-12 hours", blocked
+# this exact chain once). That workaround only works when every job is the
+# same physical machine — on ephemeral hosted runners each job gets its own
+# fresh VM with no shared disk, so it's replaced below with real
+# upload-artifact/download-artifact. Public repos get free/unlimited
+# Actions artifact storage, which is what made the original quota problem
+# possible in the first place — this shouldn't recur.
 #
 # Continuous-release model, not tag-triggered: on `main`, this is the last
 # stage of a deliberate chain — CI -> connectors-heavy -> Release build ->
@@ -95,15 +107,6 @@ on:
 permissions:
   contents: read
 
-# Same fixed group as ci.yml — all release jobs share the same physical
-# self-hosted Linux machine as CI's heavy jobs. A fixed group with no
-# github.ref/github.sha in the key serializes across every branch/PR, not
-# just concurrent runs of the same one; cancel-in-progress: false queues
-# the new run instead of cancelling in-progress work.
-concurrency:
-  group: ci-self-hosted-runner
-  cancel-in-progress: false
-
 jobs:
   # Runs first, alone, before any packaging — real bug fixed here: this
   # used to live inside `github-release`, which only runs *after*
@@ -122,7 +125,7 @@ jobs:
   # failure this replaces) already behind another push.
   determine-version:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
-    runs-on: [self-hosted, Linux]
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: write
@@ -185,32 +188,43 @@ jobs:
     needs: determine-version
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     strategy:
+      # A real run (2026-09-05) showed the cost of the default fail-fast:
+      # macOS failed on a real, unrelated bug (libpq pkg-config path) and
+      # cancelled the Linux leg mid-build, wasting ~40 min of otherwise-fine
+      # progress. One platform's failure shouldn't cancel the others.
+      fail-fast: false
       matrix:
         include:
-          # x86_64 routed to the same self-hosted machine ci.yml's
-          # test/connectors/docker-image jobs use — GitHub-hosted runners are
-          # blocked account-wide by a billing issue (Settings > Billing and
-          # plans), confirmed hitting even plain ubuntu-latest, not just
-          # macOS/Windows.
+          # arm64 Linux still out of this matrix — not a billing block
+          # anymore (this repo is public, hosted minutes are free/unmetered
+          # regardless of the org's private-repo billing issue), just not
+          # re-added yet as part of this runner migration. Re-add
+          # ubuntu-24.04-arm as its own matrix leg whenever arm64 Linux
+          # packaging becomes a priority — see git history for the exact
+          # matrix entry this repo used to carry for it.
           - os: linux
             arch: x86_64
-            runner: [self-hosted, Linux]
-            self_hosted: true
-          # arm64 (and macOS below) dropped from this matrix for now — no
-          # self-hosted equivalent to fall back to (unlike x86_64 above),
-          # and the hosted ubuntu-24.04-arm/macos-13/macos-14 runners are
-          # all blocked by the same billing issue; a failing leg here was
-          # also showing up as a red run every single time regardless of
-          # x86_64's own outcome (even with fail-fast: false, which only
-          # stops one leg's failure from *cancelling* another, not from
-          # still being reported). Re-add arm64 once billing is resolved —
-          # see git history for the exact matrix entry.
+            runner: ubuntu-latest
+          # macOS added 2026-09-05, untested on real hardware. GitHub's
+          # macos-latest is Apple Silicon (arm64). Real, documented gap:
+          # ships OSS connectors only, not the enterprise-bundled binary
+          # Linux/Windows get — the enterprise binary build (below) goes
+          # through `docker build`, and Docker isn't available on GitHub's
+          # hosted macOS runners at all (unlike Linux, and unlike Windows
+          # where build-windows-installer.yml avoids Docker entirely via a
+          # `[patch]`-redirected cargo build instead). Same non-Docker
+          # `[patch]` trick could extend this to macOS later — not done
+          # here, scoped down to get a working OSS build shipped first.
+          - os: macos
+            arch: arm64
+            runner: macos-latest
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
-    # Concurrency is now handled at the workflow level (ci-self-hosted-runner
-    # group) so the whole Release workflow serializes with ci.yml on the same
-    # physical machine. Per-job concurrency is redundant and was removed.
     steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          df -h /
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           # Pinned to determine-version's exact output commit (post-bump if
@@ -234,16 +248,34 @@ jobs:
       # §3) and nexus-connector-kafka (rdkafka's default "cmake-build" feature
       # compiles vendored librdkafka from source, which auto-detects SASL/SSL/
       # zlib and silently builds without those protocols if headers are
-      # missing — installed here so the shipped binary has them). Skipped on
-      # the self-hosted runner: no interactive sudo there (same posture as
-      # ci.yml's test/connectors jobs), and these packages are assumed
-      # already present on that host from prior setup.
+      # missing — installed here so the shipped binary has them). Unconditional
+      # now that this always runs on a fresh ubuntu-latest VM (no host-level
+      # "already installed" assumption to skip past anymore).
       - name: Install native build deps for the ADBC drivers + connectors-all
-        if: matrix.os == 'linux' && !matrix.self_hosted
+        if: matrix.os == 'linux'
         run: |
           sudo apt-get update && sudo apt-get install -y \
             cmake pkg-config libpq-dev libsqlite3-dev libfmt-dev \
             unixodbc-dev libsasl2-dev libssl-dev zlib1g-dev
+
+      # macos-latest ships cmake/pkg-config already; unixodbc/libpq/fmt do
+      # not (Homebrew is preinstalled, used here instead of apt). No
+      # libsasl2/zlib equivalent installed — untested whether Homebrew's
+      # system zlib is sufficient for rdkafka's cmake-build feature to find
+      # SASL/zlib on its own; same "not yet proven" caveat as the rest of
+      # this macOS leg.
+      #
+      # Real failure on a first real run (2026-09-05): libpq is keg-only in
+      # Homebrew (deliberately not linked into /opt/homebrew, to avoid
+      # conflicting with other Postgres installs) — its .pc file lives
+      # under `brew --prefix libpq`/lib/pkgconfig, outside pkg-config's
+      # default search path, so `pkg_check_modules(libpq)` failed outright
+      # ("Package 'libpq' not found") even though it was installed.
+      - name: Install native build deps (macOS)
+        if: matrix.os == 'macos'
+        run: |
+          brew install unixodbc libpq fmt protobuf
+          echo "PKG_CONFIG_PATH=$(brew --prefix libpq)/lib/pkgconfig:$PKG_CONFIG_PATH" >> "$GITHUB_ENV"
 
       - run: npm ci
         working-directory: frontend
@@ -252,29 +284,149 @@ jobs:
 
       - run: ./scripts/build-adbc-postgresql-driver.sh target/adbc
       - run: ./scripts/build-adbc-sqlite-driver.sh target/adbc
+      # Real failure on a real run (2026-09-05): package-{deb,rpm,appimage}.sh
+      # have required these two since duckdb/clickhouse landed as OSS
+      # connectors (ROADMAP.md Fase 23/24) — never actually exercised
+      # end-to-end before because the old self-hosted runner reused the same
+      # workspace across runs, so a `target/adbc` from some prior manual
+      # build silently masked this workflow never building them itself. A
+      # fresh hosted runner has no such leftover state, so this failed
+      # outright the first time this ran there. Unconditional on both
+      # platforms since 2026-09-06 — both scripts became macOS-aware the
+      # same day (a first real macOS run caught the duckdb script silently
+      # staging a non-functional Linux binary, and the clickhouse script
+      # hardcoding a Linux-only `.so` extension).
+      - run: ./scripts/build-adbc-duckdb-driver.sh target/adbc
+      - run: ./scripts/build-adbc-clickhouse-driver.sh target/adbc
 
-      - run: cargo build --release -p nexusflow --features embed-ui,connectors-all
+      # Every distributed artifact (this tarball, the .deb/.rpm/AppImage
+      # below, docker-hub-publish.yml's image, and build-windows-installer.yml's
+      # .msi) now ships every enterprise connector compiled in and
+      # license-gated (LICENSING.md §2/§3, docs/ENTERPRISE_LICENSING.md),
+      # not just the OSS ones — so the Store always has something to sell
+      # regardless of which install path a user picked, instead of only the
+      # people who happened to pull the separate Docker Hub enterprise image.
+      # Source of the private nexus-connectors-enterprise repo never enters
+      # this one; only the compiled binary does, via a read-only deploy key
+      # (`ENTERPRISE_REPO_DEPLOY_KEY` secret — GitHub org policy required
+      # deploy keys to be explicitly enabled for that repo before this could
+      # be added). Validated manually first (2026-09-01,
+      # `thiagolange/nexusflow:latest` Docker Hub build+push+compose smoke
+      # test — 71 connectors in the catalog, 41 unlocked once a license was
+      # installed) before wiring it in here.
+      #
+      # Builds via the enterprise repo's own Dockerfile (`--target builder`,
+      # stopping before its final slim runtime stage) rather than
+      # re-deriving the cargo/frontend/ADBC steps a third time (this repo's
+      # `build` job, the enterprise repo's Dockerfile, and
+      # build-windows-installer.yml's native build already make two) — that
+      # Dockerfile is the proven recipe, and it clones its own pinned
+      # `nexusflow` checkout independently rather than reusing this job's,
+      # so there's no risk of it seeing an inconsistent tree.
+      #
+      # RESOLVED 2026-09-05 (was a KNOWN GAP in an earlier commit of this
+      # migration): the enterprise repo's Dockerfile used to clone
+      # `nexusflow` over SSH, needing `--ssh default` to forward an agent —
+      # confirmed failing outright on a real hosted run ("invalid empty ssh
+      # agent socket") since a fresh `ubuntu-latest` runner has no
+      # persistent agent like the old self-hosted box did. Fixed at the
+      # source: that Dockerfile now clones over plain HTTPS instead (
+      # `nexusflow` is public, no credential needed for that clone at all),
+      # so `docker build` below no longer passes `--ssh default`.
+      #
+      # Linux only in this job — the enterprise binary is built via
+      # `docker build` below, and Docker isn't available on GitHub's
+      # hosted macOS runners. macOS gets a plain OSS build here (see the
+      # next step) and its own enterprise bundling in the separate
+      # build-macos-installer.yml instead (same reasoning as
+      # build-windows-installer.yml being decoupled from this chain).
+      - name: Clone nexus-connectors-enterprise (read-only deploy key)
+        if: matrix.os == 'linux'
+        env:
+          DEPLOY_KEY: ${{ secrets.ENTERPRISE_REPO_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p -m 0700 ~/.ssh
+          # Real failure on a first real run (2026-09-05): OpenSSH failed
+          # with "error in libcrypto". Stripping CRLF alone (tried first,
+          # still failed the same way) wasn't enough — the missing piece
+          # was forcing exactly one trailing newline too, matching what
+          # actually fixed this on Windows (`.TrimEnd("`n") + "`n"` there).
+          # `$(...)` strips all trailing newlines from the captured value;
+          # `printf '%s\n'` adds back exactly one, regardless of whether
+          # the secret's raw value had zero, one, or several.
+          key="$(printf '%s' "$DEPLOY_KEY" | tr -d '\r')"
+          printf '%s\n' "$key" > ~/.ssh/enterprise_deploy_key
+          chmod 600 ~/.ssh/enterprise_deploy_key
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/enterprise_deploy_key -o IdentitiesOnly=yes" \
+            git clone --depth 1 ssh://git@github.com/ailake-io/nexus-connectors-enterprise.git \
+            enterprise-src
+          rm -f ~/.ssh/enterprise_deploy_key
+
+      - name: Build enterprise binary (all OSS + enterprise connectors)
+        if: matrix.os == 'linux'
+        run: |
+          set -euo pipefail
+          DOCKER_BUILDKIT=1 docker build --target builder \
+            --build-arg NEXUSFLOW_REV=${{ needs.determine-version.outputs.sha }} \
+            --build-arg ENTERPRISE_FEATURES=connectors-all \
+            -t nexusflow-enterprise-builder-${{ github.run_id }} \
+            enterprise-src
+          cid="$(docker create nexusflow-enterprise-builder-${{ github.run_id }})"
+          mkdir -p target/release
+          docker cp "$cid:/tmp/nexusflow-enterprise-bin" target/release/nexusflow
+          docker cp "$cid:/out/libadbc_driver_postgresql.so" target/adbc/libadbc_driver_postgresql.so
+          docker cp "$cid:/out/libadbc_driver_sqlite.so" target/adbc/libadbc_driver_sqlite.so
+          docker cp "$cid:/out/libadbc_driver_duckdb.so" target/adbc/libadbc_driver_duckdb.so
+          docker cp "$cid:/out/libadbc_clickhouse.so" target/adbc/libadbc_clickhouse.so
+          docker rm "$cid" >/dev/null
+          docker rmi nexusflow-enterprise-builder-${{ github.run_id }} >/dev/null
+
+      # macOS: no enterprise bundling in this workflow, deliberately — see
+      # the new standalone build-macos-installer.yml (same pattern as
+      # build-windows-installer.yml: workflow_dispatch only, decoupled
+      # from this automatic release chain) instead of baking an untested
+      # macOS+connectors-all+enterprise build into the critical path that
+      # just became reliable. Plain OSS binary here, every OSS connector
+      # still linked in via connectors-all.
+      - name: Build plain OSS binary (macOS)
+        if: matrix.os == 'macos'
+        run: cargo build --release -p nexusflow --features embed-ui,connectors-all
 
       - name: Package tarball
         run: |
           stage="$(mktemp -d)"
           cp target/release/nexusflow "$stage/nexusflow-bin"
-          cp target/adbc/libadbc_driver_postgresql.so "$stage/"
-          cp target/adbc/libadbc_driver_sqlite.so "$stage/"
+          cp target/adbc/libadbc_driver_postgresql.* "$stage/"
+          cp target/adbc/libadbc_driver_sqlite.* "$stage/"
+          # duckdb/clickhouse build scripts became macOS-aware too
+          # (2026-09-06, same fix as postgresql/sqlite already had) — copy
+          # whichever extension actually got produced, glob-safe if the
+          # file doesn't exist at all (shouldn't happen now that both
+          # scripts run unconditionally earlier in this job, but a stray
+          # `*` failing to expand shouldn't break packaging either way).
+          for f in target/adbc/libadbc_driver_duckdb.* target/adbc/libadbc_clickhouse.*; do
+            [ -f "$f" ] && cp "$f" "$stage/"
+          done
           tar -czf "nexusflow-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" -C "$stage" .
 
-      # Every job below runs on the same single self-hosted Linux runner
-      # (see each job's runs-on), so a plain shared directory on that
-      # machine's disk hands artifacts between jobs without going through
-      # GitHub's own Actions artifact storage — which has a hard quota that
-      # doesn't recalculate for 6-12h after deleting old artifacts, and
-      # blocked this exact chain once already. Scoped by run_id so
-      # concurrent runs (or a re-run) don't collide.
-      - name: Stage tarball for downstream jobs (bypasses Actions artifact storage)
-        run: |
-          mkdir -p "/tmp/nexusflow-release-artifacts/${{ github.run_id }}"
-          cp "nexusflow-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" \
-            "/tmp/nexusflow-release-artifacts/${{ github.run_id }}/"
+      - name: Upload tarball for downstream jobs
+        uses: actions/upload-artifact@834a144ee995460fba8ed112a2fc961b36a5ec5a # v4.3.6
+        with:
+          name: nexusflow-tarball-${{ matrix.os }}-${{ matrix.arch }}
+          path: nexusflow-${{ matrix.os }}-${{ matrix.arch }}.tar.gz
+          retention-days: 1
+
+      # Bundled, self-contained CPython + pandas/pyarrow/dbt-core/dbt-postgres
+      # (scripts/build-python-runtime.sh) — package-{deb,rpm,appimage}.sh
+      # below all fail fast if target/python-runtime/python is missing, so
+      # this has to run before them. Same x86_64-only scope as those scripts
+      # (the release build only downloads the linux-x86_64 python-build-
+      # standalone tarball).
+      - name: Build bundled Python runtime (python-transform/dbt features)
+        if: matrix.os == 'linux' && matrix.arch == 'x86_64'
+        run: ./scripts/build-python-runtime.sh target/python-runtime
 
       # scripts/package-{deb,rpm,appimage}.sh existed but were never wired into
       # CI — only the raw tarball above was actually produced/released. Each
@@ -284,11 +436,8 @@ jobs:
       - name: Build native Linux packages (deb/rpm/AppImage)
         if: matrix.os == 'linux' && matrix.arch == 'x86_64'
         run: |
-          # No sudo on the self-hosted runner (see the deps step above) —
-          # rpmbuild and appimagetool must already be available on this host.
           if ! command -v rpmbuild >/dev/null; then
-            echo "rpmbuild not found; install the 'rpm' package on the self-hosted host."
-            exit 1
+            sudo apt-get update && sudo apt-get install -y rpm
           fi
           if ! command -v appimagetool >/dev/null; then
             # Pinned to appimagetool 1.9.1 release (M34).
@@ -306,11 +455,13 @@ jobs:
           APPIMAGETOOL="${APPIMAGETOOL:-appimagetool --appimage-extract-and-run}" \
             ./scripts/package-appimage.sh target/package
 
-      - name: Stage native packages for downstream jobs (bypasses Actions artifact storage)
+      - name: Upload native packages for downstream jobs
         if: matrix.os == 'linux' && matrix.arch == 'x86_64'
-        run: |
-          mkdir -p "/tmp/nexusflow-release-artifacts/${{ github.run_id }}"
-          cp target/package/* "/tmp/nexusflow-release-artifacts/${{ github.run_id }}/"
+        uses: actions/upload-artifact@834a144ee995460fba8ed112a2fc961b36a5ec5a # v4.3.6
+        with:
+          name: nexusflow-native-packages-${{ matrix.os }}-${{ matrix.arch }}
+          path: target/package/*
+          retention-days: 1
 
   # build-windows removed for now — cargo build --features connectors-all
   # failed for real on the self-hosted windows-connectors-heavy runner:
@@ -325,15 +476,14 @@ jobs:
   smoke-test:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     needs: [determine-version, build]
-    runs-on: [self-hosted, Linux]
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      # Same-machine shared directory instead of actions/download-artifact —
-      # see the matching "Stage tarball" step in `build` for why.
-      - name: Fetch staged tarball
-        run: |
-          mkdir -p dist
-          cp "/tmp/nexusflow-release-artifacts/${{ github.run_id }}/nexusflow-linux-x86_64.tar.gz" dist/
+      - name: Download tarball
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: nexusflow-tarball-linux-x86_64
+          path: dist
       - name: Smoke test tarball
         run: |
           cd dist
@@ -343,30 +493,33 @@ jobs:
   github-release:
     if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') || github.event_name == 'workflow_dispatch'
     needs: [determine-version, build, smoke-test]
-    runs-on: [self-hosted, Linux]
-    # Self-hosted Linux (same machine as everything else here) — hosted
-    # ubuntu-latest is blocked account-wide by the billing issue described in
-    # this file's header. Needs `sha256sum` present on the host (standard on
-    # Ubuntu/Debian). GPG signing is intentionally omitted: the repo secrets
-    # are not configured, so only unsigned assets + SHA256SUMS are published.
+    runs-on: ubuntu-latest
+    # ubuntu-latest ships `sha256sum` by default. GPG signing is
+    # intentionally omitted: the repo secrets are not configured, so only
+    # unsigned assets + SHA256SUMS are published.
     timeout-minutes: 15
     permissions:
       contents: write
     steps:
       # No checkout here — version comes from `determine-version`'s output
       # now (that job already did the only thing this one used to need a
-      # working tree for), and everything else below just copies staged
-      # files and shells out to `gh`.
-      #
-      # Same-machine shared directory instead of actions/download-artifact
-      # — see the matching "Stage tarball"/"Stage native packages" steps in
-      # `build`. This is also the last job that reads the run's staged
-      # directory, so it cleans it up after (always(), so a failed release
-      # doesn't leak the staged files across runs indefinitely).
-      - name: Fetch staged build artifacts
-        run: |
-          mkdir -p dist
-          cp "/tmp/nexusflow-release-artifacts/${{ github.run_id }}"/* dist/
+      # working tree for), and everything else below just downloads
+      # artifacts and shells out to `gh`.
+      - name: Download tarball (linux-x86_64)
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: nexusflow-tarball-linux-x86_64
+          path: dist
+      - name: Download native packages
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: nexusflow-native-packages-linux-x86_64
+          path: dist
+      - name: Download tarball (macos-arm64)
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: nexusflow-tarball-macos-arm64
+          path: dist
       - name: Generate SHA256SUMS
         run: |
           cd dist
@@ -403,54 +556,14 @@ jobs:
             gh release upload "$tag" "$f" --clobber
           done
 
-      - name: Clean up staged build artifacts
-        if: always()
-        run: rm -rf "/tmp/nexusflow-release-artifacts/${{ github.run_id }}"
-
-  docker-publish:
-    if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') || github.event_name == 'workflow_dispatch'
-    needs: [determine-version, github-release]
-    runs-on: [self-hosted, Linux]
-    timeout-minutes: 180
-    permissions:
-      contents: read
-      packages: write
-    env:
-      REGISTRY: ghcr.io
-      IMAGE_NAME: ${{ github.repository }}
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          # Same pinned-to-the-bumped-commit reasoning as `build`'s checkout
-          # above — the image must be built from the same commit whose
-          # Cargo.toml says this version, not a possibly-earlier one.
-          ref: ${{ needs.determine-version.outputs.sha }}
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata for Docker
-        id: meta
-        uses: docker/metadata-action@8e5442c4ef9f78752691e2d8f8d19755c6f78e81 # v5.5.1
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=v${{ needs.determine-version.outputs.version }}
-            type=raw,value=latest
-
-      - name: Build and push Docker image (full)
-        uses: docker/build-push-action@5cd11c3a4ced054e52742c5fd54dca954e0edd85 # v6.7.0
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            FEATURES=embed-ui,connectors-all
+  # Docker image publishing moved out of this workflow (2026-09-08) — see
+  # docker-hub-publish.yml. Was GHCR (ghcr.io/ailake-io/nexusflow); the
+  # image's home is now Docker Hub (thiagolange/nexusflow) instead, in its
+  # own workflow file so it doesn't share a runner slot with the rest of
+  # this release chain and can be re-run independently. That workflow
+  # triggers off this one's completion (`workflow_run: ["Release"]`) rather
+  # than duplicating `determine-version`'s Cargo.toml-bump-and-push logic —
+  # it just reads the already-determined version back out.
 
   # Keeps `develop` from drifting behind `main` after a release —
   # `determine-version` may have pushed a version-bump commit straight to
@@ -466,7 +579,7 @@ jobs:
   sync-develop:
     if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') || github.event_name == 'workflow_dispatch'
     needs: [determine-version, github-release]
-    runs-on: [self-hosted, Linux]
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: write

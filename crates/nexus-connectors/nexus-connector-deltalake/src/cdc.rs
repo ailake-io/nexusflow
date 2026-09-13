@@ -33,7 +33,8 @@ pub struct DeltaCdcSource {
 
 impl DeltaCdcSource {
     pub async fn connect(config: &DeltaCdcConfig) -> Result<Self, NexusError> {
-        let url = ensure_table_uri(&config.table_uri)
+        let table_uri = config.table_uri();
+        let url = ensure_table_uri(&table_uri)
             .map_err(|e| NexusError::Connector(format!("delta-cdc table uri invalid: {e}")))?;
         let table = with_timeout(config.timeout_seconds, "delta-cdc open_table", async {
             open_table(url)
@@ -53,7 +54,7 @@ impl DeltaCdcSource {
         fields.push(Field::new(OPCODE_COLUMN, DataType::Utf8, false));
 
         Ok(Self {
-            table_uri: config.table_uri.clone(),
+            table_uri,
             starting_version: config.starting_version.unwrap_or(0),
             schema: Arc::new(Schema::new(fields)),
             timeout_seconds: config.timeout_seconds,

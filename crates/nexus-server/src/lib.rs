@@ -1,26 +1,55 @@
 mod alerts;
+mod anomaly_detector;
 mod auth;
 mod auth_store;
 mod browse;
+mod capability_registry;
 mod checkpoint_store;
 mod connectors;
 mod crypto;
+mod data_catalog;
 mod db;
 mod dbt;
 mod dbt_lineage_store;
 mod dbt_test_result_store;
+mod dns_guard;
 #[cfg(feature = "embed-ui")]
 mod embedded_ui;
 mod error;
+#[cfg(feature = "version-history")]
+mod git_history_store;
+#[cfg(feature = "version-history")]
+mod git_remote_config_store;
 mod hardware_stats;
+mod infra;
 mod license;
 mod license_store;
 mod lineage;
+mod llm_eval_result_store;
+mod llm_generation_store;
 pub mod migrate;
+mod pipeline_dependencies;
+mod pipeline_run_llm_stats_store;
+mod pipeline_run_volume_store;
 mod pipeline_schema_store;
 mod pipeline_store;
 mod progress;
+mod prompt_template_store;
 mod python_transform;
+mod quality_check_store;
+#[cfg(all(
+    feature = "llm",
+    any(feature = "embeddings", feature = "embeddings-api"),
+    any(
+        feature = "lancedb",
+        feature = "qdrant",
+        feature = "milvus",
+        feature = "pgvector",
+        feature = "pinecone",
+        feature = "chromadb"
+    )
+))]
+mod rag;
 mod rate_limit;
 mod resource_stats;
 mod run_log_store;
@@ -28,16 +57,20 @@ mod runner;
 mod scheduler;
 mod server_metrics;
 pub mod telemetry;
+mod upload;
+mod upload_cleanup;
+mod work_queue;
+mod worker;
 
 use alerts::{AlertConfig, AlertNotifier};
 use auth::{require_role, Claims, JwtCodec, Role, TokenBlocklist};
 use auth_store::AuthStore;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Extension, FromRef, Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Extension, FromRef, Path, Query, State};
 use axum::http::StatusCode;
 use axum::middleware;
 use axum::response::Response;
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use checkpoint_store::CheckpointStore;
 use crypto::SecretCipher;
@@ -45,7 +78,9 @@ use error::ApiError;
 use futures_util::StreamExt;
 use license_store::{LicenseStore, LicenseStoreError};
 use nexus_core::{ConnectorRegistry, NodeSpec, PipelineSpec, ProgressSender};
-use pipeline_store::{PipelineStore, PipelineStoreError, PipelineSummary, RunRecord};
+use pipeline_store::{
+    DeleteRunOutcome, PipelineStore, PipelineStoreError, PipelineSummary, RunRecord,
+};
 use progress::{ProgressHub, RunLogEvent, RunLogger};
 use run_log_store::RunLogStore;
 use serde::{Deserialize, Serialize};
@@ -55,6 +90,14 @@ const DEFAULT_PAGE_LIMIT: i64 = 50;
 const MAX_PAGE_LIMIT: i64 = 1000;
 const DEFAULT_PREVIEW_LIMIT: usize = 50;
 const MAX_PREVIEW_LIMIT: usize = 500;
+/// How many prior runs' row counts form the anomaly-detection baseline
+/// (Fase 27) — comfortably above `anomaly_detector::MIN_HISTORY_FOR_DETECTION`
+/// so the baseline still has some size to it once a rolling window is in
+/// effect, but small enough that an intentional, sustained volume change
+/// (a new data source added upstream, e.g.) ages out of the baseline
+/// within a reasonable number of runs instead of getting permanently
+/// diluted by ancient history.
+const ANOMALY_HISTORY_WINDOW: i64 = 20;
 
 /// Query parameters for paginated list endpoints.
 #[derive(Debug, Deserialize)]
@@ -86,22 +129,70 @@ struct AppState {
     jwt: JwtCodec,
     /// Encrypts connector secrets before `pipelines` persists them (CLAUDE.md §5).
     secrets: SecretCipher,
+    /// `NEXUS_MASKING_SALT`'s raw bytes (Fase 28) — `None` when column
+    /// masking is off server-wide (see `ServerConfig.masking_salt`'s doc
+    /// comment).
+    masking_salt: Option<Vec<u8>>,
     pipelines: PipelineStore,
     run_logs: RunLogStore,
     license_store: LicenseStore,
     resource_stats: resource_stats::ResourceStatsStore,
     dbt_lineage: dbt_lineage_store::DbtLineageStore,
     pipeline_schemas: pipeline_schema_store::PipelineSchemaStore,
+    data_catalog: data_catalog::CatalogStore,
+    pipeline_dependency_state: pipeline_dependencies::DependencyStateStore,
+    pipeline_run_volume: pipeline_run_volume_store::PipelineRunVolumeStore,
+    /// `NEXUS_QUEUE_MODE` (Fase 29) — `Some` means this replica enqueues
+    /// pipeline runs instead of dispatching them inline, and (if the
+    /// backend is Postgres) also competes to claim queued runs via
+    /// `worker::spawn`. `None` (the default) preserves the exact pre-Fase-29
+    /// dispatch behavior. See `work_queue.rs`'s doc comment.
+    work_queue: Option<work_queue::WorkQueueStore>,
     // Only read from `execute_pipeline_run`'s `#[cfg(feature = "dbt")]`
     // block — kept on `AppState` unconditionally so build_state/test_state
     // don't need their own feature-gated construction path.
     #[allow(dead_code)]
     dbt_test_results: dbt_test_result_store::DbtTestResultStore,
+    // Only read from `run_transform_pipeline`'s native quality-check hook —
+    // see `dbt_test_results`'s note above for why it's unconditional here.
+    #[allow(dead_code)]
+    quality_checks: quality_check_store::QualityCheckStore,
+    // Written by `apply_llm_stage`'s `#[cfg(feature = "llm")]` block, but
+    // read unconditionally by `list_runs_handler` (empty table when the
+    // feature is off, not a compile-time concern) — no `#[allow(dead_code)]`
+    // needed here unlike `dbt_test_results`/`quality_checks` above.
+    llm_stats: pipeline_run_llm_stats_store::PipelineRunLlmStatsStore,
+    prompt_templates: prompt_template_store::PromptTemplateStore,
+    // Written by `run_llm_eval`'s `#[cfg(feature = "llm")]` block (Marco
+    // L7), read unconditionally by `list_llm_eval_results_handler` — same
+    // reasoning as `llm_stats` above.
+    llm_eval_results: llm_eval_result_store::LlmEvalResultStore,
+    // Only written/read by `rag.rs`'s `#[cfg(all(feature = "llm", ...))]`
+    // module (Marco L5) — kept unconditional on AppState, same reasoning
+    // as `dbt_test_results`/`quality_checks` above.
+    #[allow(dead_code)]
+    llm_generations: llm_generation_store::LlmGenerationStore,
     progress: ProgressHub,
     alerts: AlertNotifier,
     login_rate_limiter: std::sync::Arc<rate_limit::LoginRateLimiter>,
+    /// `NEXUS_TRUST_PROXY_HEADERS` — see `rate_limit::TrustProxyHeaders`'s doc
+    /// comment for why this defaults to `false`.
+    trust_proxy_headers: bool,
     /// `NEXUS_ALLOW_INTERNAL_HOSTS` — see `PipelineSpec::validate_security_with`.
     allow_internal_hosts: bool,
+    /// Embedded git history for pipeline/prompt artifacts (git-versioning
+    /// follow-up to LLMOPS_IMPLEMENTATION_PLAN.md's L4/L7) — see
+    /// `git_history_store.rs`. `Clone` is cheap (just a `PathBuf` behind
+    /// an `Arc`), same reasoning as every other store field here.
+    #[cfg(feature = "version-history")]
+    git_history: git_history_store::GitHistoryStore,
+    /// Optional external GitHub mirror config for `git_history` above
+    /// ("caso o usuário queira" — Part 4 of the git-versioning follow-up
+    /// plan). `None`-shaped by an empty table, not an `Option` field —
+    /// same "absent row means off" contract as `AppState.alerts`'
+    /// channels.
+    #[cfg(feature = "version-history")]
+    git_remote: git_remote_config_store::GitRemoteConfigStore,
 }
 
 impl From<PipelineStoreError> for ApiError {
@@ -140,6 +231,16 @@ impl FromRef<AppState> for SecretCipher {
     fn from_ref(state: &AppState) -> Self {
         state.secrets.clone()
     }
+}
+
+/// `/system/upload`'s own body-size limit, split into its own tiny router
+/// so `DefaultBodyLimit::max` applies only to this one route — merged into
+/// `write_protected` before that group's `require_role`/`Role::Write`
+/// layers, so it still inherits the same auth as every other write route.
+fn upload_router() -> Router<AppState> {
+    Router::new()
+        .route("/system/upload", post(upload::upload_handler))
+        .layer(DefaultBodyLimit::max(upload::MAX_UPLOAD_BYTES))
 }
 
 /// Builds the Axum app. Kept separate from `run()` so it's testable via
@@ -181,6 +282,10 @@ fn router(state: AppState) -> Router {
             "/pipelines/{id}",
             put(update_pipeline_handler).delete(delete_pipeline_handler),
         )
+        // Deleting one run from the history is the same tier as deleting
+        // the pipeline itself — both are destructive, irreversible edits
+        // to state a `Read`/`Execute` caller shouldn't be able to make.
+        .route("/pipelines/{id}/runs/{run_id}", delete(delete_run_handler))
         // Full spec (connector configs, secrets included) for reloading a
         // saved pipeline back onto the canvas to edit it. Gated behind
         // `Write` (not `Read`) because it's symmetric to create/update: only
@@ -194,6 +299,47 @@ fn router(state: AppState) -> Router {
         // `browse_fs_handler`'s doc comment for why no extra sandbox is
         // layered underneath this.
         .route("/system/browse-fs", get(browse_fs_handler))
+        // Backs the Canvas "Enviar arquivo(s)"/"Enviar pasta" buttons and
+        // the path field's dropzone (same components as browse-fs above) —
+        // the only route that actually receives file bytes from the
+        // browser. Body-size limit for this one route is layered on
+        // separately below (see `upload_router`), not applied to the rest
+        // of `write_protected`.
+        .merge(upload_router())
+        // Prompt templates (LLMOPS_IMPLEMENTATION_PLAN.md Marco L4) — same
+        // tier as editing a pipeline's config, since an `llm` node's
+        // `PromptRef` points at one of these.
+        .route(
+            "/prompts",
+            get(list_prompts_handler).post(create_prompt_handler),
+        )
+        // Data catalog (Fase 25) — editing a dataset's description/owner/
+        // tags or a column's description/PII flag is the same trust bar as
+        // editing a pipeline's config; `dataset_key` (and the `{column}`
+        // path param below) may contain `/` and must be percent-encoded by
+        // the caller (e.g. `encodeURIComponent`) — axum decodes a single
+        // path segment, so an unencoded `/` would otherwise be parsed as
+        // extra path segments.
+        .route(
+            "/catalog/datasets/{key}",
+            put(update_catalog_dataset_handler),
+        )
+        .route(
+            "/catalog/datasets/{key}/columns/{column}",
+            put(update_catalog_column_handler),
+        );
+    // Rollback creates a *new* commit/version (never rewrites history) via
+    // the same `update`/`create` path as an ordinary save — same trust bar
+    // as editing the pipeline directly. Split out of the chain above so
+    // this route still picks up the `.layer()`s applied right below,
+    // whether or not the feature is compiled in (see
+    // `git_history_store.rs`'s module doc comment).
+    #[cfg(feature = "version-history")]
+    let write_protected = write_protected.route(
+        "/pipelines/{id}/versions/{commit}/rollback",
+        post(rollback_pipeline_handler),
+    );
+    let write_protected = write_protected
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_role::<AppState>,
@@ -219,11 +365,66 @@ fn router(state: AppState) -> Router {
             "/pipelines/{id}/dbt-tests",
             get(list_dbt_test_results_handler),
         )
+        .route(
+            "/pipelines/{id}/quality-checks",
+            get(list_quality_check_results_handler),
+        )
+        .route(
+            "/pipelines/{id}/llm-eval-results",
+            get(list_llm_eval_results_handler),
+        )
+        // Proactive observability / anomaly detection (Fase 27) —
+        // read-only, same tier as the quality-checks route above.
+        .route("/pipelines/{id}/anomalies", get(pipeline_anomalies_handler))
+        .route(
+            "/pipelines/{id}/volume-trend",
+            get(pipeline_volume_trend_handler),
+        )
         // Whole-catalog graph, not a per-pipeline secret — the handler
         // below only ever hands back connector names + allowlisted
         // resource identifiers, never raw config (see lineage.rs).
         .route("/lineage", get(lineage_handler))
         .route("/lineage/{id}/schema", get(pipeline_schema_handler))
+        // Data catalog (Fase 25) — browsing/searching datasets is a `Read`
+        // action, same tier as `/lineage` above.
+        .route("/catalog/datasets", get(list_catalog_datasets_handler))
+        .route("/catalog/datasets/{key}", get(get_catalog_dataset_handler))
+        .route("/catalog/tags", get(list_catalog_tags_handler))
+        // Cross-pipeline orchestration (Fase 26) — browsing dependency
+        // relationships is a `Read` action, same tier as `/lineage` above.
+        .route(
+            "/pipelines/{id}/dependents",
+            get(list_pipeline_dependents_handler),
+        )
+        .route(
+            "/pipelines/{id}/dependencies",
+            get(get_pipeline_dependencies_handler),
+        )
+        .route("/orchestration/graph", get(orchestration_graph_handler));
+    // Version history is read-only browsing (diffs run through the same
+    // secret-safe `PipelineSummary` shape as `get_pipeline_handler`, never
+    // raw connector config) — same `Read` tier as everything else in this
+    // group. Split out of the chain (see `write_protected`'s rollback
+    // route above for why) so it still picks up the `.layer()`s below.
+    #[cfg(feature = "version-history")]
+    let read_protected = read_protected
+        .route(
+            "/pipelines/{id}/versions",
+            get(list_pipeline_versions_handler),
+        )
+        .route(
+            "/pipelines/{id}/versions/{commit}/diff",
+            get(diff_pipeline_versions_handler),
+        )
+        .route(
+            "/prompts/{name}/versions",
+            get(list_prompt_versions_handler),
+        )
+        .route(
+            "/prompts/{name}/versions/{version}/diff",
+            get(diff_prompt_versions_handler),
+        );
+    let read_protected = read_protected
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_role::<AppState>,
@@ -244,7 +445,19 @@ fn router(state: AppState) -> Router {
         .route(
             "/license",
             post(install_license_handler).get(license_status_handler),
-        )
+        );
+    // Configuring the optional GitHub push mirror is the same trust bar
+    // as installing the license itself — both gate an enterprise
+    // capability and, here, also hand the server a credential with write
+    // access to an external repo. Split out of the chain (see
+    // `write_protected`'s rollback route earlier for why) so it still
+    // picks up the `.layer()`s below.
+    #[cfg(feature = "version-history")]
+    let admin_protected = admin_protected.route(
+        "/settings/git-remote",
+        put(set_git_remote_handler).delete(delete_git_remote_handler),
+    );
+    let admin_protected = admin_protected
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_role::<AppState>,
@@ -257,6 +470,9 @@ fn router(state: AppState) -> Router {
     let login_routes = Router::new()
         .route("/auth/login", post(login_handler))
         .layer(middleware::from_fn(rate_limit::login_rate_limit))
+        .layer(Extension(rate_limit::TrustProxyHeaders(
+            state.trust_proxy_headers,
+        )))
         .layer(Extension(state.login_rate_limiter.clone()));
 
     // Logout requires any valid token; the token is revoked so it can't be
@@ -268,6 +484,29 @@ fn router(state: AppState) -> Router {
             require_role::<AppState>,
         ))
         .layer(Extension(Role::Read));
+
+    // Cloned before `state` is moved into `.with_state(state)` below —
+    // `rag::routes` (Marco L5, cfg-gated) needs its own `AppState` to
+    // build its sub-router, merged in after the main app is stateless.
+    #[cfg(all(
+        feature = "llm",
+        any(feature = "embeddings", feature = "embeddings-api"),
+        any(
+            feature = "lancedb",
+            feature = "qdrant",
+            feature = "milvus",
+            feature = "pgvector",
+            feature = "pinecone",
+            feature = "chromadb"
+        )
+    ))]
+    let rag_state = state.clone();
+
+    // Cloned unconditionally (unlike `rag_state` above) — `infra::routes`
+    // is never feature-gated, see that module's doc comment for why (the
+    // enterprise crate it delegates to is an inventory-collected plugin,
+    // not a Cargo feature this crate depends on).
+    let infra_state = state.clone();
 
     let app = Router::new()
         .route("/health", get(health))
@@ -291,6 +530,22 @@ fn router(state: AppState) -> Router {
         .merge(write_protected)
         .merge(read_protected)
         .with_state(state);
+
+    #[cfg(all(
+        feature = "llm",
+        any(feature = "embeddings", feature = "embeddings-api"),
+        any(
+            feature = "lancedb",
+            feature = "qdrant",
+            feature = "milvus",
+            feature = "pgvector",
+            feature = "pinecone",
+            feature = "chromadb"
+        )
+    ))]
+    let app = app.merge(rag::routes(rag_state));
+
+    let app = app.merge(infra::routes(infra_state));
 
     // Only wired in for the single-binary build (Marco 11) — without the
     // feature, an unmatched route just gets axum's default 404, same as
@@ -358,6 +613,10 @@ async fn list_connectors_handler(
     let active_license = state.license_store.active().await.ok().flatten();
     Json(
         ConnectorRegistry::all()
+            // `Capability`-kind descriptors (Marco L8) are license-check
+            // targets, not real connectors — never expose them as a node
+            // type the Canvas could try to add to a DAG.
+            .filter(|d| d.capability != nexus_core::ConnectorCapability::Capability)
             .map(|d| ConnectorCatalogEntry {
                 name: d.name,
                 capability: d.capability,
@@ -524,16 +783,19 @@ async fn run_pipeline_handler(
     Ok((StatusCode::ACCEPTED, Json(RunAccepted { run_id })))
 }
 
-/// Creates the run row and spawns the supervisor task that executes the
-/// pipeline — shared by the manual `POST /pipelines/{id}/run` handler above
-/// and `scheduler.rs`'s cron-triggered runs, so a scheduled run gets
-/// exactly the same history/dbt/alerting behavior as a manually-triggered
-/// one, not a second slightly-different code path.
+/// Creates the run row and either dispatches it for immediate execution or
+/// enqueues it (Fase 29) — shared by the manual `POST /pipelines/{id}/run`
+/// handler above, `scheduler.rs`'s cron-triggered runs, and
+/// `pipeline_dependencies.rs`'s dependency-triggered runs, so every
+/// trigger source gets exactly the same history/dbt/alerting/distribution
+/// behavior, not a second slightly-different code path.
 ///
-/// The progress channel is registered here, *before* the caller's 202
-/// response can reach the client — otherwise a client subscribing to
-/// `/runs/{run_id}/progress` immediately after the 202 could win the race
-/// against the supervisor's own `progress.start` and get a spurious 404.
+/// When `state.work_queue` is `Some` (`NEXUS_QUEUE_MODE=true`), this
+/// enqueues the run instead of dispatching it on whichever replica happens
+/// to be handling the triggering request — some replica running
+/// `worker::spawn`'s poll loop (possibly this same one) claims and
+/// actually runs it later. If enqueuing itself fails, this falls back to
+/// dispatching inline rather than losing the run silently.
 pub(crate) async fn start_pipeline_run(
     state: &AppState,
     spec: &PipelineSpec,
@@ -543,15 +805,88 @@ pub(crate) async fn start_pipeline_run(
     // still show up in `GET /pipelines/{id}/runs`, same as always-persisted
     // ones.
     let run_id = state.pipelines.start_run(&spec.pipeline_id).await?;
+
+    if let Some(queue) = &state.work_queue {
+        match queue.enqueue(&spec.pipeline_id, run_id).await {
+            Ok(()) => return Ok(run_id),
+            Err(e) => {
+                tracing::warn!(
+                    pipeline_id = %spec.pipeline_id,
+                    run_id,
+                    error = %e,
+                    "failed to enqueue pipeline run, dispatching inline instead"
+                );
+            }
+        }
+    }
+
+    dispatch_execute_pipeline_run(state, spec.clone(), run_id).await;
+    Ok(run_id)
+}
+
+/// Registers this run's progress channel and spawns the supervisor task —
+/// the actual "run this now, in this process" step, shared by
+/// `start_pipeline_run`'s inline-dispatch path above and `worker.rs`'s
+/// queue-claim loop. Progress is registered here rather than in
+/// `start_pipeline_run` (unlike before Fase 29) specifically so a queued
+/// run's live WebSocket progress attaches to whichever replica actually
+/// executes it, not the one that merely enqueued it — the two can be
+/// different processes entirely once queue mode is on.
+///
+/// The progress channel is registered *before* the caller's 202 response
+/// can reach the client on the inline-dispatch path — otherwise a client
+/// subscribing to `/runs/{run_id}/progress` immediately after the 202
+/// could win the race against the supervisor's own `progress.start` and
+/// get a spurious 404. A queued run has no such race to protect against
+/// (the 202 already went out long before any worker claims the job).
+pub(crate) async fn dispatch_execute_pipeline_run(
+    state: &AppState,
+    spec: PipelineSpec,
+    run_id: i64,
+) {
     let (progress_tx, log_tx) = state.progress.start(run_id).await;
     let logger = RunLogger::new(run_id, log_tx, state.run_logs.clone());
-
     let supervisor = state.clone();
-    let spec = spec.clone();
-    tokio::spawn(async move {
-        execute_pipeline_run(supervisor, spec, run_id, progress_tx, logger).await;
-    });
-    Ok(run_id)
+    tokio::spawn(spawn_execute_pipeline_run(
+        supervisor,
+        spec,
+        run_id,
+        progress_tx,
+        logger,
+    ));
+}
+
+/// Boxes `execute_pipeline_run`'s future behind a concrete, non-recursive
+/// type (`Pin<Box<dyn Future + Send>>`) instead of spawning a bare
+/// `async move { execute_pipeline_run(...).await }` block inline.
+///
+/// This indirection is load-bearing, not stylistic: `execute_pipeline_run`
+/// (Fase 26) now calls `pipeline_dependencies::trigger_downstream`, which
+/// can itself call back into `start_pipeline_run` above to fire a
+/// dependency-triggered downstream run — which spawns *another*
+/// `execute_pipeline_run`. Spawning the bare async block directly makes
+/// rustc's Send-auto-trait check on that block's opaque type transitively
+/// depend on itself through this exact cycle
+/// (`execute_pipeline_run` -> `trigger_downstream` -> `start_pipeline_run`
+/// -> spawn `execute_pipeline_run` again), which it cannot resolve
+/// ("future cannot be sent between threads safely" — a real, verified
+/// compile error, not a hypothetical). Routing the recursive edge through
+/// this wrapper's nominal boxed return type gives rustc a concrete type to
+/// bottom out on instead of re-expanding the opaque generator type forever.
+fn spawn_execute_pipeline_run(
+    state: AppState,
+    spec: PipelineSpec,
+    run_id: i64,
+    progress_tx: ProgressSender,
+    logger: RunLogger,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+    Box::pin(execute_pipeline_run(
+        state,
+        spec,
+        run_id,
+        progress_tx,
+        logger,
+    ))
 }
 
 /// Supervisor for one pipeline run: executes the pipeline and *always*
@@ -600,6 +935,13 @@ async fn execute_pipeline_run(
         Some(&logger),
         active_license.as_ref(),
         &state.pipeline_schemas,
+        &state.alerts,
+        run_id,
+        &state.quality_checks,
+        &state.llm_stats,
+        &state.prompt_templates,
+        &state.llm_eval_results,
+        state.masking_salt.as_deref(),
     )
     .await;
     state.progress.finish(run_id).await;
@@ -729,6 +1071,72 @@ async fn execute_pipeline_run(
             {
                 tracing::warn!(error = %e, "failed to record successful pipeline run");
             }
+            // Data catalog discovery (Fase 25) — best-effort, same posture
+            // as the schema/quality-check persistence above: a failure here
+            // must never fail an otherwise-successful run. Reuses whatever
+            // schema this run already captured, so it never touches
+            // pipeline_schemas itself or blocks on a second query when
+            // capture didn't happen this round.
+            let captured_schema = state
+                .pipeline_schemas
+                .get(&spec.pipeline_id)
+                .await
+                .unwrap_or(None);
+            if let Err(e) = state
+                .data_catalog
+                .record_from_pipeline(&spec, captured_schema.as_ref())
+                .await
+            {
+                tracing::warn!(error = %e, "failed to update data catalog");
+            }
+            // Cross-pipeline orchestration (Fase 26) — best-effort, same
+            // posture as the schema/quality-check persistence above: a
+            // failure here must never fail an otherwise-successful run.
+            if let Err(e) =
+                pipeline_dependencies::trigger_downstream(&state, &spec.pipeline_id).await
+            {
+                tracing::warn!(error = %e, "failed to trigger dependency-based downstream runs");
+            }
+            // Proactive observability / anomaly detection (Fase 27) —
+            // best-effort, same posture as every other post-success hook
+            // above. History is fetched *before* recording this run, so it
+            // naturally excludes the run being evaluated (the baseline,
+            // not a self-comparison).
+            let volume_history = state
+                .pipeline_run_volume
+                .recent(&spec.pipeline_id, ANOMALY_HISTORY_WINDOW)
+                .await
+                .unwrap_or_default();
+            if let Err(e) = state
+                .pipeline_run_volume
+                .record(&spec.pipeline_id, run_id, total_rows as i64)
+                .await
+            {
+                tracing::warn!(error = %e, "failed to record run volume");
+            }
+            if spec.anomaly_alerts {
+                let history: Vec<f64> = volume_history
+                    .iter()
+                    .map(|s| s.rows_written as f64)
+                    .collect();
+                if let Some(severity) =
+                    anomaly_detector::detect_anomaly(&history, total_rows as f64)
+                {
+                    let (mean, stddev) = anomaly_detector::mean_and_stddev(&history);
+                    let message = format!(
+                        "row count {total_rows} vs. baseline mean {mean:.1} (stddev {stddev:.1}) \
+                         over the last {} run(s)",
+                        history.len()
+                    );
+                    state.alerts.notify_anomaly(
+                        spec.alerts.as_ref(),
+                        &spec.pipeline_id,
+                        run_id,
+                        severity,
+                        &message,
+                    );
+                }
+            }
             server_metrics::record_run_outcome(&spec.pipeline_id, "success", started.elapsed());
             state.alerts.notify_pipeline_run(
                 spec.alerts.as_ref(),
@@ -789,6 +1197,7 @@ async fn record_run_failure(
 
 async fn create_pipeline_handler(
     State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
     Json(spec): Json<PipelineSpec>,
 ) -> Result<(StatusCode, Json<PipelineSummary>), ApiError> {
     spec.validate()
@@ -799,8 +1208,29 @@ async fn create_pipeline_handler(
         let active_license = state.license_store.active().await.unwrap_or(None);
         connectors::validate_pipeline_configs(&spec, active_license.as_ref())
             .map_err(|e| ApiError::bad_request(e.to_string()))?;
+        if !spec.depends_on.is_empty() {
+            let all_specs = state.pipelines.list_all_specs(&state.secrets).await?;
+            pipeline_dependencies::check_dependencies(&all_specs, &spec)
+                .map_err(ApiError::bad_request)?;
+        }
+        if !spec.masking.is_empty() && state.masking_salt.is_none() {
+            return Err(ApiError::bad_request(
+                "pipeline sets masking but NEXUS_MASKING_SALT is not configured on this server",
+            ));
+        }
     }
-    state.pipelines.create(&spec, &state.secrets).await?;
+    state
+        .pipelines
+        .create(&spec, &state.secrets, &claims.sub)
+        .await?;
+    #[cfg(feature = "version-history")]
+    commit_pipeline_history(
+        &state,
+        &spec,
+        &claims.sub,
+        &format!("create pipeline {}", spec.pipeline_id),
+    )
+    .await;
     let summary = state
         .pipelines
         .get_summary(&spec.pipeline_id, &state.secrets)
@@ -879,7 +1309,7 @@ async fn preview_node_handler(
     let active_license = state.license_store.active().await.unwrap_or(None);
     let (_, source) = crate::connectors::build_source(node, 0, active_license.as_ref())
         .await
-        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+        .map_err(|e| ApiError::bad_request(crate::error::sanitize_error(&e.to_string())))?;
 
     let rows = read_preview_rows(source, limit).await?;
     Ok(Json(serde_json::json!({ "rows": rows })))
@@ -897,7 +1327,19 @@ async fn read_preview_rows(
     mut source: Box<dyn nexus_core::Source>,
     limit: usize,
 ) -> Result<Vec<serde_json::Value>, ApiError> {
-    let mut stream = source.read_batches().await.map_err(ApiError::internal)?;
+    // A connect/read failure here is the caller actively testing their own
+    // connector config in the Preview tab, so the real (sanitized) reason
+    // is exactly what they need — not a flat "internal server error" that
+    // gives no clue whether the host, credentials, or something else is
+    // wrong. Deliberately `upstream_connector_failed` (502), not
+    // `bad_request` (400): the frontend's `DataPreviewPanel` treats a 400
+    // from this same endpoint as "connector can't be previewed at all"
+    // (from `build_source`'s "unsupported source connector" error a few
+    // lines up in both callers) — conflating the two would misreport a
+    // real connection failure as "not supported".
+    let mut stream = source.read_batches().await.map_err(|e| {
+        ApiError::upstream_connector_failed(crate::error::sanitize_error(&e.to_string()))
+    })?;
     let mut collected = Vec::new();
     let mut row_count = 0usize;
     while row_count < limit {
@@ -906,7 +1348,11 @@ async fn read_preview_rows(
                 row_count += batch.num_rows();
                 collected.push(batch);
             }
-            Some(Err(e)) => return Err(ApiError::internal(e)),
+            Some(Err(e)) => {
+                return Err(ApiError::upstream_connector_failed(
+                    crate::error::sanitize_error(&e.to_string()),
+                ))
+            }
             None => break,
         }
     }
@@ -980,13 +1426,19 @@ async fn preview_adhoc_handler(
         transform: None,
         sinks: Vec::new(),
         embedding: None,
+        llm: None,
         python: None,
         channel_capacity: 100,
         partitions: 1,
         dbt: None,
         post_dbt_sinks: Vec::new(),
         schedule: None,
+        depends_on: Vec::new(),
+        dependency_mode: nexus_core::DependencyMode::Any,
         alerts: None,
+        quality_checks: Vec::new(),
+        anomaly_alerts: false,
+        masking: Vec::new(),
         draft: false,
     };
     probe_spec
@@ -996,7 +1448,7 @@ async fn preview_adhoc_handler(
     let active_license = state.license_store.active().await.unwrap_or(None);
     let (_, source) = crate::connectors::build_source(&req.node, 0, active_license.as_ref())
         .await
-        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+        .map_err(|e| ApiError::bad_request(crate::error::sanitize_error(&e.to_string())))?;
 
     let rows = read_preview_rows(source, limit).await?;
     Ok(Json(serde_json::json!({ "rows": rows })))
@@ -1021,6 +1473,7 @@ fn find_node_by_resolved_name<'a>(spec: &'a PipelineSpec, name: &str) -> Option<
 
 async fn update_pipeline_handler(
     State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
     Path(id): Path<String>,
     Json(spec): Json<PipelineSpec>,
 ) -> Result<Json<PipelineSummary>, ApiError> {
@@ -1038,19 +1491,410 @@ async fn update_pipeline_handler(
         let active_license = state.license_store.active().await.unwrap_or(None);
         connectors::validate_pipeline_configs(&spec, active_license.as_ref())
             .map_err(|e| ApiError::bad_request(e.to_string()))?;
+        if !spec.depends_on.is_empty() {
+            let all_specs = state.pipelines.list_all_specs(&state.secrets).await?;
+            pipeline_dependencies::check_dependencies(&all_specs, &spec)
+                .map_err(ApiError::bad_request)?;
+        }
+        if !spec.masking.is_empty() && state.masking_salt.is_none() {
+            return Err(ApiError::bad_request(
+                "pipeline sets masking but NEXUS_MASKING_SALT is not configured on this server",
+            ));
+        }
     }
-    state.pipelines.update(&id, &spec, &state.secrets).await?;
+    state
+        .pipelines
+        .update(&id, &spec, &state.secrets, &claims.sub)
+        .await?;
+    #[cfg(feature = "version-history")]
+    commit_pipeline_history(
+        &state,
+        &spec,
+        &claims.sub,
+        &format!("update pipeline {}", spec.pipeline_id),
+    )
+    .await;
     Ok(Json(
         state.pipelines.get_summary(&id, &state.secrets).await?,
     ))
+}
+
+/// Mirrors a just-persisted `PipelineSpec` save into `state.git_history`,
+/// at `pipelines/{id}.json`. Content is the same `spec_ciphertext` the SQL
+/// row already carries (`pipeline_store::encode_spec`, re-encrypted here
+/// under the same key) — never the decrypted JSON, so the git history
+/// never becomes a second, unrevocable place connector secrets leak to
+/// (see CLAUDE.md §5). Best-effort: a failure here is a real gap in
+/// history — but it must never fail the save itself (the SQL write above
+/// already committed): logged via `tracing::warn!` and swallowed, same
+/// posture as `alerts.rs`'s fire-and-forget notifications.
+#[cfg(feature = "version-history")]
+async fn commit_pipeline_history(
+    state: &AppState,
+    spec: &PipelineSpec,
+    author: &str,
+    message: &str,
+) {
+    let ciphertext = pipeline_store::encode_spec(spec, &state.secrets);
+    let path = format!("pipelines/{}.json", spec.pipeline_id);
+    match state
+        .git_history
+        .commit_blob(&path, ciphertext.as_bytes(), message, author)
+        .await
+    {
+        Ok(_) => maybe_push_git_history_to_remote(state).await,
+        Err(e) => tracing::warn!(
+            pipeline_id = %spec.pipeline_id,
+            error = %e,
+            "failed to record git version history for this pipeline save"
+        ),
+    }
+}
+
+/// If a GitHub remote is configured (`PUT /settings/git-remote`) *and* the
+/// active license covers `git-history-github-sync`, mirrors `main` to it
+/// in the background — Part 4 of the git-versioning follow-up plan,
+/// "caso o usuário queira". Both the license check and the push itself
+/// are best-effort and fire-and-forget: neither ever holds up or fails
+/// the pipeline/prompt save that triggered it, same posture as
+/// `alerts.rs`'s notifications and `commit_pipeline_history` above. Not
+/// gated by license at all when no remote is configured — this is a
+/// no-op, not a check that needs to run either way.
+#[cfg(feature = "version-history")]
+async fn maybe_push_git_history_to_remote(state: &AppState) {
+    let Ok(Some(remote)) = state.git_remote.get(&state.secrets).await else {
+        return;
+    };
+    let active_license = state.license_store.active().await.unwrap_or(None);
+    if connectors::check_connector_license("git-history-github-sync", active_license.as_ref())
+        .is_err()
+    {
+        return;
+    }
+    let git_history = state.git_history.clone();
+    tokio::spawn(async move {
+        if let Err(e) = git_history
+            .push_to_remote(&remote.remote_url, &remote.token)
+            .await
+        {
+            tracing::warn!(
+                error = %e,
+                "failed to push git version history to the configured GitHub remote"
+            );
+        }
+    });
+}
+
+#[cfg(feature = "version-history")]
+#[derive(Debug, Deserialize)]
+struct SetGitRemoteRequest {
+    /// e.g. `https://github.com/acme/pipelines.git`.
+    remote_url: String,
+    /// A GitHub personal access token (or App installation token) with
+    /// push access to `remote_url` — sent over HTTPS as `x-access-token`
+    /// (see `git_history_store::GitHistoryStore::push_to_remote`).
+    /// Encrypted at rest, never returned by any endpoint.
+    token: String,
+}
+
+/// `PUT /settings/git-remote` — configures (or replaces) the optional
+/// GitHub mirror for `git_history`. Does not itself check the
+/// `git-history-github-sync` license (that check happens per-push, in
+/// `maybe_push_git_history_to_remote`) — an unlicensed remote can be
+/// configured ahead of time, it just won't be pushed to until a covering
+/// license is installed.
+#[cfg(feature = "version-history")]
+async fn set_git_remote_handler(
+    State(state): State<AppState>,
+    Json(body): Json<SetGitRemoteRequest>,
+) -> Result<StatusCode, ApiError> {
+    if body.remote_url.trim().is_empty() {
+        return Err(ApiError::bad_request("remote_url must not be empty"));
+    }
+    if body.token.trim().is_empty() {
+        return Err(ApiError::bad_request("token must not be empty"));
+    }
+    state
+        .git_remote
+        .set(&body.remote_url, &body.token, &state.secrets)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /settings/git-remote` — turns the push mirror back off.
+/// `git_history` itself (the embedded local repo) is entirely unaffected —
+/// this only stops the best-effort push, never touches history already
+/// recorded.
+#[cfg(feature = "version-history")]
+async fn delete_git_remote_handler(State(state): State<AppState>) -> Result<StatusCode, ApiError> {
+    state
+        .git_remote
+        .delete()
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `GET /pipelines/{id}/versions` — every commit that changed this
+/// pipeline, newest first. Metadata only (author/message/timestamp), no
+/// spec content — `.../diff` is where the actual (redacted) content
+/// comparison happens.
+#[cfg(feature = "version-history")]
+async fn list_pipeline_versions_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<git_history_store::VersionMeta>>, ApiError> {
+    let path = format!("pipelines/{id}.json");
+    Ok(Json(
+        state
+            .git_history
+            .history_for(&path)
+            .await
+            .map_err(ApiError::internal)?,
+    ))
+}
+
+#[cfg(feature = "version-history")]
+#[derive(Debug, Deserialize)]
+struct PipelineDiffParams {
+    /// Commit to diff against — defaults to the pipeline's current, live
+    /// state (same shape `GET /pipelines/{id}` returns) when omitted.
+    against: Option<String>,
+}
+
+/// `GET /pipelines/{id}/versions/{commit}/diff?against={commit}` — a
+/// unified text diff between two snapshots of a pipeline. Never touches
+/// raw `NodeSpec.config` (which may carry connector secrets): both sides
+/// are reduced to the same redacted shape `PipelineSummary` already
+/// exposes over the API (`pipeline_store::redact_for_diff`) before being
+/// diffed, so this can only ever reveal what `GET /pipelines/{id}`
+/// already would.
+#[cfg(feature = "version-history")]
+async fn diff_pipeline_versions_handler(
+    State(state): State<AppState>,
+    Path((id, commit)): Path<(String, String)>,
+    Query(params): Query<PipelineDiffParams>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let path = format!("pipelines/{id}.json");
+    let old_spec = load_pipeline_spec_at_commit(&state, &commit, &path).await?;
+    let new_json = match &params.against {
+        Some(against) => {
+            let new_spec = load_pipeline_spec_at_commit(&state, against, &path).await?;
+            pipeline_store::redact_for_diff(&new_spec)
+        }
+        None => {
+            pipeline_store::redact_for_diff(&state.pipelines.get_spec(&id, &state.secrets).await?)
+        }
+    };
+    let old_json = pipeline_store::redact_for_diff(&old_spec);
+    Ok(Json(serde_json::json!({
+        "diff": unified_text_diff(&old_json, &new_json),
+    })))
+}
+
+/// `POST /pipelines/{id}/versions/{commit}/rollback` — restores the
+/// pipeline to an old commit's content by writing it through the exact
+/// same `PipelineStore::update` path a normal save uses, under the
+/// current caller's name. This *creates a new commit* on top of history
+/// (`"rollback pipeline {id} to {commit}"`); it never rewrites or resets
+/// the git ref — same "immutable log" posture as checkpoints elsewhere in
+/// this codebase.
+#[cfg(feature = "version-history")]
+async fn rollback_pipeline_handler(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Path((id, commit)): Path<(String, String)>,
+) -> Result<Json<PipelineSummary>, ApiError> {
+    let path = format!("pipelines/{id}.json");
+    let old_spec = load_pipeline_spec_at_commit(&state, &commit, &path).await?;
+    if old_spec.pipeline_id != id {
+        return Err(ApiError::bad_request(format!(
+            "commit {commit:?} does not belong to pipeline {id:?}"
+        )));
+    }
+    old_spec
+        .validate()
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    state
+        .pipelines
+        .update(&id, &old_spec, &state.secrets, &claims.sub)
+        .await?;
+    commit_pipeline_history(
+        &state,
+        &old_spec,
+        &claims.sub,
+        &format!("rollback pipeline {id} to {commit}"),
+    )
+    .await;
+    Ok(Json(
+        state.pipelines.get_summary(&id, &state.secrets).await?,
+    ))
+}
+
+/// Shared by the diff and rollback handlers above: reads the ciphertext
+/// blob at `commit`/`path` out of git history and decrypts it back into a
+/// `PipelineSpec`, mapping every failure mode (bad commit, path not in
+/// that commit, corrupt/undecryptable ciphertext) to a clear 404/500
+/// instead of a panic.
+#[cfg(feature = "version-history")]
+async fn load_pipeline_spec_at_commit(
+    state: &AppState,
+    commit: &str,
+    path: &str,
+) -> Result<PipelineSpec, ApiError> {
+    let bytes = state
+        .git_history
+        .blob_at(commit, path)
+        .await
+        .map_err(|e| ApiError::not_found(e.to_string()))?;
+    let ciphertext = String::from_utf8(bytes)
+        .map_err(|e| ApiError::internal(format!("corrupt git history blob: {e}")))?;
+    pipeline_store::decode_spec(&ciphertext, &state.secrets).map_err(ApiError::from)
+}
+
+/// `GET /prompts/{name}/versions` — every version of `name` (already
+/// tracked by `PromptTemplateStore` itself, LLMOPS_IMPLEMENTATION_PLAN.md
+/// Marco L4) enriched with the git author/commit that recorded it. Each
+/// version lives at its own never-overwritten path
+/// (`prompts/{name}/v{n}.txt`), so `history_for` always resolves to
+/// exactly one commit per version — `None` only for a version saved
+/// before this feature existed (git history didn't exist yet to record
+/// it).
+#[cfg(feature = "version-history")]
+#[derive(Debug, Serialize)]
+struct PromptVersionInfo {
+    version: u32,
+    created_at: String,
+    author: Option<String>,
+    commit: Option<String>,
+}
+
+#[cfg(feature = "version-history")]
+async fn list_prompt_versions_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<Vec<PromptVersionInfo>>, ApiError> {
+    let all = state
+        .prompt_templates
+        .list()
+        .await
+        .map_err(ApiError::internal)?;
+    let mut out = Vec::new();
+    for p in all.into_iter().filter(|p| p.name == name) {
+        let path = format!("prompts/{}/v{}.txt", p.name, p.version);
+        let commit_meta = state
+            .git_history
+            .history_for(&path)
+            .await
+            .map_err(ApiError::internal)?
+            .into_iter()
+            .next();
+        out.push(PromptVersionInfo {
+            version: p.version,
+            created_at: p.created_at,
+            author: commit_meta.as_ref().map(|c| c.author.clone()),
+            commit: commit_meta.map(|c| c.commit),
+        });
+    }
+    Ok(Json(out))
+}
+
+#[cfg(feature = "version-history")]
+#[derive(Debug, Deserialize)]
+struct PromptDiffParams {
+    /// Version to diff against — defaults to the newest version when
+    /// omitted (same "None means latest" convention as the pipeline diff
+    /// endpoint above).
+    against: Option<u32>,
+}
+
+/// `GET /prompts/{name}/versions/{version}/diff?against={version}` — plain
+/// text diff between two versions' template text. Reads straight from
+/// `PromptTemplateStore::resolve` (already the source of truth for prompt
+/// text) — unlike the pipeline diff endpoint, this never needs to touch
+/// git history at all, since prompt versions are never overwritten in SQL
+/// either. Prompts carry no secrets (CLAUDE.md §5 is about connector
+/// config, not prompt text), so this is a plain, unredacted text diff.
+#[cfg(feature = "version-history")]
+async fn diff_prompt_versions_handler(
+    State(state): State<AppState>,
+    Path((name, version)): Path<(String, u32)>,
+    Query(params): Query<PromptDiffParams>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let old_text = state
+        .prompt_templates
+        .resolve(&name, Some(version))
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::not_found(format!("prompt {name:?} has no version {version}")))?;
+    let new_text = state
+        .prompt_templates
+        .resolve(&name, params.against)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| match params.against {
+            Some(v) => ApiError::not_found(format!("prompt {name:?} has no version {v}")),
+            None => ApiError::not_found(format!("prompt {name:?} not found")),
+        })?;
+    Ok(Json(serde_json::json!({
+        "diff": similar::TextDiff::from_lines(&old_text, &new_text)
+            .unified_diff()
+            .to_string(),
+    })))
+}
+
+/// Shared unified-diff renderer for the two JSON-shaped (redacted)
+/// pipeline snapshots `diff_pipeline_versions_handler` compares — both
+/// sides are pretty-printed first so the diff reads as one line per
+/// field, not one giant single-line JSON blob.
+#[cfg(feature = "version-history")]
+fn unified_text_diff(old: &serde_json::Value, new: &serde_json::Value) -> String {
+    let old_text = serde_json::to_string_pretty(old).unwrap_or_default();
+    let new_text = serde_json::to_string_pretty(new).unwrap_or_default();
+    similar::TextDiff::from_lines(&old_text, &new_text)
+        .unified_diff()
+        .to_string()
 }
 
 async fn delete_pipeline_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    state.pipelines.delete(&id).await?;
+    let run_ids = state.pipelines.delete(&id).await?;
+    // Best-effort, same as delete_run_handler: a failure here can't roll
+    // back the pipeline deletion above.
+    for run_id in run_ids {
+        if let Err(e) = state.run_logs.delete(run_id).await {
+            tracing::warn!(run_id, error = %e, "failed to delete logs for a deleted pipeline's run");
+        }
+    }
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn delete_run_handler(
+    State(state): State<AppState>,
+    Path((pipeline_id, run_id)): Path<(String, i64)>,
+) -> Result<StatusCode, ApiError> {
+    match state.pipelines.delete_run(&pipeline_id, run_id).await? {
+        DeleteRunOutcome::Deleted => {
+            // Best-effort: pipeline_run_logs has no FK to pipeline_runs
+            // (see run_log_store.rs), so a failure here can't roll back
+            // the run deletion above — just leaves orphaned log rows,
+            // same trade-off as everywhere else in this codebase that
+            // treats logging as best-effort.
+            if let Err(e) = state.run_logs.delete(run_id).await {
+                tracing::warn!(run_id, error = %e, "failed to delete logs for a deleted run");
+            }
+            Ok(StatusCode::NO_CONTENT)
+        }
+        DeleteRunOutcome::StillRunning => Err(ApiError::conflict(format!(
+            "run {run_id} is still running — wait for it to finish before deleting it"
+        ))),
+        DeleteRunOutcome::NotFound => Err(ApiError::not_found(format!(
+            "run {run_id} not found for pipeline {pipeline_id:?}"
+        ))),
+    }
 }
 
 async fn list_runs_handler(
@@ -1059,14 +1903,30 @@ async fn list_runs_handler(
     Query(pagination): Query<Pagination>,
 ) -> Result<Json<Vec<RunRecord>>, ApiError> {
     let (limit, offset) = pagination.validated()?;
-    Ok(Json(state.pipelines.list_runs(&id, limit, offset).await?))
+    let mut runs = state.pipelines.list_runs(&id, limit, offset).await?;
+    // `list_runs` never joins llm_stats itself (separate store/table, see
+    // `RunRecord.llm_stats`'s doc comment) — filled in here, one lookup per
+    // run in the page (bounded by `limit`, same cost class as the dbt/
+    // stats JSON already parsed per row above).
+    for run in &mut runs {
+        if let Ok(Some(stats)) = state.llm_stats.get(run.id).await {
+            run.llm_stats = Some(serde_json::json!({
+                "tokens_prompt": stats.tokens_prompt,
+                "tokens_completion": stats.tokens_completion,
+                "cost_estimate": stats.cost_estimate,
+            }));
+        }
+    }
+    Ok(Json(runs))
 }
 
 /// Every recorded dbt test result for this pipeline, grouped by test —
 /// what the Quality tab renders as a per-test pass/fail history. The
 /// aggregate counts (`tests_total`/`tests_passed`) already ride along on
 /// each `RunRecord.dbt_summary` from `GET /pipelines/{id}/runs`; this is
-/// the detail behind them (`dbt_test_result_store.rs`).
+/// the detail behind them (`dbt_test_result_store.rs`). Companion to
+/// `list_quality_check_results_handler` below (native, no-dbt checks,
+/// separate store) — the Quality tab merges both, tagged by source.
 async fn list_dbt_test_results_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -1074,6 +1934,136 @@ async fn list_dbt_test_results_handler(
     Ok(Json(
         state
             .dbt_test_results
+            .list_for_pipeline(&id)
+            .await
+            .map_err(ApiError::internal)?,
+    ))
+}
+
+/// Every recorded native (dbt-independent) quality check result for this
+/// pipeline — the `QualityCheckSpec`s configured on the pipeline, evaluated
+/// against its materialized output on the `run_transform_pipeline` path
+/// (see `nexus_core::quality`'s doc comment and `quality_check_store.rs`).
+/// Companion to `list_dbt_test_results_handler`; the Quality tab merges
+/// both, tagged by source.
+async fn list_quality_check_results_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<nexus_core::QualityCheckOutcome>>, ApiError> {
+    Ok(Json(
+        state
+            .quality_checks
+            .list_for_pipeline(&id)
+            .await
+            .map_err(ApiError::internal)?,
+    ))
+}
+
+/// One tracked metric's current anomaly status (Fase 27) — today, always
+/// exactly `rows_written` (0 entries if the pipeline hasn't run enough
+/// times yet to have both a latest run and any history at all). A `Vec`
+/// rather than a single object so a second tracked metric can be added
+/// later without a breaking response-shape change.
+#[derive(Serialize)]
+struct AnomalyStatus {
+    metric: &'static str,
+    latest_run_id: i64,
+    latest_value: i64,
+    baseline_mean: f64,
+    baseline_stddev: f64,
+    /// How many prior runs fed `baseline_mean`/`baseline_stddev` — below
+    /// `anomaly_detector::MIN_HISTORY_FOR_DETECTION`, `severity` is always
+    /// `null` (not enough history to say anything yet, not "no anomaly").
+    history_size: usize,
+    severity: Option<anomaly_detector::AnomalySeverity>,
+}
+
+/// `GET /pipelines/{id}/anomalies` — whether the most recent run's row
+/// count is a statistical outlier against this pipeline's own history.
+/// Read-only status computed on demand (same posture as `/lineage`), not
+/// gated by `PipelineSpec.anomaly_alerts` — that flag only controls
+/// whether a detected anomaly also fires an alert, this endpoint always
+/// reports what it finds.
+async fn pipeline_anomalies_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<AnomalyStatus>>, ApiError> {
+    let samples = state
+        .pipeline_run_volume
+        .recent(&id, ANOMALY_HISTORY_WINDOW + 1)
+        .await
+        .map_err(ApiError::internal)?;
+    // Need at least one prior run to form any baseline at all — the
+    // "not enough history" case itself is reported via `severity: null`
+    // once there's a latest run to report on, but with zero history
+    // there's nothing to report on yet, period.
+    let Some((latest, history_samples)) = samples.split_last() else {
+        return Ok(Json(Vec::new()));
+    };
+    let history: Vec<f64> = history_samples
+        .iter()
+        .map(|s| s.rows_written as f64)
+        .collect();
+    let severity = anomaly_detector::detect_anomaly(&history, latest.rows_written as f64);
+    let (baseline_mean, baseline_stddev) = anomaly_detector::mean_and_stddev(&history);
+    Ok(Json(vec![AnomalyStatus {
+        metric: "rows_written",
+        latest_run_id: latest.run_id,
+        latest_value: latest.rows_written,
+        baseline_mean,
+        baseline_stddev,
+        history_size: history.len(),
+        severity,
+    }]))
+}
+
+#[derive(Deserialize)]
+struct VolumeTrendQuery {
+    #[serde(default = "default_volume_trend_limit")]
+    limit: i64,
+}
+
+fn default_volume_trend_limit() -> i64 {
+    50
+}
+
+const MAX_VOLUME_TREND_LIMIT: i64 = 500;
+
+/// `GET /pipelines/{id}/volume-trend?limit=` — raw per-run row counts,
+/// oldest-first, for the Quality tab's trend chart. Deliberately per-run
+/// rather than time-bucketed like `GET /system/resource-stats`: a run is a
+/// discrete event, not a continuous signal sampled on a clock, so bucketing
+/// it into time windows (`resource_stats::bucket_samples`) would just
+/// average away the exact per-run values the chart and the anomaly
+/// baseline both actually want.
+async fn pipeline_volume_trend_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<VolumeTrendQuery>,
+) -> Result<Json<Vec<pipeline_run_volume_store::VolumeSample>>, ApiError> {
+    let limit = query.limit.clamp(1, MAX_VOLUME_TREND_LIMIT);
+    Ok(Json(
+        state
+            .pipeline_run_volume
+            .recent(&id, limit)
+            .await
+            .map_err(ApiError::internal)?,
+    ))
+}
+
+/// Every recorded golden-dataset eval result for this pipeline
+/// (LLMOPS_IMPLEMENTATION_PLAN.md Marco L7) — scored per run against the
+/// `llm` node's current prompt version, evaluated by `run_llm_eval` on the
+/// `run_transform_pipeline` path (`llm_eval_result_store.rs`). Companion to
+/// `list_dbt_test_results_handler`/`list_quality_check_results_handler`;
+/// the Quality tab renders all three, tagged by source.
+async fn list_llm_eval_results_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<llm_eval_result_store::LlmEvalOutcome>>, ApiError> {
+    Ok(Json(
+        state
+            .llm_eval_results
             .list_for_pipeline(&id)
             .await
             .map_err(ApiError::internal)?,
@@ -1144,6 +2134,221 @@ async fn pipeline_schema_handler(
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found(format!("no schema captured yet for pipeline {id:?}")))
         .map(Json)
+}
+
+/// `GET /catalog/datasets?q=&tag=&connector=&owner=&has_pii=` — Fase 25's
+/// data catalog. Every filter is optional and AND-combined (see
+/// `data_catalog::CatalogFilter`'s doc comment for why filtering happens in
+/// Rust, not SQL).
+async fn list_catalog_datasets_handler(
+    State(state): State<AppState>,
+    Query(filter): Query<data_catalog::CatalogFilter>,
+) -> Result<Json<Vec<data_catalog::CatalogDataset>>, ApiError> {
+    state
+        .data_catalog
+        .list(&filter)
+        .await
+        .map_err(ApiError::internal)
+        .map(Json)
+}
+
+/// `GET /catalog/datasets/{key}` — one dataset's full metadata + columns.
+/// 404 when no pipeline has ever touched this resource (`key` never got
+/// registered by `record_from_pipeline`).
+async fn get_catalog_dataset_handler(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+) -> Result<Json<data_catalog::CatalogDataset>, ApiError> {
+    state
+        .data_catalog
+        .get(&key)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::not_found(format!("no dataset {key:?} in the catalog")))
+        .map(Json)
+}
+
+/// `GET /catalog/tags` — distinct tags across every dataset, for a
+/// tag-filter dropdown.
+async fn list_catalog_tags_handler(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<String>>, ApiError> {
+    state
+        .data_catalog
+        .list_tags()
+        .await
+        .map_err(ApiError::internal)
+        .map(Json)
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateCatalogDatasetRequest {
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    owner: Option<String>,
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
+/// `PUT /catalog/datasets/{key}` — sets description/owner/tags. 404 when
+/// `key` isn't a known dataset (never auto-creates one from a bare edit —
+/// `record_from_pipeline` is the only path that registers a dataset).
+async fn update_catalog_dataset_handler(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+    Json(body): Json<UpdateCatalogDatasetRequest>,
+) -> Result<StatusCode, ApiError> {
+    let updated = state
+        .data_catalog
+        .update_dataset_metadata(&key, body.description, body.owner, body.tags)
+        .await
+        .map_err(ApiError::internal)?;
+    if updated {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::not_found(format!(
+            "no dataset {key:?} in the catalog"
+        )))
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateCatalogColumnRequest {
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    pii_flag: bool,
+}
+
+/// `PUT /catalog/datasets/{key}/columns/{column}` — sets a column's
+/// description and PII flag (manual only, Fase 25 decision: no automatic
+/// heuristic). 404 when the dataset itself isn't known yet; unlike the
+/// dataset-level endpoint above, a column *may* be annotated before it's
+/// ever been observed by a run.
+async fn update_catalog_column_handler(
+    State(state): State<AppState>,
+    Path((key, column)): Path<(String, String)>,
+    Json(body): Json<UpdateCatalogColumnRequest>,
+) -> Result<StatusCode, ApiError> {
+    let updated = state
+        .data_catalog
+        .update_column_metadata(&key, &column, body.description, body.pii_flag)
+        .await
+        .map_err(ApiError::internal)?;
+    if updated {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::not_found(format!(
+            "no dataset {key:?} in the catalog"
+        )))
+    }
+}
+
+/// One pipeline that depends on another — used by both
+/// `GET /pipelines/{id}/dependents` (the `pipeline_id` is the dependent,
+/// `id` in the path is its upstream) and `GET /orchestration/graph`'s
+/// edges.
+#[derive(Serialize)]
+struct PipelineDependentInfo {
+    pipeline_id: String,
+    dependency_mode: nexus_core::DependencyMode,
+}
+
+/// `GET /pipelines/{id}/dependents` — every saved (non-draft) pipeline that
+/// lists `id` in its own `depends_on` (Fase 26). Empty when nothing depends
+/// on this pipeline, not an error.
+async fn list_pipeline_dependents_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<PipelineDependentInfo>>, ApiError> {
+    let all_specs = state.pipelines.list_all_specs(&state.secrets).await?;
+    Ok(Json(
+        all_specs
+            .into_iter()
+            .filter(|s| !s.draft && s.depends_on.iter().any(|d| d.upstream_pipeline_id == id))
+            .map(|s| PipelineDependentInfo {
+                pipeline_id: s.pipeline_id,
+                dependency_mode: s.dependency_mode,
+            })
+            .collect(),
+    ))
+}
+
+#[derive(Serialize)]
+struct PipelineDependenciesResponse {
+    depends_on: Vec<String>,
+    dependency_mode: nexus_core::DependencyMode,
+}
+
+/// `GET /pipelines/{id}/dependencies` — this pipeline's own upstream list
+/// and trigger mode. A thin, dependency-graph-focused slice of what
+/// `GET /pipelines/{id}` already returns in `PipelineSummary`.
+async fn get_pipeline_dependencies_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<PipelineDependenciesResponse>, ApiError> {
+    let summary = state.pipelines.get_summary(&id, &state.secrets).await?;
+    Ok(Json(PipelineDependenciesResponse {
+        depends_on: summary.depends_on,
+        dependency_mode: summary.dependency_mode,
+    }))
+}
+
+#[derive(Serialize)]
+struct OrchestrationNode {
+    pipeline_id: String,
+}
+
+#[derive(Serialize)]
+struct OrchestrationEdge {
+    from: String,
+    to: String,
+    dependency_mode: nexus_core::DependencyMode,
+}
+
+#[derive(Serialize)]
+struct OrchestrationGraph {
+    nodes: Vec<OrchestrationNode>,
+    edges: Vec<OrchestrationEdge>,
+}
+
+/// `GET /orchestration/graph` — whole-catalog pipeline-to-pipeline
+/// dependency graph (Fase 26), separate from `/lineage`'s resource-level
+/// graph. Recomputed fresh on every request from saved specs, same posture
+/// as `lineage_handler` — pipeline dependency counts are small, no reason
+/// to materialize this. Drafts are excluded, same reasoning as
+/// `lineage_handler` (an incomplete draft's `depends_on` was never
+/// validated).
+async fn orchestration_graph_handler(
+    State(state): State<AppState>,
+) -> Result<Json<OrchestrationGraph>, ApiError> {
+    let all_specs: Vec<_> = state
+        .pipelines
+        .list_all_specs(&state.secrets)
+        .await?
+        .into_iter()
+        .filter(|s| !s.draft)
+        .collect();
+    let nodes = all_specs
+        .iter()
+        .map(|s| OrchestrationNode {
+            pipeline_id: s.pipeline_id.clone(),
+        })
+        .collect();
+    let edges = all_specs
+        .iter()
+        .flat_map(|s| {
+            let downstream = s.pipeline_id.clone();
+            let mode = s.dependency_mode;
+            s.depends_on.iter().map(move |d| OrchestrationEdge {
+                from: d.upstream_pipeline_id.clone(),
+                to: downstream.clone(),
+                dependency_mode: mode,
+            })
+        })
+        .collect();
+    Ok(Json(OrchestrationGraph { nodes, edges }))
 }
 
 #[derive(Deserialize)]
@@ -1344,6 +2549,73 @@ async fn license_status_handler(
 }
 
 #[derive(Deserialize)]
+struct CreatePromptRequest {
+    name: String,
+    template: String,
+}
+
+#[derive(Serialize)]
+struct CreatePromptResponse {
+    name: String,
+    version: u32,
+}
+
+/// Always inserts a new version — see `PromptTemplateStore::create`'s doc
+/// comment for why this never overwrites (LLMOPS_IMPLEMENTATION_PLAN.md
+/// Marco L4).
+async fn create_prompt_handler(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Json(body): Json<CreatePromptRequest>,
+) -> Result<Json<CreatePromptResponse>, ApiError> {
+    if body.name.trim().is_empty() {
+        return Err(ApiError::bad_request("name must not be empty"));
+    }
+    if body.template.trim().is_empty() {
+        return Err(ApiError::bad_request("template must not be empty"));
+    }
+    let version = state
+        .prompt_templates
+        .create(&body.name, &body.template, &claims.sub)
+        .await
+        .map_err(ApiError::internal)?;
+    #[cfg(feature = "version-history")]
+    {
+        let path = format!("prompts/{}/v{}.txt", body.name, version);
+        let message = format!("create prompt {} v{}", body.name, version);
+        match state
+            .git_history
+            .commit_blob(&path, body.template.as_bytes(), &message, &claims.sub)
+            .await
+        {
+            Ok(_) => maybe_push_git_history_to_remote(&state).await,
+            Err(e) => tracing::warn!(
+                name = %body.name,
+                version,
+                error = %e,
+                "failed to record git version history for this prompt save"
+            ),
+        }
+    }
+    Ok(Json(CreatePromptResponse {
+        name: body.name,
+        version,
+    }))
+}
+
+async fn list_prompts_handler(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<prompt_template_store::PromptTemplate>>, ApiError> {
+    Ok(Json(
+        state
+            .prompt_templates
+            .list()
+            .await
+            .map_err(ApiError::internal)?,
+    ))
+}
+
+#[derive(Deserialize)]
 struct UpdateRoleRequest {
     role: Role,
 }
@@ -1408,9 +2680,10 @@ async fn progress_ws_handler(
         .strip_prefix("nexusflow-")
         .ok_or_else(|| ApiError::unauthorized("expected nexusflow-<token> protocol"))?;
     let (progress_rx, log_rx) = authorize_progress_subscription(&state, token, run_id).await?;
+    let llm_stats = state.llm_stats.clone();
     Ok(ws
         .protocols([proto.clone()])
-        .on_upgrade(move |socket| forward_progress(socket, progress_rx, log_rx)))
+        .on_upgrade(move |socket| forward_progress(socket, progress_rx, log_rx, run_id, llm_stats)))
 }
 
 /// Split out from `progress_ws_handler` so it's callable directly from a
@@ -1454,6 +2727,8 @@ async fn forward_progress(
     mut socket: WebSocket,
     mut rx: tokio::sync::broadcast::Receiver<nexus_core::ProgressEvent>,
     mut log_rx: tokio::sync::broadcast::Receiver<RunLogEvent>,
+    run_id: i64,
+    llm_stats: pipeline_run_llm_stats_store::PipelineRunLlmStatsStore,
 ) {
     let mut hardware = hardware_stats::HardwareMonitor::new();
     let mut hardware_ticker = tokio::time::interval(HARDWARE_STATS_INTERVAL);
@@ -1462,6 +2737,13 @@ async fn forward_progress(
     // to the client is discarded rather than shipped as a misleading 0%.
     hardware_ticker.tick().await;
     hardware.sample();
+    // Same interval as hardware_stats, separate ticker (LLMOPS_IMPLEMENTATION_PLAN.md
+    // Marco L2) — a DB read per tick instead of an in-memory sample, but
+    // negligible for one indexed row every 2s on a single active run.
+    // Skipped entirely (no frame sent) when the run has no llm node, unlike
+    // hardware_stats which is unconditionally useful for every run.
+    let mut llm_stats_ticker = tokio::time::interval(HARDWARE_STATS_INTERVAL);
+    llm_stats_ticker.tick().await;
 
     loop {
         tokio::select! {
@@ -1511,6 +2793,19 @@ async fn forward_progress(
                     break;
                 }
             }
+            _ = llm_stats_ticker.tick() => {
+                if let Ok(Some(stats)) = llm_stats.get(run_id).await {
+                    let json = serde_json::to_string(&serde_json::json!({ "llm_stats": {
+                        "tokens_prompt": stats.tokens_prompt,
+                        "tokens_completion": stats.tokens_completion,
+                        "cost_estimate": stats.cost_estimate,
+                    } }))
+                    .expect("llm stats always serialize");
+                    if socket.send(Message::Text(json.into())).await.is_err() {
+                        break;
+                    }
+                }
+            }
             incoming = socket.recv() => {
                 // No client->server protocol — any message or a closed
                 // connection both mean "stop forwarding".
@@ -1535,6 +2830,16 @@ pub struct ServerConfig {
     /// 64-char hex string (32 raw bytes) — comes from `NEXUS_ENCRYPTION_KEY`.
     /// Encrypts connector secrets at rest (CLAUDE.md §5). See `crypto.rs`.
     pub encryption_key_hex: String,
+    /// `NEXUS_MASKING_SALT` — keys the HMAC-SHA256 column tokenization a
+    /// pipeline opts into via `PipelineSpec.masking` (Fase 28). `None`
+    /// means the feature is off server-wide: a pipeline spec with a
+    /// non-empty `masking` list is rejected at save time
+    /// (`create_pipeline_handler`/`update_pipeline_handler`), not silently
+    /// run unmasked. Unlike `encryption_key_hex` above this isn't required
+    /// at boot — most deployments never use column masking at all, and
+    /// this crate has no way to know in advance whether any saved pipeline
+    /// will ever set `masking`.
+    pub masking_salt: Option<String>,
     /// `NEXUS_SLACK_WEBHOOK_URL` — `None` just means alerting is off, not a
     /// startup failure (see `alerts.rs`).
     pub slack_webhook_url: Option<String>,
@@ -1555,6 +2860,23 @@ pub struct ServerConfig {
     /// documents an env var that degrades gracefully when unset (alerts just
     /// stay off); this one weakens SSRF protection, so it's opt-in only.
     pub allow_internal_hosts: bool,
+    /// `NEXUS_TRUST_PROXY_HEADERS` — see `rate_limit::TrustProxyHeaders`'s
+    /// doc comment. Same "opt-in only" reasoning as `allow_internal_hosts`
+    /// above: trusting `X-Forwarded-For` weakens the login rate limiter
+    /// unless a reverse proxy is confirmed to own that header.
+    pub trust_proxy_headers: bool,
+    /// `NEXUS_QUEUE_MODE` (Fase 29) — opt-in, off by default: preserves the
+    /// exact pre-Fase-29 inline-dispatch behavior unless a deployment
+    /// explicitly enables queue-based execution distribution across
+    /// replicas (Postgres backend only — see `work_queue.rs`'s doc
+    /// comment). Never required, most self-hosted single-replica
+    /// deployments have no reason to turn this on.
+    pub queue_mode: bool,
+    /// `NEXUS_GIT_HISTORY_PATH` — where the embedded bare git repo backing
+    /// pipeline/prompt version history lives (see `git_history_store.rs`).
+    /// Defaults to a path next to the pipelines database.
+    #[cfg(feature = "version-history")]
+    pub git_history_path: String,
 }
 
 async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
@@ -1581,6 +2903,30 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         dbt_test_result_store::DbtTestResultStore::connect(&config.pipelines_database_url).await?;
     let pipeline_schemas =
         pipeline_schema_store::PipelineSchemaStore::connect(&config.pipelines_database_url).await?;
+    let data_catalog = data_catalog::CatalogStore::connect(&config.pipelines_database_url).await?;
+    let pipeline_dependency_state =
+        pipeline_dependencies::DependencyStateStore::connect(&config.pipelines_database_url)
+            .await?;
+    let pipeline_run_volume =
+        pipeline_run_volume_store::PipelineRunVolumeStore::connect(&config.pipelines_database_url)
+            .await?;
+    let work_queue = if config.queue_mode {
+        Some(work_queue::WorkQueueStore::connect(&config.pipelines_database_url).await?)
+    } else {
+        None
+    };
+    let quality_checks =
+        quality_check_store::QualityCheckStore::connect(&config.pipelines_database_url).await?;
+    let llm_stats = pipeline_run_llm_stats_store::PipelineRunLlmStatsStore::connect(
+        &config.pipelines_database_url,
+    )
+    .await?;
+    let prompt_templates =
+        prompt_template_store::PromptTemplateStore::connect(&config.pipelines_database_url).await?;
+    let llm_generations =
+        llm_generation_store::LlmGenerationStore::connect(&config.pipelines_database_url).await?;
+    let llm_eval_results =
+        llm_eval_result_store::LlmEvalResultStore::connect(&config.pipelines_database_url).await?;
     if let Some((username, password)) = &config.bootstrap_admin {
         auth_store.seed_admin_if_empty(username, password).await?;
     }
@@ -1592,11 +2938,19 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
     );
     let secrets = SecretCipher::from_hex_key(&config.encryption_key_hex)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let masking_salt = config.masking_salt.as_ref().map(|s| s.as_bytes().to_vec());
+    #[cfg(feature = "version-history")]
+    let git_history = git_history_store::GitHistoryStore::open(&config.git_history_path)?;
+    #[cfg(feature = "version-history")]
+    let git_remote =
+        git_remote_config_store::GitRemoteConfigStore::connect(&config.pipelines_database_url)
+            .await?;
     Ok(AppState {
         checkpoints,
         auth_store,
         jwt,
         secrets,
+        masking_salt,
         pipelines,
         run_logs,
         license_store,
@@ -1604,16 +2958,33 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         dbt_lineage,
         dbt_test_results,
         pipeline_schemas,
+        data_catalog,
+        pipeline_dependency_state,
+        pipeline_run_volume,
+        work_queue,
+        quality_checks,
+        llm_stats,
+        prompt_templates,
+        llm_generations,
+        llm_eval_results,
         progress: ProgressHub::default(),
-        alerts: AlertNotifier::new(AlertConfig {
-            slack_webhook_url: config.slack_webhook_url.clone(),
-            teams_webhook_url: config.teams_webhook_url.clone(),
-            pagerduty_routing_key: config.pagerduty_routing_key.clone(),
-            email: config.email.clone(),
-            webhook_url: config.webhook_url.clone(),
-        }),
+        alerts: AlertNotifier::new(
+            AlertConfig {
+                slack_webhook_url: config.slack_webhook_url.clone(),
+                teams_webhook_url: config.teams_webhook_url.clone(),
+                pagerduty_routing_key: config.pagerduty_routing_key.clone(),
+                email: config.email.clone(),
+                webhook_url: config.webhook_url.clone(),
+            },
+            config.allow_internal_hosts,
+        ),
         login_rate_limiter: std::sync::Arc::new(rate_limit::LoginRateLimiter::default()),
         allow_internal_hosts: config.allow_internal_hosts,
+        trust_proxy_headers: config.trust_proxy_headers,
+        #[cfg(feature = "version-history")]
+        git_history,
+        #[cfg(feature = "version-history")]
+        git_remote,
     })
 }
 
@@ -1688,6 +3059,13 @@ pub async fn run() -> anyhow::Result<()> {
              e.g. `openssl rand -hex 32` (CLAUDE.md §5)"
         )
     })?;
+    let masking_salt = std::env::var("NEXUS_MASKING_SALT").ok();
+    if masking_salt.is_none() {
+        tracing::warn!(
+            "NEXUS_MASKING_SALT not set — a pipeline cannot enable column masking (Fase 28) \
+             until this is set; existing pipelines without masking are unaffected"
+        );
+    }
     let bootstrap_admin = match (
         std::env::var("NEXUS_ADMIN_USERNAME"),
         std::env::var("NEXUS_ADMIN_PASSWORD"),
@@ -1740,6 +3118,54 @@ pub async fn run() -> anyhow::Result<()> {
              self-hosted deployments, never on a multi-tenant/shared instance."
         );
     }
+    let trust_proxy_headers = std::env::var("NEXUS_TRUST_PROXY_HEADERS")
+        .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+    if trust_proxy_headers {
+        tracing::warn!(
+            "NEXUS_TRUST_PROXY_HEADERS=true — the login rate limiter will trust the \
+             X-Forwarded-For header. Only set this when a reverse proxy in front of this \
+             process overwrites that header itself; otherwise any direct caller can spoof it \
+             and bypass per-IP login rate limiting entirely."
+        );
+    }
+    let queue_mode =
+        std::env::var("NEXUS_QUEUE_MODE").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+    if queue_mode {
+        tracing::info!(
+            "NEXUS_QUEUE_MODE=true — pipeline runs triggered on this replica are enqueued \
+             instead of dispatched inline (Fase 29); requires a Postgres metadata backend to \
+             actually be claimed by any replica (see work_queue.rs)."
+        );
+    }
+    // Default used to be a bare relative path ("nexusflow-version-history.git",
+    // resolved against the process's CWD) — inside the published image that's
+    // "/" (no WORKDIR set in the runtime stage), owned by root, not writable
+    // by the non-root `nexusflow` user (uid 1001). Nothing had ever turned
+    // `version-history` on in a built image before the LLMOps Store
+    // integration (see docs/ENTERPRISE_LICENSING.md), so this went
+    // undetected: the server crashed on boot ("Permission denied") the
+    // first time the feature was actually exercised end-to-end.
+    //
+    // First fix attempt used "$HOME/nexusflow-version-history.git" — wrong
+    // too, verified empirically: this image's minimal runtime environment
+    // never exports HOME at all (useradd -r creates no home entry that a
+    // non-login process inherits), so it silently fell through to the same
+    // "." fallback and crashed the same way. `std::env::temp_dir()`
+    // resolves via $TMPDIR with a hardcoded "/tmp" fallback — always
+    // exists, always writable, no environment precondition at all. Same
+    // "doesn't need to survive a container recreate" posture already used
+    // for this deployment's sqlite metadata DBs in local testbeds
+    // (docker-compose.nexusflow-test.yml's NEXUS_CHECKPOINT_DB, etc.) — a
+    // deployment that wants the git history to persist across restarts
+    // sets NEXUS_GIT_HISTORY_PATH to a mounted volume, same as it already
+    // must for sqlite-backed metadata.
+    #[cfg(feature = "version-history")]
+    let git_history_path = std::env::var("NEXUS_GIT_HISTORY_PATH").unwrap_or_else(|_| {
+        std::env::temp_dir()
+            .join("nexusflow-version-history.git")
+            .to_string_lossy()
+            .into_owned()
+    });
 
     let state = build_state(&ServerConfig {
         checkpoint_database_url: database_url,
@@ -1749,12 +3175,17 @@ pub async fn run() -> anyhow::Result<()> {
         jwt_ttl_seconds: 3600,
         bootstrap_admin,
         encryption_key_hex,
+        masking_salt,
         slack_webhook_url,
         teams_webhook_url,
         pagerduty_routing_key,
         email,
         webhook_url,
         allow_internal_hosts,
+        trust_proxy_headers,
+        queue_mode,
+        #[cfg(feature = "version-history")]
+        git_history_path,
     })
     .await?;
 
@@ -1782,6 +3213,16 @@ pub async fn run() -> anyhow::Result<()> {
     // resource_stats.rs) — same "only the real boot path" rule as the
     // scheduler above.
     resource_stats::spawn(state.clone());
+
+    // Sweeps NEXUS_UPLOAD_DIR of batches past their TTL (see
+    // upload_cleanup.rs) — same "only the real boot path" rule as above;
+    // uploaded files otherwise have no lifecycle at all.
+    upload_cleanup::spawn(state.clone());
+
+    // Queue-based execution distribution (Fase 29, see worker.rs) — a
+    // no-op unless `NEXUS_QUEUE_MODE=true`; same "only the real boot path"
+    // rule as every other background task above.
+    worker::spawn(state.clone());
 
     let app = router(state);
 
@@ -1836,9 +3277,20 @@ async fn shutdown_signal() {
 mod tests {
     use super::*;
     use axum::body::Body;
+    use axum::extract::ConnectInfo;
     use axum::http::{Request, StatusCode};
     use axum::response::IntoResponse;
     use tower::ServiceExt;
+
+    /// Fresh, isolated bare repo per call — `test_state()`/`rate_limited_state()`
+    /// each get their own so parallel `#[tokio::test]`s never share one.
+    /// Leaked on purpose (`.keep()`): these are short-lived test processes,
+    /// same trade-off other tests make with real filesystem fixtures.
+    #[cfg(feature = "version-history")]
+    fn test_git_history() -> git_history_store::GitHistoryStore {
+        let dir = tempfile::tempdir().unwrap().keep();
+        git_history_store::GitHistoryStore::open(dir.join("history.git")).unwrap()
+    }
 
     async fn test_state() -> AppState {
         let auth_store = AuthStore::connect("sqlite::memory:").await.unwrap();
@@ -1851,6 +3303,7 @@ mod tests {
             auth_store,
             jwt: JwtCodec::new(b"test-secret", 3600),
             secrets: SecretCipher::from_hex_key(&"ab".repeat(32)).unwrap(),
+            masking_salt: Some(b"test-masking-salt".to_vec()),
             pipelines: PipelineStore::connect("sqlite::memory:").await.unwrap(),
             run_logs: RunLogStore::connect("sqlite::memory:").await.unwrap(),
             license_store: LicenseStore::connect("sqlite::memory:").await.unwrap(),
@@ -1868,13 +3321,53 @@ mod tests {
             )
             .await
             .unwrap(),
+            data_catalog: data_catalog::CatalogStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
+            pipeline_dependency_state: pipeline_dependencies::DependencyStateStore::connect(
+                "sqlite::memory:",
+            )
+            .await
+            .unwrap(),
+            pipeline_run_volume: pipeline_run_volume_store::PipelineRunVolumeStore::connect(
+                "sqlite::memory:",
+            )
+            .await
+            .unwrap(),
+            work_queue: None,
+            quality_checks: quality_check_store::QualityCheckStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
+            llm_stats: pipeline_run_llm_stats_store::PipelineRunLlmStatsStore::connect(
+                "sqlite::memory:",
+            )
+            .await
+            .unwrap(),
+            prompt_templates: prompt_template_store::PromptTemplateStore::connect(
+                "sqlite::memory:",
+            )
+            .await
+            .unwrap(),
+            llm_generations: llm_generation_store::LlmGenerationStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
+            llm_eval_results: llm_eval_result_store::LlmEvalResultStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
             progress: ProgressHub::default(),
-            alerts: AlertNotifier::new(AlertConfig::default()),
+            alerts: AlertNotifier::new(AlertConfig::default(), false),
             login_rate_limiter: std::sync::Arc::new(rate_limit::LoginRateLimiter::new(
                 std::time::Duration::from_secs(60),
                 10_000,
             )),
             allow_internal_hosts: false,
+            trust_proxy_headers: false,
+            #[cfg(feature = "version-history")]
+            git_history: test_git_history(),
+            #[cfg(feature = "version-history")]
+            git_remote: git_remote_config_store::GitRemoteConfigStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
         }
     }
 
@@ -1996,6 +3489,7 @@ mod tests {
                     sink: Box::new(NullSink),
                 },
                 None,
+                None,
             )
             .await
             .expect("partition runs successfully");
@@ -2076,16 +3570,9 @@ mod tests {
         let state = test_state().await;
         let app = router(state);
 
-        let body = serde_json::json!({"username": "admin", "password": "test-password"});
+        let peer: SocketAddr = "203.0.113.1:12345".parse().unwrap();
         let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/auth/login")
-                    .header("content-type", "application/json")
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
+            .oneshot(login_credentials_request(peer, "admin", "test-password"))
             .await
             .unwrap();
 
@@ -2096,16 +3583,9 @@ mod tests {
     async fn login_rejects_wrong_password() {
         let app = router(test_state().await);
 
-        let body = serde_json::json!({"username": "admin", "password": "wrong"});
+        let peer: SocketAddr = "203.0.113.1:12345".parse().unwrap();
         let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/auth/login")
-                    .header("content-type", "application/json")
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
+            .oneshot(login_credentials_request(peer, "admin", "wrong"))
             .await
             .unwrap();
 
@@ -2436,7 +3916,154 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["unique_id"], "test.proj.not_null_orders_id");
         assert_eq!(results[0]["status"], "fail");
-        assert_eq!(results[0]["message"], "3 rows failed");
+    }
+
+    // --- Marco L8: llm-lineage-tracking / reactive-rag-cdc enterprise gate ---
+
+    #[cfg(all(
+        feature = "llm",
+        any(feature = "embeddings", feature = "embeddings-api"),
+        any(
+            feature = "lancedb",
+            feature = "qdrant",
+            feature = "milvus",
+            feature = "pgvector",
+            feature = "pinecone",
+            feature = "chromadb"
+        )
+    ))]
+    #[tokio::test]
+    async fn generation_lineage_is_forbidden_without_a_covering_license() {
+        let state = test_state().await;
+        let read_token = bearer(&state, Role::Read);
+        // Seeded directly — this test is about the license gate in front
+        // of the handler, not about producing a real generation via RAG
+        // (already covered by `reactive_rag_cdc_pipeline.rs`/
+        // `lancedb_search_integration.rs`).
+        let id = state
+            .llm_generations
+            .record(llm_generation_store::NewGeneration {
+                pipeline_id: "p1",
+                question: "what is nexusflow?",
+                answer: "a data movement framework",
+                prompt_name: "rag-prompt",
+                prompt_version: 1,
+                model: "gpt-test",
+                tokens_prompt: 10,
+                tokens_completion: 5,
+                resource_id: None,
+                context_keys: &[],
+            })
+            .await
+            .unwrap();
+        let app = router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/lineage/generation/{id}"))
+                    .header("authorization", &read_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "no license installed — the generation exists (id is real), so a non-403 \
+             status here would mean the license check isn't actually gating this handler"
+        );
+    }
+
+    #[cfg(all(
+        feature = "llm",
+        any(feature = "embeddings", feature = "embeddings-api"),
+        any(
+            feature = "lancedb",
+            feature = "qdrant",
+            feature = "milvus",
+            feature = "pgvector",
+            feature = "pinecone",
+            feature = "chromadb"
+        )
+    ))]
+    #[tokio::test]
+    async fn generation_lineage_is_visible_with_a_covering_license() {
+        use crate::license::test_support::{claims, sign};
+
+        let state = test_state().await;
+        state
+            .license_store
+            .install(&sign(&claims(vec!["llm-lineage-tracking"])))
+            .await
+            .unwrap();
+        let read_token = bearer(&state, Role::Read);
+        let id = state
+            .llm_generations
+            .record(llm_generation_store::NewGeneration {
+                pipeline_id: "p1",
+                question: "what is nexusflow?",
+                answer: "a data movement framework",
+                prompt_name: "rag-prompt",
+                prompt_version: 1,
+                model: "gpt-test",
+                tokens_prompt: 10,
+                tokens_completion: 5,
+                resource_id: None,
+                context_keys: &[],
+            })
+            .await
+            .unwrap();
+        let app = router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/lineage/generation/{id}"))
+                    .header("authorization", &read_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = body_json(response).await;
+        assert_eq!(body["question"], "what is nexusflow?");
+    }
+
+    #[tokio::test]
+    async fn connectors_catalog_never_exposes_capability_only_slugs() {
+        // `llm-lineage-tracking`/`reactive-rag-cdc` (Marco L8,
+        // `capability_registry.rs`) are license-check targets, not real
+        // connectors — they must never show up as a node type the Canvas
+        // could try to add to a DAG.
+        let state = test_state().await;
+        let read_token = bearer(&state, Role::Read);
+        let app = router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/connectors")
+                    .header("authorization", &read_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let entries = body_json(response).await;
+        let names: Vec<&str> = entries
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["name"].as_str().unwrap())
+            .collect();
+        assert!(!names.contains(&"llm-lineage-tracking"));
+        assert!(!names.contains(&"reactive-rag-cdc"));
     }
 
     #[tokio::test]
@@ -2720,6 +4347,273 @@ mod tests {
         let list = body_json(response).await;
         assert_eq!(list.as_array().unwrap().len(), 1);
         assert_eq!(list[0]["pipeline_id"], "p1");
+    }
+
+    /// `sample_pipeline` above, but with a distinguishable sink connector —
+    /// the version-history tests below diff/rollback on exactly this
+    /// field to prove they're reading the *old* content back, not just
+    /// re-fetching the current one.
+    #[cfg(feature = "version-history")]
+    fn sample_pipeline_with_sink(id: &str, sink_connector: &str) -> serde_json::Value {
+        let mut spec = sample_pipeline(id);
+        spec["sinks"][0]["connector"] = serde_json::json!(sink_connector);
+        spec
+    }
+
+    #[cfg(feature = "version-history")]
+    #[tokio::test]
+    async fn pipeline_versions_lists_one_entry_per_save_newest_first() {
+        let state = test_state().await;
+        let write_token = bearer(&state, Role::Write);
+        let read_token = bearer(&state, Role::Read);
+        let app = router(state);
+
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                "/pipelines",
+                &write_token,
+                sample_pipeline_with_sink("p1", "sqlite"),
+            ))
+            .await
+            .unwrap();
+        app.clone()
+            .oneshot(json_request(
+                "PUT",
+                "/pipelines/p1",
+                &write_token,
+                sample_pipeline_with_sink("p1", "postgres"),
+            ))
+            .await
+            .unwrap();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/pipelines/p1/versions")
+                    .header("authorization", read_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let versions = body_json(response).await;
+        let versions = versions.as_array().unwrap();
+        assert_eq!(versions.len(), 2);
+        assert_eq!(versions[0]["message"], "update pipeline p1", "newest first");
+        assert_eq!(versions[1]["message"], "create pipeline p1");
+    }
+
+    #[cfg(feature = "version-history")]
+    #[tokio::test]
+    async fn pipeline_diff_reports_the_sink_connector_change() {
+        let state = test_state().await;
+        let write_token = bearer(&state, Role::Write);
+        let read_token = bearer(&state, Role::Read);
+        let app = router(state);
+
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                "/pipelines",
+                &write_token,
+                sample_pipeline_with_sink("p1", "sqlite"),
+            ))
+            .await
+            .unwrap();
+        app.clone()
+            .oneshot(json_request(
+                "PUT",
+                "/pipelines/p1",
+                &write_token,
+                sample_pipeline_with_sink("p1", "postgres"),
+            ))
+            .await
+            .unwrap();
+
+        let versions = body_json(
+            app.clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/pipelines/p1/versions")
+                        .header("authorization", &read_token)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
+        )
+        .await;
+        let create_commit = versions[1]["commit"].as_str().unwrap();
+
+        // No `?against=` — diffs the old commit against the pipeline's
+        // current (latest) state.
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/pipelines/p1/versions/{create_commit}/diff"))
+                    .header("authorization", read_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = body_json(response).await;
+        let diff = body["diff"].as_str().unwrap();
+        assert!(diff.contains("sqlite"), "diff:\n{diff}");
+        assert!(diff.contains("postgres"), "diff:\n{diff}");
+        assert!(
+            !diff.contains("postgres://user:pw@host/db"),
+            "diff must never leak connector config/secrets:\n{diff}"
+        );
+    }
+
+    #[cfg(feature = "version-history")]
+    #[tokio::test]
+    async fn pipeline_rollback_restores_old_content_as_a_new_commit() {
+        let state = test_state().await;
+        let write_token = bearer(&state, Role::Write);
+        let read_token = bearer(&state, Role::Read);
+        let app = router(state);
+
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                "/pipelines",
+                &write_token,
+                sample_pipeline_with_sink("p1", "sqlite"),
+            ))
+            .await
+            .unwrap();
+        app.clone()
+            .oneshot(json_request(
+                "PUT",
+                "/pipelines/p1",
+                &write_token,
+                sample_pipeline_with_sink("p1", "postgres"),
+            ))
+            .await
+            .unwrap();
+
+        let versions = body_json(
+            app.clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/pipelines/p1/versions")
+                        .header("authorization", &read_token)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
+        )
+        .await;
+        let create_commit = versions[1]["commit"].as_str().unwrap().to_string();
+
+        let rollback = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/pipelines/p1/versions/{create_commit}/rollback"))
+                    .header("authorization", &write_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rollback.status(), StatusCode::OK);
+        let summary = body_json(rollback).await;
+        assert_eq!(
+            summary["sinks"][0]["connector"], "sqlite",
+            "rollback restored the original sink connector"
+        );
+
+        // Rollback is a new commit, not a history rewrite — 3 entries now,
+        // not 2.
+        let versions_after = body_json(
+            app.oneshot(
+                Request::builder()
+                    .uri("/pipelines/p1/versions")
+                    .header("authorization", read_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        let versions_after = versions_after.as_array().unwrap();
+        assert_eq!(versions_after.len(), 3);
+        assert!(versions_after[0]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("rollback pipeline p1 to"));
+    }
+
+    #[cfg(feature = "version-history")]
+    #[tokio::test]
+    async fn prompt_versions_and_diff_track_authors_and_text_changes() {
+        let state = test_state().await;
+        let write_token = bearer(&state, Role::Write);
+        let read_token = bearer(&state, Role::Read);
+        let app = router(state);
+
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                "/prompts",
+                &write_token,
+                serde_json::json!({"name": "greet", "template": "Hello v1"}),
+            ))
+            .await
+            .unwrap();
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                "/prompts",
+                &write_token,
+                serde_json::json!({"name": "greet", "template": "Hello v2"}),
+            ))
+            .await
+            .unwrap();
+
+        let versions = body_json(
+            app.clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/prompts/greet/versions")
+                        .header("authorization", &read_token)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
+        )
+        .await;
+        let versions = versions.as_array().unwrap();
+        assert_eq!(versions.len(), 2);
+        assert!(versions.iter().all(|v| v["commit"].is_string()));
+
+        let diff = body_json(
+            app.oneshot(
+                Request::builder()
+                    .uri("/prompts/greet/versions/1/diff?against=2")
+                    .header("authorization", read_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        let diff_text = diff["diff"].as_str().unwrap();
+        assert!(diff_text.contains("-Hello v1"), "diff:\n{diff_text}");
+        assert!(diff_text.contains("+Hello v2"), "diff:\n{diff_text}");
     }
 
     #[tokio::test]
@@ -3036,6 +4930,202 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn recreating_a_deleted_pipelines_id_does_not_inherit_its_run_history() {
+        let state = test_state().await;
+        let write_token = bearer(&state, Role::Write);
+        let execute_token = bearer(&state, Role::Execute);
+
+        // First "p1": create it, give it a couple of runs.
+        state.pipelines.start_run("p1").await.unwrap();
+        let run2 = state.pipelines.start_run("p1").await.unwrap();
+        state
+            .pipelines
+            .finish_run_success(run2, &[], None)
+            .await
+            .unwrap();
+        let (_progress_tx, log_tx) = state.progress.start(run2).await;
+        let logger = RunLogger::new(run2, log_tx, state.run_logs.clone());
+        logger.info("first p1's log line").await;
+
+        let app = router(state);
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                "/pipelines",
+                &write_token,
+                sample_pipeline("p1"),
+            ))
+            .await
+            .unwrap();
+
+        let delete = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/pipelines/p1")
+                    .header("authorization", &write_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(delete.status(), StatusCode::NO_CONTENT);
+
+        // Second "p1": brand new pipeline reusing the same id.
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                "/pipelines",
+                &write_token,
+                sample_pipeline("p1"),
+            ))
+            .await
+            .unwrap();
+
+        let runs = app
+            .oneshot(
+                Request::builder()
+                    .uri("/pipelines/p1/runs")
+                    .header("authorization", execute_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let runs = body_json(runs).await;
+        assert!(
+            runs.as_array().unwrap().is_empty(),
+            "the new p1 must not inherit the deleted p1's run history: {runs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_run_removes_it_from_history() {
+        let state = test_state().await;
+        let write_token = bearer(&state, Role::Write);
+        let execute_token = bearer(&state, Role::Execute);
+        let app = router(state);
+
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                "/pipelines",
+                &write_token,
+                sample_pipeline("p1"),
+            ))
+            .await
+            .unwrap();
+
+        let body = serde_json::json!({
+            "pipeline_id": "p1",
+            "sources": [{"connector": "mongodb", "config": {}}],
+            "sinks": [{"connector": "postgres", "config": {}}]
+        });
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                "/pipelines/p1/run",
+                &execute_token,
+                body,
+            ))
+            .await
+            .unwrap();
+        let record = wait_for_terminal_run(&app, &execute_token, "p1").await;
+        let run_id = record["id"].as_i64().unwrap();
+
+        let delete = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/pipelines/p1/runs/{run_id}"))
+                    .header("authorization", &write_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(delete.status(), StatusCode::NO_CONTENT);
+
+        let runs = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/pipelines/p1/runs")
+                    .header("authorization", &write_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let runs = body_json(runs).await;
+        assert!(runs.as_array().unwrap().is_empty());
+
+        // Deleting again — already gone — is a 404, not a silent success.
+        let redelete = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/pipelines/p1/runs/{run_id}"))
+                    .header("authorization", write_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(redelete.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn delete_run_rejects_a_run_still_in_progress() {
+        let state = test_state().await;
+        let write_token = bearer(&state, Role::Write);
+        let run_id = state.pipelines.start_run("p1").await.unwrap();
+        let app = router(state);
+
+        let delete = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/pipelines/p1/runs/{run_id}"))
+                    .header("authorization", write_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(delete.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn delete_run_is_scoped_to_the_url_pipeline_id() {
+        let state = test_state().await;
+        let write_token = bearer(&state, Role::Write);
+        let run_id = state.pipelines.start_run("p1").await.unwrap();
+        state
+            .pipelines
+            .finish_run_success(run_id, &[], None)
+            .await
+            .unwrap();
+        let app = router(state);
+
+        // p1's run can't be deleted through p2's URL.
+        let delete = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/pipelines/p2/runs/{run_id}"))
+                    .header("authorization", write_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(delete.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
     async fn run_records_failed_run_in_history() {
         let state = test_state().await;
         let write_token = bearer(&state, Role::Write);
@@ -3238,22 +5328,24 @@ mod tests {
         assert!(validate_jwt_secret(&"x".repeat(32)).is_ok());
     }
 
-    #[tokio::test]
-    async fn login_rate_limits_per_ip() {
+    /// `AppState` builder shared by the login-rate-limit tests below —
+    /// identical to `test_state()` except the caller picks the limiter and
+    /// `trust_proxy_headers`, both of which the base helper hardcodes.
+    async fn rate_limited_state(
+        limiter: std::sync::Arc<rate_limit::LoginRateLimiter>,
+        trust_proxy_headers: bool,
+    ) -> AppState {
         let auth_store = AuthStore::connect("sqlite::memory:").await.unwrap();
         auth_store
             .seed_admin_if_empty("admin", "test-password")
             .await
             .unwrap();
-        let limiter = std::sync::Arc::new(rate_limit::LoginRateLimiter::new(
-            std::time::Duration::from_secs(60),
-            2,
-        ));
-        let state = AppState {
+        AppState {
             checkpoints: CheckpointStore::connect("sqlite::memory:").await.unwrap(),
             auth_store,
             jwt: JwtCodec::new(b"test-secret", 3600),
             secrets: SecretCipher::from_hex_key(&"ab".repeat(32)).unwrap(),
+            masking_salt: Some(b"test-masking-salt".to_vec()),
             pipelines: PipelineStore::connect("sqlite::memory:").await.unwrap(),
             run_logs: RunLogStore::connect("sqlite::memory:").await.unwrap(),
             license_store: LicenseStore::connect("sqlite::memory:").await.unwrap(),
@@ -3271,42 +5363,174 @@ mod tests {
             )
             .await
             .unwrap(),
+            data_catalog: data_catalog::CatalogStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
+            pipeline_dependency_state: pipeline_dependencies::DependencyStateStore::connect(
+                "sqlite::memory:",
+            )
+            .await
+            .unwrap(),
+            pipeline_run_volume: pipeline_run_volume_store::PipelineRunVolumeStore::connect(
+                "sqlite::memory:",
+            )
+            .await
+            .unwrap(),
+            work_queue: None,
+            quality_checks: quality_check_store::QualityCheckStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
+            llm_stats: pipeline_run_llm_stats_store::PipelineRunLlmStatsStore::connect(
+                "sqlite::memory:",
+            )
+            .await
+            .unwrap(),
+            prompt_templates: prompt_template_store::PromptTemplateStore::connect(
+                "sqlite::memory:",
+            )
+            .await
+            .unwrap(),
+            llm_generations: llm_generation_store::LlmGenerationStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
+            llm_eval_results: llm_eval_result_store::LlmEvalResultStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
             progress: ProgressHub::default(),
-            alerts: AlertNotifier::new(AlertConfig::default()),
+            alerts: AlertNotifier::new(AlertConfig::default(), false),
             login_rate_limiter: limiter,
             allow_internal_hosts: false,
-        };
-        let app = router(state);
+            trust_proxy_headers,
+            #[cfg(feature = "version-history")]
+            git_history: test_git_history(),
+            #[cfg(feature = "version-history")]
+            git_remote: git_remote_config_store::GitRemoteConfigStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
+        }
+    }
 
+    /// A login POST with `peer` attached as the connection's `ConnectInfo`
+    /// — `oneshot` never opens a real socket, so this is how these tests
+    /// simulate "requests arriving from this real address" without one.
+    fn login_credentials_request(
+        peer: SocketAddr,
+        username: &str,
+        password: &str,
+    ) -> Request<Body> {
+        let body = serde_json::json!({"username": username, "password": password});
+        Request::builder()
+            .method("POST")
+            .uri("/auth/login")
+            .header("content-type", "application/json")
+            .extension(ConnectInfo(peer))
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    fn login_request(peer: SocketAddr, forwarded_for: Option<&str>) -> Request<Body> {
         let body = serde_json::json!({"username": "admin", "password": "wrong"});
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/auth/login")
+            .header("content-type", "application/json")
+            .extension(ConnectInfo(peer));
+        if let Some(xff) = forwarded_for {
+            builder = builder.header("x-forwarded-for", xff);
+        }
+        builder.body(Body::from(body.to_string())).unwrap()
+    }
+
+    #[tokio::test]
+    async fn login_rate_limits_per_ip() {
+        let limiter = std::sync::Arc::new(rate_limit::LoginRateLimiter::new(
+            std::time::Duration::from_secs(60),
+            2,
+        ));
+        let app = router(rate_limited_state(limiter, false).await);
+        let peer: SocketAddr = "203.0.113.1:12345".parse().unwrap();
+
         for _ in 0..2 {
             let response = app
                 .clone()
-                .oneshot(
-                    Request::builder()
-                        .method("POST")
-                        .uri("/auth/login")
-                        .header("content-type", "application/json")
-                        .body(Body::from(body.to_string()))
-                        .unwrap(),
-                )
+                .oneshot(login_request(peer, None))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+
+        let blocked = app.oneshot(login_request(peer, None)).await.unwrap();
+        assert_eq!(blocked.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    /// The actual security property from this session's audit finding: with
+    /// `trust_proxy_headers: false` (the default), a caller sending a
+    /// different `X-Forwarded-For` on every request must not be able to
+    /// evade the limit — the real peer address is what's counted.
+    #[tokio::test]
+    async fn spoofed_forwarded_for_does_not_bypass_the_limit_by_default() {
+        let limiter = std::sync::Arc::new(rate_limit::LoginRateLimiter::new(
+            std::time::Duration::from_secs(60),
+            2,
+        ));
+        let app = router(rate_limited_state(limiter, false).await);
+        let peer: SocketAddr = "203.0.113.1:12345".parse().unwrap();
+
+        for i in 0..2 {
+            let response = app
+                .clone()
+                .oneshot(login_request(peer, Some(&format!("10.0.0.{i}"))))
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         }
 
         let blocked = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/auth/login")
-                    .header("content-type", "application/json")
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
+            .oneshot(login_request(peer, Some("10.0.0.99")))
+            .await
+            .unwrap();
+        assert_eq!(
+            blocked.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "a fresh X-Forwarded-For value per request must not reset the limit \
+             when the real peer address is unchanged"
+        );
+    }
+
+    /// The opt-in path: an operator who has confirmed a trusted reverse
+    /// proxy owns `X-Forwarded-For` gets the pre-existing behavior back.
+    #[tokio::test]
+    async fn trusted_proxy_headers_are_honored_when_opted_in() {
+        let limiter = std::sync::Arc::new(rate_limit::LoginRateLimiter::new(
+            std::time::Duration::from_secs(60),
+            2,
+        ));
+        let app = router(rate_limited_state(limiter, true).await);
+        // Same peer (as the proxy itself would present to nexus-server) but
+        // distinct real clients behind it — each gets its own bucket.
+        let proxy_peer: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+
+        for _ in 0..2 {
+            let response = app
+                .clone()
+                .oneshot(login_request(proxy_peer, Some("198.51.100.1")))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+        let blocked = app
+            .clone()
+            .oneshot(login_request(proxy_peer, Some("198.51.100.1")))
             .await
             .unwrap();
         assert_eq!(blocked.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        // A different client IP behind the same proxy is unaffected.
+        let other_client = app
+            .oneshot(login_request(proxy_peer, Some("198.51.100.2")))
+            .await
+            .unwrap();
+        assert_eq!(other_client.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

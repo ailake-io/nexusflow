@@ -19,21 +19,53 @@ import {
 type Currency = 'brl' | 'usd'
 
 /**
- * Roadmap candidates (ROADMAP.md Fase 12 Bloco 3, priorização em
- * docs/ENTERPRISE_CONNECTORS.md's "Priorização sugerida" groups 1-2) — none
- * of these are registered connectors yet (no crate exists in this repo, see
- * that doc's own header), so there's no `licensed` state to show for them.
- * Kept honest with an "Em breve" badge and no buy button — no payment flow
- * exists yet either (Bloco 2/4), and no price model has been decided
- * (`docs/ENTERPRISE_LICENSING.md`'s own "Próximos passos" #2).
+ * The three LLMOps capability slugs (`capability_registry.rs`,
+ * LLMOPS_IMPLEMENTATION_PLAN.md Marco L8) — license-check targets for
+ * features that live in *this* public binary, not connector crates.
+ * `GET /connectors` deliberately never lists them (`ConnectorCapability::
+ * Capability` is filtered out server-side, `lib.rs`'s
+ * `list_connectors_handler` — the Canvas must never offer them as a
+ * pipeline node), so unlike `enterpriseConnectors` below this list is
+ * static here and cross-checked against `license.connectors` directly
+ * instead of a `licensed` flag from the API. Sold as separate line items
+ * (`nexus-licensing` products, one `connector_slug` per capability) —
+ * `createCheckout` already accepts multiple `product_ids` in one purchase
+ * if a buyer wants more than one, but each keeps its own price/on-off
+ * state, e.g. Generation Traceability is not bundled into the others.
+ *
+ * `llm-lineage-tracking`'s label is "Generation Traceability (RAG)", not
+ * "Data Quality & Lineage" — it only gates `GET /lineage/generation/{id}`
+ * (which prompt/model/row produced one specific RAG answer, `rag.rs`'s
+ * `generation_detail_handler`). The Quality tab (`quality_check_store.rs`)
+ * and the base pipeline-lineage graph (`GET /lineage`) stay OSS, ungated —
+ * a broader label here would make a buyer think they're paying for those
+ * too.
  */
-const COMING_SOON: { slug: string; name: string; reasonKey: string }[] = [
-  { slug: 'snowflake', name: 'Snowflake', reasonKey: 'store.reasonSnowflake' },
-  { slug: 'bigquery', name: 'BigQuery', reasonKey: 'store.reasonBigquery' },
-  { slug: 'redshift', name: 'Redshift', reasonKey: 'store.reasonRedshift' },
-  { slug: 'databricks', name: 'Databricks', reasonKey: 'store.reasonDatabricks' },
-  { slug: 'salesforce', name: 'Salesforce', reasonKey: 'store.reasonSalesforce' },
-  { slug: 'excel', name: 'Excel', reasonKey: 'store.reasonExcel' },
+const LLMOPS_CAPABILITIES: { slug: string; labelKey: string }[] = [
+  { slug: 'llm-lineage-tracking', labelKey: 'store.capability.generationTraceability' },
+  { slug: 'reactive-rag-cdc', labelKey: 'store.capability.reactiveRag' },
+  { slug: 'git-history-github-sync', labelKey: 'store.capability.gitHistorySync' },
+]
+
+/**
+ * Ads connectors pulled out of `connectors-all`/`connectors-all-no-embeddings`
+ * (`nexus-connectors-enterprise`'s `bin/Cargo.toml`) on 2026-09-10 — none
+ * validated against a real ad account yet (`docs/ENTERPRISE_CONNECTORS.md`
+ * §3, `docs/PENDING_REAL_ACCOUNT_VALIDATION.md`). The crates still exist and
+ * compile standalone, they just aren't in any binary shipped to a customer
+ * right now, so `GET /connectors` never lists them — same reasoning as
+ * `LLMOPS_CAPABILITIES` above (static list here, not derived from the API),
+ * but rendered as a plain "Em breve" badge, no buy flow: there's no license
+ * slug to gate and no product to sell for a connector that isn't compiled
+ * into the binary at all. Remove an entry here the same day it goes back
+ * into `connectors-all` after passing a real test.
+ */
+const ADS_CONNECTORS_COMING_SOON: { slug: string; name: string }[] = [
+  { slug: 'google-ads', name: 'Google Ads' },
+  { slug: 'linkedin-ads', name: 'LinkedIn Ads' },
+  { slug: 'meta-ads', name: 'Meta Ads' },
+  { slug: 'tiktok-ads', name: 'TikTok Ads' },
+  { slug: 'x-ads', name: 'X Ads' },
 ]
 
 /**
@@ -45,10 +77,15 @@ const COMING_SOON: { slug: string; name: string; reasonKey: string }[] = [
  * connector in the Canvas's `ConnectorPalette` — one source of truth, no
  * separate "purchased" state to keep in sync.
  *
- * "Disponíveis agora" only ever lists connectors the running binary
- * actually has registered with `requires_license` (none in this repo
- * today — see `docs/ENTERPRISE_LICENSING.md`); "Em breve" is the static
- * roadmap list above, never treated as real inventory.
+ * "Disponíveis agora" lists every connector the running binary actually
+ * has registered with `requires_license` (`GET /connectors`) — as of
+ * 2026-09-10 that's the enterprise catalog minus the 5 ads connectors
+ * (see `ADS_CONNECTORS_COMING_SOON` above), which do get their own static
+ * "Em breve" section since they're real, just not shippable yet.
+ *
+ * "LLMOps" is a third, separate section below it: those three slugs
+ * aren't connectors at all (see `LLMOPS_CAPABILITIES` above), so they
+ * can't come from the same `enterpriseConnectors` list.
  */
 export function Store() {
   const { t } = useI18n()
@@ -287,24 +324,77 @@ export function Store() {
         </div>
       )}
 
-      <div>
+      <div className="mb-8">
         <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           {t('store.comingSoon')}
         </h2>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {COMING_SOON.map((c) => (
-            <div key={c.slug} className="rounded-xl border border-white/10 bg-card/50 p-4 opacity-80">
+          {ADS_CONNECTORS_COMING_SOON.map((c) => (
+            <div key={c.slug} className="rounded-xl border border-white/10 bg-card p-4 opacity-70">
               <div className="flex items-center justify-between">
                 <span className="font-medium text-foreground">{c.name}</span>
-                <span className="rounded-full bg-white/5 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                <span className="flex items-center gap-1 rounded-full bg-white/5 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
                   {t('store.comingSoonBadge')}
                 </span>
               </div>
-              <p className="mt-1.5 text-xs text-muted-foreground">{t(c.reasonKey)}</p>
             </div>
           ))}
         </div>
       </div>
+
+      {licensingConfigured && (
+        <div className="mb-8">
+          <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            {t('store.capabilitiesTitle')}
+          </h2>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {LLMOPS_CAPABILITIES.map((cap) => {
+              const acquired = license?.connectors.includes(cap.slug) ?? false
+              const product = !acquired
+                ? products.find((p) => p.connector_slug === cap.slug && p.active)
+                : undefined
+              return (
+                <div key={cap.slug} className="rounded-xl border border-white/10 bg-card p-4">
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium text-foreground">{t(cap.labelKey)}</span>
+                    {acquired ? (
+                      <span className="flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-400">
+                        <CheckCircle2 className="h-3 w-3" /> {t('store.acquired')}
+                      </span>
+                    ) : (
+                      <span className="flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-400">
+                        <Lock className="h-3 w-3" /> {t('store.locked')}
+                      </span>
+                    )}
+                  </div>
+                  {product && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="mt-3 w-full"
+                      disabled={buyingSlug === product.connector_slug || !buyerEmail.trim()}
+                      onClick={() => handleBuy(product.connector_slug)}
+                    >
+                      {buyingSlug === product.connector_slug ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <ShoppingCart className="h-3.5 w-3.5" />
+                      )}
+                      {t('store.buy', {
+                        price:
+                          currency === 'brl'
+                            ? `R$ ${(product.price_cents_brl / 100).toFixed(2)}`
+                            : `US$ ${(product.price_cents_usd / 100).toFixed(2)}`,
+                      })}
+                    </Button>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
     </div>
   )
 }

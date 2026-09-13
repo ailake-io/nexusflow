@@ -29,9 +29,15 @@ existentes de SQLite se for o caso.
      --from-literal=NEXUS_PIPELINES_DB="postgres://user:pass@host:5432/nexusflow"
    ```
    (Ou use Sealed Secrets / External Secrets Operator / Vault — o que seu cluster já usa.)
-2. Ajuste `configmap.yaml` (usuário admin, timeouts, SMTP) e a imagem em
-   `deployment.yaml` (`ghcr.io/ailake-io/nexusflow:<tag>` — não use `:latest` em
-   produção).
+2. Ajuste `configmap.yaml` (usuário admin, timeouts, SMTP) e a tag da imagem
+   (`thiagolange/nexusflow` no Docker Hub) — **não** edite `deployment.yaml`
+   pra isso, use o transformer `images:` já presente em
+   `kustomization.yaml`:
+   ```bash
+   kustomize edit set image thiagolange/nexusflow=thiagolange/nexusflow:v0.1.4
+   ```
+   ou edite a tag direto no `images:` do `kustomization.yaml`. Não use
+   `:latest` em produção.
 3. Aplique:
    ```bash
    kubectl apply -k packaging/kubernetes/

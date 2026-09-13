@@ -57,6 +57,34 @@ pub struct PythonTransformSpec {
     pub timeout_seconds: Option<u64>,
 }
 
+/// One upstream pipeline this pipeline waits on before `pipeline_dependencies.rs`
+/// (Fase 26) automatically triggers a run — a `schedule` cron expression
+/// remains the only other automatic trigger, and both can coexist on the
+/// same pipeline (whichever fires first starts a run; they don't interact).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PipelineDependency {
+    pub upstream_pipeline_id: String,
+}
+
+/// How multiple `depends_on` entries combine. Meaningless (and ignored) when
+/// `depends_on` has 0 or 1 entries.
+///
+/// - `Any`: a run starts as soon as *any one* upstream succeeds. With 2+
+///   upstreams this means the downstream can fire more than once per
+///   "round" — each upstream success is evaluated independently, there's no
+///   shared state across them.
+/// - `All`: a run starts only once *every* upstream has succeeded at least
+///   once since the last time this downstream itself fired. Needs the
+///   per-"epoch" satisfaction tracking `pipeline_dependencies.rs` persists
+///   (`nexus-core` itself has no run history to check this against).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DependencyMode {
+    #[default]
+    Any,
+    All,
+}
+
 /// Which dbt command to invoke after the raw load succeeds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -239,6 +267,167 @@ fn default_similarity_threshold() -> f32 {
     0.8
 }
 
+/// Points at a named, versioned prompt template
+/// (LLMOPS_IMPLEMENTATION_PLAN.md Marco L4) instead of embedding the
+/// template text inline — lets a prompt's wording change without editing
+/// every `PipelineSpec` that uses it, and ties every logged LLM call back
+/// to exactly which prompt version produced it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptRef {
+    pub name: String,
+    /// `None` = always resolve to the newest version at run time (unlike
+    /// `EmbeddingModelSpec::Onnx.revision`, which defaults to a fixed
+    /// "main" — a prompt's wording doesn't carry the same reproducibility
+    /// cost a swapped ONNX model binary would, so "latest" is a reasonable
+    /// default here). `Some(v)` pins to that exact version regardless of
+    /// newer ones created later.
+    #[serde(default)]
+    pub version: Option<u32>,
+}
+
+/// Configuration for the optional LLM stage (LLMOPS_IMPLEMENTATION_PLAN.md
+/// Marco L1). Defined in nexus-core for the same reason as `EmbeddingSpec`
+/// above: `PipelineSpec` carries it without adding an nexus-ai dependency to
+/// the core crate; nexus-ai consumes this spec at runtime.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmNodeSpec {
+    /// Which saved prompt template to use (LLMOPS_IMPLEMENTATION_PLAN.md
+    /// Marco L4) — resolved to the actual template text at run time via
+    /// `nexus-server::prompt_template_store` (nexus-core/nexus-ai never
+    /// touch that store directly, same layering as `LlmCache`).
+    pub prompt: PromptRef,
+    /// Columns available for interpolation into the resolved prompt
+    /// template's `{column_name}` placeholders.
+    pub input_columns: Vec<String>,
+    /// Name of the new column holding the LLM's response text.
+    pub output_column: String,
+    pub model: LlmModelConfig,
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
+    #[serde(default)]
+    pub temperature: Option<f32>,
+    /// Logs the full prompt/response text in run logs, not just metadata
+    /// (token counts, latency). Off by default — prompt/response can carry
+    /// customer-sensitive data (CLAUDE.md §5), same posture as every other
+    /// log line in this codebase that touches user content.
+    #[serde(default)]
+    pub log_full_content: bool,
+    /// Response cache (LLMOPS_IMPLEMENTATION_PLAN.md Marco L3) — `None`
+    /// means every call hits the API, no caching.
+    #[serde(default)]
+    pub cache: Option<LlmCacheSpec>,
+    /// Golden dataset (LLMOPS_IMPLEMENTATION_PLAN.md Marco L7) — fixed
+    /// question/expected-answer pairs re-run every time this node's pipeline
+    /// runs, scored against the *current* prompt version/model, so a prompt
+    /// change's effect on answer quality is measurable instead of assumed.
+    /// Empty (the default) means no eval — most `llm` nodes don't need one.
+    #[serde(default)]
+    pub eval: Vec<LlmEvalCase>,
+    /// How `eval` is scored — `#[serde(default)]` keeps every spec saved
+    /// before this field existed on `TokenSimilarity`, the original L7
+    /// behavior.
+    #[serde(default)]
+    pub eval_scoring: EvalScoringMode,
+}
+
+/// Scoring strategy for `LlmNodeSpec.eval` (LLMOPS_IMPLEMENTATION_PLAN.md
+/// Marco L7 follow-up). `TokenSimilarity` (the default) is direct
+/// comparison — deterministic, no extra API call. `LlmJudge` reuses the
+/// same `LlmBackend` that answered the golden question for a *second* call
+/// that grades the answer against the expected one, at roughly double the
+/// per-case cost — trades money for judgment that isn't fooled by
+/// paraphrasing token similarity would score low.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum EvalScoringMode {
+    #[default]
+    TokenSimilarity,
+    LlmJudge,
+}
+
+/// One golden test case for Marco L7. `inputs` mirrors the batch `llm`
+/// node's own `{column_name}` interpolation (not RAG's fixed
+/// `{context}`/`{question}` convention, see `rag.rs`) — a map lets a golden
+/// case fill in whatever placeholders this node's prompt template actually
+/// references, regardless of `input_columns`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmEvalCase {
+    pub name: String,
+    pub inputs: std::collections::BTreeMap<String, String>,
+    pub expected_answer: String,
+}
+
+/// Redis-backed response cache — key is `sha256(model + prompt + max_tokens
+/// + temperature)` (`nexus_ai::llm::cache_key`), value is the raw response
+/// text. Always Redis for now (no enum with 1 variant — same reasoning
+/// `LlmModelConfig` had before it needed more than `Api`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmCacheSpec {
+    /// Redis connection URL (e.g. "redis://localhost:6379").
+    pub url: String,
+    pub ttl_seconds: u64,
+}
+
+/// Which backend serves the LLM call. No local ONNX/GGUF path — always an
+/// HTTP API, either OpenAI-shaped (`Api`, covers OpenAI itself, Ollama's
+/// `/v1` compat endpoint, Moonshot/Kimi, Groq, and most other providers
+/// that mimic the OpenAI request/response shape) or Anthropic's own native
+/// Messages API (`Anthropic` — different auth header, request/response
+/// shape, so it needs its own variant rather than fitting `Api`). Kept as
+/// a tagged enum matching `EmbeddingModelSpec`'s shape so a future backend
+/// doesn't require a breaking spec change.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "backend")]
+pub enum LlmModelConfig {
+    Api {
+        /// Base URL of an OpenAI-compatible chat completions endpoint (no
+        /// trailing `/chat/completions` — e.g. "https://api.openai.com/v1",
+        /// "http://localhost:11434/v1" for Ollama, "https://api.moonshot.cn/v1"
+        /// for Kimi).
+        base_url: String,
+        /// Model name passed through to the API request body.
+        model: String,
+        /// Name of the environment variable holding the API key on the
+        /// machine running nexus-server — never the key itself (CLAUDE.md
+        /// §5: no secret lives in the persisted DAG JSON). `None` means the
+        /// endpoint needs no auth (e.g. a local Ollama/vLLM server).
+        #[serde(default)]
+        api_key_env: Option<String>,
+        /// Price per 1,000 prompt/completion tokens, in whatever currency
+        /// the caller wants displayed (LLMOPS_IMPLEMENTATION_PLAN.md Marco
+        /// L2). No universal price table exists across providers/models —
+        /// the user supplies it. `None` means cost is never estimated for
+        /// this node (aggregate cost stays 0, tokens still tracked).
+        #[serde(default)]
+        cost_per_1k_prompt_tokens: Option<f64>,
+        #[serde(default)]
+        cost_per_1k_completion_tokens: Option<f64>,
+    },
+    /// Anthropic's native Messages API (`POST {base_url}/v1/messages`,
+    /// `x-api-key` header instead of `Authorization: Bearer`, `max_tokens`
+    /// required by the API itself unlike OpenAI's optional field) — not
+    /// OpenAI-shaped, so it can't reuse `Api` above.
+    Anthropic {
+        /// No trailing `/v1/messages` — e.g. "https://api.anthropic.com".
+        #[serde(default = "default_anthropic_base_url")]
+        base_url: String,
+        /// e.g. "claude-sonnet-5", "claude-opus-5".
+        model: String,
+        /// Name of the environment variable holding the API key — never
+        /// the key itself, same reasoning as `Api::api_key_env`. Unlike
+        /// `Api`, this is required: Anthropic's API has no "no auth" mode.
+        api_key_env: String,
+        #[serde(default)]
+        cost_per_1k_prompt_tokens: Option<f64>,
+        #[serde(default)]
+        cost_per_1k_completion_tokens: Option<f64>,
+    },
+}
+
+fn default_anthropic_base_url() -> String {
+    "https://api.anthropic.com".to_string()
+}
+
 /// Two shapes, both valid DAGs (ARCHITECTURE.md §4):
 /// - No transform: strictly linear `1 source -> 1 sink`, partitioned
 ///   execution (Marco 1's model — `PipelineEngine::run`).
@@ -255,10 +444,16 @@ pub struct PipelineSpec {
     /// before the SQL transform (if present) or before the sinks.
     #[serde(default)]
     pub embedding: Option<EmbeddingSpec>,
+    /// Optional LLM stage (LLMOPS_IMPLEMENTATION_PLAN.md Marco L1), applied
+    /// after `embedding` (if present) and before the SQL transform — e.g.
+    /// chunk -> embed -> also ask an LLM something about the original text,
+    /// both written to the same sink.
+    #[serde(default)]
+    pub llm: Option<LlmNodeSpec>,
     /// Optional Python cleaning/transformation stage, chained after the SQL
     /// `transform` (if present) and before the sinks — order is `sources ->
-    /// embedding -> transform -> python -> sinks`. When `transform` is
-    /// `None`, `python` still requires exactly 1 source/1 sink (same
+    /// embedding -> llm -> transform -> python -> sinks`. When `transform`
+    /// is `None`, `python` still requires exactly 1 source/1 sink (same
     /// constraint as the transform-less linear path — see `validate()`),
     /// since there's no SQL stage to fan multiple sources into one table
     /// first.
@@ -286,12 +481,53 @@ pub struct PipelineSpec {
     /// before this field existed.
     #[serde(default)]
     pub schedule: Option<String>,
+    /// Upstream pipelines this one waits on before an automatic run starts
+    /// (Fase 26) — empty (the default) means no dependency-based
+    /// triggering, same as before this field existed. Combines with
+    /// `dependency_mode` when there's more than one entry; orthogonal to
+    /// `schedule` above (a pipeline may have both, neither, or either).
+    #[serde(default)]
+    pub depends_on: Vec<PipelineDependency>,
+    #[serde(default)]
+    pub dependency_mode: DependencyMode,
     /// Per-pipeline alert channels — additive to nexus-server's global,
     /// env-var-configured channels (`alerts.rs::AlertConfig`), which keep
     /// firing exactly as before. `None` (the default) means no per-pipeline
     /// channels, same as before this field existed.
     #[serde(default)]
     pub alerts: Option<AlertsConfig>,
+    /// Native, dbt-independent data-quality checks (not_null/unique/min/
+    /// max/accepted_values) evaluated against this pipeline's fully
+    /// materialized output — see `quality::QualityCheckSpec`'s doc comment
+    /// for why this only takes effect on the `run_transform_pipeline` path
+    /// (any pipeline with a Transform node). `None`/empty means no checks,
+    /// same as before this field existed.
+    #[serde(default)]
+    pub quality_checks: Vec<crate::quality::QualityCheckSpec>,
+    /// Opt-in (Fase 27): when true, a run whose output row count is a
+    /// statistical outlier against this pipeline's own run history fires
+    /// through `alerts` above (reusing the same per-pipeline channels, not
+    /// a separate configuration surface) — see
+    /// `nexus-server::anomaly_detector::detect_anomaly`. `false` (the
+    /// default) means no anomaly-based alerting, same as before this field
+    /// existed; the pipeline's row-count history is still tracked either
+    /// way (`pipeline_run_volume_store.rs`), this only gates whether a
+    /// detected anomaly notifies anyone.
+    #[serde(default)]
+    pub anomaly_alerts: bool,
+    /// Deterministic column tokenization (Fase 28) — applied to every
+    /// source batch before the SQL transform (if present) and before the
+    /// sink(s), same "before the transform" position `embedding` already
+    /// takes for the passthrough path (see `column_masking::ColumnMasker`'s
+    /// doc comment for why this is tokenization, not reversible
+    /// encryption: there is no way to recover the original value from a
+    /// saved pipeline spec or from the sink data alone). Empty/unset means
+    /// no masking, same as before this field existed. Requires
+    /// `NEXUS_MASKING_SALT` to be configured server-side — a non-empty
+    /// list here on a server without that salt set fails at save time
+    /// (see nexus-server's `create_pipeline_handler`), not silently no-ops.
+    #[serde(default)]
+    pub masking: Vec<crate::column_masking::ColumnMaskingSpec>,
     /// When true, the spec is saved as a draft: only `pipeline_id` is
     /// validated, and connector configs/embedding/dbt are not checked.
     /// Drafts cannot be executed; they must be completed and re-saved
@@ -500,6 +736,69 @@ impl PipelineSpec {
             }
         }
 
+        if let Some(llm) = &self.llm {
+            if llm.prompt.name.trim().is_empty() {
+                return Err(NexusError::Schema(
+                    "llm.prompt.name must not be empty".into(),
+                ));
+            }
+            if llm.prompt.version == Some(0) {
+                return Err(NexusError::Schema(
+                    "llm.prompt.version must be > 0 (versions start at 1)".into(),
+                ));
+            }
+            if llm.output_column.trim().is_empty() {
+                return Err(NexusError::Schema(
+                    "llm.output_column must not be empty".into(),
+                ));
+            }
+            let (base_url, model) = match &llm.model {
+                LlmModelConfig::Api {
+                    base_url, model, ..
+                } => (base_url, model),
+                LlmModelConfig::Anthropic {
+                    base_url,
+                    model,
+                    api_key_env,
+                    ..
+                } => {
+                    if api_key_env.trim().is_empty() {
+                        return Err(NexusError::Schema(
+                            "llm.model.api_key_env must not be empty".into(),
+                        ));
+                    }
+                    (base_url, model)
+                }
+            };
+            if base_url.trim().is_empty() {
+                return Err(NexusError::Schema(
+                    "llm.model.base_url must not be empty".into(),
+                ));
+            }
+            if model.trim().is_empty() {
+                return Err(NexusError::Schema(
+                    "llm.model.model must not be empty".into(),
+                ));
+            }
+            if let Some(temperature) = llm.temperature {
+                if !(0.0..=2.0).contains(&temperature) {
+                    return Err(NexusError::Schema(
+                        "llm.temperature must be between 0.0 and 2.0".into(),
+                    ));
+                }
+            }
+            if let Some(cache) = &llm.cache {
+                if cache.url.trim().is_empty() {
+                    return Err(NexusError::Schema("llm.cache.url must not be empty".into()));
+                }
+                if cache.ttl_seconds == 0 {
+                    return Err(NexusError::Schema(
+                        "llm.cache.ttl_seconds must be > 0".into(),
+                    ));
+                }
+            }
+        }
+
         if !self.post_dbt_sinks.is_empty() {
             let has_output = self.dbt.as_ref().is_some_and(|d| d.output.is_some());
             if !has_output {
@@ -543,6 +842,56 @@ impl PipelineSpec {
         if let Some(expr) = &self.schedule {
             crate::schedule::parse_cron_expression(expr)
                 .map_err(|e| NexusError::Schema(format!("invalid schedule: {e}")))?;
+        }
+        // Cross-pipeline cycle detection needs visibility into every other
+        // saved spec (nexus-server's `pipeline_dependencies::check_dependencies`,
+        // called from the create/update handlers) — this only checks what a
+        // single spec can know about itself: charset, and the trivial
+        // 1-node cycle of depending on itself.
+        let mut seen_upstreams = std::collections::HashSet::new();
+        for (i, dep) in self.depends_on.iter().enumerate() {
+            let upstream = dep.upstream_pipeline_id.trim();
+            if upstream.is_empty() {
+                return Err(NexusError::Schema(format!(
+                    "depends_on[{i}].upstream_pipeline_id must not be empty"
+                )));
+            }
+            if !upstream
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            {
+                return Err(NexusError::Schema(format!(
+                    "depends_on[{i}].upstream_pipeline_id must only contain ASCII letters, digits, '_' or '-'"
+                )));
+            }
+            if upstream == id {
+                return Err(NexusError::Schema(
+                    "a pipeline cannot depend on itself".into(),
+                ));
+            }
+            if !seen_upstreams.insert(upstream) {
+                return Err(NexusError::Schema(format!(
+                    "depends_on lists {upstream:?} more than once"
+                )));
+            }
+        }
+        // Whether `NEXUS_MASKING_SALT` is actually configured server-side
+        // isn't knowable here (nexus-core has no env vars of its own,
+        // CLAUDE.md §8.3) — that check happens in nexus-server's
+        // create/update handlers. This only validates the shape.
+        let mut seen_masked_columns = std::collections::HashSet::new();
+        for (i, m) in self.masking.iter().enumerate() {
+            if m.column.trim().is_empty() {
+                return Err(NexusError::Schema(format!(
+                    "masking[{i}].column must not be empty"
+                )));
+            }
+            if !seen_masked_columns.insert(m.column.as_str()) {
+                return Err(NexusError::Schema(format!(
+                    "masking lists column {:?} more than once",
+                    m.column
+                )));
+            }
         }
         Ok(())
     }
@@ -609,6 +958,9 @@ impl PipelineSpec {
         }
         if let Some(embedding) = &self.embedding {
             validate_embedding_security(&embedding.model, allow_internal_hosts)?;
+        }
+        if let Some(llm) = &self.llm {
+            validate_llm_security(&llm.model, allow_internal_hosts)?;
         }
         if let Some(alerts) = &self.alerts {
             validate_alerts_security(alerts, allow_internal_hosts)?;
@@ -687,6 +1039,33 @@ fn validate_embedding_security(
                         "embedding.model.base_url points to an internal host".into(),
                     ));
                 }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Same SSRF guard as `validate_embedding_security`, for `llm.model.base_url`
+/// — an identical user-supplied outbound-request URL, same risk.
+fn validate_llm_security(
+    model: &LlmModelConfig,
+    allow_internal_hosts: bool,
+) -> Result<(), NexusError> {
+    let base_url = match model {
+        LlmModelConfig::Api { base_url, .. } => base_url,
+        LlmModelConfig::Anthropic { base_url, .. } => base_url,
+    };
+    if base_url.starts_with('/') {
+        return Err(NexusError::Schema(
+            "llm.model.base_url must not be an absolute path".into(),
+        ));
+    }
+    if !allow_internal_hosts {
+        if let Some(host) = http_host(base_url) {
+            if is_internal_host(&host) {
+                return Err(NexusError::Schema(
+                    "llm.model.base_url points to an internal host".into(),
+                ));
             }
         }
     }
@@ -813,7 +1192,60 @@ fn http_host(s: &str) -> Option<String> {
     url.host_str().map(|h| h.to_lowercase())
 }
 
-fn is_internal_host(host: &str) -> bool {
+/// Checks a real (already-resolved) IP address against private/reserved
+/// ranges — the part of [`is_internal_host`]'s check that still applies
+/// *after* DNS resolution, when all that's left is a numeric address (no
+/// more named-host special cases like `localhost`/`.local` to match on).
+/// `pub` so `nexus-server`'s DNS-rebinding guard (`dns_guard.rs`) can run
+/// this same check against a hostname's *resolved* address, not just its
+/// literal spelling — `is_internal_host` alone only protects a pipeline
+/// spec that names an internal host directly; a public domain that later
+/// re-resolves to one of these ranges sails right through it.
+pub fn is_internal_ip(addr: &std::net::IpAddr) -> bool {
+    match addr {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            // 10.0.0.0/8
+            if o[0] == 10 {
+                return true;
+            }
+            // 172.16.0.0/12
+            if o[0] == 172 && (16..=31).contains(&o[1]) {
+                return true;
+            }
+            // 192.168.0.0/16
+            if o[0] == 192 && o[1] == 168 {
+                return true;
+            }
+            // 127.0.0.0/8 (localhost range)
+            if o[0] == 127 {
+                return true;
+            }
+            // 100.64.0.0/10 (CGNAT / shared address space)
+            if o[0] == 100 && (64..=127).contains(&o[1]) {
+                return true;
+            }
+            // 169.254.0.0/16 (link-local IPv4, also covers the cloud
+            // metadata endpoint 169.254.169.254)
+            if o[0] == 169 && o[1] == 254 {
+                return true;
+            }
+            // 0.0.0.0/8 ("this network" / unspecified)
+            if o[0] == 0 {
+                return true;
+            }
+            false
+        }
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.is_unique_local()
+                || v6.is_unspecified()
+                || (v6.segments()[0] & 0xffc0) == 0xfe80
+        }
+    }
+}
+
+pub fn is_internal_host(host: &str) -> bool {
     // Strip optional port.
     let host = host.split(':').next().unwrap_or(host);
 
@@ -840,44 +1272,7 @@ fn is_internal_host(host: &str) -> bool {
 
     // Parse as IP and check private/reserved ranges.
     if let Ok(addr) = host.parse::<std::net::IpAddr>() {
-        match addr {
-            std::net::IpAddr::V4(v4) => {
-                let o = v4.octets();
-                // 10.0.0.0/8
-                if o[0] == 10 {
-                    return true;
-                }
-                // 172.16.0.0/12
-                if o[0] == 172 && (16..=31).contains(&o[1]) {
-                    return true;
-                }
-                // 192.168.0.0/16
-                if o[0] == 192 && o[1] == 168 {
-                    return true;
-                }
-                // 127.0.0.0/8 (localhost range)
-                if o[0] == 127 {
-                    return true;
-                }
-                // 100.64.0.0/10 (CGNAT / shared address space)
-                if o[0] == 100 && (64..=127).contains(&o[1]) {
-                    return true;
-                }
-                // 169.254.0.0/16 (link-local IPv4)
-                if o[0] == 169 && o[1] == 254 {
-                    return true;
-                }
-            }
-            std::net::IpAddr::V6(v6) => {
-                if v6.is_loopback()
-                    || v6.is_unique_local()
-                    || v6.is_unspecified()
-                    || (v6.segments()[0] & 0xffc0) == 0xfe80
-                {
-                    return true;
-                }
-            }
-        }
+        return is_internal_ip(&addr);
     }
     false
 }
@@ -1464,5 +1859,92 @@ mod tests {
         let spec = PipelineSpec::parse(json).unwrap();
         spec.validate_security()
             .expect("external alerts channels must be accepted");
+    }
+
+    #[test]
+    fn accepts_valid_depends_on() {
+        let json = r#"{
+            "pipeline_id": "downstream",
+            "sources": [{"connector": "postgres", "config": {}}],
+            "sinks": [{"connector": "postgres", "config": {}}],
+            "depends_on": [{"upstream_pipeline_id": "upstream-1"}, {"upstream_pipeline_id": "upstream_2"}],
+            "dependency_mode": "all"
+        }"#;
+        let spec = PipelineSpec::parse(json).expect("valid depends_on must parse");
+        assert_eq!(spec.depends_on.len(), 2);
+        assert_eq!(spec.dependency_mode, DependencyMode::All);
+    }
+
+    #[test]
+    fn depends_on_mode_defaults_to_any() {
+        let json = r#"{
+            "pipeline_id": "downstream",
+            "sources": [{"connector": "postgres", "config": {}}],
+            "sinks": [{"connector": "postgres", "config": {}}],
+            "depends_on": [{"upstream_pipeline_id": "upstream-1"}]
+        }"#;
+        let spec = PipelineSpec::parse(json).unwrap();
+        assert_eq!(spec.dependency_mode, DependencyMode::Any);
+    }
+
+    #[test]
+    fn rejects_self_dependency() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "postgres", "config": {}}],
+            "sinks": [{"connector": "postgres", "config": {}}],
+            "depends_on": [{"upstream_pipeline_id": "p"}]
+        }"#;
+        let err = PipelineSpec::parse(json).expect_err("self-dependency must fail");
+        assert!(err.to_string().contains("cannot depend on itself"));
+    }
+
+    #[test]
+    fn rejects_depends_on_with_invalid_characters() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "postgres", "config": {}}],
+            "sinks": [{"connector": "postgres", "config": {}}],
+            "depends_on": [{"upstream_pipeline_id": "up/stream"}]
+        }"#;
+        let err = PipelineSpec::parse(json).expect_err("invalid upstream_pipeline_id must fail");
+        assert!(err.to_string().contains("must only contain"));
+    }
+
+    #[test]
+    fn rejects_empty_depends_on_entry() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "postgres", "config": {}}],
+            "sinks": [{"connector": "postgres", "config": {}}],
+            "depends_on": [{"upstream_pipeline_id": ""}]
+        }"#;
+        let err = PipelineSpec::parse(json).expect_err("empty upstream_pipeline_id must fail");
+        assert!(err.to_string().contains("must not be empty"));
+    }
+
+    #[test]
+    fn rejects_duplicate_depends_on_entries() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "postgres", "config": {}}],
+            "sinks": [{"connector": "postgres", "config": {}}],
+            "depends_on": [{"upstream_pipeline_id": "u"}, {"upstream_pipeline_id": "u"}]
+        }"#;
+        let err = PipelineSpec::parse(json).expect_err("duplicate depends_on entries must fail");
+        assert!(err.to_string().contains("more than once"));
+    }
+
+    #[test]
+    fn draft_pipeline_skips_depends_on_validation() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [],
+            "sinks": [],
+            "depends_on": [{"upstream_pipeline_id": "p"}],
+            "draft": true
+        }"#;
+        PipelineSpec::parse(json)
+            .expect("draft must skip depends_on validation, same as everything else");
     }
 }

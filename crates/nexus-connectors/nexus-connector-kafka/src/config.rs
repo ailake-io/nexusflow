@@ -140,7 +140,7 @@ impl KafkaConnectorConfig {
     /// config. The returned config already contains `bootstrap.servers`,
     /// `group.id`, `client.id` (when present), `enable.auto.commit=false`,
     /// `auto.offset.reset=earliest`, and any SASL/SSL security settings.
-    #[cfg(feature = "consumer")]
+    #[cfg(any(feature = "consumer", feature = "producer"))]
     pub fn client_config(&self) -> rdkafka::ClientConfig {
         use rdkafka::ClientConfig;
 

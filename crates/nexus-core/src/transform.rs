@@ -41,37 +41,53 @@ fn find_column_exprs(plan: &LogicalPlan) -> Option<(&LogicalPlan, Vec<Expr>)> {
     }
 }
 
-/// A `Projection` sitting directly on top of an `Aggregate` references the
-/// aggregate's own synthesized output names (DataFusion's default display
-/// name for an unaliased aggregate expression, e.g. `SUM(amount)` becomes
-/// the column name `sum(events.amount)`) rather than the underlying table
-/// columns — plain `column_refs()` on the projection's expr would report
-/// that synthesized name as if it were a real source column. This traces
-/// one level through: for each name `expr` references, if it matches one of
-/// the aggregate's own output names, substitute that aggregate expression's
-/// *own* `column_refs()` instead.
+fn plain_column_refs(expr: &Expr) -> Vec<String> {
+    expr.column_refs()
+        .into_iter()
+        .map(|c| c.name.clone())
+        .collect()
+}
+
+/// `Aggregate`'s `group_expr`/`aggr_expr` and `Window`'s `window_expr` are
+/// the two plan nodes whose own exprs get a DataFusion-synthesized display
+/// name as their *output* column (e.g. `SUM(amount)` becomes the column name
+/// `sum(events.amount)`; a window function becomes its full `OVER (...)`
+/// text) — see `resolve_source_columns`'s doc comment for why a `Projection`
+/// sitting on top of either needs to trace through that name instead of
+/// taking it at face value.
+fn synthesized_exprs(plan: &LogicalPlan) -> Option<Vec<Expr>> {
+    match plan {
+        LogicalPlan::Aggregate(a) => {
+            Some(a.group_expr.iter().chain(&a.aggr_expr).cloned().collect())
+        }
+        LogicalPlan::Window(w) => Some(w.window_expr.clone()),
+        _ => None,
+    }
+}
+
+/// A `Projection` sitting directly on top of an `Aggregate` or `Window`
+/// references that node's own synthesized output names rather than the
+/// underlying table columns — plain `column_refs()` on the projection's expr
+/// would report that synthesized name as if it were a real source column
+/// (worse than "not determined": a wrong-looking value, e.g. the literal
+/// text `rank() ORDER BY [events.amount ASC ...]` reported as a "source
+/// column"). This traces one level through: for each name `expr`
+/// references, if it matches one of that node's own output names, substitute
+/// that node's expression's *own* `column_refs()` instead.
 fn resolve_source_columns(expr: &Expr, plan: &LogicalPlan) -> Vec<String> {
     let LogicalPlan::Projection(p) = plan else {
-        return expr
-            .column_refs()
-            .into_iter()
-            .map(|c| c.name.clone())
-            .collect();
+        return plain_column_refs(expr);
     };
-    let LogicalPlan::Aggregate(agg) = p.input.as_ref() else {
-        return expr
-            .column_refs()
-            .into_iter()
-            .map(|c| c.name.clone())
-            .collect();
+    let Some(synthesized) = synthesized_exprs(p.input.as_ref()) else {
+        return plain_column_refs(expr);
     };
 
     let mut resolved: Vec<String> = expr
         .column_refs()
         .into_iter()
         .flat_map(|c| {
-            let agg_exprs = agg.group_expr.iter().chain(&agg.aggr_expr);
-            let matched: Vec<String> = agg_exprs
+            let matched: Vec<String> = synthesized
+                .iter()
                 .filter(|e| e.schema_name().to_string() == c.name)
                 .flat_map(|e| e.column_refs().into_iter().map(|c| c.name.clone()))
                 .collect();
@@ -405,6 +421,29 @@ mod tests {
         assert!(
             lineage.iter().all(|l| l.source_columns.is_none()),
             "Union isn't a shape find_column_exprs covers — must say so, not guess"
+        );
+    }
+
+    #[tokio::test]
+    async fn column_lineage_resolves_window_function_synthesized_name() {
+        let (schema, _batch) = events_batch();
+        let transform =
+            DataFusionTransform::new("SELECT id, RANK() OVER (ORDER BY amount) AS rnk FROM events");
+
+        let lineage = transform
+            .column_lineage(vec![("events".to_string(), schema)])
+            .await
+            .expect("lineage resolves");
+
+        let rnk = lineage
+            .iter()
+            .find(|l| l.output_column == "rnk")
+            .expect("rnk column present");
+        assert_eq!(
+            rnk.source_columns.as_deref(),
+            Some(&["amount".to_string()][..]),
+            "must trace through the window function's synthesized display \
+             name to the real underlying column, not report that name as-is"
         );
     }
 

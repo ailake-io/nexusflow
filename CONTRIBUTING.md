@@ -17,7 +17,7 @@ Ver `CLAUDE.md §8` pra lista completa. Resumo:
 
 ## Workflow
 
-1. Fork/branch a partir de `develop` (branch de integração ativa — é onde a maior parte do trabalho aterrissa primeiro). `main` é a branch estável/de release: periodicamente um PR leva `develop` → `main`, e cada push/PR em `main` dispara o build de release (`.github/workflows/release.yml`) e a publicação da imagem Docker no GHCR. Não commite direto em `main`.
+1. Fork/branch a partir de `develop` (branch de integração ativa — é onde a maior parte do trabalho aterrissa primeiro). `main` é a branch estável/de release: periodicamente um PR leva `develop` → `main`, e cada push pra `main` dispara a chain automática de CI/release (`ci.yml` → `connectors-heavy.yml` → `release.yml` → `docker-hub-publish.yml` + os installers Windows/macOS), incluindo a publicação da imagem Docker no **Docker Hub** (GHCR foi descontinuado em 2026-09-08). Não commite direto em `main`.
 2. `cargo fmt` + `cargo clippy --all-targets --all-features -- -D warnings` antes de commitar.
 3. `cargo test --workspace` local passando (rodando de dentro de `crates/nexus-connectors`, use o mesmo comando ali — é o workspace aninhado daquele crate, não o raiz; da raiz do repo, `-p nexus-core -p nexus-ai -p nexus-server` é o que o CI usa, ver a nota de workspace abaixo).
 4. Commit message: formato conciso, foco no *porquê* (não repita o diff na mensagem).

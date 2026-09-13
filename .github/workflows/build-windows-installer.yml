@@ -1,15 +1,19 @@
 name: build-windows-installer
 
-# Standalone .msi build — deliberately NOT part of the CI -> connectors-heavy
-# -> Release chain (release.yml). Windows was dropped from that chain
-# because the self-hosted windows-connectors-heavy runner needs a one-time
-# manual vcpkg/OpenSSL setup before `cargo build --features connectors-all`
-# succeeds (nexus-connector-mysql's mysql_cdc only supports native OpenSSL,
-# no rustls option) — see release.yml's header comment for the full story.
-# This workflow only ever runs when a human explicitly triggers it
-# (workflow_dispatch), never on push/PR, and never blocks or is blocked by
-# CI/connectors-heavy/Release — the same self-hosted Windows runner
-# connectors-heavy.yml uses, but a fully independent workflow file.
+# .msi build. Chained after the CI -> connectors-heavy -> Release sequence
+# on main (2026-09-08, at the user's explicit request) via `workflow_run`
+# below — still not a `needs:` inside release.yml itself (there's no
+# cross-file `needs:`), so a failed/cancelled Release run does not still
+# kick this off (see the job-level `if:`). Moved off the dedicated
+# self-hosted Windows box to hosted `windows-latest` 2026-09-05 (repo went
+# public same day, no more self-hosted NexusFlow Actions) — the
+# vcpkg/OpenSSL setup that used to be a manual one-time step on that host
+# is now an explicit `vcpkg install` step below, run fresh each time
+# against the vcpkg GitHub's windows-latest image ships pre-installed
+# (`$env:VCPKG_INSTALLATION_ROOT`). Proven against real runs since
+# (nexus-connector-mysql's mysql_cdc only supports native OpenSSL, no
+# rustls option, which is what originally failed here before vcpkg was
+# set up).
 on:
   workflow_dispatch:
     inputs:
@@ -21,6 +25,14 @@ on:
           artifact, without publishing it anywhere.
         required: false
         type: string
+  # Automatic path: runs after Release finishes on main, same commit
+  # Release just tagged — always attaches the .msi to that release (the
+  # "leave blank" artifact-only path above only applies to the manual
+  # dispatch case, see "Resolve version" step below).
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+    branches: [main]
 
 permissions:
   contents: write
@@ -31,13 +43,51 @@ env:
 jobs:
   build-windows-installer:
     name: build-windows-installer
-    runs-on: [windows-connectors-heavy]
-    timeout-minutes: 60
+    if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    # 60 min wasn't enough on a real run (2026-09-05): the plain-OSS
+    # `cargo build --release --features embed-ui,connectors-all` alone ran
+    # 44+ min before the job's own timeout cancelled it mid-build. Bumped
+    # to 150, still not enough on a later real run (2026-09-06): this step
+    # builds the plain-OSS binary AND THEN the full enterprise binary on
+    # top (two separate full cargo builds), hit exactly 150min mid-way
+    # through the second one. Bumped again with real headroom, still well
+    # under GitHub's own 6h hard cap for a job.
+    timeout-minutes: 240
     defaults:
       run:
         shell: pwsh
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+
+      # Manual dispatch keeps its existing behavior exactly (empty `version`
+      # input means "just build, upload as an artifact, don't touch any
+      # release" — see the two `if:`s below). The automatic path
+      # (workflow_run after Release) has no input to take, so it derives
+      # the tag itself from Cargo.toml — same "read workspace.package's
+      # version, prefix with v" logic docker-hub-publish.yml already uses
+      # for the same reason — and always attaches to that release, since
+      # in that path the release is known to already exist (Release just
+      # published it).
+      - name: Resolve version
+        id: resolve-version
+        shell: pwsh
+        run: |
+          $dispatchVersion = "${{ inputs.version }}"
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $tag = $dispatchVersion
+          } else {
+            $content = Get-Content Cargo.toml -Raw
+            if ($content -match '\[workspace\.package\][^\[]*?version\s*=\s*"([^"]+)"') {
+              $tag = "v$($Matches[1])"
+            } else {
+              Write-Error "could not find version under [workspace.package] in Cargo.toml"
+              exit 1
+            }
+          }
+          echo "tag=$tag" >> $env:GITHUB_OUTPUT
 
       # Same install-if-missing PowerShell block connectors-heavy.yml uses on
       # this runner (WSL's bash shadows Git Bash in PATH there, which
@@ -70,27 +120,45 @@ jobs:
           "C:\Program Files\Git\usr\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
           "C:\Program Files\CMake\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
 
-      # One-time manual setup this runner needs before this ever succeeds
-      # (see the workflow-level comment above): `vcpkg install
-      # openssl:x64-windows-static-md`, `vcpkg integrate install`, and
-      # VCPKG_ROOT set in the runner's own environment (not here — it has
-      # to survive across jobs/runs, this step only *verifies* it, with a
-      # clear error instead of a cryptic openssl-sys build failure deep in
-      # the cargo build step below).
-      - name: Verify vcpkg OpenSSL is set up
+      # Runs fresh every time now (ephemeral hosted runner, no persistent
+      # one-time setup possible) — GitHub's windows-latest image ships
+      # vcpkg pre-installed at $env:VCPKG_INSTALLATION_ROOT, so this is
+      # "install one package into it" rather than a from-scratch vcpkg
+      # bootstrap. `vcpkg integrate install` wires MSBuild to auto-link
+      # vcpkg packages; openssl-sys's build.rs also needs VCPKG_ROOT set
+      # explicitly to find it (persisted via $GITHUB_ENV for later steps).
+      - name: Install vcpkg OpenSSL (static)
         shell: pwsh
         run: |
-          if (-not $env:VCPKG_ROOT) {
-            Write-Error "VCPKG_ROOT is not set on this runner — one-time setup needed: vcpkg install openssl:x64-windows-static-md && vcpkg integrate install, then set VCPKG_ROOT in the runner's environment. See this workflow's header comment."
-            exit 1
-          }
-          $opensslPkg = Join-Path $env:VCPKG_ROOT "installed\x64-windows-static-md\lib\libssl.lib"
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install openssl:x64-windows-static-md
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" integrate install
+          "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $opensslPkg = Join-Path $env:VCPKG_INSTALLATION_ROOT "installed\x64-windows-static-md\lib\libssl.lib"
           if (!(Test-Path $opensslPkg)) {
-            Write-Error "openssl:x64-windows-static-md not found under VCPKG_ROOT — run: vcpkg install openssl:x64-windows-static-md"
+            Write-Error "openssl:x64-windows-static-md install did not produce $opensslPkg"
             exit 1
           }
 
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+
+      # Same real failure connectors-heavy.yml hit and fixed: lance-encoding
+      # (pulled in by connectors-all's lancedb) needs a real `protoc` on
+      # PATH, absent from windows-latest by default. Pinned zip + sha256,
+      # same download as that workflow's fix.
+      - name: Install protoc
+        shell: pwsh
+        run: |
+          $protocVersion = "29.3"
+          $protocSha256 = "57ea59e9f551ad8d71ffaa9b5cfbe0ca1f4e720972a1db7ec2d12ab44bff9383"
+          $zipPath = "$env:TEMP\protoc.zip"
+          Invoke-WebRequest -Uri "https://github.com/protocolbuffers/protobuf/releases/download/v$protocVersion/protoc-$protocVersion-win64.zip" -OutFile $zipPath
+          $actual = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $protocSha256) {
+            Write-Error "protoc zip checksum mismatch: expected $protocSha256, got $actual"
+            exit 1
+          }
+          Expand-Archive -Path $zipPath -DestinationPath "$env:TEMP\protoc" -Force
+          "$env:TEMP\protoc\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
 
       - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.4.0
         with:
@@ -119,6 +187,91 @@ jobs:
       - name: cargo build --release
         run: cargo build --release -p nexusflow --features embed-ui,connectors-all
 
+      # Every distributed artifact now ships every enterprise connector
+      # compiled in and license-gated, not just OSS's own connectors-all —
+      # same reasoning as release.yml's Linux `build`/`docker-publish` jobs'
+      # matching steps (see those comments for the full rationale and the
+      # manual Docker Hub validation this was based on). Windows can't reuse
+      # that Docker recipe (native msvc target, not a Linux container), so
+      # this clones the enterprise repo directly and builds
+      # `nexusflow-enterprise` from it with a `[patch]` redirecting its
+      # nexus-core/nexus-server git dependency at this job's own
+      # already-checked-out+frontend-built OSS tree (same trick the
+      # enterprise Dockerfile itself uses, just against a local checkout
+      # instead of a fresh clone) — the OSS `nexusflow` binary above can't
+      # be patched into including enterprise connectors itself, since
+      # nothing in this workspace depends on itself via the git URL a patch
+      # could intercept.
+      #
+      # UNTESTED on a real Windows runner as of this comment (no Windows
+      # machine available to validate locally) — `cargo wix`'s `--no-build`
+      # flag below is assumed, not confirmed, to skip its own internal
+      # `cargo build` (which would otherwise silently overwrite
+      # target\release\nexusflow.exe with the plain-OSS binary right before
+      # packaging, undoing the copy two steps down). If `--no-build` turns
+      # out not to be the right flag name, `cargo wix` should fail loudly
+      # (unrecognized argument) rather than silently ship the wrong binary —
+      # confirm via a real `workflow_dispatch` run before trusting this path.
+      - name: Clone nexus-connectors-enterprise (read-only deploy key)
+        shell: pwsh
+        env:
+          DEPLOY_KEY: ${{ secrets.ENTERPRISE_REPO_DEPLOY_KEY }}
+        run: |
+          $sshDir = "$env:USERPROFILE\.ssh"
+          New-Item -ItemType Directory -Force -Path $sshDir | Out-Null
+          $keyPath = "$sshDir\enterprise_deploy_key"
+          # Real failure on a first real run (2026-09-05): OpenSSH on
+          # Windows rejected the key outright ("invalid format"). Normalize
+          # to LF-only and force a trailing newline before writing — an SSH
+          # private key with CRLF line endings or a missing final newline
+          # (either possible depending on how the GitHub secret's value was
+          # entered) fails PEM parsing even though the key content itself
+          # is correct. Untested whether this was the actual root cause;
+          # it's a safe, idempotent normalization regardless.
+          $normalizedKey = ($env:DEPLOY_KEY -replace "`r`n", "`n" -replace "`r", "`n").TrimEnd("`n") + "`n"
+          [System.IO.File]::WriteAllText($keyPath, $normalizedKey)
+          icacls $keyPath /inheritance:r /grant:r "$($env:USERNAME):(R)" | Out-Null
+          ssh-keyscan.exe github.com 2>$null | Out-File -Append -Encoding ascii "$sshDir\known_hosts"
+          $env:GIT_SSH_COMMAND = "ssh -i `"$keyPath`" -o IdentitiesOnly=yes"
+          git clone --depth 1 ssh://git@github.com/ailake-io/nexus-connectors-enterprise.git enterprise-src
+          Remove-Item $keyPath -Force
+
+      - name: Build enterprise binary (all OSS + enterprise connectors)
+        shell: pwsh
+        run: |
+          # Real failure on a first real run (2026-09-05): this step used
+          # to overlay a "placeholder" nexus-connector-kinesis from
+          # enterprise-src onto this OSS checkout — stale by the time this
+          # ever actually ran. The OSS `nexusflow` repo has never had a
+          # nexus-connector-kinesis crate at all (confirmed earlier this
+          # same session: zero references anywhere in this repo), and the
+          # enterprise repo's own Cargo.toml/bin/main.rs were fixed
+          # separately (kinesis added as its own workspace member,
+          # `extern crate` wired in `bin/main.rs`) so it no longer needs
+          # this overlay — same fix already removed the matching dead step
+          # from the enterprise Dockerfile. Removed here for the same
+          # reason: `crates\nexus-connectors\nexus-connector-kinesis`
+          # doesn't exist in this checkout, so `Remove-Item` on it failed
+          # outright.
+          New-Item -ItemType Directory -Force -Path enterprise-src\.cargo | Out-Null
+          $repoRoot = (Get-Location).Path -replace '\\', '/'
+          @"
+          [patch."https://github.com/ailake-io/nexusflow.git"]
+          nexus-core = { path = "$repoRoot/crates/nexus-core" }
+          nexus-server = { path = "$repoRoot/crates/nexus-server" }
+          "@ | Out-File -Encoding utf8 enterprise-src\.cargo\config.toml
+
+          Push-Location enterprise-src
+          # Forces the lockfile to re-resolve against the patch above —
+          # same reasoning as the enterprise Dockerfile's matching step
+          # (its own comment explains the silent-stale-patch failure mode
+          # this avoids).
+          Remove-Item -Force -ErrorAction SilentlyContinue Cargo.lock
+          cargo generate-lockfile
+          cargo build --release -p nexusflow-enterprise --features connectors-all-no-embeddings,dbt,python-transform,embed-ui,connectors-all
+          Pop-Location
+          Copy-Item enterprise-src\target\release\nexusflow-enterprise.exe target\release\nexusflow.exe -Force
+
       - name: cargo wix
         # cargo-wix dropped --input in favor of --include/-I for a custom
         # .wxs source file (the old flag now errors: "unexpected argument
@@ -126,8 +279,12 @@ jobs:
         # package manifest (Cargo.toml) to build, not the .wxs path.
         # --package is required in a workspace (this repo is one) — without
         # it cargo-wix errors "Workspace detected. Please pass a package
-        # name." instead of guessing which member to build.
-        run: cargo wix --package nexusflow --include packaging\windows\main.wxs --nocapture
+        # name." instead of guessing which member to build. --no-build
+        # skips cargo-wix's own internal build (see the "UNTESTED" comment
+        # above) so it packages the enterprise binary just copied into
+        # target\release\nexusflow.exe instead of silently rebuilding the
+        # plain-OSS one over it.
+        run: cargo wix --package nexusflow --include packaging\windows\main.wxs --no-build --nocapture
 
       - name: Locate the built .msi
         id: msi
@@ -149,7 +306,7 @@ jobs:
       # step failing outright once already blocked an otherwise-successful
       # build from finishing.
       - uses: actions/upload-artifact@834a144ee995460fba8ed112a2fc961b36a5ec5a # v4.4.3
-        if: inputs.version == ''
+        if: steps.resolve-version.outputs.tag == ''
         with:
           name: nexusflow-windows-installer
           path: ${{ steps.msi.outputs.path }}
@@ -162,7 +319,7 @@ jobs:
       # official release zip directly instead — same "pinned version +
       # sha256 check" pattern as the appimagetool download in ci.yml.
       - name: Install GitHub CLI
-        if: inputs.version != ''
+        if: steps.resolve-version.outputs.tag != ''
         run: |
           if (!(Get-Command gh.exe -ErrorAction SilentlyContinue)) {
             $ghVersion = "2.98.0"
@@ -182,9 +339,9 @@ jobs:
       # given — otherwise the artifact above is the whole output, a human
       # downloads and publishes it by hand whenever ready.
       - name: Attach to release
-        if: inputs.version != ''
+        if: steps.resolve-version.outputs.tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.version }}
+          RELEASE_TAG: ${{ steps.resolve-version.outputs.tag }}
           MSI_PATH: ${{ steps.msi.outputs.path }}
         run: gh release upload "$env:RELEASE_TAG" "$env:MSI_PATH" --clobber

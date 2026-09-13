@@ -12,6 +12,26 @@ export interface TransformSpec {
   sql: string
 }
 
+/** Matches nexus-core::QualityCheckKind exactly — `#[serde(tag = "kind",
+ * rename_all = "snake_case")]`, so each variant is `{ kind: "<name>", ...
+ * fields }` with no wrapper. */
+export type QualityCheckKind =
+  | { kind: 'not_null' }
+  | { kind: 'unique' }
+  | { kind: 'min'; min: number }
+  | { kind: 'max'; max: number }
+  | { kind: 'accepted_values'; values: string[] }
+  /** Fase 27 — checks the pipeline's total output row count, not a named
+   *  column (`QualityCheckSpec.column` is ignored for this kind). Either
+   *  bound optional; `undefined` means unbounded on that side. */
+  | { kind: 'row_count'; min?: number; max?: number }
+
+/** Matches nexus-core::QualityCheckSpec exactly. */
+export interface QualityCheckSpec {
+  column: string
+  check: QualityCheckKind
+}
+
 /** Matches nexus-core::PythonTransformSpec exactly — a cleaning/
  * transformation stage run as an isolated `python3` subprocess (mirrors
  * `dbt` in isolation model, not in when it runs — chains after `transform`
@@ -91,12 +111,42 @@ export interface PipelineSpec {
    * the server's scheduler. Unset means the pipeline only runs when
    * explicitly triggered. */
   schedule?: string
+  /** Upstream pipeline ids this one waits on before an automatic run starts
+   * (Fase 26) — empty/unset means no dependency-based triggering.
+   * Orthogonal to `schedule` above. */
+  depends_on?: { upstream_pipeline_id: string }[]
+  /** How multiple `depends_on` entries combine — meaningless with 0 or 1
+   * entries. Matches nexus-core::DependencyMode's `#[serde(rename_all =
+   * "snake_case")]`. */
+  dependency_mode?: 'any' | 'all'
   /** Per-pipeline alert channels, additive to the global env-var-configured
    * ones. Unset means no per-pipeline channels. */
   alerts?: AlertsConfig
+  /** Native (dbt-independent) quality checks, evaluated against the
+   * pipeline's materialized output — only takes effect on a pipeline with a
+   * Transform node (see nexus_core::quality's doc comment). Empty/unset
+   * means no checks configured. */
+  quality_checks?: QualityCheckSpec[]
+  /** Opt-in (Fase 27): fire an alert (through `alerts` above) when this
+   * pipeline's output row count is a statistical outlier against its own
+   * run history. `false`/unset means row-count history is still tracked,
+   * just never alerts on it. */
+  anomaly_alerts?: boolean
+  /** Deterministic column tokenization (Fase 28) — applied before the SQL
+   * transform (if present) and before the sink(s). Matches
+   * nexus-core::column_masking::ColumnMaskingSpec exactly. Requires
+   * NEXUS_MASKING_SALT to be configured server-side; saving a pipeline
+   * with a non-empty list here on a server without that salt set fails at
+   * save time. Empty/unset means no masking. */
+  masking?: MaskingSpec[]
   /** When true, the spec is saved as a draft and the server skips validation
    * of connector configs/embedding/dbt. Drafts cannot be executed. */
   draft?: boolean
+}
+
+/** Matches nexus-core::column_masking::ColumnMaskingSpec exactly. */
+export interface MaskingSpec {
+  column: string
 }
 
 /** Matches nexus-core::WebhookAlertChannel exactly — Slack/Teams/generic
@@ -249,7 +299,16 @@ export interface PipelineMeta {
   channelCapacity?: number
   partitions?: number
   schedule?: string
+  /** Plain pipeline ids (canvas form of `PipelineSpec.depends_on`, which
+   * wraps each one in `{upstream_pipeline_id}`) — Fase 26. */
+  dependsOn?: string[]
+  dependencyMode?: 'any' | 'all'
   alerts?: AlertsConfig
+  qualityChecks?: QualityCheckSpec[]
+  anomalyAlerts?: boolean
+  /** Plain column names (canvas form of `PipelineSpec.masking`, which
+   * wraps each one in `{column}`) — Fase 28. */
+  maskedColumns?: string[]
 }
 
 /**
@@ -363,7 +422,18 @@ export function toPipelineSpec(
   if (meta.channelCapacity !== undefined) spec.channel_capacity = meta.channelCapacity
   if (meta.partitions !== undefined) spec.partitions = meta.partitions
   if (meta.schedule?.trim()) spec.schedule = meta.schedule.trim()
+  if (meta.dependsOn && meta.dependsOn.length > 0) {
+    spec.depends_on = meta.dependsOn.map((upstream_pipeline_id) => ({ upstream_pipeline_id }))
+    if (meta.dependencyMode) spec.dependency_mode = meta.dependencyMode
+  }
   if (meta.alerts) spec.alerts = meta.alerts
+  if (meta.qualityChecks && meta.qualityChecks.length > 0) {
+    spec.quality_checks = meta.qualityChecks
+  }
+  if (meta.anomalyAlerts) spec.anomaly_alerts = true
+  if (meta.maskedColumns && meta.maskedColumns.length > 0) {
+    spec.masking = meta.maskedColumns.map((column) => ({ column }))
+  }
   if (allowDraft) spec.draft = true
   return spec
 }

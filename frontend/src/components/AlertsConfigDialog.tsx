@@ -15,6 +15,10 @@ interface AlertsConfigDialogProps {
   onOpenChange: (open: boolean) => void
   alerts?: AlertsConfig
   onChange: (alerts: AlertsConfig | undefined) => void
+  /** Fase 27 — `PipelineSpec.anomaly_alerts`, edited here rather than in
+   *  its own dialog since it fires through these same channels. */
+  anomalyAlerts?: boolean
+  onAnomalyAlertsChange: (enabled: boolean) => void
 }
 
 /**
@@ -24,7 +28,14 @@ interface AlertsConfigDialogProps {
  * (no local draft state to lose on close/reopen) — same controlled pattern
  * `PipelineIoPanel` already uses for `meta`.
  */
-export function AlertsConfigDialog({ open, onOpenChange, alerts, onChange }: AlertsConfigDialogProps) {
+export function AlertsConfigDialog({
+  open,
+  onOpenChange,
+  alerts,
+  onChange,
+  anomalyAlerts,
+  onAnomalyAlertsChange,
+}: AlertsConfigDialogProps) {
   const { t } = useI18n()
 
   const update = (patch: Partial<AlertsConfig>) => {
@@ -65,6 +76,23 @@ export function AlertsConfigDialog({ open, onOpenChange, alerts, onChange }: Ale
           />
           <PagerDutySection channel={alerts?.pagerduty} onChange={(c) => update({ pagerduty: c })} />
           <EmailSection channel={alerts?.email} onChange={(c) => update({ email: c })} />
+
+          <label className="flex items-start gap-2 rounded-lg border border-white/10 p-3">
+            <input
+              type="checkbox"
+              checked={anomalyAlerts ?? false}
+              onChange={(e) => onAnomalyAlertsChange(e.target.checked)}
+              className="mt-0.5"
+            />
+            <span>
+              <span className="block text-sm font-medium text-foreground">
+                {t('quality.anomaly.alertsToggle')}
+              </span>
+              <span className="mt-0.5 block text-xs text-muted-foreground">
+                {t('quality.anomaly.alertsToggleHint')}
+              </span>
+            </span>
+          </label>
         </div>
       </DialogContent>
     </Dialog>

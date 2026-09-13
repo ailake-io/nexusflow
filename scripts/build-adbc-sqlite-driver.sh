@@ -14,8 +14,8 @@
 #     find_package(SQLite3))
 #   - libfmt-dev (or any fmt install find_package(fmt) can locate)
 #
-# Output: $OUT_DIR/libadbc_driver_manager.so and
-#         $OUT_DIR/libadbc_driver_sqlite.so
+# Output: $OUT_DIR/libadbc_driver_manager.{so,dylib} and
+#         $OUT_DIR/libadbc_driver_sqlite.{so,dylib} (dylib on macOS)
 #
 # Usage:
 #   ./scripts/build-adbc-sqlite-driver.sh [OUT_DIR]
@@ -30,6 +30,16 @@ OUT_DIR="${1:-$REPO_ROOT/target/adbc}"
 ADBC_REF="${ADBC_ADBC_REF:-apache-arrow-adbc-24}"
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
+
+# macOS support added 2026-09-05, untested on real hardware — see the
+# matching comment in build-adbc-postgresql-driver.sh.
+if [[ "$(uname)" == "Darwin" ]]; then
+  LIB_EXT="dylib"
+  NPROC="$(sysctl -n hw.ncpu)"
+else
+  LIB_EXT="so"
+  NPROC="$(nproc)"
+fi
 
 mkdir -p "$OUT_DIR"
 
@@ -46,11 +56,11 @@ cmake -S "$WORK_DIR/arrow-adbc/c" -B "$WORK_DIR/build" \
   -DCMAKE_SKIP_RPATH=ON
 
 echo "==> building"
-cmake --build "$WORK_DIR/build" -j"$(nproc)" \
+cmake --build "$WORK_DIR/build" -j"$NPROC" \
   --target adbc_driver_manager_shared adbc_driver_sqlite_shared
 
-cp "$WORK_DIR/build/driver_manager/libadbc_driver_manager.so" "$OUT_DIR/"
-cp "$WORK_DIR/build/driver/sqlite/libadbc_driver_sqlite.so" "$OUT_DIR/"
+cp "$WORK_DIR/build/driver_manager/libadbc_driver_manager.$LIB_EXT" "$OUT_DIR/"
+cp "$WORK_DIR/build/driver/sqlite/libadbc_driver_sqlite.$LIB_EXT" "$OUT_DIR/"
 
-echo "==> done: $OUT_DIR/libadbc_driver_manager.so"
-echo "==> done: $OUT_DIR/libadbc_driver_sqlite.so"
+echo "==> done: $OUT_DIR/libadbc_driver_manager.$LIB_EXT"
+echo "==> done: $OUT_DIR/libadbc_driver_sqlite.$LIB_EXT"

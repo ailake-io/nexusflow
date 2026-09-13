@@ -10,18 +10,19 @@ Consolidado dos itens que ficaram faltando/incompletos ao longo das fases abaixo
 2. ~~**Marco 13 do roadmap original — CDC nativo sem Kafka/Debezium**~~ — resolvido: Fase 18 (`postgres-cdc`/`mongodb-cdc`/`mysql-cdc`), sinal de adoção confirmado.
 3. **`nexus-ai`: features `cuda`/`metal` registram o execution provider ONNX Runtime correto (`ort::ep::CUDA`/`ort::ep::CoreML`), mas não validadas em hardware real** (sandbox é Linux sem GPU) — só confirmado que compilam e que o EP é registrado antes do load da sessão; runtime faz fallback silencioso pra CPU se o driver/hardware não estiver presente. `api` (embeddings via HTTP externa, endpoint compatível com OpenAI) implementada e testada (mock via `wiremock`) — sem chamada real contra OpenAI/Azure/etc neste sandbox. O perfil `cuda` do Docker já tem a infra de runtime pronta (base image + `--gpus all`).
 4. **Alertas: Slack, MS Teams, PagerDuty, Email e Webhook genérico — todos os 5 canais de `CLAUDE.md §6` implementados** (ver `nexus-server/src/alerts.rs`).
-5. **Windows (`.msi`) removido do CI de release por ora — chegou a rodar, achou um bug real.** `build-windows` (self-hosted `windows-connectors-heavy`, mesma máquina do `connectors-heavy.yml`) rodou de verdade uma vez e achou um erro genuíno: `cargo build --features connectors-all` falha em `openssl-sys` — `nexus-connector-mysql` (CDC binlog) depende da crate `mysql_cdc`, que só suporta OpenSSL nativo (sem rustls), e essa máquina Windows não tem OpenSSL/vcpkg instalado. Fix é setup manual na máquina (`vcpkg install openssl:x64-windows-static-md` + `vcpkg integrate install` + variável `VCPKG_ROOT`), não algo que o workflow resolve sozinho. Job removido do `release.yml` até isso ser feito (definição completa preservada no histórico do git); religar depois. Mesmo depois desse fix, o `.msi` ainda não terá sido instalado/testado numa máquina Windows real por um humano, e só ship a binário do servidor — build dos drivers ADBC (Postgres/SQLite) pra `.dll` continua sem existir (MSVC+vcpkg separado do OpenSSL acima). `winget` continua não configurado. **macOS removido do matrix de release CI por ora** (não é o mesmo caso do Windows: não existe runner self-hosted de macOS pra trocar, e os runners hospedados `macos-13`/`macos-14` do GitHub bateram num bloqueio de billing da org — ver item 16 — que também cancelava os builds Linux via fail-fast do matrix). Homebrew/`.dmg`: specs em `packaging/macos/`, nunca validados em máquina real, sem build script dos drivers ADBC pra macOS (`.dylib`) — os scripts atuais (`scripts/build-adbc-*.sh`) só geram `.so`.
+5. **Repo ficou público 2026-09-05 — todo workflow saiu do self-hosted pra runner hospedado, resolvendo o bloqueio de billing do item 16 por completo (não só macOS/Windows).** Windows: `build-windows-installer.yml` migrou de self-hosted pra `windows-latest` — o setup vcpkg/OpenSSL que resolvia o bug real do `mysql_cdc`/OpenSSL nativo (sem rustls) virou passo explícito rodando do zero a cada execução, contra o vcpkg pré-instalado na imagem hospedada. Timeout bumpado 60→150min depois que uma execução real mostrou o `cargo build --features connectors-all` sozinho levando 44+ min. Instalado e validado numa máquina Windows real (2026-09-06, `.msi` publicado de verdade) — só ship o binário do servidor; build dos drivers ADBC (Postgres/SQLite) pra `.dll` continua sem existir. `winget` continua não configurado (ver seção própria de distribuição). O job `build-windows` original dentro do `release.yml` (full `connectors-all`, matrix automático a cada push/PR) segue **removido dessa chain por ora** — decisão separada, não bloqueio técnico. **macOS entrou no matrix de `release.yml`'s `build` job** (`macos-latest`, arm64) no mesmo dia — esse leg específico produz um binário OSS-only (o passo que builda o enterprise usa `docker build`, indisponível em runner macOS hospedado). **Correção 2026-09-09**: revisão anterior deste item dizia "não validado"/"sem conectores enterprise" pro macOS como um todo — errado. `build-macos-installer.yml` (workflow separado, `[patch]` de Cargo em vez de Docker, mesmo truque do Windows) rodou de verdade num `macos-latest` real em 2026-09-06 (63m54s, `connectors-all` + todo conector enterprise, achou e corrigiu bugs reais — `libpq` keg-only, scripts `duckdb`/`clickhouse` hardcodando extensão Linux) e dispara sozinho desde 2026-09-08. Homebrew: formula em `packaging/macos/nexusflow.rb` aponta pro tarball real publicado (`v0.1.3`), `sha256` real e conferido, não placeholder. Scripts `scripts/build-adbc-*.sh` ganharam suporte a `.dylib`/`sysctl` pro macOS, validados nesse mesmo run real. O que falta: um humano de fato rodando `brew install`/o binário numa máquina Mac física. **2026-09-08: `build-windows-installer.yml` e `build-macos-installer.yml` deixaram de ser só `workflow_dispatch` isolado** — ganharam trigger `workflow_run` em `Release`/branch `main`, então agora disparam sozinhos como parte da chain automática (`ci.yml` → `connectors-heavy.yml` → `release.yml` → esses dois + `docker-hub-publish.yml`, ver item 8); o `workflow_dispatch` manual continua disponível pra rebuild avulso.
 6. ~~**`.deb`/`.rpm`/AppImage validados manualmente mas nunca wireados em CI**~~ — resolvido: `release.yml`'s `build` job (Linux x86_64) agora chama `scripts/package-{deb,rpm,appimage}.sh` automaticamente a cada push/PR pra `main` e sobe os 3 artifacts junto com o tarball — antes só o tarball cru era produzido em CI, os 3 scripts existiam mas nunca eram invocados. arm64 fica de fora por ora (os scripts hardcodam amd64/x86_64). `.rpm` também já tinha sido validado manualmente com `rpmbuild` real antes disso (`scripts/package-rpm.sh` buildou `nexusflow-0.1.0-1.x86_64.rpm` de ponta a ponta; corrigido de brinde um `Requires:` incompleto — faltava `unixODBC`/`cyrus-sasl-lib`, equivalentes RPM do `unixodbc`/`libsasl2-2` que o `.deb` já lista, não pegos pelo scanner automático do rpmbuild porque são dlopen'd, não linkados direto no ELF).
 7. **Estatísticas de hardware (CPU/RAM) implementadas** — `sysinfo` via `nexus-server::hardware_stats`, frame `{"hardware_stats": {...}}` intercalado no WebSocket de progresso a cada 2s (mesmo canal do `ProgressEvent`, discriminado pela chave). Sem GPU — `sysinfo` não expõe utilização de GPU (é vendor-specific, NVML pra NVIDIA etc.) e nada no código depende disso ainda.
-8. **Imagem Docker publicada no GHCR** (`docker-publish` job em `.github/workflows/release.yml`). Build amd64 apenas (arm64 fora de escopo até resolver billing de runners hospedados), com `FEATURES=embed-ui,connectors-all`, tag `v{X.Y.Z}` + `latest` a cada push pra `main`. GHCR usa `GITHUB_TOKEN` (sem credencial externa). Docker Hub (`ailake/nexusflow`) está fora do CI atual até `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN` serem configurados.
+8. ~~**Imagem Docker publicada no GHCR**~~ — **migrado pro Docker Hub em 2026-09-08**: o job `docker-publish` (GHCR, `GITHUB_TOKEN`) foi removido de vez do `release.yml`, substituído por um workflow próprio (`.github/workflows/docker-hub-publish.yml`), disparando via `workflow_run` em `Release` + `workflow_dispatch` manual, autenticando com `secrets.DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN` (confirmados existentes no repo via `gh secret list`). Publica `thiagolange/nexusflow`, tags `v{X.Y.Z}` + `latest`, mesmo `FEATURES=embed-ui,connectors-all`, build amd64 apenas.
 9. **Admin (gestão de usuários) tem tela no Canvas** — `UsersPanel.tsx` cobre criar/promover/excluir contra as rotas já existentes (`GET/POST /users`, `GET/DELETE /users/{username}`, `PUT /users/{username}/role`). Nav item só aparece pra role Admin (decodificado do JWT client-side, sem verificar assinatura) — enforcement real continua 100% no servidor (`auth.rs`).
 10. Ver também a seção **Débitos conhecidos** no fim deste arquivo (secrets sem KMS, RBAC sem escopo por recurso, versões de dependência pinadas, advisories RustSec aceitos).
 11. ~~**Estágio `embedding` do `PipelineSpec` sem UI no Canvas**~~ — resolvido: node dedicado `kind: 'embedding'` no Canvas (mesmo padrão do node `dbt`, painel próprio em `NodeInspector.tsx` já que `EmbeddingModelSpec`/`ChunkingSpec` são unions com tag que o `SchemaForm` genérico não resolve). `lib/dag.ts`'s `PipelineSpec` agora declara `embedding`; `toPipelineSpec`/`fromPipelineSpec` fazem o round-trip completo (Onnx↔Api, fixed_window↔recursive_character) sem perder config ao editar/salvar.
 12. **Fase 16 (Preview + dbt ETL) é backend-only** — `GET /pipelines/{id}/preview` não tem botão/tabela no Canvas ainda (só curl/Postman); o node dbt tem handle de saída (Fase 18 adicionou, consistência visual), mas painel de config pra `dbt.output` — hoje só configurável via API/JSON direto. Ambos deliberadamente adiados até validar se o formato backend-only já resolve o suficiente.
 13. ~~**Fase 18 (CDC nativo) sem toggle no Canvas**~~ — resolvido: `NodeInspector` tem switch Batch/CDC pra Postgres/MongoDB (MySQL é CDC-only, sem batch pra alternar).
-14. ~~**Manifests k8s reais (Deployment/Service/PVC/Secret/HPA) ainda não escritos**~~ — resolvido: Fase 19, `packaging/kubernetes/` + `packaging/swarm/`.
-15. **Guia de deploy público na web — não implementado, não documentado.** O instalador/binário sozinho não é suficiente pra rodar em produção acessível publicamente. Falta: (a) reverse proxy com TLS na frente do `nexus-server` (o binário serve HTTP puro na porta 8080, sem TLS embutido); (b) bootstrap de segredos reais (chave AES-256-GCM de credenciais, secret de assinatura JWT) — hoje sem processo documentado de geração/rotação; (c) criação do primeiro usuário Admin via `POST /users` documentada como passo de setup; (d) troca de SQLite pra Postgres pro backend de metadados quando for multi-usuário concorrente (`sqlx` já suporta os dois, só falta o guia); (e) firewall/security group expondo só 443/80, nunca a porta 8080 direta. Caminho mais simples: a imagem Docker já publicada no GHCR (multi-arch, non-root, `/health`) atrás de Caddy/nginx com TLS via Let's Encrypt — documentar como `docs/guides/DEPLOY_WEB.md` (ainda não existe).
-16. **Billing da org GitHub bloqueado — afeta todo runner hospedado, não só macOS/Windows.** Descoberto ao mergear a PR do item 5: `build (linux, x86_64, ubuntu-latest)` e `build (linux, arm64, ubuntu-24.04-arm)` falharam com o mesmo erro ("recent account payments have failed or your spending limit needs to be increased") que já tinha bloqueado macOS/Windows — ou seja, é bloqueio de conta inteira, não uma cota específica de runner caro. Mitigado: `build`'s entrada `linux/x86_64` movida pro self-hosted `[self-hosted, Linux]` (mesma máquina do `ci.yml`), sem dependência de billing — e essa é a única entrada do matrix agora. `linux/arm64` **removido do matrix** (não só desabilitado) — sem alternativa self-hosted, aparecia como run vermelho a cada push mesmo sem afetar x86_64 (`fail-fast: false` evita cancelamento cruzado, mas não evita o próprio job aparecer falho). Religar quando o billing for resolvido em `Settings > Billing and plans` — só o usuário (admin da org) resolve isso; definição exata do matrix entry preservada no histórico do git.
+14. ~~**Manifests k8s reais (Deployment/Service/PVC/Secret/HPA) ainda não escritos**~~ — resolvido: Fase 19, `packaging/kubernetes/` + `packaging/swarm/`. **Validado num minikube real em 2026-09-06/07**: multi-réplica com Postgres compartilhado, health probes, HPA+metrics-server funcionando. Bug real achado e corrigido nessa validação: `deployment.yaml` referenciava a tag da imagem via `${NEXUSFLOW_VERSION:?msg}` (sintaxe shell) direto no YAML — `kubectl apply -k`/`kubectl kustomize` nunca substitui isso (confirmado empiricamente, a string ficava literal). Corrigido com o transformer nativo do kustomize (`images:` em `kustomization.yaml`), `deployment.yaml` passou a referenciar a imagem sem tag.
+15. **Guia de deploy público na web — não implementado, não documentado.** O instalador/binário sozinho não é suficiente pra rodar em produção acessível publicamente. Falta: (a) reverse proxy com TLS na frente do `nexus-server` (o binário serve HTTP puro na porta 8080, sem TLS embutido); (b) bootstrap de segredos reais (chave AES-256-GCM de credenciais, secret de assinatura JWT) — hoje sem processo documentado de geração/rotação; (c) criação do primeiro usuário Admin via `POST /users` documentada como passo de setup; (d) troca de SQLite pra Postgres pro backend de metadados quando for multi-usuário concorrente (`sqlx` já suporta os dois, só falta o guia); (e) firewall/security group expondo só 443/80, nunca a porta 8080 direta. Caminho mais simples: a imagem Docker já publicada no Docker Hub (`thiagolange/nexusflow`, non-root, `/health`) atrás de Caddy/nginx com TLS via Let's Encrypt, ou os manifests k8s do item 14 acima — documentar como `docs/guides/DEPLOY_WEB.md` (ainda não existe).
+16. ~~**Billing da org GitHub bloqueado — afeta todo runner hospedado, não só macOS/Windows.**~~ — **resolvido 2026-09-05**: o bloqueio ("recent account payments have failed or your spending limit needs to be increased") era de conta inteira, mas só afetava minutos **pagos** de repo privado — repo público tem minutos de Actions hospedados grátis/ilimitados, independente do billing da conta. Tornar o repo público removeu o bloqueio de vez; todo workflow voltou a rodar em runner hospedado do GitHub (`ubuntu-latest`/`windows-latest`/`macos-latest`) em vez do self-hosted único que existia só por causa desse bloqueio. arm64 Linux (`ubuntu-24.04-arm`) ainda não foi re-adicionado ao matrix — não é mais bloqueio técnico, só não priorizado ainda.
+17. **Ideia de conector: Apache Fluss (streaming storage pra lakehouse, upsert + CDC nativo) — registrado, não iniciado.** Complementaria bem o par CDC nativo + sinks Delta/Iceberg já existentes (`ARCHITECTURE.md §7`), mas sem crate Rust disponível hoje — só client Java/Flink com protocolo binário próprio, sem equivalente ao `rdkafka` que o conector Kafka usa. Vira bridging connector do zero (implementar o protocolo, não só consumir SDK pronto). Baixa prioridade — nem Fase 12 (conectores enterprise, deliberadamente por último) chegou nisso ainda, e aqui nem catálogo (`docs/ENTERPRISE_CONNECTORS.md`) tem entrada. Reavaliar se/quando surgir um client Rust (oficial ou da comunidade).
 
 ## Fase 0 — Fundação (workspace) ✅
 - [x] `Cargo.toml` workspace + crates vazios: `nexus-core`, `nexus-ai`, `nexus-server`, e `crates/nexus-connectors/` já como workspace de sub-crates (não crate único) — ver `CLAUDE.md §3` e `ARCHITECTURE.md §3`
@@ -88,10 +89,10 @@ Consolidado dos itens que ficaram faltando/incompletos ao longo das fases abaixo
 ## Fase 10 — dbt (ELT opcional) ✅
 - [x] Subprocesso assíncrono invocando `dbt run`/`build`/`test` pós-carga (feature `dbt`), com resultado de lineage/qualidade no histórico de execução
 
-## Fase 11 — Distribuição multiplataforma ✅ (Windows/macOS não validados em máquina real)
+## Fase 11 — Distribuição multiplataforma ✅ (Windows/macOS validados em CI real, não numa máquina física de usuário)
 - [x] Single binary com frontend embutido (`rust-embed`, feature `embed-ui`)
-- [x] Empacotamento: AppImage/deb/rpm (Linux, todos testados, e desde a rodada de release CI abaixo buildados automaticamente em CI) — `.msi` (Windows), winget (Windows) e Homebrew/dmg (macOS) têm specs em `packaging/` mas nenhum roda em CI hoje (`.msi` chegou a rodar e achou um bug real de OpenSSL, ver item 5 das Pendências ativas; os demais nunca foram wireados) nem foram validados em máquina real
-- [x] Imagem Docker com perfil `cuda` selecionável via `--build-arg RUNTIME_IMAGE` (base image + `--gpus all` prontos; aceleração real pendente da Fase 5's `cuda` feature), publicada no GHCR a cada push pra `main` — modelo de release contínua, não mais por tag `git` (ver item 8 das Pendências ativas). Build amd64 com `FEATURES=embed-ui,connectors-all`; Docker Hub fora do CI atual até secrets configurados.
+- [x] Empacotamento: AppImage/deb/rpm (Linux, todos testados, e desde a rodada de release CI abaixo buildados automaticamente em CI) — `.msi` (Windows) roda em CI (`build-windows-installer.yml`, dispara sozinho após cada release desde 2026-09-08, ver item 5 das Pendências ativas) e já foi instalado numa máquina Windows real (2026-09-06); Homebrew/dmg (macOS) roda em CI real desde 2026-09-06 (`build-macos-installer.yml`, `macos-latest`, 63m54s, `connectors-all` + todo conector enterprise) e dispara sozinho após cada release; nenhum dos dois teve um humano de fato instalando numa máquina física própria ainda. winget (Windows) continua sem spec/CI nenhum.
+- [x] Imagem Docker com perfil `cuda` selecionável via `--build-arg RUNTIME_IMAGE` (base image + `--gpus all` prontos; aceleração real pendente da Fase 5's `cuda` feature), publicada no **Docker Hub** (`thiagolange/nexusflow`) a cada push pra `main` — GHCR foi descontinuado em 2026-09-08 (ver item 8 das Pendências ativas). Build amd64 com `FEATURES=embed-ui,connectors-all`.
 - [x] Script de instalação `curl | sh` (`scripts/install.sh`) + `.github/workflows/release.yml`
 
 ## Fase 12 — Enterprise connectors / store de plugins pagos (paralelo, repo separado)
@@ -180,14 +181,29 @@ licenciamento e `docs/ENTERPRISE_CONNECTORS.md` pro catálogo/priorização.
   `csv`, seleção de aba/sheet) — prioridade tier-2 em
   `docs/ENTERPRISE_CONNECTORS.md` (baixa barreira técnica, alto volume em
   PME). Repo privado `nexus-connectors-enterprise` criado e ativo — bem
-  além do escopo original de "primeiro conector": já tem **24 crates / 51
-  entradas de catálogo** (Excel + BigQuery, Snowflake, Redshift, Synapse,
-  MSSQL/MSSQL CDC, Oracle/Oracle LogMiner CDC, SAP HANA, Salesforce,
-  Shopify, Stripe, Meta/Google/LinkedIn/TikTok Ads, GA4, YouTube
-  Analytics, Kinesis, Pulsar, Elasticsearch/OpenSearch, Weaviate, Azure AI
-  Search, Vertex AI Vector Search — ver `docs/DOCKER_LOCAL_TESTING.md`
-  desse repo pra lista completa com campos/exemplo de config por
-  conector).
+  além do escopo original de "primeiro conector": **37 crates** hoje
+  (contagem real via `Cargo.toml` do repo, 2026-09-05 — número sobe com
+  frequência, ver `docs/ENTERPRISE_CONNECTORS.md` pra lista viva por
+  categoria em vez de um total fixo aqui) — Excel, BigQuery, Snowflake,
+  Redshift, Synapse, MSSQL/MSSQL CDC, Oracle/Oracle LogMiner CDC, SAP
+  HANA, Teradata, Vertica, Salesforce, HubSpot, Zendesk, ServiceNow,
+  Dynamics 365, NetSuite, Workday, SharePoint, Dropbox, Google
+  Sheets/Drive, Shopify, Stripe, Meta/Google/LinkedIn/TikTok/X Ads, GA4,
+  YouTube Analytics, Kinesis, Pulsar, Starburst (Trino), Databricks,
+  Elasticsearch/OpenSearch, Weaviate, Azure AI Search, Vertex AI Vector
+  Search — ver `docs/DOCKER_LOCAL_TESTING.md` desse repo pra lista
+  completa com campos/exemplo de config por conector.
+- [x] **Bloco 5 — Gate de capabilities não-conector (LLMOps Marco L8)**:
+  `"llm-lineage-tracking"` (`GET /lineage/generation/{id}`) e
+  `"reactive-rag-cdc"` (`*-cdc` source + `embedding` no passthrough)
+  reaproveitam o enforcement do Bloco 1 (`check_connector_license`), mas
+  registrados via `submit_enterprise_connector!` dentro do próprio
+  `nexus-server` (`capability_registry.rs`), não num crate privado —
+  esse código já roda sempre no binário público, diferente de um
+  conector real que só existe quando o crate enterprise está linkado.
+  `ConnectorCapability` ganhou uma 4ª variante (`Capability`) só pra
+  esses dois, filtrada de `GET /connectors` (nunca vira node type no
+  Canvas). Ver `docs/ENTERPRISE_LICENSING.md §5`.
 - [ ] **Bloco 4 — Storefront mínimo**: página de venda + checkout, mesmo que
   simples (Mercado Pago Checkout Pro cobre a parte de pagamento sem UI
   custom pra dado de cartão).
@@ -285,12 +301,53 @@ Protocolo padrão de telemetria IoT (AWS IoT Core, Azure IoT Hub, HiveMQ, Mosqui
 
 ---
 
-## Fase 24 — Aba Infra: Canvas visual pra Terraform (AWS) — planejado, não implementado
+## Fase 23 — Conector ClickHouse (ADBC nativo, repo público)
+
+Estava registrado como candidato enterprise em `docs/ENTERPRISE_CONNECTORS.md` sob a premissa "ADBC básico OSS, avançado pago" — investigação numa sessão anterior derrubou essa premissa: RBAC e cluster mode (`Distributed`/`Replicated`, ClickHouse Keeper) são recursos OSS do próprio ClickHouse self-hosted, não existe feature "avançada" genuína pra reservar como paga (diferente de Snowflake/Oracle/SAP, que têm licenciamento pago real). Driver ADBC também é oficial (ClickHouse, Inc.) e grátis. Decisão: vai pro repo público, mesma categoria de Postgres/SQLite.
+
+- [x] `nexus-connector-clickhouse` (feature `clickhouse`) — mesmo esqueleto ADBC do `nexus-connector-postgres` (`driver.rs`/`config.rs`/`source.rs`/`sink.rs`), única option key `uri` confirmada contra a doc real do driver (adbc-drivers.org/drivers/clickhouse/), não múltiplas chaves como Snowflake.
+- [x] Instalação de um comando só (`dbc install clickhouse`, ADBC Driver Foundry) — diferente de Postgres/SQLite, que exigem compilar `libadbc_driver_*.so` na mão.
+- [x] **Sink append-only, achado real**: ClickHouse não tem `ON CONFLICT`/upsert leve (`ALTER TABLE ... UPDATE/DELETE` são mutations assíncronas pesadas). `write_batch` rejeita explicitamente batches de CDC com `__opcode` de delete em vez de descartar silenciosamente — dedup fica a cargo do usuário via `ReplacingMergeTree`/`CollapsingMergeTree`, mecanismo idiomático do próprio ClickHouse.
+- [x] `partition_column` em vez de `primary_key` (nome do Postgres, implica unicidade que o ClickHouse não impõe) — qualquer coluna orderável usada só pra particionar leitura em paralelo.
+- [ ] Sem teste de integração real (mesma ressalva de todo conector ADBC do repo — nem `postgres` tem, `ADBC_DRIVER_POSTGRESQL_PATH` também não é setado em CI). Só unit tests dos SQL builders.
+
+**Critério de pronto:** `cargo test -p nexus-connector-clickhouse` cobrindo os SQL builders (incluindo rejeição de SQL injection), `cargo build --features connectors-all` linkando o conector, `GET /connectors` listando `clickhouse`. **Atingido** (sem validação contra instância ClickHouse real — mesma ressalva que Snowflake/BigQuery/Databricks já carregam).
+
+---
+
+## Fase 24 — Expansão de conectores (gap analysis, OSS + enterprise)
+
+Motivada por uma análise de lacunas nesta sessão: conectores de streaming existiam só como source (nunca publicavam), e vários candidatos do `docs/ENTERPRISE_CONNECTORS.md` seguiam sem crate por falta de esforço, não por falta de demanda. Escopo: implementar tudo que fizesse sentido, exceto Db2 (exclusão explícita do usuário) e SAP BAPI/IDoc (achado durante a implementação: bloqueio legal, não técnico — SDK NetWeaver da SAP é proprietário e não redistribuível sem licença comercial direta, sem caminho Rust possível).
+
+**OSS (`crates/nexus-connectors/`):**
+- [x] Kafka ganhou sink (produtor via `rdkafka`, feature `producer`) — só tinha source antes.
+- [x] `duckdb` — fast-path ADBC oficial (`dbc install duckdb`), upsert real via `ON CONFLICT`, diferente do append-only do ClickHouse.
+- [x] `redis` — Streams (`XADD`/`XREAD`), não KV genérico; sem consumer group em v1.
+- [x] `nats` — pub/sub core, não JetStream (sem persistência/replay).
+- [x] `rabbitmq` — AMQP 0-9-1, sempre auto-ack no source (sem redelivery manual em v1).
+
+**Enterprise (`nexus-connectors-enterprise`, repo privado, 24 crates novos/alterados):**
+- [x] Kinesis e Pulsar ganharam sink (mesma lacuna do Kafka).
+- [x] Teradata, Vertica — mesmo esqueleto ODBC do HANA; Teradata usa `UPDATE ... ELSE INSERT` (sem `MERGE` nativo), Vertica usa `MERGE` real.
+- [x] HubSpot, Zendesk, Google Sheets — REST/JSON, testados com `wiremock`, mesmo padrão do Salesforce/Stripe.
+- [x] Dropbox, Google Drive — **acharam o próprio padrão** durante a implementação: em vez de listar metadado de arquivo como linha, reusam o parsing `arrow-csv` do `nexus-connector-csv` público contra uma pasta com CSV/TSV, já que `object_store` não tem backend pra essas duas nuvens.
+- [x] ServiceNow, Dynamics 365, SharePoint — REST/OAuth mais complexo (paginação OData v4 via `@odata.nextLink` em Dynamics/SharePoint, offset simples no ServiceNow).
+- [x] NetSuite — SuiteQL (não a SOAP SuiteTalk antiga) pra leitura, REST Record API pra escrita; schema inferido dinamicamente das colunas da query (sem `fields` fixo).
+- [x] Workday — **source-only, permanente**: RaaS (Report-as-a-Service) cobre leitura real, mas o write-path de verdade do Workday é SOAP (`Put_Worker` etc.), superfície de protocolo separada e muito maior, não uma simplificação de v1 — mesmo racional do Stripe ser read-only, só que por limitação técnica em vez de decisão de produto.
+
+**Achados reais durante a verificação** (não só desenvolvimento): um `| tail` mascarando exit code de pipe escondeu 3 bugs reais por um tempo (variant `redis::Value::Data` renomeado pra `BulkString` na 0.27; `hasMore` do NetSuite sem `#[serde(rename)]`, quebrando paginação silenciosamente; `needless_range_loop`/`if_same_then_else` do clippy em 3 crates) — todos recorrigidos após passar a rodar tudo com exit code real (redirecionado a arquivo, sem pipe). Dois bugs de clippy pré-existentes (não relacionados a este trabalho) em `mssql-cdc`/`oracle-cdc` também corrigidos a pedido do usuário.
+
+**Critério de pronto:** `cargo check`/`test`/`clippy -D warnings` limpos (exit code real, sem `| tail`) no workspace inteiro dos dois repos, `GET /connectors` listando cada conector novo. **Atingido** — 19 itens implementados e commitados (6 ondas), nenhum contra conta/tenant real (mesma ressalva de todo conector REST/ODBC deste repo — só `wiremock`/unit tests).
+
+---
+
+## Fase 25 — Aba Infra: Canvas visual pra Terraform (AWS) — planejado, não implementado
 
 Usuário pediu uma aba nova: desenhar infraestrutura AWS num Canvas
 visual (caixinha por recurso, clicar traz a config necessária) e
-gerar Terraform. Pesquisado e planejado nesta sessão, execução fica
-pra um próximo passo — registrado aqui pra não perder o levantamento.
+gerar Terraform. Pesquisado e planejado numa sessão anterior, execução
+fica pra um próximo passo — registrado aqui pra não perder o
+levantamento.
 
 **Achado que muda a estimativa de esforço pra baixo**: o mecanismo
 inteiro já existe, só nunca foi usado fora do domínio "conector de
@@ -329,10 +386,10 @@ aplicar o mesmo padrão a um domínio novo.
   dependendo de `aws_vpc`/`aws_subnet`/`aws_security_group`).
   Kinesis/Glue/MSK/Redshift ficam como expansão incremental depois,
   mesmo mecanismo, baixo risco (mesmo padrão que a allowlist de
-  recurso da aba Linhagem desta sessão já estabeleceu).
+  recurso da aba Linhagem já estabeleceu).
 
 **Desenho técnico levantado** (detalhe completo ficou só no plano
-efêmero da sessão, resumo aqui):
+efêmero da sessão original, resumo aqui):
 - Novo crate `crates/nexus-infra/` — um struct por recurso
   (`Deserialize + Serialize + JsonSchema`), campo que referencia outro
   nó do Canvas usa sufixo `_ref` (convenção pro frontend desenhar
@@ -364,20 +421,6 @@ efêmero da sessão, resumo aqui):
 
 ---
 
-## Fase 23 — Conector ClickHouse (ADBC nativo, repo público)
-
-Estava registrado como candidato enterprise em `docs/ENTERPRISE_CONNECTORS.md` sob a premissa "ADBC básico OSS, avançado pago" — investigação numa sessão anterior derrubou essa premissa: RBAC e cluster mode (`Distributed`/`Replicated`, ClickHouse Keeper) são recursos OSS do próprio ClickHouse self-hosted, não existe feature "avançada" genuína pra reservar como paga (diferente de Snowflake/Oracle/SAP, que têm licenciamento pago real). Driver ADBC também é oficial (ClickHouse, Inc.) e grátis. Decisão: vai pro repo público, mesma categoria de Postgres/SQLite.
-
-- [x] `nexus-connector-clickhouse` (feature `clickhouse`) — mesmo esqueleto ADBC do `nexus-connector-postgres` (`driver.rs`/`config.rs`/`source.rs`/`sink.rs`), única option key `uri` confirmada contra a doc real do driver (adbc-drivers.org/drivers/clickhouse/), não múltiplas chaves como Snowflake.
-- [x] Instalação de um comando só (`dbc install clickhouse`, ADBC Driver Foundry) — diferente de Postgres/SQLite, que exigem compilar `libadbc_driver_*.so` na mão.
-- [x] **Sink append-only, achado real**: ClickHouse não tem `ON CONFLICT`/upsert leve (`ALTER TABLE ... UPDATE/DELETE` são mutations assíncronas pesadas). `write_batch` rejeita explicitamente batches de CDC com `__opcode` de delete em vez de descartar silenciosamente — dedup fica a cargo do usuário via `ReplacingMergeTree`/`CollapsingMergeTree`, mecanismo idiomático do próprio ClickHouse.
-- [x] `partition_column` em vez de `primary_key` (nome do Postgres, implica unicidade que o ClickHouse não impõe) — qualquer coluna orderável usada só pra particionar leitura em paralelo.
-- [ ] Sem teste de integração real (mesma ressalva de todo conector ADBC do repo — nem `postgres` tem, `ADBC_DRIVER_POSTGRESQL_PATH` também não é setado em CI). Só unit tests dos SQL builders.
-
-**Critério de pronto:** `cargo test -p nexus-connector-clickhouse` cobrindo os SQL builders (incluindo rejeição de SQL injection), `cargo build --features connectors-all` linkando o conector, `GET /connectors` listando `clickhouse`. **Atingido** (sem validação contra instância ClickHouse real — mesma ressalva que Snowflake/BigQuery/Databricks já carregam).
-
----
-
 **Critério de "MVP pronto"**: Fases 0–3 + 7 (parcial: auth básica) + 8 (canvas mínimo) funcionando end-to-end — mover dados de Postgres pra Postgres via canvas visual, com checkpoint por partição, retry e escrita idempotente. **Atingido e superado** — Fases 0–11 e 13–17 completas, só falta Fase 12 (enterprise, repo separado) e os itens condicionais/parciais marcados acima.
 
 ## Débitos conhecidos (aceitos pro MVP, resolver antes de vender enterprise)
@@ -387,5 +430,28 @@ Estava registrado como candidato enterprise em `docs/ENTERPRISE_CONNECTORS.md` s
 - ~~**Ciclo de vida do modelo ONNX indefinido**~~ — decidido 2026-07-30: HF Hub em runtime + cache local (`ARCHITECTURE.md §8`).
 - **Execução single-node** — decisão deliberada de escopo, não limitação a esconder do usuário (`ARCHITECTURE.md §6`). Documentar isso claramente também no README quando o produto for anunciado publicamente.
 - **5 advisories RustSec aceitos (ver `.github/workflows/ci.yml`'s `cargo-audit` job)**: `RUSTSEC-2023-0071` (rsa, via `jsonwebtoken`'s RS256 — sem correção disponível upstream), `RUSTSEC-2026-0194`/`-0195` (quick-xml, via `object_store`/`datafusion` 54.1.0 — mesmo pin de arrow 58.x abaixo), `RUSTSEC-2025-0009`/`RUSTSEC-2024-0336` (ring/rustls, via `milvus-sdk-rust`'s tonic 0.8.3 — sem release mais nova do SDK). Reavaliar cada um quando a dependência que os carrega soltar uma versão nova.
-- **`arrow-array`/`arrow-schema` fixados em `58.4.0` e `adbc_core`/`adbc_driver_manager`/`adbc_ffi` em `0.23.0` (não a última, `0.24.0`) em todo o workspace** — `datafusion` 54.1.0 (última versão publicada) ainda depende de arrow 58.x, enquanto adbc 0.24.0 já exige arrow ≥59. Sem overlap entre as duas, então fixamos tudo em 58.4.0/0.23.0 pra ter um `RecordBatch` só no grafo de dependências. Reavaliar quando o datafusion soltar uma versão em cima de arrow 59+.
+- **`GHSA-2f9f-gq7v-9h6m` (Apache Thrift, "Memory Allocation with Excessive Size Value", corrigido em `thrift` 0.23.0) — aceito, sem `--ignore` no `cargo-audit` porque não existe `RUSTSEC-ID` pra isso (só aparece como Dependabot alert no GitHub, dispensado como `tolerable_risk` em 2026-09-02).** Rastreado via `cargo tree -i thrift@0.17.0 --all-features`: o `parquet` que o workspace usa (58.4.0) **não depende mais do crate `thrift`** — a rota vulnerável é 100% via `nexus-connector-ailake`, que puxa os crates externos `ailake-catalog`/`ailake-parquet` (pacote separado do mesmo projeto `ailake-io/ai-lakehouse`, fixado em `0.1.12`), que ainda usam `parquet 52.2.0` com o `thrift` velho internamente — sem release mais nova desses crates pra atualizar. Fix real precisa sair de lá, não deste repo. Exploração exigiria um arquivo Parquet malicioso alcançável por um source/sink `ailake` — já atrás do mesmo tier de confiança (`Write`) que outros conectores locais documentados em `ARCHITECTURE.md §10`.
+- **`arrow-array`/`arrow-schema` fixados em `58.4.0` e `adbc_core`/`adbc_driver_manager`/`adbc_ffi` em `0.23.0` (não a última, `0.24.0`) em todo o workspace** — **atualização 2026-09-02**: verificado via `cargo update` (só resolução de dependências, não compilado/testado) que `datafusion` 55.0.0 (mais nova que a 54.1.0 pinada hoje) já resolve limpo contra `arrow-array`/`arrow-schema`/`parquet` 59.x — a metade do bloqueio original ("datafusion ainda não suporta arrow 59+") não é mais verdade. Não confirmado ainda se `adbc_core`/`adbc_driver_manager`/`adbc_ffi` 0.24.0 também resolve nesse mesmo grafo (não testado). Migração real (editar os ~30 `Cargo.toml` que fixam a versão, `cargo check`/`test`/`clippy` em cada conector) ainda não feita — só a checagem de resolução.
 - **CDC nativo (`*-cdc`) combinado com um node de transform SQL ainda passa por `PipelineEngine::drain_sources`** — materializa tudo em memória antes de aplicar o SQL via DataFusion, o que nunca termina pra um source CDC em volume realista (WAL/binlog/change-stream não têm fim natural). O resume automático da Fase 18 e o streaming per-micro-batch só cobrem o caminho "passthrough" (sem transform, exatamente 1 source CDC + 1 sink). Não é regressão — nunca funcionou —, mas achado ao verificar o mecanismo de resume, antes não documentado. Ver `ARCHITECTURE.md §7`.
+
+---
+
+## Fase 26 — LLMOps: node `llm`, RAG e avaliação sistemática
+
+Mergeado em `develop` em 2026-09-07 (`518cfa3`, PR #79). Plano marco a marco em `docs/LLMOPS_IMPLEMENTATION_PLAN.md`, ideação original em `docs/MLOPS_LLMOPS_PLAN.md`, resumo arquitetural em `ARCHITECTURE.md §17-18`.
+
+- [x] **Marco L1 — Node `llm` + tracing básico**: 1 chamada por linha, backend `Api` (qualquer endpoint OpenAI-compatible) ou `Anthropic` (Messages API nativa, adicionado como emenda ao L1). Log estruturado por chamada, nunca prompt/resposta cru por padrão.
+- [x] **Marco L2 — Custo/tokens agregado**: tokens/custo por run, exposto em `GET /pipelines/{id}/runs`.
+- [x] **Marco L3 — Cache de resposta**: Redis, chave por hash(modelo+prompt+params), TTL configurável.
+- [x] **Marco L4 — Versionamento de prompt**: `PromptTemplateStore` (`POST`/`GET /prompts`) — cada save é uma versão nova, nunca sobrescreve.
+- [x] **Marco L5 — Linhagem row→geração**: `POST /rag/query` (RAG ad-hoc, fora do engine de batch) + `GET /lineage/generation/{id}`. Primeira capacidade de busca vetorial do repo — todo conector vetorial (LanceDB/Qdrant/Milvus/pgvector/Pinecone/ChromaDB) só tinha sink antes disso.
+- [x] **Marco L6 — RAG reativo via CDC**: `embedding` destravado no caminho passthrough — combinação `*-cdc` source + `embedding` sem node `transform` (antes só funcionava sem CDC).
+- [x] **Marco L7 — Avaliação sistemática**: golden dataset (`LlmNodeSpec.eval`) re-rodado a cada run, score por similaridade de token, persistido em `llm_eval_results`, visível no `QualityPanel.tsx`.
+- [x] **Marco L8 — Empacotamento enterprise**: `GET /lineage/generation/{id}` e a combinação CDC+embedding (L6) viram pagos, reaproveitando o mecanismo de license já existente (`ROADMAP.md` Fase 12 Bloco 5) — `POST /rag/query` em si continua OSS pra qualquer vetor store. Mesmo commit `518cfa3` também implementou o versionamento git embutido + mirror pro GitHub (`git-history-github-sync`, `ARCHITECTURE.md §18`), um terceiro slug de capability paga, na época sem doc dedicada.
+- [x] **L7 — follow-up** (fora do plano original): eval passa a rodar em todo caminho de execução (`run_linear_pipeline`/passthrough e `run_streaming_cdc_pipeline`, não só `run_transform_pipeline`); scoring "LLM como juiz" (`EvalScoringMode::LlmJudge`) como alternativa ao token-similarity, com fallback automático se a nota não parsear.
+- [x] **RAG multi-vetor** (fora do plano original): `POST /rag/query` deixa de ser só LanceDB — Qdrant, Milvus, pgvector, Pinecone e ChromaDB ganharam capacidade de busca própria (`search.rs` em cada crate de conector). Testado com container real (embedding real + banco real) pra Qdrant/Milvus/pgvector/ChromaDB; Pinecone via mock HTTP (único sem self-host).
+- [x] **Venda das 3 capabilities na Store + 2 bugs reais corrigidos** (2026-09-08/09, fora do plano original — `feature/llmops-store`, mergeada em `develop`): `llm-lineage-tracking`/`reactive-rag-cdc`/`git-history-github-sync` viraram produtos compráveis na Store, reusando o checkout Stripe já validado pro Excel (`docs/ENTERPRISE_LICENSING.md`). No processo, achado e corrigido: (1) `git-history-github-sync` era vendável mas fisicamente impossível de compilar em qualquer binário já publicado (`bin/Cargo.toml` do repo enterprise nunca expunha `llm`/`version-history`, e `version-history` nem entrava no `connectors-all` deste repo); (2) o default de `NEXUS_GIT_HISTORY_PATH` crashava no boot da imagem publicada (caminho não gravável pelo usuário não-root — corrigido com `std::env::temp_dir()`, depois de uma primeira tentativa com `$HOME` também falhar). Ambos nunca detectados antes porque ninguém tinha ligado `version-history` num binário publicado desde que foi implementado. Detalhe completo em `ARCHITECTURE.md §18`.
+
+**Achados reais durante a verificação** (não só desenvolvimento): notificações de tarefa em background se mostraram não confiáveis nesta sessão — "completed"/exit 0 reportado pra processos que na real tinham morrido sem rodar nada, escondendo por um tempo 2 bugs reais do Marco L8 (`schemars` só em `[dev-dependencies]` quando `capability_registry.rs` precisa dele sempre; `ConnectorCapability::Capability` sem qualificar `nexus_core::`) e um bug do L7 original (teste de scoring com duas frases cuja similaridade batia exatamente no threshold de pass/fail). Todos corrigidos depois de rodar tudo em foreground com timeout explícito.
+
+**Critério de pronto:** todos os 8 marcos + 3 rodadas extra implementados e testados (unitário + integração real via testcontainers onde fazia sentido — Redis, Postgres/pgvector, Qdrant, Milvus, ChromaDB; mock HTTP só pra Anthropic/OpenAI-compatible e Pinecone; checkout Stripe real em modo teste pra venda das capabilities). **Atingido e mergeado em `develop`** — LLMOps core em `518cfa3` (PR #79, 2026-09-07), venda + fixes em `feature/llmops-store` (2026-09-09).

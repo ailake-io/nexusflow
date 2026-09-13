@@ -2,9 +2,11 @@
 //! ARCHITECTURE.md §4.3, IMPLEMENTATION_PLAN.md Marco 5.
 
 mod config;
+mod search;
 mod sink;
 
 pub use config::MilvusConnectorConfig;
+pub use search::MilvusSearchClient;
 pub use sink::MilvusSink;
 
 nexus_core::submit_connector!(

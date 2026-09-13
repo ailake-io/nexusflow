@@ -9,6 +9,11 @@ license.workspace = true
 [features]
 default = []
 consumer = ["dep:rdkafka", "dep:tokio"]
+# Shares the same optional rdkafka/tokio deps as `consumer` — enabling
+# either (or both) links librdkafka once. Kept as its own feature so a
+# publish-only deployment doesn't need to pull in StreamConsumer/CommitMode
+# plumbing it will never use.
+producer = ["dep:rdkafka", "dep:tokio"]
 
 [dependencies]
 arrow-array = "58.4.0"

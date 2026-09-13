@@ -140,8 +140,11 @@ Chunking e embedding são etapas **puras** (sem I/O) para ficarem testáveis sem
 
 - Segredos de conexão (URIs, tokens) criptografados com **AES-256-GCM** antes de persistir em `sqlx` (Postgres/SQLite). Chave de criptografia vem de variável de ambiente/secret manager, nunca hardcoded.
 - RBAC checado em middleware Axum, antes do handler — não dentro de cada handler individualmente.
+- **Rate limit de login por IP real, não por header**: `login_rate_limit` (`rate_limit.rs`) identifica o chamador pelo peer TCP real (`ConnectInfo`), não por `X-Forwarded-For` — esse header é livremente falsificável numa conexão direta (sem reverse proxy na frente, o cenário padrão hoje, já que o guia de deploy público com TLS/proxy ainda não existe, ver `ROADMAP.md`), e um atacante mandando um valor diferente a cada tentativa zerava o rate limit por completo. Só passa a confiar no header via `NEXUS_TRUST_PROXY_HEADERS=true`, atestação explícita do operador de que um proxy confiável já o sanitiza.
+- **Guard de SSRF contra DNS rebinding**: `PipelineSpec::validate_security_with`'s `is_internal_host` só valida o hostname *literal* na hora de salvar/pré-visualizar — um domínio público que depois resolve pra um IP interno (`127.0.0.1`, `169.254.169.254`, RFC1918, ...) passava batido, e a requisição real ia pra onde o DNS mandasse naquele momento. `nexus-server::dns_guard::SsrfSafeResolver` reforça isso plugado via `reqwest::ClientBuilder::dns_resolver` — cada endereço resolvido é checado (`nexus_core::is_internal_ip`) no exato momento da conexão real, não só uma vez na validação. Aplicado hoje no `AlertNotifier` (Slack/Teams/webhook, que disparam sozinhos a cada run); desativado quando `NEXUS_ALLOW_INTERNAL_HOSTS=true` (mesma semântica de opt-in do check literal).
 - **Débito conhecido**: chave via env var não atende requisito enterprise de KMS (AWS/GCP/Vault) + rotação de chave. Aceitável pro MVP self-host; precisa entrar no roadmap antes do primeiro cliente enterprise (ver `LICENSING.md`).
 - **Débito conhecido**: RBAC atual é 4 papéis globais (`Read`/`Execute`/`Write`/`Admin`), sem escopo por recurso (pipeline específico, credencial específica). Suficiente pra single-tenant self-host; bloqueador se o produto for SaaS multi-tenant no futuro.
+- **Débito conhecido**: o guard de DNS rebinding acima só cobre `AlertNotifier` — conectores de saída arbitrária (REST, webhook sink) ainda só têm o check literal, porque estendê-lo exigiria threadar `allow_internal_hosts` até dentro de cada crate de conector (hoje só `validate_security_with` conhece essa flag). Maior valor prático já coberto primeiro (alerta dispara sozinho a cada run; preview/REST é sob demanda e já exige papel `Execute`+).
 
 ## 11. Distribuição de conectores enterprise
 
@@ -294,3 +297,154 @@ destino, só desperdiça trabalho numa tabela grande).
 
 Os 3 produzem `RecordBatch` com `__opcode` na mesma convenção do §5/§7 —
 mesmo `nexus_core::split_by_opcode` agnóstico à origem.
+
+## 17. LLMOps: node `llm`, RAG e avaliação sistemática
+
+Complementa o §8 (pipeline de embeddings) — nasce onde aquele termina:
+depois de chunk+embed, o node `llm` (opcional, mesmo pipeline) pode
+perguntar algo sobre o texto original, e o RAG expõe isso sob demanda
+fora do engine de batch. Plano de implementação marco a marco em
+`docs/LLMOPS_IMPLEMENTATION_PLAN.md`; resumo arquitetural aqui.
+
+**Node `llm` (pipeline em lote)**: `LlmNodeSpec` — 1 chamada HTTP por
+linha (não batch, diferente de embeddings), `input_columns`
+interpolados em `{placeholder}` no template resolvido. Dois backends:
+`LlmModelConfig::Api` (qualquer endpoint OpenAI-compatible — OpenAI,
+Ollama, Kimi/Moonshot etc.) e `LlmModelConfig::Anthropic` (Messages API
+nativa, sem modo "sem auth" — `api_key_env` obrigatório).
+`nexus_ai::llm::apply_llm` aplica no `RecordBatch`, anexando
+`output_column`; `nexus-server::runner::apply_llm_stage` orquestra a
+chamada real + log estruturado (nunca prompt/resposta cru, a menos que
+`log_full_content: true`) + persistência de custo/tokens
+(`pipeline_run_llm_stats_store.rs`).
+
+**Cache de resposta**: `LlmNodeSpec.cache: Option<LlmCacheSpec>`
+(Redis) — chave `sha256(model+prompt+max_tokens+temperature)`, TTL
+configurável. Cache hit reporta 0 tokens, ~0 latência.
+
+**Versionamento de prompt**: `PromptTemplateStore`
+(`POST`/`GET /prompts`) — cada `create()` é uma versão nova, nunca
+sobrescreve. `PromptRef{name, version: Option<u32>}` no node
+`llm`/RAG — `None` sempre resolve pra versão mais recente no momento
+do run.
+
+**RAG (`POST /rag/query`)**: fora do `PipelineSpec`/engine de batch —
+pergunta ad-hoc, uma de cada vez, reusando o `embedding`+`llm` de um
+pipeline já salvo. Fluxo: embute a pergunta com o MESMO modelo que
+gerou os vetores salvos → busca vetorial no sink → monta prompt com
+`{context}`/`{question}` (convenção própria, distinta do
+`{input_columns}` do node em lote) → chama o LLM → grava a geração
+(`llm_generations`, imutável). Suporta os 6 destinos vetoriais que o
+NexusFlow já tem em escrita — LanceDB, Qdrant, Milvus, pgvector,
+Pinecone, ChromaDB — cada um com seu próprio `search.rs` no respectivo
+crate de conector (não existia antes do LLMOps: todo conector vetorial
+só tinha sink, nunca query). LanceDB devolve `RecordBatch`
+(nativamente Arrow); os outros 5 devolvem `(chave, texto)` direto —
+não vale a pena forçar `RecordBatch` num formato que não é Arrow-nativo
+(pontos/JSON/linhas SQL).
+
+**Linhagem row→geração**: `GET /lineage/generation/{id}` — de qual
+linha/chunk uma resposta específica veio, via `LineageNode::Generation`
+(nunca aparece no grafo `GET /lineage` global, só nesse endpoint
+pontual, pra não crescer sem limite).
+
+**RAG reativo (CDC + embedding sem `transform`)**:
+`run_passthrough_pipeline` aceita `embedding` mesmo numa fonte `*-cdc`
+sem node `transform` — sem isso, uma mudança real (INSERT/UPDATE/DELETE
+via CDC) nunca virava vetor atualizado automaticamente, só um run
+manual/agendado. `BatchTransform` (`nexus-core::pipeline`) é o hook
+genérico que tornou isso possível sem acoplar o engine batch a "é
+embedding" — qualquer transformação de `RecordBatch` pode entrar ali
+no futuro.
+
+**Avaliação sistemática (golden dataset)**:
+`LlmNodeSpec.eval: Vec<LlmEvalCase>` — perguntas/respostas fixas,
+re-rodadas a cada run do pipeline (independente do dado real que
+passou, roda em qualquer caminho de execução —
+`run_transform_pipeline`, `run_linear_pipeline`/passthrough,
+`run_streaming_cdc_pipeline` — já que não depende de linha nenhuma
+processada). Scoring: `EvalScoringMode::TokenSimilarity` (Jaccard sobre
+tokens, padrão, determinístico) ou `LlmJudge` (segunda chamada ao
+mesmo `LlmBackend` julgando a resposta de 0 a 10, cai pro
+token-similarity se a nota não parsear). Resultado em
+`llm_eval_results`, visível no `QualityPanel.tsx` como 3ª origem (dbt /
+checks nativos / eval LLM).
+
+**Empacotamento enterprise (licenciamento de capability, não de
+conector)**: diferente do §11 (conector inteiro só existe no binário
+privado), três capacidades são pagas mesmo vivendo sempre no binário
+público — `GET /lineage/generation/{id}` (slug `llm-lineage-tracking`),
+a combinação CDC+embedding do RAG reativo (slug `reactive-rag-cdc`) e o
+mirror de histórico git pro GitHub (slug `git-history-github-sync`, ver
+§18). Reaproveita o mesmo `check_connector_license`/`LicenseClaims` do
+§11, mas os três slugs são registrados via
+`submit_enterprise_connector!` dentro do próprio `nexus-server`
+(`capability_registry.rs`), não num crate enterprise — se o registro só
+existisse quando um plugin privado estivesse linkado, o binário OSS
+"liberaria por padrão" (o comportamento seguro de
+`check_connector_license` quando o slug não é encontrado, correto pra
+conector real — que tem um segundo bloqueio no match arm de conexão —,
+mas não existe pra código que já roda sempre). `ConnectorCapability::Capability`
+marca esses 3 registros como não-conector, filtrados de
+`GET /connectors` pra nunca virar node type no Canvas. `POST /rag/query`
+em si continua OSS pra qualquer vetor store — só a linhagem da geração
+é paga.
+
+**Venda via Store (2026-09-08/09)**: os 3 slugs acima viraram produtos
+compráveis na Store (`frontend/src/components/Store.tsx`), cadastrados
+como 3 itens separados (não um pacote único) no `nexus-licensing`
+(repo privado, ver `docs/ENTERPRISE_LICENSING.md`) — mesmo checkout
+Stripe já validado ponta a ponta pro conector Excel, sem nenhuma
+mudança de backend: `nexus-licensing`'s `products.connector_slug` já
+era string livre, e o JWT `connectors: [...]` já cobre qualquer slug,
+conector ou capability, do mesmo jeito. Como esses 3 nunca aparecem em
+`GET /connectors` (parágrafo acima), a lista de itens vendáveis fica
+hardcoded em `LLMOPS_CAPABILITIES` dentro do próprio `Store.tsx`,
+cruzada com `license.connectors` (não com o campo `licensed`, que só
+existe pras entradas vindas de `GET /connectors`).
+
+## 18. Versionamento de pipelines/prompts em git embutido, mirror pro GitHub
+
+Feature `version-history` (`dep:git2` + `dep:similar`, vendored —
+libgit2 buildado da fonte, mesma postura estática do resto do
+workspace), implementada junto com o LLMOps (commit `518cfa3`, "e
+versionamento git") mas nunca documentada aqui até agora. Todo
+`PipelineStore::create`/`update` e `PromptTemplateStore::create` também
+comita seu conteúdo num repo git local embutido (`git_history_store.rs`,
+sem GitHub necessário — funciona 100% OSS, offline).
+
+**Mirror opcional pro GitHub**: `PUT /settings/git-remote` configura
+(ou troca) uma URL+token; a partir daí, cada commit local também tenta
+um push best-effort em background (`maybe_push_git_history_to_remote`)
+— nunca bloqueia nem falha o save que disparou. Esse push é a única
+parte paga: roda só se a license ativa cobrir `git-history-github-sync`
+(mesmo `check_connector_license` do §17); sem cobertura, a função
+simplesmente retorna sem tentar nada — sem erro HTTP, sem log de
+warning (só o log de falha de push de verdade tem `tracing::warn!`).
+`PUT`/`DELETE /settings/git-remote` em si não checam license nenhuma —
+dá pra configurar o remote sem cobertura, ele só fica sem efeito até
+uma license cobrir o slug.
+
+**Bugs reais achados em 2026-09-08/09** (ninguém tinha ligado
+`version-history` num binário publicado antes disso — a feature
+existia desde `518cfa3` mas nunca foi de fato compilada em nada que
+saísse pra fora):
+- `nexus-connectors-enterprise`'s `bin/Cargo.toml` nunca expunha
+  `llm`/`version-history` como feature própria, e `version-history`
+  nem entrava no `connectors-all` deste repo (`nexus-server/Cargo.toml`)
+  — ou seja, a capability era vendável mas fisicamente impossível de
+  compilar em qualquer binário já publicado. Corrigido nos dois repos
+  (`connectors-all`/`connectors-all-no-embeddings` de `nexus-server` e
+  o passthrough de features em `bin/Cargo.toml`).
+- Default de `NEXUS_GIT_HISTORY_PATH` era um caminho relativo
+  (`"nexusflow-version-history.git"`, resolvido contra o CWD do
+  processo) — na imagem publicada isso é `/`, dono root, sem permissão
+  de escrita pro usuário não-root (`nexusflow`, uid 1001). Primeira
+  tentativa de correção (`$HOME/...`) também falhou — essa imagem
+  mínima nunca exporta `$HOME` pra um processo não-interativo. Fix
+  final: `std::env::temp_dir()` (resolve via `$TMPDIR`, cai pra `/tmp`
+  hardcoded) — não depende de nenhuma env var, sempre existe, sempre
+  gravável. Mesma postura de "não precisa sobreviver a um restart" já
+  usada pros bancos sqlite de teste local; um deployment que queira o
+  histórico persistente aponta `NEXUS_GIT_HISTORY_PATH` pra um volume
+  montado, do mesmo jeito que já precisa fazer pro sqlite de metadados.

@@ -4,9 +4,11 @@
 
 mod config;
 mod rows;
+mod search;
 mod sink;
 
 pub use config::ChromaConnectorConfig;
+pub use search::ChromaSearchClient;
 pub use sink::ChromaSink;
 
 nexus_core::submit_connector!(

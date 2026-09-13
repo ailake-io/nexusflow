@@ -308,13 +308,19 @@ mod tests {
                 config: serde_json::json!({"path": "/tmp/out.db"}),
             }],
             embedding: None,
+            llm: None,
             python: None,
             channel_capacity: 100,
             partitions: 1,
             dbt: None,
             post_dbt_sinks: Vec::new(),
             schedule: None,
+            depends_on: Vec::new(),
+            dependency_mode: nexus_core::DependencyMode::Any,
             alerts: None,
+            quality_checks: Vec::new(),
+            anomaly_alerts: false,
+            masking: Vec::new(),
             draft: false,
         }
     }
@@ -348,7 +354,7 @@ mod tests {
         let cipher = SecretCipher::from_hex_key(&"ab".repeat(32)).unwrap();
         let pipeline_store = PipelineStore::connect(&pipelines_sqlite_url).await.unwrap();
         pipeline_store
-            .create(&sample_spec("p1"), &cipher)
+            .create(&sample_spec("p1"), &cipher, "alice")
             .await
             .unwrap();
         let run_id = pipeline_store.start_run("p1").await.unwrap();

@@ -13,15 +13,27 @@ import type { ValueType } from 'recharts/types/component/DefaultTooltipContent'
 import { useAuth } from '@/lib/auth-context'
 import { useI18n } from '@/lib/i18n'
 import { usePipelines } from '@/hooks/usePipelines'
-import { getDbtTestResults, listRuns, type DbtTestOutcome, type RunRecord } from '@/lib/api'
+import {
+  getDbtTestResults,
+  getLlmEvalResults,
+  getPipelineAnomalies,
+  getQualityCheckResults,
+  listRuns,
+  type AnomalyStatus,
+  type DbtTestOutcome,
+  type LlmEvalOutcome,
+  type QualityCheckOutcome,
+  type RunRecord,
+} from '@/lib/api'
 import { EmptyState } from '@/components/EmptyState'
 import { StatusBadge } from '@/components/ui/status-badge'
+import { AnomalyBanner } from '@/components/AnomalyBanner'
 
 function totalRowsWritten(run: RunRecord): number {
   return (run.stats ?? []).reduce((sum, s) => sum + s.rows_written, 0)
 }
 
-function badgeVariant(status: DbtTestOutcome['status']): 'success' | 'failed' | 'warning' {
+function badgeVariant(status: string): 'success' | 'failed' | 'warning' {
   if (status === 'pass') return 'success'
   if (status === 'warn') return 'warning'
   return 'failed'
@@ -47,6 +59,53 @@ function groupByTest(results: DbtTestOutcome[]): TestGroup[] {
   return order.map((uniqueId) => ({ uniqueId, history: byId.get(uniqueId)! }))
 }
 
+/** Same shape as `TestGroup`, one row per `column`+`check` pair — native
+ * checks have no single "unique_id", so the pair is the natural key. */
+interface QualityCheckGroup {
+  key: string
+  column: string
+  check: string
+  history: QualityCheckOutcome[]
+}
+
+function groupByCheck(results: QualityCheckOutcome[]): QualityCheckGroup[] {
+  const order: string[] = []
+  const byKey = new Map<string, QualityCheckOutcome[]>()
+  for (const r of results) {
+    const key = `${r.column}:${r.check}`
+    if (!byKey.has(key)) {
+      byKey.set(key, [])
+      order.push(key)
+    }
+    byKey.get(key)!.push(r)
+  }
+  return order.map((key) => {
+    const history = byKey.get(key)!
+    return { key, column: history[0].column, check: history[0].check, history }
+  })
+}
+
+/** Same shape again, one row per golden `eval_name` — a case's history
+ * spans prompt versions, which is the whole point (Marco L7): the Quality
+ * tab is where a prompt-version regression becomes visible. */
+interface LlmEvalGroup {
+  evalName: string
+  history: LlmEvalOutcome[]
+}
+
+function groupByEvalName(results: LlmEvalOutcome[]): LlmEvalGroup[] {
+  const order: string[] = []
+  const byName = new Map<string, LlmEvalOutcome[]>()
+  for (const r of results) {
+    if (!byName.has(r.eval_name)) {
+      byName.set(r.eval_name, [])
+      order.push(r.eval_name)
+    }
+    byName.get(r.eval_name)!.push(r)
+  }
+  return order.map((evalName) => ({ evalName, history: byName.get(evalName)! }))
+}
+
 /**
  * "Quality" tab: row-count trend + dbt test history for one saved pipeline
  * at a time. Both sources already exist — `listRuns` (rows written, from
@@ -62,6 +121,9 @@ export function QualityPanel() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [runs, setRuns] = useState<RunRecord[]>([])
   const [testResults, setTestResults] = useState<DbtTestOutcome[]>([])
+  const [qualityResults, setQualityResults] = useState<QualityCheckOutcome[]>([])
+  const [llmEvalResults, setLlmEvalResults] = useState<LlmEvalOutcome[]>([])
+  const [anomalies, setAnomalies] = useState<AnomalyStatus[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -75,15 +137,24 @@ export function QualityPanel() {
     if (!token || !selectedId) return
     let cancelled = false
     setLoading(true)
-    Promise.all([listRuns(token, selectedId), getDbtTestResults(token, selectedId)])
-      .then(([runsResult, testsResult]) => {
+    Promise.all([
+      listRuns(token, selectedId),
+      getDbtTestResults(token, selectedId),
+      getQualityCheckResults(token, selectedId),
+      getLlmEvalResults(token, selectedId),
+      getPipelineAnomalies(token, selectedId),
+    ])
+      .then(([runsResult, testsResult, qualityResult, llmEvalResult, anomaliesResult]) => {
         if (cancelled) return
         setRuns([...runsResult].reverse()) // API returns newest-first; chart wants oldest-first
         setTestResults(testsResult)
+        setQualityResults(qualityResult)
+        setLlmEvalResults(llmEvalResult)
+        setAnomalies(anomaliesResult)
         setError(null)
       })
-      .catch(() => {
-        if (!cancelled) setError(t('quality.error'))
+      .catch((err: unknown) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : t('quality.error'))
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
@@ -105,6 +176,8 @@ export function QualityPanel() {
   )
 
   const testGroups = useMemo(() => groupByTest(testResults), [testResults])
+  const qualityGroups = useMemo(() => groupByCheck(qualityResults), [qualityResults])
+  const llmEvalGroups = useMemo(() => groupByEvalName(llmEvalResults), [llmEvalResults])
 
   return (
     <div className="h-full overflow-auto p-6">
@@ -188,6 +261,19 @@ export function QualityPanel() {
             )}
           </div>
 
+          {anomalies.length > 0 && (
+            <div>
+              <div className="mb-2 text-xs font-medium text-muted-foreground">
+                {t('quality.anomaly.title')}
+              </div>
+              <div className="flex flex-col gap-2">
+                {anomalies.map((a) => (
+                  <AnomalyBanner key={a.metric} status={a} />
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="rounded-lg border border-white/10 bg-card p-4">
             <div className="mb-3 text-xs font-medium text-muted-foreground">
               {t('quality.dbtTests')}
@@ -216,6 +302,91 @@ export function QualityPanel() {
                         </div>
                       </div>
                       {latest.status !== 'pass' && latest.message && (
+                        <p className="mt-2 text-xs text-red-400">
+                          {t('quality.latestMessage')}: {latest.message}
+                        </p>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-lg border border-white/10 bg-card p-4">
+            <div className="mb-3 text-xs font-medium text-muted-foreground">
+              {t('quality.nativeChecks')}
+            </div>
+            {qualityGroups.length === 0 ? (
+              <div className="flex h-16 items-center text-xs text-muted-foreground">
+                {t('quality.noNativeChecks')}
+              </div>
+            ) : (
+              <div className="flex flex-col gap-3">
+                {qualityGroups.map((group) => {
+                  const latest = group.history[group.history.length - 1]
+                  return (
+                    <div
+                      key={group.key}
+                      className="rounded-md border border-white/5 bg-white/[0.02] p-3"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-mono text-xs text-foreground">
+                          {group.check} ({group.column})
+                        </span>
+                        <div className="flex items-center gap-1.5">
+                          {group.history.map((r, i) => (
+                            <StatusBadge key={i} variant={badgeVariant(r.status)}>
+                              {t(`quality.${r.status}`)}
+                            </StatusBadge>
+                          ))}
+                        </div>
+                      </div>
+                      {latest.status !== 'pass' && latest.message && (
+                        <p className="mt-2 text-xs text-red-400">
+                          {t('quality.latestMessage')}: {latest.message}
+                        </p>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-lg border border-white/10 bg-card p-4">
+            <div className="mb-3 text-xs font-medium text-muted-foreground">
+              {t('quality.llmEval')}
+            </div>
+            {llmEvalGroups.length === 0 ? (
+              <div className="flex h-16 items-center text-xs text-muted-foreground">
+                {t('quality.noLlmEval')}
+              </div>
+            ) : (
+              <div className="flex flex-col gap-3">
+                {llmEvalGroups.map((group) => {
+                  const latest = group.history[group.history.length - 1]
+                  return (
+                    <div
+                      key={group.evalName}
+                      className="rounded-md border border-white/5 bg-white/[0.02] p-3"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-mono text-xs text-foreground">
+                          {group.evalName} (v{latest.prompt_version})
+                        </span>
+                        <div className="flex items-center gap-1.5">
+                          {group.history.map((r, i) => (
+                            <StatusBadge
+                              key={i}
+                              variant={r.passed ? 'success' : 'failed'}
+                            >
+                              {r.score.toFixed(2)}
+                            </StatusBadge>
+                          ))}
+                        </div>
+                      </div>
+                      {!latest.passed && latest.message && (
                         <p className="mt-2 text-xs text-red-400">
                           {t('quality.latestMessage')}: {latest.message}
                         </p>

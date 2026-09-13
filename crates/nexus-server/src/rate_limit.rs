@@ -1,9 +1,9 @@
 use crate::error::ApiError;
-use axum::extract::{Extension, Request};
+use axum::extract::{ConnectInfo, Extension, Request};
 use axum::middleware::Next;
 use axum::response::Response;
 use dashmap::DashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -75,29 +75,47 @@ impl Default for LoginRateLimiter {
     }
 }
 
-/// Axum middleware that rejects login requests beyond the per-IP rate limit.
-/// Uses `X-Forwarded-For` when present (trusted-proxy deployments). When the
-/// header is absent the request is still allowed through (rate-limiting by
-/// direct peer address is done at the reverse-proxy layer in this deployment
-/// model; avoiding `ConnectInfo` here keeps the middleware free of the axum
-/// version conflict introduced by `milvus-sdk-rust`).
+/// Whether this deployment sits behind a reverse proxy that itself
+/// overwrites/sets `X-Forwarded-For` before the request reaches
+/// nexus-server. On a direct connection (the default — see
+/// `ROADMAP.md`'s "Guia de deploy público" item, no reverse-proxy guide
+/// exists yet, so a plain `nexusflow` binary exposed on its own port is a
+/// real, common deployment shape today) that header is fully
+/// attacker-controlled: sending a different value on every login attempt
+/// would defeat per-IP rate limiting entirely. Defaults to `false` (use the
+/// real TCP peer address via `ConnectInfo` instead); only becomes `true`
+/// via the operator explicitly setting `NEXUS_TRUST_PROXY_HEADERS=true`,
+/// which is their attestation that a trusted proxy is the only thing that
+/// can reach this process directly.
+#[derive(Clone, Copy)]
+pub struct TrustProxyHeaders(pub bool);
+
+/// Axum middleware that rejects login requests beyond the per-IP rate
+/// limit. Identifies the caller by the real TCP peer address by default;
+/// only consults the spoofable `X-Forwarded-For` header when
+/// `NEXUS_TRUST_PROXY_HEADERS=true` (see [`TrustProxyHeaders`]).
 pub async fn login_rate_limit(
     Extension(limiter): Extension<Arc<LoginRateLimiter>>,
+    Extension(trust_proxy): Extension<TrustProxyHeaders>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: axum::http::HeaderMap,
     mut req: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    let ip_str = extract_client_ip(&headers);
-    let ip = ip_str
-        .parse()
-        .unwrap_or_else(|_| std::net::IpAddr::from([0, 0, 0, 0]));
+    let ip = if trust_proxy.0 {
+        extract_client_ip(&headers)
+            .parse()
+            .unwrap_or_else(|_| std::net::IpAddr::from([0, 0, 0, 0]))
+    } else {
+        peer.ip()
+    };
     if !limiter.is_allowed(ip) {
         crate::server_metrics::record_rate_limit_rejection();
         return Err(ApiError::too_many_requests(
             "too many login attempts, try again later",
         ));
     }
-    req.extensions_mut().insert(ClientIp(ip_str));
+    req.extensions_mut().insert(ClientIp(ip.to_string()));
     Ok(next.run(req).await)
 }
 

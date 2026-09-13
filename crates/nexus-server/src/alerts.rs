@@ -61,11 +61,25 @@ pub struct AlertNotifier {
 }
 
 impl AlertNotifier {
-    pub fn new(config: AlertConfig) -> Self {
-        Self {
-            config,
-            client: reqwest::Client::new(),
-        }
+    /// `allow_internal_hosts` mirrors `PipelineSpec::validate_security_with`'s
+    /// flag of the same name (`NEXUS_ALLOW_INTERNAL_HOSTS`): when `false`
+    /// (the default), every request this client makes is checked against
+    /// the *resolved* address at connect time, not just a channel URL's
+    /// literal hostname at config-save time — see `dns_guard.rs`'s doc
+    /// comment for why the literal check alone isn't enough (DNS
+    /// rebinding). When an operator has explicitly opted into internal
+    /// hosts, the plain client is used instead, so a self-hosted alert
+    /// receiver on the private network keeps working.
+    pub fn new(config: AlertConfig, allow_internal_hosts: bool) -> Self {
+        let client = if allow_internal_hosts {
+            reqwest::Client::new()
+        } else {
+            reqwest::Client::builder()
+                .dns_resolver(std::sync::Arc::new(crate::dns_guard::SsrfSafeResolver))
+                .build()
+                .expect("reqwest client with a custom DNS resolver must build")
+        };
+        Self { config, client }
     }
 
     /// Spawns one task per configured channel and returns immediately — the
@@ -195,6 +209,79 @@ impl AlertNotifier {
                     to,
                 };
                 match send_run_email(&email, &pipeline_id, run_id, success, &message).await {
+                    Ok(()) => crate::server_metrics::record_alert_sent("Email", "success"),
+                    Err(e) => {
+                        tracing::warn!(channel = "Email", error = %e, "failed to send alert");
+                        crate::server_metrics::record_alert_sent("Email", "failure");
+                    }
+                }
+            });
+        }
+    }
+
+    /// Fires an anomaly alert (Fase 27) through whichever per-pipeline
+    /// channels are configured in `alerts` — unlike `notify_pipeline_run`
+    /// above, every configured channel fires unconditionally once this is
+    /// called (an anomaly is neither a success nor a failure, so the
+    /// `on_success`/`on_failure` toggles don't apply); gating is the
+    /// caller's job (`PipelineSpec.anomaly_alerts` opt-in, checked before
+    /// ever calling this). Same fire-and-forget/never-propagate contract
+    /// as every other channel.
+    pub fn notify_anomaly(
+        &self,
+        alerts: Option<&nexus_core::AlertsConfig>,
+        pipeline_id: &str,
+        run_id: i64,
+        severity: crate::anomaly_detector::AnomalySeverity,
+        message: &str,
+    ) {
+        let Some(alerts) = alerts else { return };
+
+        if let Some(c) = &alerts.slack {
+            let client = self.client.clone();
+            let payload = slack_anomaly_payload(pipeline_id, run_id, severity, message);
+            spawn_webhook_post(client, c.url.clone(), payload, "Slack");
+        }
+        if let Some(c) = &alerts.teams {
+            let client = self.client.clone();
+            let payload = teams_anomaly_payload(pipeline_id, run_id, severity, message);
+            spawn_webhook_post(client, c.url.clone(), payload, "Teams");
+        }
+        if let Some(c) = &alerts.webhook {
+            let client = self.client.clone();
+            let payload = generic_webhook_anomaly_payload(pipeline_id, run_id, severity, message);
+            spawn_webhook_post(client, c.url.clone(), payload, "Webhook");
+        }
+        if let Some(c) = &alerts.pagerduty {
+            let client = self.client.clone();
+            let payload =
+                pagerduty_anomaly_payload(&c.routing_key, pipeline_id, run_id, severity, message);
+            spawn_webhook_post(
+                client,
+                PAGERDUTY_EVENTS_URL.to_string(),
+                payload,
+                "PagerDuty",
+            );
+        }
+        if let Some(c) = &alerts.email {
+            let smtp_host = c.smtp_host.clone();
+            let smtp_port = c.smtp_port;
+            let username = c.username.clone();
+            let password = c.password.clone();
+            let from = c.from.clone();
+            let to = c.to.clone();
+            let pipeline_id = pipeline_id.to_string();
+            let message = message.to_string();
+            tokio::spawn(async move {
+                let email = EmailConfig {
+                    smtp_host,
+                    smtp_port,
+                    username,
+                    password,
+                    from,
+                    to,
+                };
+                match send_anomaly_email(&email, &pipeline_id, run_id, severity, &message).await {
                     Ok(()) => crate::server_metrics::record_alert_sent("Email", "success"),
                     Err(e) => {
                         tracing::warn!(channel = "Email", error = %e, "failed to send alert");
@@ -531,6 +618,164 @@ fn generic_webhook_run_payload(
     })
 }
 
+// Anomaly payload builders (Fase 27) — deliberately their own functions,
+// not a `severity`/bool-flag branch bolted onto the failure/run builders
+// above: those hardcode "failed"/"pipeline_failed" into user-facing text
+// *and* structured fields (`event`, PagerDuty `severity`) a receiver might
+// branch on, and an anomaly is neither a success nor a failure — reusing
+// them would misreport what actually happened.
+
+fn severity_label(severity: crate::anomaly_detector::AnomalySeverity) -> &'static str {
+    match severity {
+        crate::anomaly_detector::AnomalySeverity::Warning => "warning",
+        crate::anomaly_detector::AnomalySeverity::Critical => "critical",
+    }
+}
+
+fn slack_anomaly_payload(
+    pipeline_id: &str,
+    run_id: i64,
+    severity: crate::anomaly_detector::AnomalySeverity,
+    message: &str,
+) -> Value {
+    let label = severity_label(severity);
+    json!({
+        "blocks": [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": format!(
+                        ":chart_with_upwards_trend: *Anomaly detected ({label})*\n*Pipeline:* `{pipeline_id}`\n*Run:* `{run_id}`\n{message}"
+                    )
+                }
+            }
+        ]
+    })
+}
+
+fn teams_anomaly_payload(
+    pipeline_id: &str,
+    run_id: i64,
+    severity: crate::anomaly_detector::AnomalySeverity,
+    message: &str,
+) -> Value {
+    let label = severity_label(severity);
+    json!({
+        "type": "message",
+        "attachments": [
+            {
+                "contentType": "application/vnd.microsoft.card.adaptive",
+                "content": {
+                    "type": "AdaptiveCard",
+                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                    "version": "1.4",
+                    "body": [
+                        {
+                            "type": "TextBlock",
+                            "size": "Medium",
+                            "weight": "Bolder",
+                            "text": format!("📈 Anomaly detected ({label})")
+                        },
+                        {
+                            "type": "FactSet",
+                            "facts": [
+                                {"title": "Pipeline", "value": pipeline_id},
+                                {"title": "Run", "value": run_id.to_string()},
+                                {"title": "Detail", "value": message}
+                            ]
+                        }
+                    ]
+                }
+            }
+        ]
+    })
+}
+
+fn pagerduty_anomaly_payload(
+    routing_key: &str,
+    pipeline_id: &str,
+    run_id: i64,
+    severity: crate::anomaly_detector::AnomalySeverity,
+    message: &str,
+) -> Value {
+    json!({
+        "routing_key": routing_key,
+        "event_action": "trigger",
+        "dedup_key": format!("nexusflow-anomaly-{pipeline_id}-{run_id}"),
+        "payload": {
+            "summary": format!("Anomaly detected on pipeline '{pipeline_id}' run {run_id}: {message}"),
+            "source": "nexusflow",
+            "severity": severity_label(severity),
+            "custom_details": {
+                "pipeline_id": pipeline_id,
+                "run_id": run_id,
+                "message": message
+            }
+        }
+    })
+}
+
+fn generic_webhook_anomaly_payload(
+    pipeline_id: &str,
+    run_id: i64,
+    severity: crate::anomaly_detector::AnomalySeverity,
+    message: &str,
+) -> Value {
+    json!({
+        "event": "pipeline_anomaly",
+        "severity": severity_label(severity),
+        "pipeline_id": pipeline_id,
+        "run_id": run_id,
+        "message": message
+    })
+}
+
+async fn send_anomaly_email(
+    config: &EmailConfig,
+    pipeline_id: &str,
+    run_id: i64,
+    severity: crate::anomaly_detector::AnomalySeverity,
+    message: &str,
+) -> Result<(), NexusError> {
+    let label = severity_label(severity);
+    let subject =
+        format!("[nexusflow] Anomaly detected on pipeline '{pipeline_id}' run {run_id} ({label})");
+    let body = format!(
+        "Pipeline: {pipeline_id}\nRun: {run_id}\nSeverity: {label}\n{message}\n\n---\nSent by NexusFlow"
+    );
+
+    let from: Mailbox = config
+        .from
+        .parse()
+        .map_err(|e| NexusError::Connector(format!("invalid email from address: {e}")))?;
+
+    let mut builder = Message::builder().from(from).subject(subject);
+    for to in &config.to {
+        let to: Mailbox = to
+            .parse()
+            .map_err(|e| NexusError::Connector(format!("invalid email to address: {e}")))?;
+        builder = builder.to(to);
+    }
+    let message = builder
+        .body(body)
+        .map_err(|e| NexusError::Connector(format!("failed to build email: {e}")))?;
+
+    let mut mailer = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&config.smtp_host)
+        .map_err(|e| NexusError::Connector(format!("invalid SMTP host: {e}")))?
+        .port(config.smtp_port);
+    if let (Some(username), Some(password)) = (&config.username, &config.password) {
+        mailer = mailer.credentials(Credentials::new(username.clone(), password.clone()));
+    }
+    mailer
+        .build()
+        .send(message)
+        .await
+        .map_err(|e| NexusError::Connector(format!("failed to send email: {e}")))?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -592,7 +837,7 @@ mod tests {
     async fn notify_without_configured_webhook_is_a_no_op() {
         // No channel configured — must not panic, spawn nothing that
         // observably does anything. Absence of a crash is the assertion.
-        let notifier = AlertNotifier::new(AlertConfig::default());
+        let notifier = AlertNotifier::new(AlertConfig::default(), true);
         notifier.notify_pipeline_failed("p1", 1, "boom");
     }
 
@@ -639,10 +884,13 @@ mod tests {
     async fn notify_posts_slack_block_kit_payload_to_configured_webhook() {
         let (addr, received) = capture_webhook().await;
 
-        let notifier = AlertNotifier::new(AlertConfig {
-            slack_webhook_url: Some(format!("http://{addr}/webhook")),
-            ..Default::default()
-        });
+        let notifier = AlertNotifier::new(
+            AlertConfig {
+                slack_webhook_url: Some(format!("http://{addr}/webhook")),
+                ..Default::default()
+            },
+            true,
+        );
         notifier.notify_pipeline_failed("p1", 42, "unsupported connector");
 
         let body = wait_for_capture(&received).await;
@@ -656,10 +904,13 @@ mod tests {
     async fn notify_posts_teams_adaptive_card_to_configured_webhook() {
         let (addr, received) = capture_webhook().await;
 
-        let notifier = AlertNotifier::new(AlertConfig {
-            teams_webhook_url: Some(format!("http://{addr}/webhook")),
-            ..Default::default()
-        });
+        let notifier = AlertNotifier::new(
+            AlertConfig {
+                teams_webhook_url: Some(format!("http://{addr}/webhook")),
+                ..Default::default()
+            },
+            true,
+        );
         notifier.notify_pipeline_failed("p2", 43, "timeout");
 
         let body = wait_for_capture(&received).await;
@@ -682,11 +933,14 @@ mod tests {
         let (slack_addr, slack_received) = capture_webhook().await;
         let (teams_addr, teams_received) = capture_webhook().await;
 
-        let notifier = AlertNotifier::new(AlertConfig {
-            slack_webhook_url: Some(format!("http://{slack_addr}/webhook")),
-            teams_webhook_url: Some(format!("http://{teams_addr}/webhook")),
-            ..Default::default()
-        });
+        let notifier = AlertNotifier::new(
+            AlertConfig {
+                slack_webhook_url: Some(format!("http://{slack_addr}/webhook")),
+                teams_webhook_url: Some(format!("http://{teams_addr}/webhook")),
+                ..Default::default()
+            },
+            true,
+        );
         notifier.notify_pipeline_failed("p3", 44, "both channels");
 
         let slack_body = wait_for_capture(&slack_received).await;
@@ -699,17 +953,20 @@ mod tests {
     async fn notify_with_email_config_is_fire_and_forget() {
         // Invalid SMTP host is fine here: the task is spawned, returns
         // immediately, and logs the failure — the run handler never waits.
-        let notifier = AlertNotifier::new(AlertConfig {
-            email: Some(EmailConfig {
-                smtp_host: "invalid.example".to_string(),
-                smtp_port: 587,
-                username: None,
-                password: None,
-                from: "nexus@example.com".to_string(),
-                to: vec!["ops@example.com".to_string()],
-            }),
-            ..Default::default()
-        });
+        let notifier = AlertNotifier::new(
+            AlertConfig {
+                email: Some(EmailConfig {
+                    smtp_host: "invalid.example".to_string(),
+                    smtp_port: 587,
+                    username: None,
+                    password: None,
+                    from: "nexus@example.com".to_string(),
+                    to: vec!["ops@example.com".to_string()],
+                }),
+                ..Default::default()
+            },
+            true,
+        );
         notifier.notify_pipeline_failed("p4", 45, "email channel");
     }
 
@@ -717,10 +974,13 @@ mod tests {
     async fn notify_posts_generic_webhook_payload_to_configured_url() {
         let (addr, received) = capture_webhook().await;
 
-        let notifier = AlertNotifier::new(AlertConfig {
-            webhook_url: Some(format!("http://{addr}/webhook")),
-            ..Default::default()
-        });
+        let notifier = AlertNotifier::new(
+            AlertConfig {
+                webhook_url: Some(format!("http://{addr}/webhook")),
+                ..Default::default()
+            },
+            true,
+        );
         notifier.notify_pipeline_failed("p5", 46, "generic webhook");
 
         let body = wait_for_capture(&received).await;
@@ -732,7 +992,7 @@ mod tests {
 
     #[tokio::test]
     async fn notify_pipeline_run_is_a_no_op_when_alerts_is_none() {
-        let notifier = AlertNotifier::new(AlertConfig::default());
+        let notifier = AlertNotifier::new(AlertConfig::default(), true);
         // Absence of a crash/hang is the assertion — no channel configured
         // anywhere means nothing should ever be spawned.
         notifier.notify_pipeline_run(None, "p1", 1, true, "ok");
@@ -741,7 +1001,7 @@ mod tests {
     #[tokio::test]
     async fn notify_pipeline_run_fires_webhook_on_success_when_on_success_is_true() {
         let (addr, received) = capture_webhook().await;
-        let notifier = AlertNotifier::new(AlertConfig::default());
+        let notifier = AlertNotifier::new(AlertConfig::default(), true);
         let alerts = nexus_core::AlertsConfig {
             webhook: Some(nexus_core::WebhookAlertChannel {
                 url: format!("http://{addr}/webhook"),
@@ -762,7 +1022,7 @@ mod tests {
     #[tokio::test]
     async fn notify_pipeline_run_skips_webhook_on_success_when_on_success_is_false() {
         let (addr, received) = capture_webhook().await;
-        let notifier = AlertNotifier::new(AlertConfig::default());
+        let notifier = AlertNotifier::new(AlertConfig::default(), true);
         let alerts = nexus_core::AlertsConfig {
             webhook: Some(nexus_core::WebhookAlertChannel {
                 url: format!("http://{addr}/webhook"),
@@ -786,7 +1046,7 @@ mod tests {
     #[tokio::test]
     async fn notify_pipeline_run_fires_slack_on_failure_with_generalized_payload() {
         let (addr, received) = capture_webhook().await;
-        let notifier = AlertNotifier::new(AlertConfig::default());
+        let notifier = AlertNotifier::new(AlertConfig::default(), true);
         let alerts = nexus_core::AlertsConfig {
             slack: Some(nexus_core::WebhookAlertChannel {
                 url: format!("http://{addr}/webhook"),
@@ -826,7 +1086,7 @@ mod tests {
         // `fires()` gating doesn't panic/block for the PagerDuty branch and
         // that a `false` toggle is a genuine no-op (same shape as the
         // webhook toggle test above, just without a capturable receiver).
-        let notifier = AlertNotifier::new(AlertConfig::default());
+        let notifier = AlertNotifier::new(AlertConfig::default(), true);
         let alerts = nexus_core::AlertsConfig {
             pagerduty: Some(nexus_core::PagerDutyAlertChannel {
                 routing_key: "rk-123".to_string(),

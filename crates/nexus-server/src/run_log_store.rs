@@ -127,6 +127,29 @@ impl RunLogStore {
             })
             .collect()
     }
+
+    /// No FK from `pipeline_run_logs` to `pipeline_runs` (see the struct
+    /// doc comment — SQLite has no `run_id` type to reference cheaply
+    /// across the dual-dialect schema), so deleting a run doesn't cascade
+    /// here automatically; the caller (`delete_run_handler`) does both.
+    pub async fn delete(&self, run_id: i64) -> anyhow::Result<()> {
+        let sql = self.q("DELETE FROM pipeline_run_logs WHERE run_id = ?");
+        match &self.pool {
+            MetadataPool::Sqlite(p) => {
+                sqlx::query(sqlx::AssertSqlSafe(sql.into_owned()))
+                    .bind(run_id)
+                    .execute(p)
+                    .await?;
+            }
+            MetadataPool::Postgres(p) => {
+                sqlx::query(sqlx::AssertSqlSafe(sql.into_owned()))
+                    .bind(run_id)
+                    .execute(p)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -163,6 +186,18 @@ mod tests {
         assert_eq!(store.list(1).await.unwrap().len(), 1);
         assert_eq!(store.list(2).await.unwrap().len(), 1);
         assert!(store.list(3).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_removes_only_the_target_runs_logs() {
+        let store = RunLogStore::connect("sqlite::memory:").await.unwrap();
+        store.insert(1, &info("run 1 log")).await.unwrap();
+        store.insert(2, &info("run 2 log")).await.unwrap();
+
+        store.delete(1).await.unwrap();
+
+        assert!(store.list(1).await.unwrap().is_empty());
+        assert_eq!(store.list(2).await.unwrap().len(), 1);
     }
 
     #[tokio::test]

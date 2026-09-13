@@ -82,7 +82,7 @@ export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps
       connectors.some((c) => c.name === cdcName)
 
     return (
-      <aside className="flex w-80 shrink-0 flex-col border-l bg-card">
+      <aside className="flex h-full w-full flex-col border-l bg-card">
         <div className="border-b border-white/10 px-4 py-3">
           <div className="flex items-center gap-2">
             <Database className="h-4 w-4 text-primary" />
@@ -193,7 +193,7 @@ export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps
 
   if (data.kind === 'transform') {
     return (
-      <aside className="flex w-80 shrink-0 flex-col border-l bg-card">
+      <aside className="flex h-full w-full flex-col border-l bg-card">
         <div className="border-b border-white/10 px-4 py-3">
           <div className="flex items-center gap-2">
             <Code2 className="h-4 w-4 text-accent" />
@@ -238,6 +238,17 @@ export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps
             id="transform-sql"
             value={data.sql}
             onChange={(e) => onChange(node.id, { sql: e.target.value })}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={async (e) => {
+              e.preventDefault()
+              const file = e.dataTransfer.files[0]
+              if (!file) return
+              try {
+                onChange(node.id, { sql: await file.text() })
+              } catch {
+                window.alert(t('canvas.transformUploadError'))
+              }
+            }}
             rows={16}
             spellCheck={false}
             placeholder={t('canvas.sqlPlaceholder')}
@@ -250,7 +261,7 @@ export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps
 
   if (data.kind === 'dbt') {
     return (
-      <aside className="flex w-80 shrink-0 flex-col border-l bg-card">
+      <aside className="flex h-full w-full flex-col border-l bg-card">
         <div className="border-b border-white/10 px-4 py-3">
           <div className="flex items-center gap-2">
             <Layers className="h-4 w-4 text-emerald-400" />
@@ -307,7 +318,7 @@ export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps
 
   if (data.kind === 'python') {
     return (
-      <aside className="flex w-80 shrink-0 flex-col border-l bg-card">
+      <aside className="flex h-full w-full flex-col border-l bg-card">
         <div className="border-b border-white/10 px-4 py-3">
           <div className="flex items-center gap-2">
             <Terminal className="h-4 w-4 text-sky-400" />
@@ -354,6 +365,17 @@ export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps
                 id="python-script"
                 value={data.script}
                 onChange={(e) => onChange(node.id, { script: e.target.value })}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={async (e) => {
+                  e.preventDefault()
+                  const file = e.dataTransfer.files[0]
+                  if (!file) return
+                  try {
+                    onChange(node.id, { script: await file.text() })
+                  } catch {
+                    window.alert(t('canvas.pythonUploadError'))
+                  }
+                }}
                 rows={16}
                 spellCheck={false}
                 placeholder={t('canvas.pythonScriptPlaceholder')}
@@ -384,7 +406,7 @@ export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps
   }
 
   return (
-    <aside className="flex w-80 shrink-0 flex-col border-l bg-card">
+    <aside className="flex h-full w-full flex-col border-l bg-card">
       <div className="border-b border-white/10 px-4 py-3">
         <div className="flex items-center gap-2">
           <Sparkles className="h-4 w-4 text-fuchsia-400" />

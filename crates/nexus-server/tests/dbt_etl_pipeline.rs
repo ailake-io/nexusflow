@@ -11,6 +11,7 @@
 //! feature) not provisioned unconditionally in CI.
 
 use axum::body::Body;
+use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
 use axum::Router;
 use nexus_server::{build_app, ServerConfig};
@@ -22,12 +23,14 @@ use tower::ServiceExt;
 
 async fn login(app: Router, username: &str, password: &str) -> String {
     let body = json!({"username": username, "password": password});
+    let peer: std::net::SocketAddr = "203.0.113.1:12345".parse().unwrap();
     let response = app
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri("/auth/login")
                 .header("content-type", "application/json")
+                .extension(ConnectInfo(peer))
                 .body(Body::from(body.to_string()))
                 .unwrap(),
         )
@@ -115,6 +118,7 @@ fn test_server_config() -> ServerConfig {
         jwt_ttl_seconds: 3600,
         bootstrap_admin: Some(("admin".to_string(), "test-password".to_string())),
         encryption_key_hex: "ab".repeat(32),
+        masking_salt: Some("test-masking-salt".to_string()),
         slack_webhook_url: None,
         teams_webhook_url: None,
         pagerduty_routing_key: None,
@@ -123,6 +127,15 @@ fn test_server_config() -> ServerConfig {
         // testcontainers exposes Postgres on localhost — same escape hatch
         // postgres_pipeline.rs uses for its own SSRF-hardened ad-hoc run.
         allow_internal_hosts: true,
+        trust_proxy_headers: false,
+        queue_mode: false,
+        #[cfg(feature = "version-history")]
+        git_history_path: tempfile::tempdir()
+            .unwrap()
+            .keep()
+            .join("history.git")
+            .to_string_lossy()
+            .to_string(),
     }
 }
 

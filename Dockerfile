@@ -34,12 +34,14 @@ RUN npm run build
 # local dev and CI (.github/workflows/ci.yml's `test` job).
 FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241 AS adbc
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      git ca-certificates cmake make g++ pkg-config libpq-dev libsqlite3-dev libfmt-dev \
+      git ca-certificates cmake make g++ pkg-config libpq-dev libsqlite3-dev libfmt-dev unzip curl \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
-COPY scripts/build-adbc-postgresql-driver.sh scripts/build-adbc-sqlite-driver.sh scripts/
+COPY scripts/build-adbc-postgresql-driver.sh scripts/build-adbc-sqlite-driver.sh scripts/build-adbc-duckdb-driver.sh scripts/
+ARG DUCKDB_VERSION=1.5.5
 RUN scripts/build-adbc-postgresql-driver.sh /out \
- && scripts/build-adbc-sqlite-driver.sh /out
+ && scripts/build-adbc-sqlite-driver.sh /out \
+ && DUCKDB_VERSION="${DUCKDB_VERSION}" scripts/build-adbc-duckdb-driver.sh /out
 
 FROM rust:1-slim-trixie@sha256:8e8cf8f7fd54a2d23d5a743b3a03f56e26b6c774276c33fa0595111704ebb15c AS clickhouse-adbc
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -89,16 +91,49 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cp /src/target/release/nexusflow /tmp/nexusflow-bin
 
 FROM ${RUNTIME_IMAGE} AS runtime
+# `unixodbc` here is NOT a runtime dependency of the binary itself — the
+# `odbc` connector statically vendors and links unixODBC's driver-manager
+# code in (odbc-api's `vendored-unix-odbc` feature, see
+# nexus-connector-odbc/Cargo.toml), so nexusflow-bin has no dynamic
+# dependency on libodbc.so.2. What's installed here is the package's
+# `/etc/odbcinst.ini` + `odbcinst` tooling, so an operator can
+# `apt-get install`/register a vendor ODBC driver (e.g. `odbc-postgresql`)
+# against a standard location instead of building that infrastructure
+# themselves. No vendor driver is bundled: the `odbc` connector is a
+# generic bridge for legacy/unsupported systems (SQL Server, Oracle, SAP
+# HANA, Teradata, ...) that have no native NexusFlow connector, so there's
+# no single "right" vendor driver to pick, and most require accepting a
+# vendor EULA (e.g. Microsoft's msodbcsql18) or aren't freely
+# redistributable (Oracle Instant Client, IBM DB2 CLI). Postgres/MySQL/
+# SQLite/DuckDB/ClickHouse already have a native ADBC or bridging connector
+# (see ARCHITECTURE.md §4.1) and don't go through ODBC at all, so their
+# ODBC drivers are deliberately not installed here either.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      libpq5 libsqlite3-0 ca-certificates curl python3 python3-pip \
+      libpq5 libsqlite3-0 ca-certificates curl python3 python3-pip unixodbc \
+    # Pinned (not floating "latest") so a build can't silently pull in a
+    # compromised/broken release of any of these — same reproducibility
+    # posture as nexus-ai's ONNX model revision pin and
+    # scripts/build-python-runtime.sh's python-build-standalone tag pin.
     && pip3 install --break-system-packages --no-cache-dir \
-      pandas numpy pyarrow polars python-dateutil \
+      pandas==2.2.3 numpy==1.26.4 pyarrow==17.0.0 polars==1.8.2 python-dateutil==2.9.0 \
+      dbt-core==1.12.3 dbt-postgres==1.11.0 \
+    # dbt-postgres is the baseline adapter (Postgres is the primary ADBC
+    # warehouse this repo documents dbt against, CLAUDE.md §4.4) — a user
+    # targeting a different warehouse (dbt-duckdb, dbt-clickhouse, etc.)
+    # still needs to install that adapter into the running container
+    # themselves; add it here if a real need for it shows up.
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -r -g 1001 nexusflow \
-    && useradd -r -u 1001 -g nexusflow nexusflow
+    && useradd -r -u 1001 -g nexusflow nexusflow \
+    # Embedding pipelines download the ONNX model to $HOME/.cache at
+    # runtime (nexus-ai via hf-hub) — `useradd -r` creates no home dir, so
+    # the cache creation fails with EACCES for the runtime user and every
+    # embedding pipeline errors on a fresh container ("hugging face hub
+    # error: I/O error Permission denied").
+    && mkdir -p /home/nexusflow && chown 1001:1001 /home/nexusflow
 
 COPY --from=builder /tmp/nexusflow-bin /usr/lib/nexusflow/nexusflow-bin
-COPY --from=adbc /out/libadbc_driver_postgresql.so /out/libadbc_driver_sqlite.so /usr/lib/nexusflow/
+COPY --from=adbc /out/libadbc_driver_postgresql.so /out/libadbc_driver_sqlite.so /out/libadbc_driver_duckdb.so /usr/lib/nexusflow/
 COPY --from=clickhouse-adbc /out/libadbc_clickhouse.so /usr/lib/nexusflow/
 COPY packaging/linux/nexusflow-wrapper.sh /usr/bin/nexusflow
 RUN chmod +x /usr/bin/nexusflow \

@@ -15,6 +15,14 @@ pub enum ConnectorCapability {
     AdbcNative,
     ArrowFlight,
     Bridged,
+    /// Not I/O — a license-gated feature flag on code that already lives in
+    /// the public repo (LLMOPS_IMPLEMENTATION_PLAN.md Marco L8), registered
+    /// via `submit_enterprise_connector!` so it reuses `check_connector_license`
+    /// without a real `Source`/`Sink` behind it. Never appears in
+    /// `GET /connectors`'s catalog (`list_connectors_handler` filters this
+    /// variant out) — a descriptor tagged `Capability` is a license-check
+    /// target only, not a node type the Canvas can add to a DAG.
+    Capability,
 }
 
 #[async_trait]

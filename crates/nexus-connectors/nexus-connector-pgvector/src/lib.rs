@@ -6,10 +6,12 @@
 
 mod config;
 mod rows;
+mod search;
 mod sink;
 mod sql;
 
 pub use config::{PgVectorConnectorConfig, PgVectorSslMode};
+pub use search::PgVectorSearchClient;
 pub use sink::PgVectorSink;
 
 nexus_core::submit_connector!(

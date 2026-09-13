@@ -2,13 +2,81 @@
 
 Guia prático de instalação e uso — do zero até rodar seu primeiro pipeline. Para arquitetura interna, ver [`ARCHITECTURE.md`](../ARCHITECTURE.md); para a stack completa, [`CLAUDE.md`](../CLAUDE.md).
 
+## Requisitos de hardware
+
+> **Estimativas de engenharia, não benchmark formal.** Este repositório
+> não tem uma suíte de performance própria ainda — os números abaixo vêm
+> de fatos conhecidos da arquitetura (o que é comprovadamente CPU-bound
+> ou memory-bound, ver referências entre parênteses), não de medição real
+> de throughput em hardware específico. Trate como ponto de partida pra
+> dimensionar, não como garantia.
+
+### Mínimo — testar localmente, 1-2 pipelines simples, sem embeddings
+
+| Recurso | Valor |
+|---|---|
+| CPU | 2 núcleos |
+| RAM | 2 GB |
+| Disco | 1 GB livre (binário + SQLite + drivers ADBC) |
+| SO | Linux x86_64 (único caminho validado de ponta a ponta — ver `README.md`'s nota de validação de plataforma) |
+| Rede | só o necessário pras fontes/destinos configurados |
+
+Suficiente pro binário single-node com SQLite (padrão), 1-2 pipelines
+batch simples sem `embedding`/`dbt`, volume de dado pequeno. O processo
+em si é leve (Rust, sem JVM) — o teto real vem do que os *pipelines*
+fazem, não do binário parado.
+
+### Recomendado — produção, múltiplos pipelines concorrentes, embeddings/dbt
+
+| Recurso | Valor |
+|---|---|
+| CPU | 4-8 núcleos |
+| RAM | 8-16 GB |
+| Disco | SSD, 20 GB+ livres |
+| GPU | Opcional, **não obrigatória** |
+| Backend de metadados | Postgres em vez de SQLite (multi-réplica/k8s) |
+
+Por que esses números, não chutados:
+
+- **RAM escala com o node `transform` (inclui `embedding`)** — pipeline
+  sem `transform` (passthrough) faz streaming de verdade, memória
+  limitada pelo `channel_capacity` configurado; mas `transform`/
+  `embedding` **materializam o dataset inteiro em memória**
+  (`PipelineEngine::drain_sources`, `ARCHITECTURE.md §4`) antes de
+  aplicar SQL/embedding. Uma tabela de origem grande passando por
+  `transform` precisa de RAM proporcional ao tamanho dela, não do
+  tamanho do batch.
+- **Single-node compartilha um processo só** — todo pipeline do mesmo
+  deployment roda na mesma máquina, paralelismo é *dentro* do processo
+  via tasks do tokio (`ARCHITECTURE.md §6`, decisão deliberada de
+  escopo). Múltiplas partições/pipelines concorrentes competem pelo
+  mesmo CPU/RAM — dimensionar pelo pico de uso simultâneo esperado, não
+  por um pipeline isolado.
+- **Modelo de embedding local fica carregado em memória** — backend
+  `cpu`/ONNX (`ARCHITECTURE.md §8`) carrega o modelo uma vez por run;
+  modelos pequenos (`all-MiniLM-L6-v2`) ficam na casa de 100MB, modelos
+  maiores passam de 1GB. Inferência CPU se beneficia de mais núcleos.
+- **CDC nativo mantém conexão persistente** — `postgres-cdc`/
+  `mongodb-cdc`/`mysql-cdc` seguram uma conexão de replicação/change
+  stream aberta o tempo todo (`ARCHITECTURE.md §7`); rede instável
+  degrada resume, não corrompe dado (checkpoint por partição cobre
+  isso), mas convém rede estável pra CDC em produção.
+- **GPU (`cuda`/`metal`) existe mas não foi validada em hardware real**
+  neste projeto ainda (`ROADMAP.md`, item 3 das "Pendências ativas") —
+  acelera embedding em volume alto quando funcionar, mas CPU já atende
+  volume pequeno/médio sem GPU nenhuma.
+- **SSD, não HDD** — cache de modelo (`~/.cache/nexusflow/models`),
+  checkpoint SQLite com escrita frequente em CDC, e formatos de data
+  lake locais (Parquet/Delta/Iceberg/AI-Lake) fazem I/O de disco
+  suficiente pra HDD virar gargalo real.
+
 ## 1. Instalação
 
 Escolha uma das opções abaixo. Todas sobem o mesmo binário: um único processo servindo API REST + WebSocket + UI web em `http://localhost:8080`.
 
 ### Docker (mais simples)
 
-Imagem publicada no GHCR (já com todos os 27 conectores):
+Imagem publicada no Docker Hub (já com todos os 31 conectores) — GHCR foi descontinuado em 2026-09-08:
 
 ```bash
 # volume nomeado nasce root-owned; o container roda como uid 1001 (não-root) —
@@ -26,7 +94,7 @@ docker run -d --name nexusflow -p 8080:8080 \
   -e NEXUS_AUTH_DB="sqlite:///data/nexusflow-auth.db" \
   -e NEXUS_PIPELINES_DB="sqlite:///data/nexusflow-pipelines.db" \
   -v nexusflow_data:/data \
-  ghcr.io/ailake-io/nexusflow:latest
+  thiagolange/nexusflow:latest
 ```
 
 Build local (imagem por padrão só liga postgres/sqlite, igual ao binário nativo — ver seção 2 abaixo):
@@ -63,7 +131,7 @@ docker run --gpus all -d -p 8080:8080 \
 curl -fsSL https://raw.githubusercontent.com/ailake-io/nexusflow/develop/scripts/install.sh | sh
 ```
 
-Baixa o binário + drivers ADBC pra `~/.local/share/nexusflow` e cria `~/.local/bin/nexusflow`. Precisa de um [release](https://github.com/ailake-io/nexusflow/releases) publicado — ver `.github/workflows/release.yml`. O binário do release já vem com **todos** os 27 conectores linkados (`embed-ui,connectors-all`, não só postgres/sqlite — ver seção 2 abaixo); pra `odbc`/`kafka` funcionarem, precisa de `unixodbc`/`libsasl2` no sistema (o instalador avisa no final se faltar).
+Baixa o binário + drivers ADBC pra `~/.local/share/nexusflow` e cria `~/.local/bin/nexusflow`. Precisa de um [release](https://github.com/ailake-io/nexusflow/releases) publicado — ver `.github/workflows/release.yml`. O binário do release já vem com **todos** os 31 conectores linkados (`embed-ui,connectors-all`, não só postgres/sqlite — ver seção 2 abaixo); pra `odbc`/`kafka` funcionarem, precisa de `unixodbc`/`libsasl2` no sistema (o instalador avisa no final se faltar).
 
 ### Pacotes nativos (Linux)
 
@@ -75,7 +143,7 @@ Baixa o binário + drivers ADBC pra `~/.local/share/nexusflow` e cria `~/.local/
 
 Mesma coisa: todos os conectores já vêm linkados; o `.deb` declara `unixodbc`/`libsasl2-2` como `Depends`, AppImage/rpm exigem essas libs já presentes no sistema alvo.
 
-Windows (`.msi`/winget) e macOS (Homebrew/`.dmg`) têm specs em `packaging/windows/` e `packaging/macos/`, mas ainda não foram validados em máquina real — ver os comentários em cada arquivo.
+Windows: `.msi` real via `cargo-wix` (`.github/workflows/build-windows-installer.yml`, `workflow_dispatch` manual, `windows-latest` hospedado desde 2026-09-05) — o vcpkg/OpenSSL que resolvia o bug real do `mysql_cdc` (só suporta OpenSSL nativo, sem rustls) roda como passo explícito a cada execução agora; ainda não instalado/testado numa máquina Windows real por um humano, e `winget` continua não configurado. macOS (Homebrew): `release.yml`'s `build` job ganhou leg `macos-latest`/arm64 no mesmo dia — binário OSS-only (sem conectores enterprise, ver `packaging/macos/README.md`), formula em `packaging/macos/nexusflow.rb`, nenhuma release real passou por essa combinação ainda.
 
 ### Build a partir do source
 
@@ -99,9 +167,9 @@ export NEXUS_ADMIN_PASSWORD="troque-isto"
 
 ## 2. Habilitando conectores
 
-Isso só se aplica a quem builda a partir do source (seção 1, "Build a partir do source") — os binários pré-buildados (script de instalação, `.deb`/AppImage/rpm) e a imagem Docker publicada no GHCR já vêm com `connectors-all` ligado, ver seção 1.
+Isso só se aplica a quem builda a partir do source (seção 1, "Build a partir do source") — os binários pré-buildados (script de instalação, `.deb`/AppImage/rpm) e a imagem Docker publicada no Docker Hub já vêm com `connectors-all` ligado, ver seção 1.
 
-Por padrão um `cargo build` sem flags só liga `postgres` e `sqlite`. A feature `connectors-all` habilita as outras **24 entradas de conector** no catálogo (26 nomes no total, pois a feature `rest` registra tanto `rest` quanto `webhook`): mongodb, mysql (batch, via `mysql_async`), kafka, mqtt, rest, webhook, odbc, milvus, qdrant, lancedb, pgvector, pinecone, chromadb, deltalake, iceberg, parquet, ailake, csv e os 6 CDCs nativos (postgres-cdc, mongodb-cdc, mysql-cdc, deltalake-cdc, iceberg-cdc, ailake-cdc). Cada um só entra no binário se sua feature for pedida:
+Por padrão um `cargo build` sem flags só liga `postgres` e `sqlite`. A feature `connectors-all` habilita as outras **27 features de conector** (29 nomes no catálogo, pois `rest` registra tanto `rest` quanto `webhook`, e `mongodb` registra `mongodb`+`mongodb-cdc` sem feature própria pra CDC): mongodb, mysql (batch, via `mysql_async`), kafka (source+sink), mqtt, rest, webhook, odbc, milvus, qdrant, lancedb, pgvector, pinecone, chromadb, deltalake, iceberg, parquet, ailake, csv, clickhouse (ADBC, sink append-only), duckdb (ADBC, upsert real), redis (Streams), nats (core pub/sub), rabbitmq (AMQP 0-9-1) e os 6 CDCs nativos (postgres-cdc, mongodb-cdc, mysql-cdc, deltalake-cdc, iceberg-cdc, ailake-cdc). Cada um só entra no binário se sua feature for pedida:
 
 ```bash
 # um conector específico
@@ -191,8 +259,11 @@ cargo run --release -p nexus-server --bin migrate-metadata --features postgres -
 Manifests de referência (Deployment/Service/PVC/HPA/ConfigMap/Secret) em
 `packaging/kubernetes/` (`kubectl apply -k packaging/kubernetes/`), stack file
 de Docker Swarm em `packaging/swarm/` (`docker stack deploy`) — ver o `README.md`
-de cada um. Não são Helm chart nem testados num cluster gerenciado real, são
-ponto de partida validado offline.
+de cada um. Não são Helm chart. Kubernetes foi validado num **minikube real**
+em 2026-09-06/07 (multi-réplica com Postgres compartilhado, health probes,
+HPA+metrics-server funcionando) — ainda não testado num cluster gerenciado
+real (EKS/GKE/AKS). Docker Swarm continua ponto de partida validado só
+offline.
 
 ## 4. Primeiro acesso
 
@@ -302,7 +373,7 @@ Se `dbt.output` estiver setado no spec (aponta pro model/tabela que o dbt acabou
 
 | Arquivo | Conteúdo |
 |---|---|
-| [`USER_GUIDE.md`](./USER_GUIDE.md) | Referência completa: config exata de cada um dos 27 conectores, transform SQL, embeddings, dbt ELT/ETL, preview, agendamento |
+| [`USER_GUIDE.md`](./USER_GUIDE.md) | Referência completa: config exata de cada um dos 31 conectores, transform SQL, embeddings, dbt ELT/ETL, preview, agendamento |
 | [`ARCHITECTURE.md`](../ARCHITECTURE.md) | Roteador de conectores, streaming/backpressure, checkpointing |
 | [`ROADMAP.md`](../ROADMAP.md) | Fases e critério de "pronto" |
 | [`CONTRIBUTING.md`](../CONTRIBUTING.md) | Como contribuir |

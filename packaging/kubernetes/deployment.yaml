@@ -32,7 +32,15 @@ spec:
         fsGroup: 1001
       containers:
         - name: nexusflow
-          image: ghcr.io/ailake-io/nexusflow:${NEXUSFLOW_VERSION:?NEXUSFLOW_VERSION must be set}
+          # No tag pinned here on purpose — kustomization.yaml's `images:`
+          # transformer sets the real one at apply time (kustomize does
+          # NOT substitute shell/env-var syntax into plain resource YAML,
+          # so a `${VAR}` placeholder here would apply literally and fail
+          # with an invalid image reference; the transformer is the actual
+          # kustomize-native way to parameterize this). Never apply this
+          # file directly with `kubectl apply -f` — always through
+          # `kubectl apply -k .` so the transformer runs.
+          image: thiagolange/nexusflow
           ports:
             - name: http
               containerPort: 8080

@@ -54,6 +54,22 @@ impl ApiError {
         }
     }
 
+    /// For a connector I/O failure while actively probing a connection on
+    /// the caller's behalf (`GET /pipelines/{id}/preview`,
+    /// `POST /connectors/preview`) — deliberately not `bad_request`: 400 on
+    /// those two endpoints specifically means "this connector can't be
+    /// previewed at all" to the frontend (`DataPreviewPanel.tsx`), a
+    /// distinct case from "the connection itself failed" this constructor
+    /// is for. The caller must pass an already-`sanitize_error`d message —
+    /// same reasoning as `internal`'s doc comment: connector errors
+    /// routinely embed connection URIs.
+    pub fn upstream_connector_failed(sanitized_message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_GATEWAY,
+            message: sanitized_message.into(),
+        }
+    }
+
     /// 500s never carry the underlying error's text: connector/sqlx errors
     /// routinely embed connection URIs — credentials included — so the
     /// detail goes to the server log and the client gets a generic message.

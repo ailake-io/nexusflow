@@ -25,7 +25,12 @@ export function useConnectors(): UseConnectorsResult {
     setLoading(true)
     listConnectors(token)
       .then((result) => {
-        if (!cancelled) setConnectors(result)
+        // Sorted once here (not registration order, which is whatever
+        // order each connector crate happened to link in) so every
+        // consumer — the Canvas palette, the Store — lists connectors
+        // alphabetically without each needing its own sort.
+        const sorted = [...result].sort((a, b) => a.name.localeCompare(b.name))
+        if (!cancelled) setConnectors(sorted)
       })
       .catch((err: unknown) => {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err))

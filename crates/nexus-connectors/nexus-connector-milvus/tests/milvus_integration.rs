@@ -63,7 +63,10 @@ async fn text_chunk_embed_milvus_end_to_end() {
         .await
         .expect("etcd starts");
 
-    let _minio = GenericImage::new("minio/minio", "latest")
+    // `minio/minio` on Docker Hub was pulled/deprecated in favor of
+    // quay.io — a plain `docker pull minio/minio` now 404s ("repository
+    // does not exist"), confirmed the hard way when this broke CI.
+    let _minio = GenericImage::new("quay.io/minio/minio", "latest")
         // Same log-follow race as etcd above — minio is ready before
         // testcontainers starts tailing stdout.
         .with_wait_for(WaitFor::seconds(3))

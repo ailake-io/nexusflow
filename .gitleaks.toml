@@ -1,0 +1,28 @@
+title = "gitleaks config — NexusFlow"
+
+[extend]
+useDefault = true
+
+# Known test-only Ed25519 private key (crates/nexus-server/src/license.rs,
+# test_support module) — paired with LICENSE_PUBLIC_KEY_PEM, used only to
+# sign license JWTs in unit tests. Intentionally public: the file's own
+# doc comment says "Never use this key for a real license — the private
+# half lives in this OSS repo's git history, which is the opposite of
+# secret." Matched by exact key content (not commit/path) so the allowlist
+# survives both a git-history scan and a working-tree scan of any future
+# commit that still contains this line.
+#
+# [allowlist] (singular table), not [[allowlists]] — verified locally
+# with gitleaks 8.21.2 that the plural array form is silently ignored
+# here (finding still flagged); this is the form that actually works.
+[allowlist]
+description = "license.rs test_support::TEST_PRIVATE_KEY_PEM — documented non-secret test fixture"
+regexes = [
+  '''MC4CAQAwBQYDK2VwBCIEIPByldYeti11Ln8Z2hkQXRrST\+PoTsO/sycPsIAI24gm''',
+  # anthropic_client.rs's own unauthorized-response test — `api_key_env`
+  # is the *name* of an env var the client reads a real key from at
+  # runtime, never a literal key value. "generic-api-key" only fires
+  # because this test string happens to look like an assignment (`...KEY_2"
+  # .to_string()`); nothing here is secret.
+  '''NEXUS_TEST_ANTHROPIC_KEY_2''',
+]

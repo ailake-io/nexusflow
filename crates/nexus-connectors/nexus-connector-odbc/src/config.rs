@@ -101,7 +101,14 @@ impl OdbcConnectorConfig {
         }
 
         let mut parts: Vec<String> = Vec::new();
-        parts.push(format!("Driver={}", odbc_escape(&self.driver)));
+        // `self.driver` already carries its own literal `{...}` delimiters
+        // (see the field doc comment) — running it through `odbc_escape`
+        // doubles that pre-existing closing brace, corrupting the token so
+        // the driver manager reads everything after it (the rest of the
+        // connection string) as part of the driver name/path. Unlike
+        // `server`/`database`/etc., this field is not raw content to
+        // protect, so it's used as-is.
+        parts.push(format!("Driver={}", self.driver));
         parts.push(format!("Server={}", odbc_escape(&self.server)));
         if let Some(port) = self.port {
             parts.push(format!("Port={port}"));

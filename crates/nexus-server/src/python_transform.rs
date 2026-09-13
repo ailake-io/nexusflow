@@ -162,7 +162,10 @@ mod tests {
     use std::sync::Arc;
 
     /// python3 isn't a Rust dependency (see the module doc comment) — it
-    /// has to actually be on PATH. Skip (not fail) when it's missing, same
+    /// has to actually be on PATH, and `python_harness.py` further needs
+    /// `pandas`/`pyarrow` importable (the production image installs both
+    /// via pip, see `Dockerfile`, but a developer's local `python3` often
+    /// won't have them). Skip (not fail) when either is missing, same
     /// spirit as dbt.rs's `require_dbt_cli_or_skip!()`.
     macro_rules! require_python3_or_skip {
         () => {
@@ -173,6 +176,16 @@ mod tests {
                 .is_err()
             {
                 eprintln!("skipping: `python3` not found on PATH");
+                return;
+            }
+            if !tokio::process::Command::new("python3")
+                .args(["-c", "import pandas, pyarrow"])
+                .output()
+                .await
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+            {
+                eprintln!("skipping: `python3` lacks `pandas`/`pyarrow` (see Dockerfile for the production install)");
                 return;
             }
         };

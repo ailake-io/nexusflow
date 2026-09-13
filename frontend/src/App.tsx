@@ -11,6 +11,10 @@ import {
   Waypoints,
   BadgeCheck,
   BarChart3,
+  BookText,
+  Cloud,
+  Database,
+  GitBranch,
 } from 'lucide-react'
 import { useAuth } from '@/lib/auth-context'
 import { useI18n } from '@/lib/i18n'
@@ -25,20 +29,28 @@ const PipelinesList = lazy(() => import('@/components/PipelinesList'))
 const PipelineStatusBoard = lazy(() => import('@/components/PipelineStatusBoard'))
 const UsersPanel = lazy(() => import('@/components/UsersPanel'))
 const Store = lazy(() => import('@/components/Store'))
+const InfraCanvas = lazy(() => import('@/components/InfraCanvas'))
 const ResourcesPanel = lazy(() => import('@/components/ResourcesPanel'))
 const LineagePanel = lazy(() => import('@/components/LineagePanel'))
+const DataCatalogPanel = lazy(() => import('@/components/DataCatalogPanel'))
+const PipelineDependencyGraph = lazy(() => import('@/components/PipelineDependencyGraph'))
 const QualityPanel = lazy(() => import('@/components/QualityPanel'))
 const DataPreviewPanel = lazy(() => import('@/components/DataPreviewPanel'))
+const PromptLibrary = lazy(() => import('@/components/PromptLibrary'))
 
 type View =
   | 'canvas'
   | 'pipelines'
   | 'status'
   | 'store'
+  | 'infra'
   | 'resources'
   | 'lineage'
+  | 'catalog'
+  | 'orchestration'
   | 'quality'
   | 'preview'
+  | 'prompts'
   | 'admin'
 
 function ViewFallback() {
@@ -81,10 +93,14 @@ function App() {
     { id: 'pipelines', label: t('nav.pipelines'), icon: List },
     { id: 'status', label: t('nav.status'), icon: Activity },
     { id: 'store', label: t('nav.store'), icon: StoreIcon },
+    { id: 'infra', label: t('nav.infra'), icon: Cloud },
     { id: 'resources', label: t('nav.resources'), icon: Gauge },
     { id: 'lineage', label: t('nav.lineage'), icon: Waypoints },
+    { id: 'catalog', label: t('nav.catalog'), icon: Database },
+    { id: 'orchestration', label: t('nav.orchestration'), icon: GitBranch },
     { id: 'quality', label: t('nav.quality'), icon: BadgeCheck },
     { id: 'preview', label: t('nav.preview'), icon: BarChart3 },
+    { id: 'prompts', label: t('nav.prompts'), icon: BookText },
     // Client-side gating only decides visibility of the nav item — the
     // /users routes are Admin-enforced server-side regardless (auth.rs).
     ...(role === 'admin'
@@ -171,10 +187,14 @@ function App() {
             {view === 'pipelines' && <PipelinesList onEdit={handleEdit} />}
             {view === 'status' && <PipelineStatusBoard />}
             {view === 'store' && <Store />}
+            {view === 'infra' && <InfraCanvas />}
             {view === 'resources' && <ResourcesPanel />}
             {view === 'lineage' && <LineagePanel />}
+            {view === 'catalog' && <DataCatalogPanel />}
+            {view === 'orchestration' && <PipelineDependencyGraph />}
             {view === 'quality' && <QualityPanel />}
             {view === 'preview' && <DataPreviewPanel />}
+            {view === 'prompts' && <PromptLibrary />}
             {view === 'admin' && <UsersPanel />}
           </Suspense>
         </div>

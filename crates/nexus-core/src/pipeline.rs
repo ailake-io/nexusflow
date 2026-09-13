@@ -3,9 +3,61 @@ use crate::error::NexusError;
 use crate::traits::{Sink, Source, Transform};
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
+use futures::future::BoxFuture;
 use futures::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
+
+/// Applied to every batch between read and write on the passthrough path
+/// (LLMOPS_IMPLEMENTATION_PLAN.md Marco L6) — e.g. chunk+embed a CDC
+/// source's batches before they reach the sink, without needing a
+/// `transform` node (which would force `drain_sources`, and a CDC source's
+/// stream never naturally drains — see `ARCHITECTURE.md §7`). Defined here,
+/// not in nexus-ai, because nexus-core can't depend on nexus-ai (CLAUDE.md
+/// §8.3) — the closure itself is built and owned by the caller
+/// (`nexus-server::runner`), this crate just calls it as an opaque
+/// `RecordBatch -> RecordBatch` step. A transform can change row count
+/// (chunking expands 1 row into N) — the rest of the writer loop already
+/// counts/checkpoints whatever was actually written, not what was read, so
+/// that's not a special case here.
+pub type BatchTransform =
+    Box<dyn Fn(RecordBatch) -> BoxFuture<'static, Result<RecordBatch, NexusError>> + Send + Sync>;
+
+/// Runs `first` then `second`, in that order, on every batch — lets a
+/// caller stack two independent per-batch stages (Fase 28: column masking,
+/// then Marco L6's embedding) onto the single `batch_transform` slot
+/// `PipelineEngine::run_partition` takes, instead of that slot only ever
+/// holding one stage. `None`/`None` collapses to `None` rather than an
+/// identity closure, so a pipeline using neither feature pays zero
+/// per-batch overhead, same as before either existed.
+pub fn chain_batch_transforms(
+    first: Option<BatchTransform>,
+    second: Option<BatchTransform>,
+) -> Option<BatchTransform> {
+    match (first, second) {
+        (None, None) => None,
+        (Some(f), None) => Some(f),
+        (None, Some(g)) => Some(g),
+        (Some(f), Some(g)) => {
+            // `Fn` (not `FnOnce`): this closure is called once per batch,
+            // so `f`/`g` can't be moved into the returned future directly
+            // (that would only work for the first call) — `Arc` lets each
+            // call cheaply clone a handle to the same underlying closures,
+            // same pattern `run_passthrough_pipeline` already uses for its
+            // embedding backend.
+            let f = std::sync::Arc::new(f);
+            let g = std::sync::Arc::new(g);
+            Some(Box::new(move |batch: RecordBatch| {
+                let f = f.clone();
+                let g = g.clone();
+                Box::pin(async move {
+                    let batch = f(batch).await?;
+                    g(batch).await
+                }) as BoxFuture<'static, Result<RecordBatch, NexusError>>
+            }))
+        }
+    }
+}
 
 /// One partition's Source+Sink pair, ready to run. Partitioning is the unit
 /// of parallelism — see ARCHITECTURE.md §4.
@@ -110,11 +162,12 @@ impl PipelineEngine {
         Self { channel_capacity }
     }
 
-    #[tracing::instrument(skip(self, handle, progress), fields(partition_id = %handle.partition_id))]
+    #[tracing::instrument(skip(self, handle, progress, batch_transform), fields(partition_id = %handle.partition_id))]
     pub async fn run_partition(
         &self,
         handle: PartitionHandle,
         progress: Option<ProgressSender>,
+        batch_transform: Option<BatchTransform>,
     ) -> Result<PartitionStats, NexusError> {
         let PartitionHandle {
             partition_id,
@@ -150,6 +203,14 @@ impl PipelineEngine {
             let mut bytes_written = 0usize;
 
             while let Some(batch) = rx.recv().await {
+                // Applied before the row/byte counts below are computed —
+                // a transform can change row count (chunking expands 1 row
+                // into N), so stats/checkpoints reflect what was actually
+                // written, not what was read (Marco L6).
+                let batch = match &batch_transform {
+                    Some(f) => f(batch).await?,
+                    None => batch,
+                };
                 let batch_rows = batch.num_rows();
                 let batch_bytes = batch.get_array_memory_size();
                 rows_written += batch_rows;
@@ -233,7 +294,7 @@ impl PipelineEngine {
             let progress = progress.clone();
             set.spawn(async move {
                 PipelineEngine::new(capacity)
-                    .run_partition(partition, progress)
+                    .run_partition(partition, progress, None)
                     .await
             });
         }
@@ -537,6 +598,7 @@ mod tests {
                     sink: Box::new(sink),
                 },
                 None,
+                None,
             )
             .await
             .expect("partition runs successfully");
@@ -550,6 +612,60 @@ mod tests {
             1,
             "checkpoint committed once per partition, not per batch"
         );
+    }
+
+    /// LLMOPS_IMPLEMENTATION_PLAN.md Marco L6 — the whole point of
+    /// `batch_transform` is letting the passthrough path (which CDC
+    /// sources use) run something like chunk+embed without a `transform`
+    /// node. A transform that expands 1 row into N (chunking's real shape)
+    /// must be reflected in `rows_written`/what the sink actually
+    /// received, not the pre-transform row count.
+    #[tokio::test]
+    async fn run_partition_applies_batch_transform_and_counts_its_output_rows() {
+        let source = VecSource {
+            schema: test_schema(),
+            batches: vec![test_batch(vec![1, 2]), test_batch(vec![3])],
+        };
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let sink = RecordingSink {
+            received: received.clone(),
+            checkpoints: Arc::new(Mutex::new(Vec::new())),
+        };
+
+        // Doubles every row (id, id) — simulates chunking's row-expansion
+        // shape without needing a real embedding backend in this test.
+        let transform: BatchTransform = Box::new(|batch: RecordBatch| {
+            Box::pin(async move {
+                let ids = batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int64Array>()
+                    .unwrap();
+                let doubled: Vec<i64> = ids.values().iter().flat_map(|v| [*v, *v]).collect();
+                Ok(test_batch(doubled))
+            })
+        });
+
+        let engine = PipelineEngine::new(8);
+        let stats = engine
+            .run_partition(
+                PartitionHandle {
+                    partition_id: "p0".to_string(),
+                    source: Box::new(source),
+                    sink: Box::new(sink),
+                },
+                None,
+                Some(transform),
+            )
+            .await
+            .expect("partition runs successfully");
+
+        // 2 input rows -> 4 output, 1 input row -> 2 output: 6 total, not 3.
+        assert_eq!(stats.rows_written, 6);
+        let received = received.lock().unwrap();
+        assert_eq!(received.len(), 2);
+        assert_eq!(received[0].num_rows(), 4);
+        assert_eq!(received[1].num_rows(), 2);
     }
 
     /// Simulates a CDC source: reports its position via `position_handle`,
@@ -613,6 +729,7 @@ mod tests {
                     sink: Box::new(sink),
                 },
                 None,
+                None,
             )
             .await
             .expect("partition runs successfully");
@@ -640,6 +757,7 @@ mod tests {
                     source: Box::new(source),
                     sink: Box::new(sink),
                 },
+                None,
                 None,
             )
             .await
@@ -688,6 +806,7 @@ mod tests {
                     sink: Box::new(FailingSink),
                 },
                 None,
+                None,
             )
             .await
             .expect_err("sink failure must propagate");
@@ -735,6 +854,7 @@ mod tests {
                     }),
                     sink: Box::new(RecordingSink::default()),
                 },
+                None,
                 None,
             )
             .await
@@ -869,6 +989,7 @@ mod tests {
                     sink: Box::new(RecordingSink::default()),
                 },
                 Some(tx),
+                None,
             )
             .await
             .expect("partition runs successfully");
@@ -958,5 +1079,71 @@ mod tests {
         };
         assert_eq!(rows_in(&sink_a_received), 5);
         assert_eq!(rows_in(&sink_b_received), 5);
+    }
+
+    fn add_one_column_transform(name: &'static str) -> BatchTransform {
+        Box::new(move |batch: RecordBatch| {
+            Box::pin(async move {
+                let mut fields: Vec<Field> = batch
+                    .schema()
+                    .fields()
+                    .iter()
+                    .map(|f| (**f).clone())
+                    .collect();
+                fields.push(Field::new(name, DataType::Boolean, false));
+                let mut columns = batch.columns().to_vec();
+                columns.push(Arc::new(arrow_array::BooleanArray::from(vec![
+                    true;
+                    batch
+                        .num_rows(
+                        )
+                ])));
+                RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+                    .map_err(|e| NexusError::Schema(e.to_string()))
+            })
+        })
+    }
+
+    #[test]
+    fn chain_batch_transforms_of_none_and_none_is_none() {
+        assert!(chain_batch_transforms(None, None).is_none());
+    }
+
+    #[tokio::test]
+    async fn chain_batch_transforms_runs_only_transform_when_the_other_is_none() {
+        let chained = chain_batch_transforms(Some(add_one_column_transform("a")), None).unwrap();
+        let out = chained(test_batch(vec![1])).await.unwrap();
+        assert_eq!(out.schema().fields().len(), 2);
+        assert_eq!(out.schema().field(1).name(), "a");
+
+        let chained = chain_batch_transforms(None, Some(add_one_column_transform("b"))).unwrap();
+        let out = chained(test_batch(vec![1])).await.unwrap();
+        assert_eq!(out.schema().field(1).name(), "b");
+    }
+
+    #[tokio::test]
+    async fn chain_batch_transforms_runs_both_in_order() {
+        let chained = chain_batch_transforms(
+            Some(add_one_column_transform("first")),
+            Some(add_one_column_transform("second")),
+        )
+        .unwrap();
+        let out = chained(test_batch(vec![1])).await.unwrap();
+        assert_eq!(out.schema().fields().len(), 3);
+        assert_eq!(out.schema().field(1).name(), "first");
+        assert_eq!(out.schema().field(2).name(), "second");
+    }
+
+    #[tokio::test]
+    async fn chained_transform_can_be_called_more_than_once() {
+        let chained = chain_batch_transforms(
+            Some(add_one_column_transform("a")),
+            Some(add_one_column_transform("b")),
+        )
+        .unwrap();
+        let out1 = chained(test_batch(vec![1])).await.unwrap();
+        let out2 = chained(test_batch(vec![2, 3])).await.unwrap();
+        assert_eq!(out1.num_rows(), 1);
+        assert_eq!(out2.num_rows(), 2);
     }
 }

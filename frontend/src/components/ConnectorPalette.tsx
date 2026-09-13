@@ -1,5 +1,5 @@
 import { useState, type DragEvent } from 'react'
-import { Database, Loader2, AlertCircle, Lock, Search } from 'lucide-react'
+import { Database, Loader2, AlertCircle, Search } from 'lucide-react'
 import { useI18n } from '@/lib/i18n'
 import type { ConnectorDescriptor } from '@/lib/api'
 import { EmptyState } from '@/components/EmptyState'
@@ -24,9 +24,16 @@ export function ConnectorPalette({ connectors, loading, error }: ConnectorPalett
   const { t } = useI18n()
   const [query, setQuery] = useState('')
 
+  // An enterprise connector the license doesn't cover stays out of the
+  // palette entirely — the Store is where it's discovered/purchased, not
+  // here with a padlock. Once a purchased license activates it,
+  // `licensed` flips to `true` server-side (GET /connectors) and it
+  // starts appearing here like any OSS connector.
+  const unlockedConnectors = connectors.filter((c) => !c.requires_license || c.licensed)
+
   const filteredConnectors = query.trim()
-    ? connectors.filter((c) => c.name.toLowerCase().includes(query.trim().toLowerCase()))
-    : connectors
+    ? unlockedConnectors.filter((c) => c.name.toLowerCase().includes(query.trim().toLowerCase()))
+    : unlockedConnectors
 
   return (
     <aside className="flex w-60 shrink-0 flex-col border-r bg-card">
@@ -61,7 +68,7 @@ export function ConnectorPalette({ connectors, loading, error }: ConnectorPalett
             {error}
           </div>
         )}
-        {!loading && connectors.length === 0 && (
+        {!loading && unlockedConnectors.length === 0 && (
           <EmptyState
             icon={<Database className="h-5 w-5" />}
             title={t('canvas.noConnectors')}
@@ -69,7 +76,7 @@ export function ConnectorPalette({ connectors, loading, error }: ConnectorPalett
             className="p-3"
           />
         )}
-        {!loading && connectors.length > 0 && filteredConnectors.length === 0 && (
+        {!loading && unlockedConnectors.length > 0 && filteredConnectors.length === 0 && (
           <p className="px-1 py-4 text-center text-xs text-muted-foreground">
             {t('canvas.noConnectorsMatch', { query: query.trim() })}
           </p>
@@ -99,12 +106,6 @@ export function ConnectorPalette({ connectors, loading, error }: ConnectorPalett
             >
               <Database className="h-3.5 w-3.5 text-muted-foreground group-hover:text-primary" />
               <span className="font-medium text-foreground">{connector.name}</span>
-              {connector.requires_license && !connector.licensed && (
-                <Lock
-                  className="ml-auto h-3 w-3 shrink-0 text-amber-400"
-                  aria-label={t('canvas.connectorLocked')}
-                />
-              )}
             </div>
           ))}
         </div>

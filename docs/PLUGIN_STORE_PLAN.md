@@ -14,10 +14,10 @@
 > gateway de pagamento.
 
 > **Escopo:** catálogo, checkout, pagamento, emissão de license key e entrega/liberação de conectores enterprise no NexusFlow.
-> **Status (auditado, ver `docs/ENTERPRISE_LICENSING.md` §"Estado real" — fonte de verdade atual):** o gate técnico de licenciamento no `nexus-server`, o enforcement em runtime e a integração frontend (cadeado + aba Store) já estão implementados; o catálogo enterprise real já existe (24 crates / 51 entradas no repo privado). O que falta é só o lado de cobrança — o serviço `nexus-licensing` (catálogo/checkout/webhook) não existe ainda. As seções abaixo (decisões de checkout/pricing/store) continuam válidas como planejamento pra essa parte que falta.
+> **Status (auditado, ver `docs/ENTERPRISE_LICENSING.md` §"Estado real" — fonte de verdade atual):** o gate técnico de licenciamento no `nexus-server`, o enforcement em runtime e a integração frontend (cadeado + aba Store) já estão implementados; o catálogo enterprise real já existe (37 crates no repo privado, contagem real via `Cargo.toml`, 2026-09-05 — número sobe com frequência, ver `docs/ENTERPRISE_CONNECTORS.md` pra lista viva por categoria em vez de um total fixo aqui). O que falta é só o lado de cobrança — o serviço `nexus-licensing` (catálogo/checkout/webhook) não existe ainda. As seções abaixo (decisões de checkout/pricing/store) continuam válidas como planejamento pra essa parte que falta.
 > **Repos envolvidos:**
 > - `ailake-io/nexusflow` (este repo, OSS) — gate de license no servidor + integrações frontend.
-> - `ailake-io/nexus-connectors-enterprise` (repo privado, já existe, 24 conectores) — conectores pagos.
+> - `ailake-io/nexus-connectors-enterprise` (repo privado, já existe, 37 crates de conector) — conectores pagos.
 > - `ailake-io/nexus-licensing` (repo privado, a criar) — catálogo, checkout e emissão de license keys.
 
 ---
@@ -35,7 +35,7 @@ Já existe no repo OSS a infra completa pra validar, armazenar e **fazer valer**
 | Registry enterprise | `crates/nexus-core/src/registry.rs` | `ConnectorDescriptor` tem `requires_license: Option<&'static str>` e macro `submit_enterprise_connector!`. | ✅ pronto |
 | **Enforcement em runtime** | `crates/nexus-server/src/connectors.rs` (`check_connector_license`) | `validate_source_config`/`validate_sink_config`/`build_source`/`build_sink` checam a license ativa antes de salvar/rodar um pipeline com conector `requires_license`. | ✅ pronto |
 | **Frontend** | `frontend/src/components/ConnectorPalette.tsx`, `Store.tsx` | Cadeado nos conectores sem license cobrindo + aba Store com status de license e form de instalação (Admin-only). | ✅ pronto |
-| **Catálogo enterprise real** | repo privado `nexus-connectors-enterprise` | 24 crates de conector / 51 entradas no catálogo (25 OSS + 26 nomes enterprise). | ✅ pronto |
+| **Catálogo enterprise real** | repo privado `nexus-connectors-enterprise` | 37 crates de conector (contagem via `Cargo.toml`, 2026-09-05 — sobe com frequência, ver `docs/ENTERPRISE_CONNECTORS.md` pra lista viva). | ✅ pronto |
 
 **O que ainda NÃO existe:**
 

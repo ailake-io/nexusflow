@@ -3,9 +3,11 @@
 
 mod config;
 mod rows;
+mod search;
 mod sink;
 
 pub use config::PineconeConnectorConfig;
+pub use search::PineconeSearchClient;
 pub use sink::PineconeSink;
 
 nexus_core::submit_connector!(

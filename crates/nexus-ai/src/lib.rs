@@ -8,6 +8,8 @@
 pub mod chunking;
 #[cfg(any(feature = "cpu", feature = "api"))]
 pub mod embedding;
+#[cfg(feature = "llm")]
+pub mod llm;
 
 pub use chunking::{
     chunk_fixed_window, chunk_recursive_character, chunk_semantic, split_sentences,
