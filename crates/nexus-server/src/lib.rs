@@ -127,6 +127,10 @@ struct AppState {
     jwt: JwtCodec,
     /// Encrypts connector secrets before `pipelines` persists them (CLAUDE.md §5).
     secrets: SecretCipher,
+    /// `NEXUS_MASKING_SALT`'s raw bytes (Fase 28) — `None` when column
+    /// masking is off server-wide (see `ServerConfig.masking_salt`'s doc
+    /// comment).
+    masking_salt: Option<Vec<u8>>,
     pipelines: PipelineStore,
     run_logs: RunLogStore,
     license_store: LicenseStore,
@@ -877,6 +881,7 @@ async fn execute_pipeline_run(
         &state.llm_stats,
         &state.prompt_templates,
         &state.llm_eval_results,
+        state.masking_salt.as_deref(),
     )
     .await;
     state.progress.finish(run_id).await;
@@ -1147,6 +1152,11 @@ async fn create_pipeline_handler(
             pipeline_dependencies::check_dependencies(&all_specs, &spec)
                 .map_err(ApiError::bad_request)?;
         }
+        if !spec.masking.is_empty() && state.masking_salt.is_none() {
+            return Err(ApiError::bad_request(
+                "pipeline sets masking but NEXUS_MASKING_SALT is not configured on this server",
+            ));
+        }
     }
     state
         .pipelines
@@ -1367,6 +1377,7 @@ async fn preview_adhoc_handler(
         alerts: None,
         quality_checks: Vec::new(),
         anomaly_alerts: false,
+        masking: Vec::new(),
         draft: false,
     };
     probe_spec
@@ -1423,6 +1434,11 @@ async fn update_pipeline_handler(
             let all_specs = state.pipelines.list_all_specs(&state.secrets).await?;
             pipeline_dependencies::check_dependencies(&all_specs, &spec)
                 .map_err(ApiError::bad_request)?;
+        }
+        if !spec.masking.is_empty() && state.masking_salt.is_none() {
+            return Err(ApiError::bad_request(
+                "pipeline sets masking but NEXUS_MASKING_SALT is not configured on this server",
+            ));
         }
     }
     state
@@ -2749,6 +2765,16 @@ pub struct ServerConfig {
     /// 64-char hex string (32 raw bytes) — comes from `NEXUS_ENCRYPTION_KEY`.
     /// Encrypts connector secrets at rest (CLAUDE.md §5). See `crypto.rs`.
     pub encryption_key_hex: String,
+    /// `NEXUS_MASKING_SALT` — keys the HMAC-SHA256 column tokenization a
+    /// pipeline opts into via `PipelineSpec.masking` (Fase 28). `None`
+    /// means the feature is off server-wide: a pipeline spec with a
+    /// non-empty `masking` list is rejected at save time
+    /// (`create_pipeline_handler`/`update_pipeline_handler`), not silently
+    /// run unmasked. Unlike `encryption_key_hex` above this isn't required
+    /// at boot — most deployments never use column masking at all, and
+    /// this crate has no way to know in advance whether any saved pipeline
+    /// will ever set `masking`.
+    pub masking_salt: Option<String>,
     /// `NEXUS_SLACK_WEBHOOK_URL` — `None` just means alerting is off, not a
     /// startup failure (see `alerts.rs`).
     pub slack_webhook_url: Option<String>,
@@ -2838,6 +2864,7 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
     );
     let secrets = SecretCipher::from_hex_key(&config.encryption_key_hex)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let masking_salt = config.masking_salt.as_ref().map(|s| s.as_bytes().to_vec());
     #[cfg(feature = "version-history")]
     let git_history = git_history_store::GitHistoryStore::open(&config.git_history_path)?;
     #[cfg(feature = "version-history")]
@@ -2849,6 +2876,7 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         auth_store,
         jwt,
         secrets,
+        masking_salt,
         pipelines,
         run_logs,
         license_store,
@@ -2956,6 +2984,13 @@ pub async fn run() -> anyhow::Result<()> {
              e.g. `openssl rand -hex 32` (CLAUDE.md §5)"
         )
     })?;
+    let masking_salt = std::env::var("NEXUS_MASKING_SALT").ok();
+    if masking_salt.is_none() {
+        tracing::warn!(
+            "NEXUS_MASKING_SALT not set — a pipeline cannot enable column masking (Fase 28) \
+             until this is set; existing pipelines without masking are unaffected"
+        );
+    }
     let bootstrap_admin = match (
         std::env::var("NEXUS_ADMIN_USERNAME"),
         std::env::var("NEXUS_ADMIN_PASSWORD"),
@@ -3056,6 +3091,7 @@ pub async fn run() -> anyhow::Result<()> {
         jwt_ttl_seconds: 3600,
         bootstrap_admin,
         encryption_key_hex,
+        masking_salt,
         slack_webhook_url,
         teams_webhook_url,
         pagerduty_routing_key,
@@ -3177,6 +3213,7 @@ mod tests {
             auth_store,
             jwt: JwtCodec::new(b"test-secret", 3600),
             secrets: SecretCipher::from_hex_key(&"ab".repeat(32)).unwrap(),
+            masking_salt: Some(b"test-masking-salt".to_vec()),
             pipelines: PipelineStore::connect("sqlite::memory:").await.unwrap(),
             run_logs: RunLogStore::connect("sqlite::memory:").await.unwrap(),
             license_store: LicenseStore::connect("sqlite::memory:").await.unwrap(),
@@ -5217,6 +5254,7 @@ mod tests {
             auth_store,
             jwt: JwtCodec::new(b"test-secret", 3600),
             secrets: SecretCipher::from_hex_key(&"ab".repeat(32)).unwrap(),
+            masking_salt: Some(b"test-masking-salt".to_vec()),
             pipelines: PipelineStore::connect("sqlite::memory:").await.unwrap(),
             run_logs: RunLogStore::connect("sqlite::memory:").await.unwrap(),
             license_store: LicenseStore::connect("sqlite::memory:").await.unwrap(),

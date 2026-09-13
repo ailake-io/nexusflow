@@ -62,6 +62,47 @@ async fn log_error(log: Option<&RunLogger>, message: impl Into<String>) {
     }
 }
 
+/// Builds the `ColumnMasker` (Fase 28) for `spec.masking`, if any —
+/// `Ok(None)` when the pipeline has no masking configured, `Err` when it
+/// does but `masking_salt` is unset (a run must fail loudly rather than
+/// silently write unmasked PII; the same condition is also checked at save
+/// time in `create_pipeline_handler`/`update_pipeline_handler`, but the
+/// salt could still be removed from the environment between a pipeline
+/// being saved and a later scheduled run actually executing it). Returns
+/// the `Arc` itself (not a pre-boxed `BatchTransform`) so a caller can
+/// *also* use `ColumnMasker::mask_schema` to fix up a sink's declared
+/// schema (masked columns become `Utf8`) before ever building a
+/// `BatchTransform` closure from it — see `masking_batch_transform` below.
+fn build_masker(
+    spec: &PipelineSpec,
+    masking_salt: Option<&[u8]>,
+) -> anyhow::Result<Option<std::sync::Arc<nexus_core::ColumnMasker>>> {
+    if spec.masking.is_empty() {
+        return Ok(None);
+    }
+    let salt = masking_salt.ok_or_else(|| {
+        anyhow::anyhow!(
+            "pipeline has masking configured but NEXUS_MASKING_SALT is not set on this server"
+        )
+    })?;
+    Ok(Some(std::sync::Arc::new(nexus_core::ColumnMasker::new(
+        &spec.masking,
+        salt,
+    ))))
+}
+
+/// Wraps a `ColumnMasker` as a `BatchTransform` — cheap to call, the `Arc`
+/// is only cloned, never rebuilt, per batch, same "loaded once per run"
+/// posture `run_passthrough_pipeline`'s embedding backend already has.
+fn masking_batch_transform(masker: &std::sync::Arc<nexus_core::ColumnMasker>) -> nexus_core::BatchTransform {
+    let masker = masker.clone();
+    Box::new(move |batch: arrow_array::RecordBatch| {
+        let masker = masker.clone();
+        Box::pin(async move { masker.mask_batch(batch) })
+            as futures::future::BoxFuture<'static, Result<arrow_array::RecordBatch, nexus_core::NexusError>>
+    })
+}
+
 /// Arrow `Field`s -> the plain, serializable shape `PipelineSchemaStore`
 /// persists — filters out `__opcode` (CDC metadata, never a real column the
 /// Lineage tab's schema view should show, same exclusion every sink/column
@@ -197,6 +238,7 @@ fn log_progress(
 
 #[tracing::instrument(skip_all, fields(pipeline_id = %spec.pipeline_id))]
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub async fn run_pipeline(
     spec: &PipelineSpec,
     checkpoints: &CheckpointStore,
@@ -210,6 +252,7 @@ pub async fn run_pipeline(
     llm_stats_store: &crate::pipeline_run_llm_stats_store::PipelineRunLlmStatsStore,
     prompt_templates: &crate::prompt_template_store::PromptTemplateStore,
     llm_eval_store: &crate::llm_eval_result_store::LlmEvalResultStore,
+    masking_salt: Option<&[u8]>,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     // A `*-cdc` source with a plain SQL transform (the only documented CDC
     // shape — `SELECT * FROM source0`, required to preserve `__opcode` for
@@ -244,6 +287,7 @@ pub async fn run_pipeline(
             run_id,
             prompt_templates,
             llm_eval_store,
+            masking_salt,
         )
         .await
     } else if spec.has_transform() || spec.python.is_some() {
@@ -260,6 +304,7 @@ pub async fn run_pipeline(
             llm_stats_store,
             prompt_templates,
             llm_eval_store,
+            masking_salt,
         )
         .await
     } else {
@@ -282,6 +327,7 @@ pub async fn run_pipeline(
             run_id,
             prompt_templates,
             llm_eval_store,
+            masking_salt,
         )
         .await
     }
@@ -316,6 +362,7 @@ async fn run_linear_pipeline(
     run_id: i64,
     prompt_templates: &crate::prompt_template_store::PromptTemplateStore,
     llm_eval_store: &crate::llm_eval_result_store::LlmEvalResultStore,
+    masking_salt: Option<&[u8]>,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     // Golden-dataset eval (Marco L7) doesn't depend on which sub-path below
     // actually runs (postgres-partitioned or `run_passthrough_pipeline`) —
@@ -341,6 +388,7 @@ async fn run_linear_pipeline(
             schema_store,
             alerts,
             run_id,
+            masking_salt,
         )
         .await;
     }
@@ -349,6 +397,19 @@ async fn run_linear_pipeline(
         anyhow::bail!(
             "embedding stage is not supported on the no-transform (postgres→postgres) path; \
              add a transform node to use embeddings"
+        );
+    }
+    if !spec.masking.is_empty() {
+        // Same restriction as embedding immediately above, and for the same
+        // reason: this fast path uses `PipelineEngine::run` across possibly
+        // many PK-range partitions at once (see its own doc comment), which
+        // has no per-partition `batch_transform` slot the way
+        // `run_partition` (used everywhere else) does — see Fase 28's plan
+        // notes for why extending `PipelineEngine::run` itself wasn't worth
+        // it for this one fast path alone.
+        anyhow::bail!(
+            "masking is not supported on the no-transform (postgres→postgres) path; \
+             add a transform node to use column masking"
         );
     }
 
@@ -585,9 +646,12 @@ async fn run_streaming_cdc_pipeline(
     run_id: i64,
     prompt_templates: &crate::prompt_template_store::PromptTemplateStore,
     llm_eval_store: &crate::llm_eval_result_store::LlmEvalResultStore,
+    masking_salt: Option<&[u8]>,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     #[cfg(feature = "llm")]
     maybe_run_llm_eval(spec, run_id, log, llm_eval_store, prompt_templates).await;
+
+    let masker = build_masker(spec, masking_salt)?;
 
     // Resume-state lookup is anchored on the first sink's resolved name
     // ("sink0" when unnamed) — every sink commits the same source position
@@ -614,7 +678,15 @@ async fn run_streaming_cdc_pipeline(
         build_source(&source_node, 0, active_license).await,
     )
     .await?;
-    let source_schema = source.schema();
+    // Fase 28: the schema DataFusion resolves the transform SQL against
+    // must already reflect masking (masked columns become `Utf8`) — every
+    // batch handed to `transform.apply` below is masked *before* it gets
+    // there, so a stale (pre-masking) schema here would disagree with the
+    // actual Arrow array types in every batch DataFusion receives.
+    let source_schema = match &masker {
+        Some(m) => m.mask_schema(&source.schema()),
+        None => source.schema(),
+    };
 
     let transform_spec = spec
         .transform
@@ -690,6 +762,13 @@ async fn run_streaming_cdc_pipeline(
 
     while let Some(item) = stream.next().await {
         let batch = log_on_err(log, "source 0 read failed", item).await?;
+        // Fase 28: masked before the transform sees it, not after — a
+        // `GROUP BY`/join on a masked column inside `transform_spec.sql`
+        // only works against the token, never the original value.
+        let batch = match &masker {
+            Some(m) => log_on_err(log, "masking failed", m.mask_batch(batch)).await?,
+            None => batch,
+        };
         let transformed = log_on_err(
             log,
             "transform failed",
@@ -784,6 +863,7 @@ async fn run_passthrough_pipeline(
     schema_store: &crate::pipeline_schema_store::PipelineSchemaStore,
     alerts: &crate::alerts::AlertNotifier,
     run_id: i64,
+    masking_salt: Option<&[u8]>,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     // Enterprise gate (LLMOPS_IMPLEMENTATION_PLAN.md Marco L8) — reactive
     // RAG (a `*-cdc` source combined with `embedding`, which is exactly
@@ -844,6 +924,16 @@ async fn run_passthrough_pipeline(
     } else {
         None
     };
+    // Fase 28: masking runs *before* embedding — a masked text column
+    // being embedded should embed the token, not the original PII, same
+    // "mask before anything downstream sees it" ordering
+    // `run_transform_pipeline`/`run_streaming_cdc_pipeline` apply relative
+    // to the SQL transform.
+    let masker = build_masker(spec, masking_salt)?;
+    let batch_transform = nexus_core::chain_batch_transforms(
+        masker.as_ref().map(masking_batch_transform),
+        batch_transform,
+    );
 
     let source_node = &spec.sources[0];
     let sink_node = &spec.sinks[0];
@@ -885,6 +975,18 @@ async fn run_passthrough_pipeline(
     // `build_schema`), and it's never a real destination column.
     let source_schema = source.schema();
     let sink_schema = schema_without_opcode(&source_schema);
+    // Fase 28: the sink must be built from the *masked* schema (masked
+    // columns become `Utf8`) — it receives whatever `batch_transform`
+    // above actually outputs, not `source_schema` unchanged. Embedding's
+    // own output-column addition on this path predates this and isn't
+    // reflected here either; unlike embedding, masking never changes a
+    // sink's column *count*, only some columns' types, so this is the
+    // narrower, safe fix rather than a broader schema-reconciliation
+    // rewrite of this whole function.
+    let sink_schema = match &masker {
+        Some(m) => m.mask_schema(&sink_schema),
+        None => sink_schema,
+    };
 
     // No transform on this path — the sink receives exactly the source's
     // own schema (minus `__opcode`, `column_infos` filters it the same way).
@@ -1001,6 +1103,7 @@ async fn run_transform_pipeline(
     llm_stats_store: &crate::pipeline_run_llm_stats_store::PipelineRunLlmStatsStore,
     prompt_templates: &crate::prompt_template_store::PromptTemplateStore,
     llm_eval_store: &crate::llm_eval_result_store::LlmEvalResultStore,
+    masking_salt: Option<&[u8]>,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     // Same reasoning as `run_passthrough_pipeline`'s `is_cdc` check: a `-cdc`
     // source is meant to run again every scheduler tick, using
@@ -1034,6 +1137,28 @@ async fn run_transform_pipeline(
     log_info(log, format!("{} source(s) connected", sources.len())).await;
 
     let inputs = PipelineEngine::drain_sources(sources).await?;
+
+    // Fase 28: masked before the SQL transform ever sees any of it — a
+    // `GROUP BY`/join on a masked column inside a Transform node only
+    // works against the token, never the original value. Each source's
+    // schema is rebuilt alongside its batches (masked columns become
+    // `Utf8`) so DataFusion resolves the transform SQL against types that
+    // actually match what's in the batches, not the pre-masking source
+    // schema.
+    let masker = build_masker(spec, masking_salt)?;
+    let inputs = match &masker {
+        Some(m) => inputs
+            .into_iter()
+            .map(|(name, schema, batches)| -> anyhow::Result<_> {
+                let masked_batches = batches
+                    .into_iter()
+                    .map(|b| m.mask_batch(b))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok((name, m.mask_schema(&schema), masked_batches))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?,
+        None => inputs,
+    };
 
     #[cfg(any(feature = "embeddings", feature = "embeddings-api"))]
     let inputs = apply_embedding_stage(inputs, spec.embedding.as_ref()).await?;

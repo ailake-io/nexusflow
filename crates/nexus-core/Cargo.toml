@@ -14,6 +14,10 @@ chrono = { version = "0.4.45", features = ["serde"] }
 cron = "0.17.0"
 datafusion = { version = "54.1.0", default-features = false, features = ["sql"] }
 futures = "0.3.33"
+# Deterministic column tokenization (Fase 28 — column_masking.rs), keyed
+# HMAC-SHA256 over an installation-wide salt.
+hmac = "0.12"
+sha2 = "0.10"
 inventory = "0.3.24"
 # Generates the JSON Schema each connector publishes for its Config struct
 # (ConnectorDescriptor.config_schema) — the UI's canvas builds a real form

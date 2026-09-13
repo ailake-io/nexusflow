@@ -515,6 +515,19 @@ pub struct PipelineSpec {
     /// detected anomaly notifies anyone.
     #[serde(default)]
     pub anomaly_alerts: bool,
+    /// Deterministic column tokenization (Fase 28) — applied to every
+    /// source batch before the SQL transform (if present) and before the
+    /// sink(s), same "before the transform" position `embedding` already
+    /// takes for the passthrough path (see `column_masking::ColumnMasker`'s
+    /// doc comment for why this is tokenization, not reversible
+    /// encryption: there is no way to recover the original value from a
+    /// saved pipeline spec or from the sink data alone). Empty/unset means
+    /// no masking, same as before this field existed. Requires
+    /// `NEXUS_MASKING_SALT` to be configured server-side — a non-empty
+    /// list here on a server without that salt set fails at save time
+    /// (see nexus-server's `create_pipeline_handler`), not silently no-ops.
+    #[serde(default)]
+    pub masking: Vec<crate::column_masking::ColumnMaskingSpec>,
     /// When true, the spec is saved as a draft: only `pipeline_id` is
     /// validated, and connector configs/embedding/dbt are not checked.
     /// Drafts cannot be executed; they must be completed and re-saved
@@ -859,6 +872,24 @@ impl PipelineSpec {
             if !seen_upstreams.insert(upstream) {
                 return Err(NexusError::Schema(format!(
                     "depends_on lists {upstream:?} more than once"
+                )));
+            }
+        }
+        // Whether `NEXUS_MASKING_SALT` is actually configured server-side
+        // isn't knowable here (nexus-core has no env vars of its own,
+        // CLAUDE.md §8.3) — that check happens in nexus-server's
+        // create/update handlers. This only validates the shape.
+        let mut seen_masked_columns = std::collections::HashSet::new();
+        for (i, m) in self.masking.iter().enumerate() {
+            if m.column.trim().is_empty() {
+                return Err(NexusError::Schema(format!(
+                    "masking[{i}].column must not be empty"
+                )));
+            }
+            if !seen_masked_columns.insert(m.column.as_str()) {
+                return Err(NexusError::Schema(format!(
+                    "masking lists column {:?} more than once",
+                    m.column
                 )));
             }
         }

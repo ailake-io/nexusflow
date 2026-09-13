@@ -237,6 +237,14 @@ export const translations = {
       modeAnyHint: 'Runs as soon as any one of the selected pipelines succeeds.',
       modeAllHint: 'Runs only once every selected pipeline has succeeded since the last run.',
     },
+    masking: {
+      title: 'Column Masking',
+      subtitle:
+        'Deterministically tokenize these columns before the transform (if any) and before the sink(s). One-way — there is no "unmask".',
+      columns: 'Masked columns (comma-separated)',
+      columnsPlaceholder: 'email, ssn, phone',
+      requiresSaltHint: 'Requires NEXUS_MASKING_SALT to be configured on the server.',
+    },
     quality: {
       title: 'Quality',
       subtitle: 'Row counts and quality check history (native and dbt) for a saved pipeline.',
@@ -421,6 +429,7 @@ export const translations = {
       alerts: 'Alerts',
       qualityChecks: 'Quality checks',
       dependencies: 'Dependencies',
+      masking: 'Masking',
     },
     alerts: {
       title: 'Alert channels',
@@ -813,6 +822,14 @@ export const translations = {
       modeAnyHint: 'Roda assim que qualquer um dos pipelines selecionados tiver sucesso.',
       modeAllHint: 'Roda só depois que todos os pipelines selecionados tiverem sucesso desde o último run.',
     },
+    masking: {
+      title: 'Mascaramento de Colunas',
+      subtitle:
+        'Tokeniza deterministicamente essas colunas antes do transform (se houver) e antes do(s) destino(s). Sem volta — não existe "desmascarar".',
+      columns: 'Colunas mascaradas (separadas por vírgula)',
+      columnsPlaceholder: 'email, cpf, telefone',
+      requiresSaltHint: 'Requer NEXUS_MASKING_SALT configurado no servidor.',
+    },
     quality: {
       title: 'Qualidade',
       subtitle: 'Contagem de linhas e histórico de checks de qualidade (nativos e dbt) de um pipeline salvo.',
@@ -997,6 +1014,7 @@ export const translations = {
       alerts: 'Alertas',
       qualityChecks: 'Checks de qualidade',
       dependencies: 'Dependências',
+      masking: 'Mascaramento',
     },
     alerts: {
       title: 'Canais de alerta',

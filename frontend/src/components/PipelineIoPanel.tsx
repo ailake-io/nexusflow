@@ -14,6 +14,7 @@ import {
   Bell,
   BadgeCheck,
   GitBranch,
+  ShieldAlert,
 } from 'lucide-react'
 import { useI18n } from '@/lib/i18n'
 import { Button } from '@/components/ui/button'
@@ -23,6 +24,7 @@ import { Label } from '@/components/ui/label'
 import { AlertsConfigDialog } from '@/components/AlertsConfigDialog'
 import { QualityChecksDialog } from '@/components/QualityChecksDialog'
 import { DependenciesConfigDialog } from '@/components/DependenciesConfigDialog'
+import { MaskingConfigDialog } from '@/components/MaskingConfigDialog'
 import type { PipelineMeta } from '@/lib/dag'
 
 interface PipelineIoPanelProps {
@@ -69,6 +71,7 @@ export function PipelineIoPanel({
   const [alertsOpen, setAlertsOpen] = useState(false)
   const [qualityChecksOpen, setQualityChecksOpen] = useState(false)
   const [dependenciesOpen, setDependenciesOpen] = useState(false)
+  const [maskingOpen, setMaskingOpen] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleExport = () => {
@@ -242,6 +245,20 @@ export function PipelineIoPanel({
           </Button>
           <Button
             type="button"
+            variant="outline"
+            onClick={() => setMaskingOpen(true)}
+            className="gap-1.5"
+          >
+            <ShieldAlert className="h-3.5 w-3.5" />
+            {t('ioPanel.masking')}
+            {meta.maskedColumns && meta.maskedColumns.length > 0 && (
+              <span className="rounded-full bg-primary/20 px-1.5 text-[10px] text-primary">
+                {meta.maskedColumns.length}
+              </span>
+            )}
+          </Button>
+          <Button
+            type="button"
             variant={autoSaveEnabled ? 'default' : 'outline'}
             onClick={onToggleAutoSave}
             disabled={!meta.pipelineId.trim()}
@@ -353,6 +370,12 @@ export function PipelineIoPanel({
         onChange={(dependsOn, dependencyMode) =>
           onMetaChange({ ...meta, dependsOn, dependencyMode })
         }
+      />
+      <MaskingConfigDialog
+        open={maskingOpen}
+        onOpenChange={setMaskingOpen}
+        maskedColumns={meta.maskedColumns}
+        onChange={(maskedColumns) => onMetaChange({ ...meta, maskedColumns })}
       />
     </div>
   )
