@@ -7403,7 +7403,7 @@ checksum = "27b02d87554356db9e9a873add8782d4ea6e3e58ea071a9adb9a2e8ddb884a8b"
 
 [[package]]
 name = "nexus-ai"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-schema 58.4.0",
@@ -7868,7 +7868,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-core"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "arrow-array 58.4.0",
  "arrow-schema 58.4.0",
