@@ -912,6 +912,17 @@ export function browseFilesystem(token: string, path?: string): Promise<BrowseLi
   return request<BrowseListing>(`/system/browse-fs${query ? `?${query}` : ''}`, {}, token)
 }
 
+/** Creates a new subdirectory named `name` directly inside `path` — backs
+ *  FileBrowserDialog's "New folder" button — and returns the updated
+ *  listing of `path` so the dialog can navigate straight into it. */
+export function createDirectory(token: string, path: string, name: string): Promise<BrowseListing> {
+  return request<BrowseListing>(
+    '/system/browse-fs',
+    { method: 'POST', body: JSON.stringify({ path, name }) },
+    token,
+  )
+}
+
 /** Matches nexus-server::upload::UploadResult, as returned by
  *  POST /system/upload. */
 export interface UploadResult {

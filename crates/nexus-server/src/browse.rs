@@ -1,5 +1,5 @@
 use serde::Serialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// One entry (file or subdirectory) inside a browsed directory.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -62,10 +62,61 @@ pub fn list_directory(path: &Path) -> std::io::Result<BrowseListing> {
     })
 }
 
+/// Creates a new subdirectory `name` directly inside `parent` — backs the
+/// FileBrowserDialog's "New folder" button, so a sink pointed at a fresh
+/// destination (e.g. a sqlite `file_path` under a directory that doesn't
+/// exist yet) doesn't require shelling into the server first.
+///
+/// `name` must be a single path component: no `/`, and not `.`/`..` — it
+/// only ever names one new directory *inside* the already-browsed
+/// (already-canonicalized) `parent`, never a path of its own, so this can't
+/// be used to climb or jump elsewhere in the filesystem.
+pub fn create_directory(parent: &Path, name: &str) -> std::io::Result<PathBuf> {
+    if name.is_empty() || name.contains('/') || name == "." || name == ".." {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "folder name must be a single path segment (no '/', '.', or '..')",
+        ));
+    }
+    let canonical_parent = parent.canonicalize()?;
+    let new_dir = canonical_parent.join(name);
+    std::fs::create_dir(&new_dir)?;
+    Ok(new_dir)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn create_directory_makes_a_new_subdirectory() {
+        let dir = tempfile::tempdir().unwrap();
+        let created = create_directory(dir.path(), "new-folder").unwrap();
+        assert!(created.is_dir());
+        assert_eq!(
+            created,
+            dir.path().canonicalize().unwrap().join("new-folder")
+        );
+    }
+
+    #[test]
+    fn create_directory_rejects_path_separators_and_dot_segments() {
+        let dir = tempfile::tempdir().unwrap();
+        for bad_name in ["a/b", "..", ".", "", "/etc"] {
+            assert!(
+                create_directory(dir.path(), bad_name).is_err(),
+                "{bad_name:?} should have been rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn create_directory_fails_if_it_already_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("existing")).unwrap();
+        assert!(create_directory(dir.path(), "existing").is_err());
+    }
 
     #[test]
     fn lists_directories_before_files_both_alphabetical() {
