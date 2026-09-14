@@ -358,7 +358,7 @@ export function SchemaForm({ schema, defs, value, onChange, idPrefix }: SchemaFo
               {fieldSchema.description && <FieldHint text={fieldSchema.description} />}
             </div>
             <div
-              className="mt-1.5 flex items-center gap-2"
+              className="mt-1.5 space-y-1.5"
               onDragOver={isFilePathField ? (e) => e.preventDefault() : undefined}
               onDrop={isFilePathField ? onFieldDrop(key) : undefined}
             >
@@ -368,11 +368,15 @@ export function SchemaForm({ schema, defs, value, onChange, idPrefix }: SchemaFo
                 autoComplete={isSecretField ? 'new-password' : 'off'}
                 value={(value[key] as string) ?? ''}
                 onChange={(e) => setField(key, e.target.value)}
-                className="flex-1"
+                className="w-full"
                 disabled={isUploadingThisField}
               />
               {isFilePathField && (
-                <>
+                // Wraps onto its own line(s) instead of squeezing next to
+                // the input — a narrow (unresized) node inspector panel
+                // otherwise clips or fully hides the later buttons (real
+                // bug: "Enviar pasta" never appeared at default width).
+                <div className="flex flex-wrap items-center gap-2">
                   <Button
                     type="button"
                     variant="outline"
@@ -408,7 +412,7 @@ export function SchemaForm({ schema, defs, value, onChange, idPrefix }: SchemaFo
                     <FolderUp className="h-3.5 w-3.5" />
                     {t('schemaForm.uploadFolder')}
                   </Button>
-                </>
+                </div>
               )}
             </div>
             {isFilePathField && (

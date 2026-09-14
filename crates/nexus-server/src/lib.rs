@@ -298,7 +298,10 @@ fn router(state: AppState) -> Router {
         // role as editing a node's config in the first place — see
         // `browse_fs_handler`'s doc comment for why no extra sandbox is
         // layered underneath this.
-        .route("/system/browse-fs", get(browse_fs_handler))
+        .route(
+            "/system/browse-fs",
+            get(browse_fs_handler).post(create_directory_handler),
+        )
         // Backs the Canvas "Enviar arquivo(s)"/"Enviar pasta" buttons and
         // the path field's dropzone (same components as browse-fs above) —
         // the only route that actually receives file bytes from the
@@ -2411,6 +2414,34 @@ async fn browse_fs_handler(
         .map_err(ApiError::internal)?
         .map(Json)
         .map_err(|e| ApiError::bad_request(format!("could not list path: {e}")))
+}
+
+#[derive(Deserialize)]
+struct CreateDirectoryRequest {
+    /// Directory to create the new subdirectory inside — the path the
+    /// FileBrowserDialog is currently showing.
+    path: String,
+    /// Name of the new subdirectory (single path segment).
+    name: String,
+}
+
+/// Backs the FileBrowserDialog's "New folder" button — lets a caller
+/// already trusted to type a local path into a node's config (same `Write`
+/// gate as `browse_fs_handler`) create a fresh destination directory (e.g.
+/// for a sqlite `file_path` that doesn't exist yet) without needing shell
+/// access to the server. Returns the now-updated listing of `path` so the
+/// dialog can refresh and navigate straight into the new folder.
+async fn create_directory_handler(
+    Json(req): Json<CreateDirectoryRequest>,
+) -> Result<Json<browse::BrowseListing>, ApiError> {
+    tokio::task::spawn_blocking(move || {
+        browse::create_directory(std::path::Path::new(&req.path), &req.name)?;
+        browse::list_directory(std::path::Path::new(&req.path))
+    })
+    .await
+    .map_err(ApiError::internal)?
+    .map(Json)
+    .map_err(|e| ApiError::bad_request(format!("could not create folder: {e}")))
 }
 
 #[derive(Deserialize)]

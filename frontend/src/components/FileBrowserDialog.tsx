@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
-import { Folder, File as FileIcon, ChevronRight } from 'lucide-react'
+import { Folder, File as FileIcon, ChevronRight, FolderPlus } from 'lucide-react'
 import { useI18n } from '@/lib/i18n'
 import { useAuth } from '@/lib/auth-context'
-import { browseFilesystem, type BrowseEntry, ApiError } from '@/lib/api'
+import { browseFilesystem, createDirectory, type BrowseEntry, ApiError } from '@/lib/api'
 import {
   Dialog,
   DialogContent,
@@ -11,6 +11,7 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 
 interface FileBrowserDialogProps {
   open: boolean
@@ -36,11 +37,18 @@ export function FileBrowserDialog({ open, onOpenChange, initialPath, onSelect }:
   const [entries, setEntries] = useState<BrowseEntry[]>([])
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  const [creatingFolder, setCreatingFolder] = useState(false)
+  const [newFolderName, setNewFolderName] = useState('')
+  const [createError, setCreateError] = useState<string | null>(null)
+  const [creating, setCreating] = useState(false)
 
   useEffect(() => {
     if (!open) return
     const start = initialPath && initialPath.startsWith('/') ? initialPath : '/'
     setPath(start)
+    setCreatingFolder(false)
+    setNewFolderName('')
+    setCreateError(null)
   }, [open, initialPath])
 
   useEffect(() => {
@@ -87,6 +95,23 @@ export function FileBrowserDialog({ open, onOpenChange, initialPath, onSelect }:
   const segments = path.split('/').filter(Boolean)
   const goTo = (index: number) => setPath('/' + segments.slice(0, index + 1).join('/'))
 
+  const submitNewFolder = async () => {
+    const name = newFolderName.trim()
+    if (!name || !token) return
+    setCreating(true)
+    setCreateError(null)
+    try {
+      const listing = await createDirectory(token, path, name)
+      setPath(listing.path === '/' ? `/${name}` : `${listing.path}/${name}`)
+      setCreatingFolder(false)
+      setNewFolderName('')
+    } catch (e) {
+      setCreateError(e instanceof ApiError ? e.message : t('fileBrowser.createFolderError'))
+    } finally {
+      setCreating(false)
+    }
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg sm:max-w-lg">
@@ -94,23 +119,76 @@ export function FileBrowserDialog({ open, onOpenChange, initialPath, onSelect }:
           <DialogTitle>{t('fileBrowser.title')}</DialogTitle>
         </DialogHeader>
 
-        <div className="flex flex-wrap items-center gap-1 rounded-md bg-muted/50 px-2 py-1.5 text-xs text-muted-foreground">
-          <button type="button" onClick={() => setPath('/')} className="hover:text-foreground hover:underline">
-            /
-          </button>
-          {segments.map((segment, index) => (
-            <span key={index} className="flex items-center gap-1">
-              <ChevronRight className="h-3 w-3" />
-              <button
-                type="button"
-                onClick={() => goTo(index)}
-                className="hover:text-foreground hover:underline"
-              >
-                {segment}
-              </button>
-            </span>
-          ))}
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex flex-1 flex-wrap items-center gap-1 rounded-md bg-muted/50 px-2 py-1.5 text-xs text-muted-foreground">
+            <button type="button" onClick={() => setPath('/')} className="hover:text-foreground hover:underline">
+              /
+            </button>
+            {segments.map((segment, index) => (
+              <span key={index} className="flex items-center gap-1">
+                <ChevronRight className="h-3 w-3" />
+                <button
+                  type="button"
+                  onClick={() => goTo(index)}
+                  className="hover:text-foreground hover:underline"
+                >
+                  {segment}
+                </button>
+              </span>
+            ))}
+          </div>
+          {!creatingFolder && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setCreatingFolder(true)}
+            >
+              <FolderPlus className="h-3.5 w-3.5" />
+              {t('fileBrowser.newFolder')}
+            </Button>
+          )}
         </div>
+
+        {creatingFolder && (
+          <div className="flex items-center gap-2">
+            <Input
+              autoFocus
+              value={newFolderName}
+              onChange={(e) => setNewFolderName(e.target.value)}
+              placeholder={t('fileBrowser.newFolderPlaceholder')}
+              disabled={creating}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') submitNewFolder()
+                if (e.key === 'Escape') {
+                  setCreatingFolder(false)
+                  setNewFolderName('')
+                  setCreateError(null)
+                }
+              }}
+              className="flex-1"
+            />
+            <Button type="button" size="sm" disabled={creating || !newFolderName.trim()} onClick={submitNewFolder}>
+              {t('fileBrowser.create')}
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={creating}
+              onClick={() => {
+                setCreatingFolder(false)
+                setNewFolderName('')
+                setCreateError(null)
+              }}
+            >
+              {t('common.cancel')}
+            </Button>
+          </div>
+        )}
+        {creatingFolder && createError && (
+          <p className="text-[10px] text-red-400">{createError}</p>
+        )}
 
         <div className="max-h-80 overflow-y-auto rounded-md border border-white/10">
           {loading && (
