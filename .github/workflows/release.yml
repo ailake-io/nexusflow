@@ -126,7 +126,10 @@ jobs:
   determine-version:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Was 5 — bumped for the two `cargo update --workspace` calls below
+    # (metadata-only re-resolution, no compilation, but still needs a cold
+    # crates.io index fetch on a fresh runner).
+    timeout-minutes: 15
     permissions:
       contents: write
     outputs:
@@ -170,7 +173,20 @@ jobs:
 
           if [ "$version" != "$current_version" ]; then
             sed -i "s/^version = \"[^\"]*\"/version = \"$version\"/" Cargo.toml
-            git add Cargo.toml
+            # crates/nexus-connectors is a *separate* cargo workspace with
+            # its own [workspace.package] version and its own Cargo.lock —
+            # bumping only the root one here left it behind twice this
+            # cycle (root said 0.1.4, nexus-connectors still said 0.1.3),
+            # caught by scripts/check-lockfile-drift.py in ci.yml's
+            # `connectors` job. Bump both, and regenerate *both* lockfiles
+            # (`cargo update --workspace` here only re-resolves metadata —
+            # no compilation — so it stays well within this job's 5min
+            # budget) so a version bump can never again leave either
+            # Cargo.lock stale.
+            sed -i "s/^version = \"[^\"]*\"/version = \"$version\"/" crates/nexus-connectors/Cargo.toml
+            cargo update --workspace
+            (cd crates/nexus-connectors && cargo update --workspace)
+            git add Cargo.toml Cargo.lock crates/nexus-connectors/Cargo.toml crates/nexus-connectors/Cargo.lock
             git commit -m "chore(release): set version to v$version [skip ci]"
             # actions/checkout leaves a detached HEAD, not a local `main`
             # branch — `git push origin main` has nothing to push and fails
