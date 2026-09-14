@@ -131,7 +131,15 @@ pub fn resource_identifier(connector: &str, config: &Value) -> Option<(ResourceK
         "nats" => field("subject").map(|s| (ResourceKind::Topic, s.to_string())),
         "redis" => field("stream_key").map(|s| (ResourceKind::Topic, s.to_string())),
         "rabbitmq" => field("queue").map(|q| (ResourceKind::Topic, q.to_string())),
-        "csv" | "parquet" => field("path").map(|p| (ResourceKind::File, p.to_string())),
+        // `uri` (the legacy single-field form, and what the Canvas UI
+        // actually sends) takes precedence over the split `path` field —
+        // same precedence the connector itself uses (see
+        // CsvConnectorConfig/ParquetConnectorConfig's own doc comments).
+        // A config with only `path` set (cloud storage backends) still
+        // resolves via the fallback.
+        "csv" | "parquet" => field("uri")
+            .or_else(|| field("path"))
+            .map(|p| (ResourceKind::File, p.to_string())),
         // Enterprise connectors — ODBC batch (database+table, no CDC
         // variant for any of these yet):
         "teradata" | "vertica" => {
@@ -459,6 +467,42 @@ mod tests {
         assert_eq!(
             resource_identifier("sqlite", &cfg),
             Some((ResourceKind::Table, "events".to_string()))
+        );
+    }
+
+    #[test]
+    fn resource_identifier_prefers_csv_parquet_uri_over_split_path() {
+        // `uri` is the legacy single-field form and what the Canvas UI
+        // actually sends (CsvConnectorConfig/ParquetConnectorConfig's own
+        // doc comment: "uri takes precedence when present") — a config
+        // with only `uri` set must still resolve, not silently produce no
+        // lineage node (real bug: a csv->sqlite pipeline configured via
+        // `uri` showed up empty in GET /lineage).
+        assert_eq!(
+            resource_identifier("csv", &serde_json::json!({"uri": "/data/events.csv"})),
+            Some((ResourceKind::File, "/data/events.csv".to_string()))
+        );
+        assert_eq!(
+            resource_identifier(
+                "parquet",
+                &serde_json::json!({"uri": "s3://bucket/events.parquet"})
+            ),
+            Some((ResourceKind::File, "s3://bucket/events.parquet".to_string()))
+        );
+        // Split-field form (cloud backends without `uri`) still falls back
+        // to `path`.
+        assert_eq!(
+            resource_identifier("csv", &serde_json::json!({"path": "/data/events.csv"})),
+            Some((ResourceKind::File, "/data/events.csv".to_string()))
+        );
+        // When both are set, `uri` wins — same precedence the connector
+        // itself uses.
+        assert_eq!(
+            resource_identifier(
+                "csv",
+                &serde_json::json!({"uri": "/data/real.csv", "path": "ignored.csv"})
+            ),
+            Some((ResourceKind::File, "/data/real.csv".to_string()))
         );
     }
 
