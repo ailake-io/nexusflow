@@ -4137,7 +4137,7 @@ mod tests {
         let body = serde_json::json!({
             "pipeline_id": "p1",
             "sources": [{"connector": "postgres", "config": {}}],
-            "sinks": [{"connector": "sqlite", "config": {}}]
+            "sinks": [{"connector": "sqlite", "config": {"uri": "/tmp/p1.db"}}]
         });
 
         let response = app
