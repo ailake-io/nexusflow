@@ -608,6 +608,27 @@ impl PipelineSpec {
                 crate::validate_identifier(name)
                     .map_err(|e| NexusError::Schema(format!("sinks[{i}].name is invalid: {e}")))?;
             }
+            // `SqliteConnectorConfig::file_path` silently defaults to
+            // `:memory:` when neither `uri` nor `file_path` is set — fine
+            // for a source (an intentionally empty scratch db) but
+            // catastrophic for a sink: the run reports success, writes
+            // land in a connection-scoped in-memory database, and vanish
+            // the instant that connection closes. Every later read
+            // (preview, the next run, a downstream pipeline) opens a
+            // *fresh* `:memory:` db and finds nothing — a real pipeline
+            // was found doing exactly this, silently discarding 100k
+            // rows on every run. Reject at save time instead of
+            // discovering it via an empty preview.
+            if node.connector == "sqlite"
+                && !node.config.get("uri").is_some_and(|v| v.is_string())
+                && !node.config.get("file_path").is_some_and(|v| v.is_string())
+            {
+                return Err(NexusError::Schema(format!(
+                    "sinks[{i}]: sqlite sink requires 'uri' or 'file_path' — left unset, it \
+                     silently writes to an in-memory database that is discarded the instant \
+                     the run finishes, so every run reports success while persisting nothing"
+                )));
+            }
         }
 
         match &self.transform {
@@ -1301,6 +1322,41 @@ mod tests {
     }
 
     #[test]
+    fn rejects_sqlite_sink_missing_uri_and_file_path() {
+        // Left unset, SqliteConnectorConfig::file_path silently defaults to
+        // `:memory:` — a sink that reports success while discarding every
+        // row written to it the instant the run's connection closes. Real
+        // bug found live: a csv->sqlite pipeline "succeeded" on every run
+        // yet GET /pipelines/{id}/preview always showed "no such table"
+        // because nothing was ever actually persisted.
+        let json = r#"{
+            "pipeline_id": "p1",
+            "sources": [{"connector": "postgres", "config": {"table": "events"}}],
+            "sinks": [{"connector": "sqlite", "config": {"table": "events_copy"}}]
+        }"#;
+        let err =
+            PipelineSpec::parse(json).expect_err("sink with no uri/file_path must be rejected");
+        assert!(err.to_string().contains("uri' or 'file_path'"));
+    }
+
+    #[test]
+    fn accepts_sqlite_sink_with_explicit_uri_or_file_path() {
+        for sink_config in [
+            r#"{"uri": "/data/events.db", "table": "events_copy"}"#,
+            r#"{"file_path": "/data/events.db", "table": "events_copy"}"#,
+        ] {
+            let json = format!(
+                r#"{{
+                    "pipeline_id": "p1",
+                    "sources": [{{"connector": "postgres", "config": {{"table": "events"}}}}],
+                    "sinks": [{{"connector": "sqlite", "config": {sink_config}}}]
+                }}"#
+            );
+            PipelineSpec::parse(&json).expect("explicit uri or file_path is accepted");
+        }
+    }
+
+    #[test]
     fn parses_valid_fan_in_transform_pipeline() {
         let json = r#"{
             "pipeline_id": "join-demo",
@@ -1309,7 +1365,7 @@ mod tests {
                 {"name": "regions", "connector": "postgres", "config": {}}
             ],
             "transform": {"sql": "SELECT * FROM events JOIN regions ON events.region = regions.region"},
-            "sinks": [{"connector": "sqlite", "config": {}}]
+            "sinks": [{"connector": "sqlite", "config": {"uri": "/tmp/join-demo.db"}}]
         }"#;
         let spec = PipelineSpec::parse(json).expect("valid fan-in spec parses");
         assert!(spec.has_transform());
