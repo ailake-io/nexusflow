@@ -48,13 +48,25 @@ pub async fn apply(
 ) -> anyhow::Result<Vec<arrow_array::RecordBatch>> {
     let timeout_seconds = spec.timeout_seconds.unwrap_or(DEFAULT_TIMEOUT_SECONDS);
 
+    // PID + nanosecond timestamp alone isn't guaranteed unique: some CI/
+    // virtualized environments have a coarser effective clock tick than
+    // nanosecond resolution, so two concurrent calls in the same process
+    // (real bug found via a genuine test race: two pipelines' python
+    // stages running at once, or just two tests in the same binary) can
+    // land on the identical string and share one temp dir — whichever
+    // script writes last wins, and the other run executes the wrong
+    // script entirely. The atomic counter guarantees a distinct value
+    // every call regardless of clock resolution.
+    static CALL_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let call_id = CALL_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let unique = format!(
-        "{}-{}",
+        "{}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
-            .unwrap_or_default()
+            .unwrap_or_default(),
+        call_id
     );
     let tmp_dir = std::env::temp_dir().join(format!("nexusflow-py-{unique}"));
     std::fs::create_dir_all(&tmp_dir)
