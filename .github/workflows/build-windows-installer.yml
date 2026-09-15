@@ -268,6 +268,16 @@ jobs:
           # this avoids).
           Remove-Item -Force -ErrorAction SilentlyContinue Cargo.lock
           cargo generate-lockfile
+          # buoyant_kernel 0.22.2 (Buoyant Data's distribution of delta-
+          # kernel, pulled in transitively by deltalake) declares
+          # `buoyant_kernel_derive = "1"` (imported under the name
+          # `delta_kernel_derive`) but 1.2.0 dropped `parse_column_name`
+          # that 0.22.2 still calls — a semver violation upstream. Same
+          # fix already applied to the enterprise Dockerfile (used by the
+          # Linux/Docker build) — this workflow resolves its own
+          # independent lockfile via the `cargo generate-lockfile` above,
+          # so it needs the identical pin or it hits the same break.
+          cargo update -p buoyant_kernel_derive --precise 1.0.0
           # aws-smithy-types 1.7.0 and aws-smithy-json 0.64.0 were both
           # published within minutes of each other on 2026-09-14, but some
           # aws-sdk-* dependent still requires `aws-smithy-json = "0.63"` —
