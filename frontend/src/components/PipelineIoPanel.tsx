@@ -21,6 +21,14 @@ import { Button } from '@/components/ui/button'
 import { FieldHint } from '@/components/FieldHint'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { MoreHorizontal } from 'lucide-react'
 import { AlertsConfigDialog } from '@/components/AlertsConfigDialog'
 import { QualityChecksDialog } from '@/components/QualityChecksDialog'
 import { DependenciesConfigDialog } from '@/components/DependenciesConfigDialog'
@@ -206,57 +214,7 @@ export function PipelineIoPanel({
           />
         </div>
 
-        <div className="ml-auto flex items-center gap-2">
-          <Button type="button" variant="outline" onClick={onNewPipeline} className="gap-1.5">
-            <FilePlus className="h-3.5 w-3.5" />
-            {t('ioPanel.newPipeline')}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => setAlertsOpen(true)}
-            className="gap-1.5"
-          >
-            <Bell className="h-3.5 w-3.5" />
-            {t('ioPanel.alerts')}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => setQualityChecksOpen(true)}
-            className="gap-1.5"
-          >
-            <BadgeCheck className="h-3.5 w-3.5" />
-            {t('ioPanel.qualityChecks')}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => setDependenciesOpen(true)}
-            className="gap-1.5"
-          >
-            <GitBranch className="h-3.5 w-3.5" />
-            {t('ioPanel.dependencies')}
-            {meta.dependsOn && meta.dependsOn.length > 0 && (
-              <span className="rounded-full bg-primary/20 px-1.5 text-[10px] text-primary">
-                {meta.dependsOn.length}
-              </span>
-            )}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => setMaskingOpen(true)}
-            className="gap-1.5"
-          >
-            <ShieldAlert className="h-3.5 w-3.5" />
-            {t('ioPanel.masking')}
-            {meta.maskedColumns && meta.maskedColumns.length > 0 && (
-              <span className="rounded-full bg-primary/20 px-1.5 text-[10px] text-primary">
-                {meta.maskedColumns.length}
-              </span>
-            )}
-          </Button>
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
           <Button
             type="button"
             variant={autoSaveEnabled ? 'default' : 'outline'}
@@ -268,6 +226,68 @@ export function PipelineIoPanel({
             <Timer className="h-3.5 w-3.5" />
             {autoSaveEnabled ? t('ioPanel.autoSaveOn') : t('ioPanel.autoSave')}
           </Button>
+
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button type="button" variant="outline" size="icon" title={t('ioPanel.moreOptions')}>
+                <MoreHorizontal className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent>
+              <DropdownMenuItem onClick={onNewPipeline}>
+                <FilePlus />
+                {t('ioPanel.newPipeline')}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => setAlertsOpen(true)}>
+                <Bell />
+                {t('ioPanel.alerts')}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setQualityChecksOpen(true)}>
+                <BadgeCheck />
+                {t('ioPanel.qualityChecks')}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setDependenciesOpen(true)}>
+                <GitBranch />
+                {t('ioPanel.dependencies')}
+                {meta.dependsOn && meta.dependsOn.length > 0 && (
+                  <span className="ml-auto rounded-full bg-primary/20 px-1.5 text-[10px] text-primary">
+                    {meta.dependsOn.length}
+                  </span>
+                )}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setMaskingOpen(true)}>
+                <ShieldAlert />
+                {t('ioPanel.masking')}
+                {meta.maskedColumns && meta.maskedColumns.length > 0 && (
+                  <span className="ml-auto rounded-full bg-primary/20 px-1.5 text-[10px] text-primary">
+                    {meta.maskedColumns.length}
+                  </span>
+                )}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={handleExport}>
+                <Download />
+                {t('ioPanel.exportJson')}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={handleImport}>
+                <Upload />
+                {t('ioPanel.loadJson')}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => fileInputRef.current?.click()}>
+                <FileUp />
+                {t('ioPanel.loadFile')}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json,.yaml,.yml,application/json,text/yaml"
+            className="hidden"
+            onChange={handleFileUpload}
+          />
+
           <Button
             type="button"
             onClick={handleSave}
@@ -277,30 +297,6 @@ export function PipelineIoPanel({
             {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
             {saving ? t('ioPanel.saving') : t('ioPanel.save')}
           </Button>
-          <Button type="button" variant="outline" onClick={handleExport} className="gap-1.5">
-            <Download className="h-3.5 w-3.5" />
-            {t('ioPanel.exportJson')}
-          </Button>
-          <Button type="button" variant="outline" onClick={handleImport} className="gap-1.5">
-            <Upload className="h-3.5 w-3.5" />
-            {t('ioPanel.loadJson')}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => fileInputRef.current?.click()}
-            className="gap-1.5"
-          >
-            <FileUp className="h-3.5 w-3.5" />
-            {t('ioPanel.loadFile')}
-          </Button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".json,.yaml,.yml,application/json,text/yaml"
-            className="hidden"
-            onChange={handleFileUpload}
-          />
           <Button
             type="button"
             variant="secondary"

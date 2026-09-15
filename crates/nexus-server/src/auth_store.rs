@@ -3,7 +3,25 @@ use crate::db::{rewrite_placeholders, MetadataPool};
 use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
+use serde::Serialize;
 use std::borrow::Cow;
+
+/// One row of the audit trail — the read-side counterpart of
+/// `AuthStore::log_security_event`. Built by hand from a tuple (see
+/// `list_audit_log`) rather than `#[derive(sqlx::FromRow)]`: this crate
+/// doesn't enable sqlx's `macros` feature (every other query in this file
+/// already decodes into plain tuples for the same reason), so the derive
+/// macro isn't available.
+#[derive(Debug, Clone, Serialize)]
+pub struct AuditLogEntry {
+    pub id: i64,
+    pub happened_at: String,
+    pub username: Option<String>,
+    pub action: String,
+    pub resource_id: Option<String>,
+    pub success: bool,
+    pub ip: Option<String>,
+}
 
 fn validate_username(username: &str) -> anyhow::Result<()> {
     if username.is_empty() {
@@ -76,6 +94,16 @@ impl AuthStore {
                 )
                 .execute(p)
                 .await?;
+                // Additive migration (Fase: audit log coverage) — was
+                // login-only; now also records pipeline create/update/delete
+                // and run success/failure, so entries need something to say
+                // *which* pipeline. No `ADD COLUMN IF NOT EXISTS` on older
+                // SQLite, so this just runs it and ignores the error ("column
+                // already exists") on a second/later boot — same pattern as
+                // `quality_check_store.rs`'s `violation_count`/`sample_size`.
+                let _ = sqlx::query("ALTER TABLE audit_log ADD COLUMN resource_id TEXT")
+                    .execute(p)
+                    .await;
             }
             MetadataPool::Postgres(p) => {
                 sqlx::query(
@@ -110,6 +138,9 @@ impl AuthStore {
                 )
                 .execute(p)
                 .await?;
+                sqlx::query("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS resource_id TEXT")
+                    .execute(p)
+                    .await?;
             }
         }
 
@@ -200,16 +231,21 @@ impl AuthStore {
     }
 
     /// Records a security-relevant event durably. `ip` is optional (e.g.
-    /// extracted from the HTTP connection).
+    /// extracted from the HTTP connection). `resource_id` names the affected
+    /// resource (e.g. a pipeline id) for actions that have one — `None` for
+    /// account-level events like `login` that don't.
     pub async fn log_security_event(
         &self,
         username: Option<&str>,
         action: &str,
+        resource_id: Option<&str>,
         success: bool,
         ip: Option<&str>,
     ) -> anyhow::Result<()> {
-        let sql =
-            self.q("INSERT INTO audit_log (username, action, success, ip) VALUES (?, ?, ?, ?)");
+        let sql = self.q(
+            "INSERT INTO audit_log (username, action, resource_id, success, ip) \
+             VALUES (?, ?, ?, ?, ?)",
+        );
         match &self.pool {
             // SQLite has no native BOOLEAN type; the sqlx sqlite driver
             // encodes `bool` binds as 0/1 under the hood, matching the
@@ -218,6 +254,7 @@ impl AuthStore {
                 sqlx::query(sqlx::AssertSqlSafe(sql))
                     .bind(username)
                     .bind(action)
+                    .bind(resource_id)
                     .bind(success)
                     .bind(ip)
                     .execute(p)
@@ -227,6 +264,7 @@ impl AuthStore {
                 sqlx::query(sqlx::AssertSqlSafe(sql))
                     .bind(username)
                     .bind(action)
+                    .bind(resource_id)
                     .bind(success)
                     .bind(ip)
                     .execute(p)
@@ -234,6 +272,62 @@ impl AuthStore {
             }
         }
         Ok(())
+    }
+
+    /// Reads the audit trail back, newest first — the read side of
+    /// `log_security_event`. Without this, the table was write-only: the
+    /// only way to see what happened was to connect to the database
+    /// directly, which is exactly what made a real incident (a pipeline
+    /// disappearing with no record of who deleted it, 2026-09-15) much
+    /// harder to investigate than it needed to be.
+    pub async fn list_audit_log(
+        &self,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<AuditLogEntry>> {
+        type Row = (
+            i64,
+            String,
+            Option<String>,
+            String,
+            Option<String>,
+            bool,
+            Option<String>,
+        );
+        let sql = self.q(
+            "SELECT id, happened_at, username, action, resource_id, success, ip \
+             FROM audit_log ORDER BY id DESC LIMIT ? OFFSET ?",
+        );
+        let rows: Vec<Row> = match &self.pool {
+            MetadataPool::Sqlite(p) => {
+                sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .bind(limit)
+                    .bind(offset)
+                    .fetch_all(p)
+                    .await?
+            }
+            MetadataPool::Postgres(p) => {
+                sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                    .bind(limit)
+                    .bind(offset)
+                    .fetch_all(p)
+                    .await?
+            }
+        };
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, happened_at, username, action, resource_id, success, ip)| AuditLogEntry {
+                    id,
+                    happened_at,
+                    username,
+                    action,
+                    resource_id,
+                    success,
+                    ip,
+                },
+            )
+            .collect())
     }
 
     pub async fn list_users(&self) -> anyhow::Result<Vec<(String, Role)>> {
@@ -447,15 +541,60 @@ mod tests {
         );
 
         store
-            .log_security_event(Some("alice"), "login", true, Some("127.0.0.1"))
+            .log_security_event(Some("alice"), "login", None, true, Some("127.0.0.1"))
             .await
             .unwrap();
         store
-            .log_security_event(Some("mallory"), "login", false, None)
+            .log_security_event(Some("mallory"), "login", None, false, None)
+            .await
+            .unwrap();
+        store
+            .log_security_event(
+                Some("alice"),
+                "pipeline_delete",
+                Some("teste1"),
+                true,
+                None,
+            )
             .await
             .unwrap();
 
+        let entries = store.list_audit_log(10, 0).await.unwrap();
+        // Newest first: the pipeline_delete entry logged last comes back
+        // first, and carries the resource_id the two login entries don't.
+        assert_eq!(entries[0].action, "pipeline_delete");
+        assert_eq!(entries[0].resource_id.as_deref(), Some("teste1"));
+        assert_eq!(entries[0].username.as_deref(), Some("alice"));
+        assert!(entries[0].success);
+        assert_eq!(entries[1].resource_id, None);
+        assert_eq!(entries[2].resource_id, None);
+
         assert!(store.delete_user("alice").await.unwrap());
         assert!(store.get_user("alice").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn list_audit_log_paginates_newest_first() {
+        let store = AuthStore::connect("sqlite::memory:").await.unwrap();
+        for i in 0..5 {
+            store
+                .log_security_event(
+                    Some("admin"),
+                    "pipeline_run",
+                    Some(&format!("p{i}")),
+                    i % 2 == 0,
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+
+        let page1 = store.list_audit_log(2, 0).await.unwrap();
+        assert_eq!(page1.len(), 2);
+        assert_eq!(page1[0].resource_id.as_deref(), Some("p4"));
+        assert_eq!(page1[1].resource_id.as_deref(), Some("p3"));
+
+        let page2 = store.list_audit_log(2, 2).await.unwrap();
+        assert_eq!(page2[0].resource_id.as_deref(), Some("p2"));
     }
 }

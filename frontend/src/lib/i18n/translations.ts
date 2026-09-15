@@ -430,6 +430,7 @@ export const translations = {
       qualityChecks: 'Quality checks',
       dependencies: 'Dependencies',
       masking: 'Masking',
+      moreOptions: 'More',
     },
     alerts: {
       title: 'Alert channels',
@@ -1019,6 +1020,7 @@ export const translations = {
       qualityChecks: 'Checks de qualidade',
       dependencies: 'Dependências',
       masking: 'Mascaramento',
+      moreOptions: 'Mais',
     },
     alerts: {
       title: 'Canais de alerta',
