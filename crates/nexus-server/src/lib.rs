@@ -1916,6 +1916,15 @@ async fn delete_pipeline_handler(
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     let run_ids = state.pipelines.delete(&id).await?;
+    // A stale checkpoint outliving its pipeline is exactly what turned a
+    // pipeline recreated under the same id into a silent no-op run
+    // (2026-09-15) — `run_passthrough_pipeline` treats a leftover `p0`
+    // checkpoint as "already done" and skips reading/writing anything at
+    // all, reporting success. Best-effort, same posture as the run-log
+    // cleanup below: a failure here can't roll back the pipeline deletion.
+    if let Err(e) = state.checkpoints.delete(&id).await {
+        tracing::warn!(error = %e, pipeline_id = %id, "failed to delete checkpoints for a deleted pipeline");
+    }
     // Until this line, a pipeline could disappear with zero record of who
     // did it or when — the exact gap a real incident (2026-09-15) hit: a
     // pipeline vanished, `pipeline_runs` still showed its run history via

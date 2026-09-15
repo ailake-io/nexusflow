@@ -106,6 +106,36 @@ impl CheckpointStore {
         Ok(rows.into_iter().map(|(p,)| p).collect())
     }
 
+    /// Deletes every checkpoint row for a pipeline being deleted. Without
+    /// this, a checkpoint from a since-deleted pipeline stays behind
+    /// forever — and if a *new* pipeline is later saved reusing the same
+    /// `pipeline_id` (as happened for real, 2026-09-15: a pipeline vanished
+    /// from the `pipelines` table by some still-unexplained means, but its
+    /// stale `p0` checkpoint survived and silently made the recreated
+    /// pipeline's first run a no-op), `run_passthrough_pipeline`'s "already
+    /// done" check (`done_partitions` containing `p0`) makes the new run
+    /// skip actually reading/writing anything — reporting "success" with
+    /// zero rows, from a batch source config that was never even connected
+    /// to, let alone validated.
+    pub async fn delete(&self, pipeline_id: &str) -> anyhow::Result<()> {
+        let sql = self.q("DELETE FROM checkpoints WHERE pipeline_id = ?");
+        match &self.pool {
+            MetadataPool::Sqlite(p) => {
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .bind(pipeline_id)
+                    .execute(p)
+                    .await?;
+            }
+            MetadataPool::Postgres(p) => {
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .bind(pipeline_id)
+                    .execute(p)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
     pub async fn commit(&self, pipeline_id: &str, cursor: &CheckpointCursor) -> anyhow::Result<()> {
         match &self.pool {
             MetadataPool::Sqlite(p) => {
@@ -314,6 +344,29 @@ mod tests {
             .unwrap();
 
         assert!(store.done_partitions("pipe-2").await.unwrap().is_empty());
+    }
+
+    /// The exact scenario that made a real incident worse (2026-09-15): a
+    /// pipeline deleted without also clearing its checkpoint left a stale
+    /// `p0` behind, so recreating the same `pipeline_id` later inherited
+    /// "already done" and silently no-op'd its first run.
+    #[tokio::test]
+    async fn delete_removes_checkpoints_for_that_pipeline_only() {
+        let store = CheckpointStore::connect("sqlite::memory:").await.unwrap();
+
+        store
+            .commit("pipe-1", &CheckpointCursor::new("p0"))
+            .await
+            .unwrap();
+        store
+            .commit("pipe-2", &CheckpointCursor::new("p0"))
+            .await
+            .unwrap();
+
+        store.delete("pipe-1").await.unwrap();
+
+        assert!(store.done_partitions("pipe-1").await.unwrap().is_empty());
+        assert_eq!(store.done_partitions("pipe-2").await.unwrap().len(), 1);
     }
 
     /// Proves the Postgres branch — most notably the quoted `"offset"`
