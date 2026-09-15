@@ -156,6 +156,16 @@ jobs:
           cd enterprise-src
           rm -f Cargo.lock
           cargo generate-lockfile
+          # aws-smithy-types 1.7.0 and aws-smithy-json 0.64.0 were both
+          # published within minutes of each other on 2026-09-14, but some
+          # aws-sdk-* dependent still requires `aws-smithy-json = "0.63"` —
+          # under Cargo's 0.x semver rule that range excludes 0.64.0, so a
+          # fresh resolve gets aws-smithy-types 1.7.0 (looser "1" req)
+          # paired with the now-incompatible aws-smithy-json 0.63.0, which
+          # no longer compiles against it. Pin aws-smithy-types back to the
+          # last version published before this break, same fix pattern as
+          # the enterprise Dockerfile's buoyant_kernel_derive pin.
+          cargo update -p aws-smithy-types --precise 1.6.3
           cargo build --release -p nexusflow-enterprise \
             --features connectors-all-no-embeddings,dbt,python-transform,embed-ui,connectors-all
           cd ..
