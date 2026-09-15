@@ -64,7 +64,7 @@ mod worker;
 
 use alerts::{AlertConfig, AlertNotifier};
 use auth::{require_role, Claims, JwtCodec, Role, TokenBlocklist};
-use auth_store::AuthStore;
+use auth_store::{AuditLogEntry, AuthStore};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{DefaultBodyLimit, Extension, FromRef, Path, Query, State};
 use axum::http::StatusCode;
@@ -448,7 +448,13 @@ fn router(state: AppState) -> Router {
         .route(
             "/license",
             post(install_license_handler).get(license_status_handler),
-        );
+        )
+        // Read side of `AuthStore::log_security_event` — was write-only
+        // until this route existed, meaning the only way to see who did
+        // what (or that a pipeline run kept failing) was to connect to the
+        // database directly. Admin-only: this table is itself security-
+        // sensitive (usernames, IPs, action history).
+        .route("/audit-log", get(list_audit_log_handler));
     // Configuring the optional GitHub push mirror is the same trust bar
     // as installing the license itself — both gate an enterprise
     // capability and, here, also hand the server a credential with write
@@ -682,6 +688,7 @@ async fn login_handler(
         .log_security_event(
             Some(&body.username),
             "login",
+            None,
             log_outcome.0,
             Some(&client_ip),
         )
@@ -1141,6 +1148,18 @@ async fn execute_pipeline_run(
                 }
             }
             server_metrics::record_run_outcome(&spec.pipeline_id, "success", started.elapsed());
+            // Best-effort, same posture as the other post-run hooks above:
+            // gives the audit trail a "did this pipeline's runs actually
+            // succeed" view without joining into `pipeline_runs` — no
+            // username here, runs can be triggered by the scheduler or a
+            // downstream dependency trigger with no HTTP caller at all.
+            if let Err(e) = state
+                .auth_store
+                .log_security_event(None, "pipeline_run", Some(&spec.pipeline_id), true, None)
+                .await
+            {
+                tracing::warn!(error = %e, "failed to write pipeline_run audit log");
+            }
             state.alerts.notify_pipeline_run(
                 spec.alerts.as_ref(),
                 &spec.pipeline_id,
@@ -1190,6 +1209,13 @@ async fn record_run_failure(
         tracing::warn!(error = %record_err, "failed to record failed pipeline run");
     }
     server_metrics::record_run_outcome(pipeline_id, "failed", started.elapsed());
+    if let Err(e) = state
+        .auth_store
+        .log_security_event(None, "pipeline_run", Some(pipeline_id), false, None)
+        .await
+    {
+        tracing::warn!(error = %e, "failed to write pipeline_run audit log");
+    }
     state
         .alerts
         .notify_pipeline_failed(pipeline_id, run_id, &sanitized);
@@ -1226,6 +1252,23 @@ async fn create_pipeline_handler(
         .pipelines
         .create(&spec, &state.secrets, &claims.sub)
         .await?;
+    // Best-effort, same posture as the login audit write above: a pipeline
+    // going missing with no record of who created/changed/deleted it is
+    // exactly the gap that made a real incident (2026-09-15) hard to
+    // investigate — but this must never fail the request itself.
+    if let Err(e) = state
+        .auth_store
+        .log_security_event(
+            Some(&claims.sub),
+            "pipeline_create",
+            Some(&spec.pipeline_id),
+            true,
+            None,
+        )
+        .await
+    {
+        tracing::warn!(error = %e, pipeline_id = %spec.pipeline_id, "failed to write pipeline_create audit log");
+    }
     #[cfg(feature = "version-history")]
     commit_pipeline_history(
         &state,
@@ -1509,6 +1552,13 @@ async fn update_pipeline_handler(
         .pipelines
         .update(&id, &spec, &state.secrets, &claims.sub)
         .await?;
+    if let Err(e) = state
+        .auth_store
+        .log_security_event(Some(&claims.sub), "pipeline_update", Some(&id), true, None)
+        .await
+    {
+        tracing::warn!(error = %e, pipeline_id = %id, "failed to write pipeline_update audit log");
+    }
     #[cfg(feature = "version-history")]
     commit_pipeline_history(
         &state,
@@ -1862,9 +1912,24 @@ fn unified_text_diff(old: &serde_json::Value, new: &serde_json::Value) -> String
 
 async fn delete_pipeline_handler(
     State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     let run_ids = state.pipelines.delete(&id).await?;
+    // Until this line, a pipeline could disappear with zero record of who
+    // did it or when — the exact gap a real incident (2026-09-15) hit: a
+    // pipeline vanished, `pipeline_runs` still showed its run history via
+    // the id sequence, but nothing said who deleted the pipeline row
+    // itself. Written after the delete succeeds (nothing to log if the
+    // delete itself failed) and best-effort, same as the run-log cleanup
+    // below: a failure here can't roll back the pipeline deletion.
+    if let Err(e) = state
+        .auth_store
+        .log_security_event(Some(&claims.sub), "pipeline_delete", Some(&id), true, None)
+        .await
+    {
+        tracing::warn!(error = %e, pipeline_id = %id, "failed to write pipeline_delete audit log");
+    }
     // Best-effort, same as delete_run_handler: a failure here can't roll
     // back the pipeline deletion above.
     for run_id in run_ids {
@@ -2455,6 +2520,20 @@ struct CreateUserRequest {
 struct UserResponse {
     username: String,
     role: Role,
+}
+
+async fn list_audit_log_handler(
+    State(state): State<AppState>,
+    Query(pagination): Query<Pagination>,
+) -> Result<Json<Vec<AuditLogEntry>>, ApiError> {
+    let (limit, offset) = pagination.validated()?;
+    Ok(Json(
+        state
+            .auth_store
+            .list_audit_log(limit, offset)
+            .await
+            .map_err(ApiError::internal)?,
+    ))
 }
 
 async fn list_users_handler(
