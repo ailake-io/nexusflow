@@ -549,13 +549,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .log_security_event(
-                Some("alice"),
-                "pipeline_delete",
-                Some("teste1"),
-                true,
-                None,
-            )
+            .log_security_event(Some("alice"), "pipeline_delete", Some("teste1"), true, None)
             .await
             .unwrap();
 
