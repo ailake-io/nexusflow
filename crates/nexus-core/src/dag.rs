@@ -1195,7 +1195,11 @@ fn validate_string_security(
 fn validate_dbt_project_dir(project_dir: &str) -> Result<(), NexusError> {
     if project_dir.starts_with('/') {
         return Err(NexusError::Schema(
-            "dbt.project_dir must be a relative path".into(),
+            "dbt.project_dir must be a relative path — relative to \
+             NEXUS_DBT_PROJECTS_ROOT if the server has that set, or to the \
+             server process's own working directory otherwise (see \
+             ARCHITECTURE.md §13)"
+                .into(),
         ));
     }
     for component in std::path::Path::new(project_dir).components() {
@@ -1737,6 +1741,23 @@ mod tests {
             .validate_security()
             .expect_err("dbt path traversal must be rejected");
         assert!(err.to_string().contains("parent-dir"));
+    }
+
+    #[test]
+    fn validate_security_rejects_absolute_dbt_project_dir_and_names_the_env_var() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "postgres", "config": {}}],
+            "sinks": [{"connector": "postgres", "config": {}}],
+            "dbt": {"project_dir": "/etc", "command": "run"}
+        }"#;
+        let spec = PipelineSpec::parse(json).unwrap();
+        let err = spec
+            .validate_security()
+            .expect_err("absolute dbt.project_dir must be rejected");
+        // Not just "must be relative" — a user hitting this needs to know
+        // *what* it's relative to without reading nexus-server's source.
+        assert!(err.to_string().contains("NEXUS_DBT_PROJECTS_ROOT"));
     }
 
     #[test]

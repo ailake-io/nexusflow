@@ -201,9 +201,24 @@ pub async fn run(config: &DbtConfig) -> anyhow::Result<DbtOutcome> {
         .unwrap_or(300);
     const MAX_OUTPUT_BYTES: usize = 1_048_576; // 1 MiB per stream
 
+    // `dag.rs::validate_dbt_project_dir` already rejected an absolute path
+    // or one with `..` components, so `project_dir` is always relative —
+    // but relative to *what* was never discoverable without reading this
+    // file: with no base configured, it resolves against the server
+    // process's own working directory (`/` in the shipped Docker image),
+    // which isn't documented or mentioned anywhere a user would look.
+    // `NEXUS_DBT_PROJECTS_ROOT`, when set, gives that relative path an
+    // actual, intentional home — e.g. a mounted volume — instead of an
+    // accidental one. Unset behaves exactly as before (join with an empty
+    // base is a no-op), so this is non-breaking.
+    let project_dir = match std::env::var("NEXUS_DBT_PROJECTS_ROOT") {
+        Ok(root) if !root.is_empty() => std::path::Path::new(&root).join(&config.project_dir),
+        _ => std::path::PathBuf::from(&config.project_dir),
+    };
+
     let mut cmd = tokio::process::Command::new("dbt");
     cmd.arg(command)
-        .current_dir(&config.project_dir)
+        .current_dir(&project_dir)
         .kill_on_drop(true);
     if let Some(select) = &config.select {
         cmd.arg("--select").arg(select);
@@ -215,7 +230,7 @@ pub async fn run(config: &DbtConfig) -> anyhow::Result<DbtOutcome> {
         .map_err(|e| {
             anyhow::anyhow!(
                 "failed to spawn `dbt {command}` in {:?}: {e} (is the `dbt` CLI on PATH?)",
-                config.project_dir
+                project_dir
             )
         })?;
 
@@ -232,7 +247,7 @@ pub async fn run(config: &DbtConfig) -> anyhow::Result<DbtOutcome> {
     // or failure alike — capture them before deciding success/failure below,
     // so a broken model's own status/message (not just dbt's overall exit
     // code) ends up in the logs too.
-    let target_dir = std::path::Path::new(&config.project_dir).join("target");
+    let target_dir = project_dir.join("target");
     let run_results: Option<DbtRunResults> =
         read_json_artifact(&target_dir.join("run_results.json"));
     let lineage: Option<DbtManifestSummary> = read_json_artifact(&target_dir.join("manifest.json"));
@@ -403,6 +418,47 @@ nexus_fixture:
             lineage.parent_map.get("model.nexus_fixture.two").unwrap(),
             &vec!["model.nexus_fixture.one".to_string()],
             "model two's real lineage traces back to model one"
+        );
+    }
+
+    /// The other half of `runs_a_real_dbt_project_end_to_end`: a *relative*
+    /// `project_dir`, resolved against `NEXUS_DBT_PROJECTS_ROOT` instead of
+    /// hardcoding an absolute path — the shape a real pipeline spec always
+    /// takes, since `dag.rs::validate_dbt_project_dir` rejects an absolute
+    /// one outright.
+    #[tokio::test]
+    async fn resolves_project_dir_against_nexus_dbt_projects_root() {
+        require_dbt_cli_or_skip!();
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("my_project");
+        std::fs::create_dir_all(&project).unwrap();
+        write_fixture_project(&project);
+
+        let config = DbtConfig {
+            project_dir: "my_project".to_string(),
+            command: DbtCommand::Run,
+            select: None,
+            output: None,
+        };
+
+        std::env::set_var("DBT_PROFILES_DIR", &project);
+        std::env::set_var("NEXUS_DBT_PROJECTS_ROOT", root.path());
+        let outcome = run(&config).await;
+        std::env::remove_var("DBT_PROFILES_DIR");
+        std::env::remove_var("NEXUS_DBT_PROJECTS_ROOT");
+
+        let outcome = outcome.expect("dbt run succeeds once project_dir resolves correctly");
+        assert!(
+            project.join("nexus_fixture.duckdb").exists(),
+            "dbt ran inside root/my_project, not the server's own cwd"
+        );
+        assert_eq!(
+            outcome
+                .run_results
+                .expect("run_results.json was captured")
+                .results
+                .len(),
+            2
         );
     }
 
