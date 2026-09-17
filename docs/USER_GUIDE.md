@@ -14,6 +14,7 @@ Referência completa e prática: da instalação até a configuração exata de 
 8. [Preview de dados](#8-preview-de-dados)
 9. [Agendamento automático](#9-agendamento-automático)
 10. [Observabilidade](#10-observabilidade)
+11. [Catálogo, orquestração, anomalia, masking e distribuição](#11-catálogo-orquestração-anomalia-masking-e-distribuição)
 
 ---
 
@@ -654,13 +655,16 @@ Baixa o modelo do Hugging Face Hub em runtime (cache local). CUDA/Metal ainda n�
 
 ## 7. dbt — ELT e ETL real
 
-Precisa do build com feature `dbt` e do CLI `dbt` (dbt-fusion) no `PATH` do processo — não instalado automaticamente.
+Precisa do build com feature `dbt` e do CLI `dbt` no `PATH` do processo. A imagem Docker publicada (e a imagem enterprise) já vêm com `dbt-core` + `dbt-postgres` instalados e `$HOME` gravável — se você compilou o binário sozinho fora de um container, instale `dbt` você mesmo (`pip install dbt-core dbt-<adapter>`).
+
+- **`DBT_PROFILES_DIR`**: dbt lê essa variável nativamente (nada específico do NexusFlow) — aponte pra onde está seu `profiles.yml`, ou deixe `dbt` usar o default `~/.dbt/profiles.yml`.
+- **`NEXUS_DBT_PROJECTS_ROOT`** (opcional): `dbt.project_dir` abaixo é sempre relativo (nunca pode começar com `/` nem conter `..`, por segurança) — sem essa variável, resolve contra o diretório de trabalho do próprio processo `nexus-server` (que pode não ser o que você espera). Setando essa env var, `project_dir` resolve contra ela — aponte pra um volume montado com seus projetos dbt.
 
 **Modo ELT** (clássico): depois que os `sinks` terminam de carregar os dados brutos, roda `dbt run`/`build`/`test` no warehouse de destino:
 ```json
 "dbt": {"project_dir": "meu_projeto_dbt", "command": "run", "select": null}
 ```
-`project_dir` é relativo (não pode começar com `/` nem conter `..`) e resultado (models/tests, lineage) aparece no histórico da execução.
+Resultado (models/tests, lineage) aparece no histórico da execução.
 
 **Modo ETL real** (extensão — `dbt.output` + `post_dbt_sinks` no nível do `PipelineSpec`): o pipeline lê de volta o resultado transformado pelo dbt e grava num destino final, tudo no mesmo `run`:
 
@@ -717,3 +721,39 @@ O scheduler faz *poll* a cada 30s e dispara via o mesmo caminho de execução do
 - WebSocket `/pipelines/{id}/runs/{run_id}/progress` — batches/linhas/bytes escritos por partição, em tempo real, mais um frame `{"hardware_stats": {...}}` intercalado a cada 2s com CPU/memória do processo.
 - Alertas em falha de pipeline: Slack, MS Teams, PagerDuty, Email e webhook genérico — configurados via variáveis de ambiente (`NEXUS_SLACK_WEBHOOK_URL` etc., ver [`GETTING_STARTED.md` §3](./GETTING_STARTED.md#3-variáveis-de-ambiente)).
 - Logs estruturados em JSON no stdout; `NEXUS_OTLP_ENDPOINT` exporta traces pra um coletor OTel.
+- **Auditoria** (`GET /audit-log`, role `Admin`) — quem fez login, criou/editou/deletou um pipeline, e se cada execução (manual, agendada ou disparada por dependência) teve sucesso ou falha. Paginação via `?limit=&offset=`.
+
+---
+
+## 11. Catálogo, orquestração, anomalia, masking e distribuição
+
+Recursos de plataforma que vão além do ETL/ELT ponto-a-ponto — ver `ARCHITECTURE.md` e `ROADMAP.md` Fases 25–29 pro detalhe técnico. Resumo prático de cada um:
+
+**Catálogo de dados** — todo dataset que um pipeline toca (source ou sink) fica pesquisável, com metadado editável (descrição, owner, tags, flag de PII **manual** por coluna):
+```bash
+GET /catalog/datasets?q=vendas&tag=financeiro&has_pii=true
+PUT /catalog/datasets/{key}                       # {"description": "...", "owner": "...", "tags": [...]}
+PUT /catalog/datasets/{key}/columns/{column}       # {"description": "...", "pii_flag": true}
+```
+Atualizado automaticamente a cada run bem-sucedido — não precisa de sincronização manual.
+
+**Orquestração cross-pipeline** — um pipeline dispara outro automaticamente quando termina, sem scheduler nem polling:
+```json
+{"pipeline_id": "processa-vendas", "depends_on": [{"upstream_pipeline_id": "carrega-vendas"}], "dependency_mode": "any"}
+```
+`dependency_mode: "any"` dispara assim que **qualquer** upstream terminar com sucesso; `"all"` espera todos terminarem no mesmo ciclo. Ciclos (A depende de B que depende de A) são rejeitados ao salvar. `GET /orchestration/graph` retorna o grafo completo pra visualização.
+
+**Detecção de anomalia** — opt-in por pipeline (`"anomaly_alerts": true` no `PipelineSpec`), compara o volume de linhas do run atual contra a média/desvio-padrão dos últimos runs (z-score) e dispara um alerta (mesmos 5 canais de observabilidade) se fugir do padrão:
+```bash
+GET /pipelines/{id}/anomalies
+GET /pipelines/{id}/volume-trend?limit=30
+```
+Precisa de um histórico mínimo antes de começar a avaliar (evita falso positivo em pipeline novo).
+
+**Mascaramento de PII** — tokenização determinística (HMAC-SHA256): o mesmo valor de entrada sempre vira o mesmo token, então `GROUP BY`/join continuam funcionando sobre a coluna mascarada, mas o valor original não é recuperável a partir do token. Requer `NEXUS_MASKING_SALT` (variável de ambiente, uma por instalação) configurada no servidor:
+```json
+{"pipeline_id": "...", "masking": [{"column": "cpf"}, {"column": "email"}], "sources": [...], "sinks": [...]}
+```
+Aplicado **antes** de qualquer transform SQL e antes de gravar no sink — o downstream nunca vê o valor real.
+
+**Distribuição de carga entre pipelines** — desligado por padrão (cada réplica executa o run que recebeu, como sempre). Ligando `NEXUS_QUEUE_MODE=true` no servidor (**Postgres-only**, sem efeito com SQLite), runs viram itens de uma fila e qualquer réplica rodando em modo *worker* pode reivindicar e executar — útil pra escalar execução de pipelines independentemente da API. Não paraleliza uma pipeline *única* entre máquinas (isso continua fora de escopo).

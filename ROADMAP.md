@@ -421,7 +421,65 @@ efêmero da sessão original, resumo aqui):
 
 ---
 
-**Critério de "MVP pronto"**: Fases 0–3 + 7 (parcial: auth básica) + 8 (canvas mínimo) funcionando end-to-end — mover dados de Postgres pra Postgres via canvas visual, com checkpoint por partição, retry e escrita idempotente. **Atingido e superado** — Fases 0–11 e 13–17 completas, só falta Fase 12 (enterprise, repo separado) e os itens condicionais/parciais marcados acima.
+## Fase 25 — Catálogo de dados navegável e buscável ✅
+
+Registro pesquisável de datasets, usando a mesma identidade estável (`resource_identifier`) que `lineage.rs` já calcula, com descrição/tags/owner por dataset e metadado por coluna (incluindo `pii_flag` **manual** — sem heurística automática nesta rodada).
+
+- [x] `crates/nexus-server/src/data_catalog.rs` — `CatalogStore` dual-dialeto (Sqlite/Postgres), mesmo padrão de `pipeline_schema_store.rs`. Índice materializado por evento (upsert a cada run bem-sucedido), diferente do grafo recomputado-por-request de `lineage.rs` — divergência deliberada, necessária pra busca/filtro funcionar.
+- [x] `GET /catalog/datasets?q=&tag=&connector=&owner=&has_pii=`, `GET /catalog/datasets/{key}`, `PUT /catalog/datasets/{key}`, `PUT /catalog/datasets/{key}/columns/{column}`, `GET /catalog/tags`.
+- [x] 7 testes cobrindo upsert por evento, filtros combinados e persistência dual-dialeto.
+
+**Critério de pronto:** rodar pipeline → dataset aparece em `GET /catalog/datasets`; description/tag/pii_flag persistem entre restart (Sqlite e Postgres); filtro por tag/owner/connector/has_pii funciona. **Atingido.**
+
+## Fase 26 — Orquestração cross-pipeline ✅
+
+`PipelineSpec` ganha `depends_on` com modo configurável (`any` dispara no primeiro upstream que terminar; `all` espera todos no mesmo epoch) — dispara automaticamente os dependentes quando o upstream termina com sucesso.
+
+- [x] `crates/nexus-server/src/pipeline_dependencies.rs` — resolve quem depende de um `pipeline_id` que acabou de suceder; modo `all` usa tabela append-only `pipeline_dependency_state` (PK natural + `ON CONFLICT DO NOTHING`, mesmo idioma de `quality_check_results`).
+- [x] Ciclo cross-pipeline detectado em `PipelineSpec::validate()` (rejeitado ao salvar, não só em runtime).
+- [x] `GET /pipelines/{id}/dependents`, `GET /pipelines/{id}/dependencies`, `GET /orchestration/graph`.
+- [x] 9 testes, incluindo não-duplo-disparo com múltiplas réplicas (mesmo espírito do teste de leader election do `scheduler.rs`).
+
+**Critério de pronto:** ciclo rejeitado ao salvar; A→B modo `any` dispara B uma vez; A,B→C modo `all` só dispara depois de A e B no mesmo epoch. **Atingido** — validado ao vivo nesta sessão (A→B disparando em ~1s).
+
+## Fase 27 — Observabilidade proativa / detecção de anomalia ✅
+
+Anomalia estatística de volume por z-score, navegável em termos de dataset/coluna (Fase 25), alertando pelos canais já existentes (Slack/Teams/PagerDuty/Email/Webhook).
+
+- [x] `nexus_core::quality::QualityCheckKind::RowCount{min, max}` — check nativo de contagem de linhas, além dos já existentes (`not_null`/`unique`/`min`/`max`/`accepted_values`). `violation_count`/`sample_size` estruturados em `quality_check_results` (não só string livre em `message`).
+- [x] `crates/nexus-server/src/pipeline_run_volume_store.rs` — tabela append-only `pipeline_run_volume`, populada no hook de sucesso de cada run (orientado a evento, não a relógio).
+- [x] `crates/nexus-server/src/anomaly_detector.rs` — z-score sobre janela dos últimos N runs, com cold-start (não dispara alerta antes de ter histórico mínimo).
+- [x] `GET /pipelines/{id}/anomalies`, `GET /pipelines/{id}/volume-trend?limit=`. Opt-in por pipeline (`PipelineSpec.anomaly_alerts`).
+- [x] 9 testes de `anomaly_detector` (séries sintéticas: estável, com outlier, cold-start) + 5 de `pipeline_run_volume_store`.
+
+**Critério de pronto:** N runs estáveis + 1 outlier dispara alerta; `quality_check_results` com colunas estruturadas fazendo round-trip; endpoint de tendência agregando corretamente. **Atingido.**
+
+## Fase 28 — Mascaramento de PII (tokenização determinística) ✅
+
+Stage de pipeline que tokeniza colunas marcadas como PII, com override por pipeline. Tokenização determinística (HMAC-SHA256 com salt fixo por instalação): mesmo valor de entrada sempre produz o mesmo token — permite `GROUP BY`/join sobre o token — sem caminho de volta ao valor original (não é criptografia reversível, decisão fechada de escopo).
+
+- [x] `crates/nexus-core/src/column_masking.rs` — `ColumnMasker` vetorizado (`arrow::array::ArrayRef`), não a API `crypto.rs::SecretCipher` existente (essa usa nonce aleatório por chamada — GCM não serve pra determinismo).
+- [x] `NEXUS_MASKING_SALT` (env var, mesmo nível de aceitação de débito que `NEXUS_ENCRYPTION_KEY`) — sem essa variável configurada, salvar um pipeline com `masking` não-vazio falha explicitamente (`create_pipeline_handler`/`update_pipeline_handler`), não silencioso.
+- [x] `PipelineSpec.masking: Vec<ColumnMaskingSpec>`, plugado nos 3 sub-caminhos do runner (`run_streaming_cdc_pipeline`, `run_transform_pipeline`, `run_linear_pipeline`) — mascara **antes** do Transform SQL e antes do sink.
+- [x] 9 testes em `nexus-core` (determinismo, colisão trivial, mask_schema).
+
+**Critério de pronto:** mesmo valor sempre gera o mesmo token; valores diferentes não colidem trivialmente; `GROUP BY` no Transform SQL funciona sobre a coluna tokenizada; valor original não recuperável sem o salt. **Atingido.**
+
+## Fase 29 — Distribuição de carga entre pipelines ✅
+
+Escopo fechado: distribuir a **execução** de pipelines diferentes entre um pool de workers — não paralelizar uma pipeline entre máquinas (isso segue fora de escopo, exigiria Ballista/DataFusion distribuído). Opt-in via `NEXUS_QUEUE_MODE=true`; sem isso, comportamento idêntico a hoje (dispatch inline na réplica que recebe a chamada).
+
+- [x] `crates/nexus-server/src/work_queue.rs` — tabela `pipeline_run_queue`, claim via `SELECT ... FOR UPDATE SKIP LOCKED` (Postgres-only — primitivo de concorrência diferente do advisory-lock de `scheduler.rs`, que elege UM líder pra *decisão*, não N workers reivindicando jobs *diferentes*).
+- [x] `crates/nexus-server/src/worker.rs` — modo réplica que só reivindica+executa jobs da fila (loop de poll + `runner::run_pipeline` existente, sem lógica interna nova), sem servir tráfego HTTP de API.
+- [x] `start_pipeline_run` enfileira em vez de despachar inline quando `state.work_queue` é `Some` — fallback pra dispatch inline se o enqueue falhar (nunca perde o run silenciosamente).
+- [x] SQLite recusa modo worker (sem `SKIP LOCKED` útil em single-instance, mesma restrição do leader election).
+- [x] 5 testes de `work_queue`, incluindo `postgres_two_workers_never_claim_the_same_job` (2+ réplicas reais via testcontainers).
+
+**Critério de pronto:** N runs enfileirados, cada um reivindicado por exatamente um worker, nenhum duplo-processamento; SQLite recusa/ignora modo worker corretamente. **Atingido.**
+
+---
+
+**Critério de "MVP pronto"**: Fases 0–3 + 7 (parcial: auth básica) + 8 (canvas mínimo) funcionando end-to-end — mover dados de Postgres pra Postgres via canvas visual, com checkpoint por partição, retry e escrita idempotente. **Atingido e superado** — Fases 0–11 e 13–29 completas, só falta Fase 12 (enterprise, repo separado) e os itens condicionais/parciais marcados acima.
 
 ## Débitos conhecidos (aceitos pro MVP, resolver antes de vender enterprise)
 
