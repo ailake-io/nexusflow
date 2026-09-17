@@ -128,7 +128,7 @@ docker run --gpus all -d -p 8080:8080 \
 ### Script de instalação (Linux/macOS)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ailake-io/nexusflow/develop/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/ailake-io/nexusflow/main/scripts/install.sh | sh
 ```
 
 Baixa o binário + drivers ADBC pra `~/.local/share/nexusflow` e cria `~/.local/bin/nexusflow`. Precisa de um [release](https://github.com/ailake-io/nexusflow/releases) publicado — ver `.github/workflows/release.yml`. O binário do release já vem com **todos** os 31 conectores linkados (`embed-ui,connectors-all`, não só postgres/sqlite — ver seção 2 abaixo); pra `odbc`/`kafka` funcionarem, precisa de `unixodbc`/`libsasl2` no sistema (o instalador avisa no final se faltar).
@@ -232,6 +232,9 @@ A feature Cargo `embeddings` (incluída em `connectors-all`) liga o crate `nexus
 | `NEXUS_OTLP_ENDPOINT` | não | — | Endpoint OTLP/HTTP pra exportar traces. Sem ela, traces ficam só como log JSON local; métricas Prometheus em `/metrics` funcionam de qualquer jeito. |
 | `NEXUS_ALLOW_INTERNAL_HOSTS` | não | `false` | Quando `true`, permite URLs de conectores apontando para `localhost`, `127.0.0.1` e IPs de LAN privados. Útil para testes locais; em produção mantenha `false` para mitigar SSRF. |
 | `ADBC_DRIVER_POSTGRESQL_PATH` / `ADBC_DRIVER_SQLITE_PATH` | sim (se usar postgres/sqlite) | — | Caminho pro `.so`/`.dylib` do driver ADBC — não existe distribuição via crates.io, tem que buildar com `scripts/build-adbc-*-driver.sh`. |
+| `NEXUS_MASKING_SALT` | não | — | Sem ela, salvar um pipeline com o campo `masking` (mascaramento de PII, `USER_GUIDE.md` §11) falha explicitamente na criação/edição. |
+| `NEXUS_QUEUE_MODE` | não | `false` | Quando `true` (**Postgres-only**), distribui a execução de runs entre réplicas via fila em vez de rodar sempre na réplica que recebeu a chamada — `USER_GUIDE.md` §11. |
+| `NEXUS_DBT_PROJECTS_ROOT` | não | diretório de trabalho do processo | Base contra a qual `dbt.project_dir` (sempre relativo) é resolvido — `USER_GUIDE.md` §7. |
 
 ### Metadados em Postgres (multi-réplica / k8s)
 
