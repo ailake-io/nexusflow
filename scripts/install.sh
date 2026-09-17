@@ -2,7 +2,7 @@
 # Installs nexusflow (Linux x86_64 only) without a package manager — same
 # pattern as rustup/dbt-fusion's installers.
 #
-#   curl -fsSL https://raw.githubusercontent.com/ailake-io/nexusflow/develop/scripts/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/ailake-io/nexusflow/main/scripts/install.sh | sh
 #
 # Downloads a release tarball built by .github/workflows/release.yml
 # (nexusflow-linux-x86_64.tar.gz: the release binary built with
@@ -29,6 +29,7 @@ os="$(uname -s)"
 arch="$(uname -m)"
 
 [ "$os" = "Linux" ] || { echo "error: unsupported OS: $os (only Linux has prebuilt binaries)" >&2; exit 1; }
+platform="linux"
 
 case "$arch" in
   x86_64|amd64) arch="x86_64" ;;
@@ -71,7 +72,7 @@ fi
 
 # Verify GPG signature if SHA256SUMS.asc is published and gpg is available.
 asc_url="https://github.com/$REPO/releases/download/$version/SHA256SUMS.asc"
-if command -v gpg >/dev/null 2>&1 && curl -fsSL "$asc_url" -o "$work_dir/SHA256SUMS.asc"; then
+if command -v gpg >/dev/null 2>&1 && curl -fsSL "$asc_url" -o "$work_dir/SHA256SUMS.asc" 2>/dev/null; then
   if ! gpg --verify "$work_dir/SHA256SUMS.asc" "$work_dir/SHA256SUMS" >/dev/null 2>&1; then
     echo "error: GPG signature verification failed for SHA256SUMS" >&2
     exit 1
