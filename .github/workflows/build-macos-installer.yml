@@ -166,32 +166,13 @@ jobs:
           # workflow resolves its own independent lockfile via the
           # `cargo generate-lockfile` above, so it needs the identical pin.
           cargo update -p buoyant_kernel_derive --precise 1.0.0
-          # The entire aws-sdk-rust ecosystem (aws-config's transitive deps)
-          # got bumped in lockstep on 2026-09-14, all requiring
-          # aws-smithy-types ^1.7.0 — except aws-config 1.12.0 itself (the
-          # latest version that exists) still hard-requires aws-smithy-json
-          # "0.63" directly, which no longer compiles against
-          # aws-smithy-types 1.7.0's changed Document::Object type. Pinning
-          # aws-smithy-types alone isn't enough: aws-sdk-kinesis/sso/sts/
-          # ssooidc, aws-runtime, aws-sigv4, and 3 aws-smithy-* crates all
-          # independently re-pin ^1.7.0-generation requirements too, so
-          # each has to be walked back to its own 2026-09-04-era sibling
-          # release in the same pass (order matters — each step's error
-          # names the next blocker). Same chain applied to the enterprise
-          # Dockerfile and build-windows-installer.yml. Will very likely
-          # resolve itself once aws-config publishes a new version —
-          # revisit removing this block then.
-          cargo update -p aws-sdk-kinesis --precise 1.119.0
-          cargo update -p aws-sdk-sso --precise 1.109.0
-          cargo update -p aws-sdk-sts --precise 1.114.0
-          cargo update -p aws-sdk-ssooidc --precise 1.111.0
-          cargo update -p aws-runtime --precise 1.9.2
-          cargo update -p aws-smithy-runtime --precise 1.14.0
-          cargo update -p aws-sigv4 --precise 1.5.1
-          cargo update -p aws-smithy-http-client --precise 1.4.0
-          cargo update -p aws-smithy-runtime-api --precise 1.16.0
-          cargo update -p aws-smithy-eventstream --precise 0.61.2
-          cargo update -p aws-smithy-types --precise 1.6.3
+          # The 11-crate aws-sdk-rust pin chain that lived here (2026-09-14)
+          # is gone: confirmed 2026-09-16 that a fresh `cargo
+          # generate-lockfile` (no pins beyond buoyant_kernel_derive above)
+          # resolves and compiles nexus-connector-kinesis cleanly again —
+          # the ecosystem converged back to a compatible set on its own,
+          # exactly as predicted when the block was added. If this
+          # regresses, the original 11-crate pin chain is in git history.
           cargo build --release -p nexusflow-enterprise \
             --features connectors-all-no-embeddings,dbt,python-transform,embed-ui,connectors-all
           cd ..
