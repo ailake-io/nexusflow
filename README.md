@@ -2,6 +2,8 @@
 
 **Universal Rust Data & Vector Framework** — movimentação, transformação, vetorização e orquestração de dados (ETL/ELT/Streaming) de altíssima performance.
 
+> 🎉 **A partir de agora, o core open source do NexusFlow está liberado** — Apache-2.0, todos os 31 conectores OSS, use e distribua livremente (ver [`LICENSING.md`](./LICENSING.md)). A **Store de conectores enterprise** (compra self-service via Stripe) está em desenvolvimento final e deve abrir em breve — enquanto isso, o catálogo enterprise já implementado pode ser consultado em [`docs/ENTERPRISE_CONNECTORS.md`](./docs/ENTERPRISE_CONNECTORS.md).
+
 > Status: ✅ MVP completo e além — 24 crates de conector (31 nomes no catálogo com as variantes CDC: Postgres/SQLite/ClickHouse/DuckDB fast-path, MySQL/MongoDB/Kafka/Redis/NATS/RabbitMQ/MQTT/REST/ODBC/CSV bridging, sinks vetoriais, data lake formats, AI Lake e webhook — Kafka já com source+sink) linkáveis via feature flag, API + UI + observabilidade + distribuição Linux + Kubernetes (`packaging/kubernetes/`, validado num minikube real) funcionando end-to-end. Além do ETL/ELT core: **catálogo de dados** pesquisável com flag de PII (`GET /catalog/datasets`), **orquestração cross-pipeline** (`depends_on` com modo `any`/`all`), **detecção de anomalia** por volume (z-score, alertando nos 5 canais já existentes), **mascaramento de PII** por tokenização determinística (`NEXUS_MASKING_SALT`), e **distribuição de carga** entre workers via fila Postgres (`NEXUS_QUEUE_MODE=true`, opt-in) — ver `ROADMAP.md` Fases 25–29. Windows já produziu e instalou um `.msi` real numa máquina real (2026-09-06) — mas o job `build-windows` do CI de release automático segue removido; macOS já buildou e rodou de ponta a ponta num runner `macos-latest` real (2026-09-06), mas ninguém instalou ainda numa máquina física própria.
 
 ## O que é
@@ -76,7 +78,7 @@ Mais opções (curl|sh, .deb/AppImage, build from source, habilitar conectores e
 
 ## Licença
 
-Community Edition sob **Apache-2.0**. Conectores enterprise são distribuídos separadamente sob licença comercial — ver [`LICENSING.md`](./LICENSING.md).
+Community Edition sob **Apache-2.0**, liberada agora — use, modifique e distribua livremente. Conectores enterprise são distribuídos separadamente sob licença comercial — ver [`LICENSING.md`](./LICENSING.md). A Store de compra self-service (checkout Stripe) está em desenvolvimento final e deve abrir em breve; o checkout já foi validado de ponta a ponta em modo teste, ver [`docs/ENTERPRISE_LICENSING.md`](./docs/ENTERPRISE_LICENSING.md).
 
 ## Stack (resumo)
 
