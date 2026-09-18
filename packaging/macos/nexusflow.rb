@@ -13,10 +13,10 @@
 #   brew install --formula https://raw.githubusercontent.com/ailake-io/nexusflow/main/packaging/macos/nexusflow.rb
 #
 # A dedicated tap (`ailake-io/homebrew-nexusflow`, so `brew install
-# ailake-io/nexusflow/nexusflow` works) is a separate follow-up — not
-# created yet; would just mirror this same formula file into that repo's
-# `Formula/` directory, ideally kept in sync automatically per release
-# rather than by hand (e.g. `brew bump-formula-pr` in a follow-up CI step).
+# ailake-io/nexusflow/nexusflow` works) exists since 2026-09-17 and is
+# the recommended install path — this file is kept in sync by hand as a
+# no-tap fallback. Automating the sync (e.g. `brew bump-formula-pr` in a
+# follow-up CI step) is still a manual step today.
 #
 # Apple Silicon only (arm64) — matches `release.yml`'s matrix, which only
 # builds on `macos-latest` (Apple Silicon). No Intel (x86_64) build exists.
@@ -31,8 +31,8 @@
 class Nexusflow < Formula
   desc "Universal Rust data & vector framework — ETL/ELT/streaming + AI Lakehouse Builder"
   homepage "https://github.com/ailake-io/nexusflow"
-  url "https://github.com/ailake-io/nexusflow/releases/download/v0.1.3/nexusflow-macos-arm64.tar.gz"
-  sha256 "38b058e67c9d0067ee497979cbceaba60721b7d9ed1df277d6e2ad3b527ea7f5"
+  url "https://github.com/ailake-io/nexusflow/releases/download/v0.1.6/nexusflow-macos-arm64.tar.gz"
+  sha256 "9476693d0bf4b5c3409ad4730a103e237d399df870f00ec3ddd1cedeaa9ccc54"
   license "Apache-2.0"
 
   depends_on macos: :ventura

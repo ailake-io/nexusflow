@@ -143,7 +143,7 @@ Baixa o binário + drivers ADBC pra `~/.local/share/nexusflow` e cria `~/.local/
 
 Mesma coisa: todos os conectores já vêm linkados; o `.deb` declara `unixodbc`/`libsasl2-2` como `Depends`, AppImage/rpm exigem essas libs já presentes no sistema alvo.
 
-Windows: `.msi` real via `cargo-wix` (`.github/workflows/build-windows-installer.yml`, `workflow_dispatch` manual, `windows-latest` hospedado desde 2026-09-05) — o vcpkg/OpenSSL que resolvia o bug real do `mysql_cdc` (só suporta OpenSSL nativo, sem rustls) roda como passo explícito a cada execução agora; ainda não instalado/testado numa máquina Windows real por um humano, e `winget` continua não configurado. macOS (Homebrew): `release.yml`'s `build` job ganhou leg `macos-latest`/arm64 no mesmo dia — binário OSS-only (sem conectores enterprise, ver `packaging/macos/README.md`), formula em `packaging/macos/nexusflow.rb`, nenhuma release real passou por essa combinação ainda.
+Windows: `.msi` real via `cargo-wix` (`.github/workflows/build-windows-installer.yml`, `windows-latest` hospedado, dispara sozinho após cada release) — **já instalado e validado numa máquina Windows real** (2026-09-06); manifesto `winget` (`Ailake.NexusFlow`) submetido em 2026-09-18, PR pendente de review em `microsoft/winget-pkgs`. macOS: `build-macos-installer.yml` **rodou de ponta a ponta num runner `macos-latest` real** (2026-09-06, `connectors-all` + enterprise), tap Homebrew dedicado `ailake-io/homebrew-nexusflow` já criado e atualizado pra v0.1.6 (`brew install ailake-io/nexusflow/nexusflow`) — `packaging/macos/nexusflow.rb` (sem tap, ver `packaging/macos/README.md`) segue mantido em paralelo. Falta só alguém instalando numa máquina macOS física de verdade.
 
 ### Build a partir do source
 
