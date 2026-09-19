@@ -165,11 +165,10 @@ impl LlmGenerationStore {
             String,
             String,
         );
-        let sql = self.q(
-            "SELECT id, pipeline_id, question, answer, prompt_name, prompt_version, model, \
-             tokens_prompt, tokens_completion, resource_id, context_keys_json, created_at \
-             FROM llm_generations WHERE id = ?",
-        );
+        let sql = self.q("SELECT id, pipeline_id, question, answer, prompt_name, \
+             CAST(prompt_version AS BIGINT), model, tokens_prompt, tokens_completion, \
+             resource_id, context_keys_json, CAST(created_at AS TEXT) \
+             FROM llm_generations WHERE id = ?");
         let row: Option<Row> = match &self.pool {
             MetadataPool::Sqlite(p) => {
                 sqlx::query_as(sqlx::AssertSqlSafe(sql))
@@ -271,5 +270,32 @@ mod tests {
 
         let generation = store.get(id).await.unwrap().unwrap();
         assert_eq!(generation.resource_id, None);
+    }
+
+    // Regression: same Postgres INT4/TIMESTAMPTZ decode mismatch as
+    // `prompt_template_store` — `prompt_version` is INTEGER and `created_at`
+    // is TIMESTAMPTZ there, so `get` (behind `GET /lineage/generation/{id}`)
+    // returned 500 on Postgres while the SQLite-only tests passed.
+    #[tokio::test]
+    async fn postgres_backend_record_then_get_round_trips() {
+        use testcontainers_modules::postgres;
+        use testcontainers_modules::testcontainers::runners::AsyncRunner;
+
+        let container = postgres::Postgres::default().start().await.unwrap();
+        let host = container.get_host().await.unwrap();
+        let port = container.get_host_port_ipv4(5432).await.unwrap();
+        let url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
+
+        let store = LlmGenerationStore::connect(&url).await.unwrap();
+        assert!(matches!(store.pool, MetadataPool::Postgres(_)));
+
+        let keys = vec!["1".to_string(), "2".to_string()];
+        let id = store.record(sample(&keys)).await.unwrap();
+
+        let generation = store.get(id).await.unwrap().unwrap();
+        assert_eq!(generation.prompt_version, 1);
+        assert_eq!(generation.tokens_prompt, 42);
+        assert_eq!(generation.context_keys, keys);
+        assert!(!generation.created_at.is_empty());
     }
 }
