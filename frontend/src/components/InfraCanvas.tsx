@@ -16,6 +16,7 @@ import {
 import '@xyflow/react/dist/style.css'
 import { Download, Loader2, AlertCircle, ShoppingCart, Lock, Play } from 'lucide-react'
 import { useI18n } from '@/lib/i18n'
+import { useTheme } from '@/lib/theme'
 import { useAuth } from '@/lib/auth-context'
 import { useInfraModules } from '@/hooks/useInfraModules'
 import { InfraModulePalette } from '@/components/InfraModulePalette'
@@ -258,6 +259,7 @@ function GeneratedFilesViewer({ files, onClose }: { files: GeneratedFiles; onClo
 
 function CanvasInner() {
   const { t } = useI18n()
+  const { theme } = useTheme()
   const { token } = useAuth()
   const { modules, loading, error } = useInfraModules()
   const { screenToFlowPosition } = useReactFlow()
@@ -379,11 +381,11 @@ function CanvasInner() {
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
             onSelectionChange={onSelectionChange}
-            colorMode="dark"
+            colorMode={theme}
             fitView
             fitViewOptions={{ maxZoom: 1 }}
           >
-            <Background gap={20} size={1} color="oklch(1 0 0 / 8%)" />
+            <Background gap={20} size={1} color="var(--flow-dots)" />
           </ReactFlow>
           {generated && <GeneratedFilesViewer files={generated} onClose={() => setGenerated(null)} />}
         </div>

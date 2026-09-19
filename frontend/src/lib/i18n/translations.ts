@@ -590,6 +590,10 @@ export const translations = {
       en: 'English',
       pt: 'Português',
     },
+    theme: {
+      toLight: 'Switch to light theme',
+      toDark: 'Switch to dark theme',
+    },
   },
   pt: {
     app: {
@@ -1179,6 +1183,10 @@ export const translations = {
     languages: {
       en: 'English',
       pt: 'Português',
+    },
+    theme: {
+      toLight: 'Mudar para o tema claro',
+      toDark: 'Mudar para o tema escuro',
     },
   },
 } as const
