@@ -1910,11 +1910,120 @@ fn unified_text_diff(old: &serde_json::Value, new: &serde_json::Value) -> String
         .to_string()
 }
 
+/// Per-pipeline history that `DELETE /pipelines/{id}` removes by default and
+/// the caller may choose to keep instead (`?keep=llm_eval,volume` or
+/// `?keep=all`). These tables are keyed by the pipeline's *name*, so rows
+/// left behind are inherited by a new pipeline created under the same id —
+/// hence "delete" is the default and keeping is an explicit choice.
+/// Checkpoints and run history/logs are not listed here: they are always
+/// removed (a stale checkpoint turns a recreated pipeline into a silent
+/// no-op run, see `delete_pipeline_handler`), and `llm_generations` is
+/// never removed (audit trail addressed by generation id, not pipeline name).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum HistoryKind {
+    LlmEval,
+    Quality,
+    Dbt,
+    Schema,
+    Volume,
+}
+
+impl HistoryKind {
+    const ALL: [HistoryKind; 5] = [
+        HistoryKind::LlmEval,
+        HistoryKind::Quality,
+        HistoryKind::Dbt,
+        HistoryKind::Schema,
+        HistoryKind::Volume,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            HistoryKind::LlmEval => "llm_eval",
+            HistoryKind::Quality => "quality",
+            HistoryKind::Dbt => "dbt",
+            HistoryKind::Schema => "schema",
+            HistoryKind::Volume => "volume",
+        }
+    }
+
+    fn parse(raw: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.name() == raw)
+    }
+
+    /// Deletes this category's rows for `pipeline_id` (`dbt` covers both the
+    /// per-test results and the parent-map lineage).
+    async fn delete_for(self, state: &AppState, pipeline_id: &str) -> anyhow::Result<()> {
+        match self {
+            HistoryKind::LlmEval => {
+                state
+                    .llm_eval_results
+                    .delete_for_pipeline(pipeline_id)
+                    .await
+            }
+            HistoryKind::Quality => state.quality_checks.delete_for_pipeline(pipeline_id).await,
+            HistoryKind::Dbt => {
+                state
+                    .dbt_test_results
+                    .delete_for_pipeline(pipeline_id)
+                    .await?;
+                state.dbt_lineage.delete_for_pipeline(pipeline_id).await
+            }
+            HistoryKind::Schema => {
+                state
+                    .pipeline_schemas
+                    .delete_for_pipeline(pipeline_id)
+                    .await
+            }
+            HistoryKind::Volume => {
+                state
+                    .pipeline_run_volume
+                    .delete_for_pipeline(pipeline_id)
+                    .await
+            }
+        }
+    }
+}
+
+#[derive(Deserialize, Default)]
+struct DeletePipelineParams {
+    /// Comma-separated `HistoryKind` names to keep, or `all`. Absent/empty
+    /// means keep nothing (delete every history category).
+    #[serde(default)]
+    keep: Option<String>,
+}
+
+/// Parsed *before* the pipeline is deleted so a typo in `keep` is a clean 400
+/// instead of a half-finished delete.
+fn parse_keep(raw: Option<&str>) -> Result<std::collections::HashSet<HistoryKind>, ApiError> {
+    let mut keep = std::collections::HashSet::new();
+    for part in raw
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
+        if part == "all" {
+            keep.extend(HistoryKind::ALL);
+        } else if let Some(kind) = HistoryKind::parse(part) {
+            keep.insert(kind);
+        } else {
+            let valid = HistoryKind::ALL.map(HistoryKind::name).join(", ");
+            return Err(ApiError::bad_request(format!(
+                "unknown history kind {part:?} in `keep` — valid: {valid}, all"
+            )));
+        }
+    }
+    Ok(keep)
+}
+
 async fn delete_pipeline_handler(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
     Path(id): Path<String>,
+    Query(params): Query<DeletePipelineParams>,
 ) -> Result<StatusCode, ApiError> {
+    let keep = parse_keep(params.keep.as_deref())?;
     let run_ids = state.pipelines.delete(&id).await?;
     // A stale checkpoint outliving its pipeline is exactly what turned a
     // pipeline recreated under the same id into a silent no-op run
@@ -1925,44 +2034,15 @@ async fn delete_pipeline_handler(
     if let Err(e) = state.checkpoints.delete(&id).await {
         tracing::warn!(error = %e, pipeline_id = %id, "failed to delete checkpoints for a deleted pipeline");
     }
-    // Every per-pipeline history table is append-only (or upserted) and keyed
-    // by the pipeline's *name*, so rows left behind by a deleted pipeline are
-    // inherited by a new one created under the same id — its Quality tab
-    // shows the old eval/quality/dbt history, its schema-drift check compares
-    // against the old schema, and anomaly detection baselines on the old
-    // run volumes. Best-effort, same posture as the checkpoint cleanup above
-    // (`llm_generations` is intentionally kept: it is the audit trail behind
-    // `GET /lineage/generation/{id}`, addressed by generation id, not by
-    // pipeline name).
-    let history_cleanups = [
-        (
-            "llm_eval_results",
-            state.llm_eval_results.delete_for_pipeline(&id).await,
-        ),
-        (
-            "quality_check_results",
-            state.quality_checks.delete_for_pipeline(&id).await,
-        ),
-        (
-            "dbt_test_results",
-            state.dbt_test_results.delete_for_pipeline(&id).await,
-        ),
-        (
-            "dbt_lineage",
-            state.dbt_lineage.delete_for_pipeline(&id).await,
-        ),
-        (
-            "pipeline_schemas",
-            state.pipeline_schemas.delete_for_pipeline(&id).await,
-        ),
-        (
-            "pipeline_run_volume",
-            state.pipeline_run_volume.delete_for_pipeline(&id).await,
-        ),
-    ];
-    for (table, result) in history_cleanups {
-        if let Err(e) = result {
-            tracing::warn!(error = %e, pipeline_id = %id, table, "failed to delete history for a deleted pipeline");
+    // Per-pipeline history the caller didn't ask to keep — see `HistoryKind`
+    // for why deleting is the default. Best-effort, same posture as the
+    // checkpoint cleanup above.
+    for kind in HistoryKind::ALL {
+        if keep.contains(&kind) {
+            continue;
+        }
+        if let Err(e) = kind.delete_for(&state, &id).await {
+            tracing::warn!(error = %e, pipeline_id = %id, history = kind.name(), "failed to delete history for a deleted pipeline");
         }
     }
     // Until this line, a pipeline could disappear with zero record of who
@@ -5159,83 +5239,132 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn deleting_a_pipeline_drops_all_its_history_but_not_others() {
+    /// Records one row in every per-pipeline history store for `id`.
+    async fn seed_history(state: &AppState, id: &str) {
+        state
+            .llm_eval_results
+            .record_all(
+                id,
+                1,
+                &[llm_eval_result_store::LlmEvalOutcome {
+                    eval_name: "golden-1".to_string(),
+                    prompt_version: 1,
+                    score: 0.9,
+                    passed: true,
+                    message: None,
+                }],
+            )
+            .await
+            .unwrap();
+        state
+            .quality_checks
+            .record_all(
+                id,
+                1,
+                &[nexus_core::quality::QualityCheckOutcome {
+                    column: "id".to_string(),
+                    check: "not_null".to_string(),
+                    status: "pass".to_string(),
+                    message: None,
+                    violation_count: None,
+                    sample_size: 10,
+                }],
+            )
+            .await
+            .unwrap();
+        state
+            .dbt_test_results
+            .record_all(
+                id,
+                1,
+                &[dbt_test_result_store::DbtTestOutcome {
+                    unique_id: "test.a".to_string(),
+                    status: "pass".to_string(),
+                    message: None,
+                    execution_time: 0.1,
+                }],
+            )
+            .await
+            .unwrap();
+        state
+            .dbt_lineage
+            .record(
+                id,
+                &std::collections::HashMap::from([(
+                    "model.a".to_string(),
+                    vec!["source.x".to_string()],
+                )]),
+            )
+            .await
+            .unwrap();
+        let cols = vec![pipeline_schema_store::ColumnInfo {
+            name: "id".to_string(),
+            data_type: "Int64".to_string(),
+        }];
+        state
+            .pipeline_schemas
+            .record(id, &cols, &cols, None)
+            .await
+            .unwrap();
+        state.pipeline_run_volume.record(id, 1, 100).await.unwrap();
+    }
+
+    /// Which categories still have rows for `id`, as `HistoryKind` names.
+    async fn surviving_history(state: &AppState, id: &str) -> Vec<&'static str> {
+        let mut kept = Vec::new();
+        if !state
+            .llm_eval_results
+            .list_for_pipeline(id)
+            .await
+            .unwrap()
+            .is_empty()
+        {
+            kept.push("llm_eval");
+        }
+        if !state
+            .quality_checks
+            .list_for_pipeline(id)
+            .await
+            .unwrap()
+            .is_empty()
+        {
+            kept.push("quality");
+        }
+        // `dbt` counts as kept only if *both* dbt stores kept their rows.
+        if !state
+            .dbt_test_results
+            .list_for_pipeline(id)
+            .await
+            .unwrap()
+            .is_empty()
+            && state.dbt_lineage.get_all().await.unwrap().contains_key(id)
+        {
+            kept.push("dbt");
+        }
+        if state.pipeline_schemas.get(id).await.unwrap().is_some() {
+            kept.push("schema");
+        }
+        if !state
+            .pipeline_run_volume
+            .recent(id, 10)
+            .await
+            .unwrap()
+            .is_empty()
+        {
+            kept.push("volume");
+        }
+        kept
+    }
+
+    /// Creates pipeline "p1" plus history for "p1" and "p2", then sends
+    /// `DELETE /pipelines/p1{query}` — returns the status and the state so
+    /// the caller can inspect what survived.
+    async fn delete_p1_with_history(query: &str) -> (StatusCode, AppState) {
         let state = test_state().await;
         let write_token = bearer(&state, Role::Write);
-
-        // Same rows recorded for both "p1" (deleted below) and "p2" (must survive).
-        for id in ["p1", "p2"] {
-            state
-                .llm_eval_results
-                .record_all(
-                    id,
-                    1,
-                    &[llm_eval_result_store::LlmEvalOutcome {
-                        eval_name: "golden-1".to_string(),
-                        prompt_version: 1,
-                        score: 0.9,
-                        passed: true,
-                        message: None,
-                    }],
-                )
-                .await
-                .unwrap();
-            state
-                .quality_checks
-                .record_all(
-                    id,
-                    1,
-                    &[nexus_core::quality::QualityCheckOutcome {
-                        column: "id".to_string(),
-                        check: "not_null".to_string(),
-                        status: "pass".to_string(),
-                        message: None,
-                        violation_count: None,
-                        sample_size: 10,
-                    }],
-                )
-                .await
-                .unwrap();
-            state
-                .dbt_test_results
-                .record_all(
-                    id,
-                    1,
-                    &[dbt_test_result_store::DbtTestOutcome {
-                        unique_id: "test.a".to_string(),
-                        status: "pass".to_string(),
-                        message: None,
-                        execution_time: 0.1,
-                    }],
-                )
-                .await
-                .unwrap();
-            state
-                .dbt_lineage
-                .record(
-                    id,
-                    &std::collections::HashMap::from([(
-                        "model.a".to_string(),
-                        vec!["source.x".to_string()],
-                    )]),
-                )
-                .await
-                .unwrap();
-            let cols = vec![pipeline_schema_store::ColumnInfo {
-                name: "id".to_string(),
-                data_type: "Int64".to_string(),
-            }];
-            state
-                .pipeline_schemas
-                .record(id, &cols, &cols, None)
-                .await
-                .unwrap();
-            state.pipeline_run_volume.record(id, 1, 100).await.unwrap();
-        }
-        let s = state.clone();
-
-        let app = router(state);
+        seed_history(&state, "p1").await;
+        seed_history(&state, "p2").await;
+        let app = router(state.clone());
         app.clone()
             .oneshot(json_request(
                 "POST",
@@ -5245,75 +5374,67 @@ mod tests {
             ))
             .await
             .unwrap();
-        let delete = app
+        let response = app
             .oneshot(
                 Request::builder()
                     .method("DELETE")
-                    .uri("/pipelines/p1")
+                    .uri(format!("/pipelines/p1{query}"))
                     .header("authorization", &write_token)
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(delete.status(), StatusCode::NO_CONTENT);
+        (response.status(), state)
+    }
 
-        assert!(s
-            .llm_eval_results
-            .list_for_pipeline("p1")
-            .await
-            .unwrap()
-            .is_empty());
-        assert!(s
-            .quality_checks
-            .list_for_pipeline("p1")
-            .await
-            .unwrap()
-            .is_empty());
-        assert!(s
-            .dbt_test_results
-            .list_for_pipeline("p1")
-            .await
-            .unwrap()
-            .is_empty());
-        assert!(!s.dbt_lineage.get_all().await.unwrap().contains_key("p1"));
-        assert!(s.pipeline_schemas.get("p1").await.unwrap().is_none());
-        assert!(s
-            .pipeline_run_volume
-            .recent("p1", 10)
-            .await
-            .unwrap()
-            .is_empty());
+    #[tokio::test]
+    async fn deleting_a_pipeline_drops_all_its_history_by_default_but_not_others() {
+        let (status, state) = delete_p1_with_history("").await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert!(surviving_history(&state, "p1").await.is_empty());
+        assert_eq!(
+            surviving_history(&state, "p2").await,
+            ["llm_eval", "quality", "dbt", "schema", "volume"]
+        );
+    }
 
+    #[tokio::test]
+    async fn delete_keep_preserves_only_the_chosen_history() {
+        let (status, state) = delete_p1_with_history("?keep=llm_eval,volume").await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
         assert_eq!(
-            s.llm_eval_results
-                .list_for_pipeline("p2")
-                .await
-                .unwrap()
-                .len(),
-            1
+            surviving_history(&state, "p1").await,
+            ["llm_eval", "volume"]
         );
+    }
+
+    #[tokio::test]
+    async fn delete_keep_dbt_preserves_both_dbt_stores() {
+        let (status, state) = delete_p1_with_history("?keep=dbt").await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(surviving_history(&state, "p1").await, ["dbt"]);
+    }
+
+    #[tokio::test]
+    async fn delete_keep_all_preserves_everything() {
+        let (status, state) = delete_p1_with_history("?keep=all").await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
         assert_eq!(
-            s.quality_checks
-                .list_for_pipeline("p2")
-                .await
-                .unwrap()
-                .len(),
-            1
+            surviving_history(&state, "p1").await,
+            ["llm_eval", "quality", "dbt", "schema", "volume"]
         );
+    }
+
+    #[tokio::test]
+    async fn delete_with_unknown_keep_is_a_400_and_deletes_nothing() {
+        let (status, state) = delete_p1_with_history("?keep=llm_eval,bogus").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        // Pipeline and every history category are still there.
+        assert!(state.pipelines.get_spec("p1", &state.secrets).await.is_ok());
         assert_eq!(
-            s.dbt_test_results
-                .list_for_pipeline("p2")
-                .await
-                .unwrap()
-                .len(),
-            1
-        );
-        assert!(s.dbt_lineage.get_all().await.unwrap().contains_key("p2"));
-        assert!(s.pipeline_schemas.get("p2").await.unwrap().is_some());
-        assert_eq!(
-            s.pipeline_run_volume.recent("p2", 10).await.unwrap().len(),
-            1
+            surviving_history(&state, "p1").await,
+            ["llm_eval", "quality", "dbt", "schema", "volume"]
         );
     }
 

@@ -16,7 +16,14 @@ import { StatusBadge } from '@/components/ui/status-badge'
 import { EmptyState } from '@/components/EmptyState'
 import { RunHistoryPanel } from '@/components/RunHistoryPanel'
 import { useI18n } from '@/lib/i18n'
-import { deletePipeline, getPipelineSpec, runPipeline, type NodeSummary } from '@/lib/api'
+import {
+  PIPELINE_HISTORY_KINDS,
+  deletePipeline,
+  getPipelineSpec,
+  runPipeline,
+  type NodeSummary,
+  type PipelineHistoryKind,
+} from '@/lib/api'
 import { useAuth } from '@/lib/auth-context'
 import { usePipelines } from '@/hooks/usePipelines'
 import type { PipelineSpec } from '@/lib/dag'
@@ -70,6 +77,7 @@ export function PipelinesList({ onEdit }: PipelinesListProps) {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editError, setEditError] = useState<string | null>(null)
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
+  const [keepHistory, setKeepHistory] = useState<PipelineHistoryKind[]>([])
   const [historyId, setHistoryId] = useState<string | null>(null)
   const [runningId, setRunningId] = useState<string | null>(null)
   const [runError, setRunError] = useState<string | null>(null)
@@ -104,7 +112,7 @@ export function PipelinesList({ onEdit }: PipelinesListProps) {
     setDeletingId(pipelineId)
     setDeleteError(null)
     try {
-      await deletePipeline(token, pipelineId)
+      await deletePipeline(token, pipelineId, keepHistory)
       refresh()
     } catch (err) {
       setDeleteError(err instanceof Error ? err.message : String(err))
@@ -252,7 +260,10 @@ export function PipelinesList({ onEdit }: PipelinesListProps) {
                   variant="destructive"
                   size="sm"
                   disabled={deletingId === p.pipeline_id}
-                  onClick={() => setConfirmDeleteId(p.pipeline_id)}
+                  onClick={() => {
+                    setKeepHistory([])
+                    setConfirmDeleteId(p.pipeline_id)
+                  }}
                   className="gap-1.5"
                 >
                   {deletingId === p.pipeline_id ? (
@@ -287,6 +298,30 @@ export function PipelinesList({ onEdit }: PipelinesListProps) {
                 <p className="mb-2 text-xs text-red-200">
                   {t('pipelines.deleteConfirm', { id: p.pipeline_id })}
                 </p>
+                <fieldset className="mb-3" disabled={deletingId === p.pipeline_id}>
+                  <legend className="mb-1 text-xs text-red-200">
+                    {t('pipelines.keepHistory')}
+                  </legend>
+                  <div className="flex flex-wrap gap-x-4 gap-y-1">
+                    {PIPELINE_HISTORY_KINDS.map((kind) => (
+                      <label key={kind} className="flex items-center gap-1.5 text-xs">
+                        <input
+                          type="checkbox"
+                          checked={keepHistory.includes(kind)}
+                          onChange={(e) =>
+                            setKeepHistory((prev) =>
+                              e.target.checked ? [...prev, kind] : prev.filter((k) => k !== kind),
+                            )
+                          }
+                        />
+                        {t(`pipelines.historyKind.${kind}`)}
+                      </label>
+                    ))}
+                  </div>
+                  <p className="mt-1 text-[10px] text-muted-foreground">
+                    {t('pipelines.keepHistoryHint')}
+                  </p>
+                </fieldset>
                 <div className="flex gap-2">
                   <Button
                     type="button"
