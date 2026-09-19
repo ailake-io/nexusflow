@@ -161,6 +161,29 @@ impl PipelineSchemaStore {
         Ok(Self { pool })
     }
 
+    /// Removes every row recorded for `pipeline_id` in `pipeline_schemas`. Called when
+    /// the pipeline itself is deleted: this table is keyed by the pipeline's
+    /// *name*, so leftover rows would otherwise be inherited by a new
+    /// pipeline later created under the same id.
+    pub async fn delete_for_pipeline(&self, pipeline_id: &str) -> anyhow::Result<()> {
+        let sql = self.q("DELETE FROM pipeline_schemas WHERE pipeline_id = ?");
+        match &self.pool {
+            MetadataPool::Sqlite(p) => {
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .bind(pipeline_id)
+                    .execute(p)
+                    .await?;
+            }
+            MetadataPool::Postgres(p) => {
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .bind(pipeline_id)
+                    .execute(p)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
     // Called from `runner.rs` after a successful schema/lineage capture —
     // fire-and-forget from the caller's perspective, doesn't fail the run
     // itself if this errors (same posture as dbt lineage/test-result
@@ -484,5 +507,23 @@ mod tests {
 
         let got = store.get("pipe-1").await.unwrap().expect("row exists");
         assert_eq!(got.source_columns, source);
+    }
+
+    #[tokio::test]
+    async fn delete_for_pipeline_removes_only_that_pipelines_schema() {
+        let store = PipelineSchemaStore::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let cols = vec![ColumnInfo {
+            name: "id".to_string(),
+            data_type: "Int64".to_string(),
+        }];
+        store.record("pipe-1", &cols, &cols, None).await.unwrap();
+        store.record("pipe-2", &cols, &cols, None).await.unwrap();
+
+        store.delete_for_pipeline("pipe-1").await.unwrap();
+
+        assert!(store.get("pipe-1").await.unwrap().is_none());
+        assert!(store.get("pipe-2").await.unwrap().is_some());
     }
 }
