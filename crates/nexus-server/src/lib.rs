@@ -1925,6 +1925,13 @@ async fn delete_pipeline_handler(
     if let Err(e) = state.checkpoints.delete(&id).await {
         tracing::warn!(error = %e, pipeline_id = %id, "failed to delete checkpoints for a deleted pipeline");
     }
+    // Golden-dataset eval history is append-only and keyed by pipeline id,
+    // so a pipeline recreated under the same id would otherwise inherit the
+    // deleted one's score history in its Quality tab. Best-effort, same
+    // posture as the checkpoint cleanup above.
+    if let Err(e) = state.llm_eval_results.delete_for_pipeline(&id).await {
+        tracing::warn!(error = %e, pipeline_id = %id, "failed to delete llm eval results for a deleted pipeline");
+    }
     // Until this line, a pipeline could disappear with zero record of who
     // did it or when — the exact gap a real incident (2026-09-15) hit: a
     // pipeline vanished, `pipeline_runs` still showed its run history via
@@ -5117,6 +5124,56 @@ mod tests {
             runs.as_array().unwrap().is_empty(),
             "the new p1 must not inherit the deleted p1's run history: {runs:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn deleting_a_pipeline_drops_its_llm_eval_history_but_not_others() {
+        let state = test_state().await;
+        let write_token = bearer(&state, Role::Write);
+        let outcome = |score: f64| llm_eval_result_store::LlmEvalOutcome {
+            eval_name: "golden-1".to_string(),
+            prompt_version: 1,
+            score,
+            passed: score >= 0.5,
+            message: None,
+        };
+        state
+            .llm_eval_results
+            .record_all("p1", 1, &[outcome(0.9)])
+            .await
+            .unwrap();
+        state
+            .llm_eval_results
+            .record_all("p2", 1, &[outcome(0.8)])
+            .await
+            .unwrap();
+        let evals = state.llm_eval_results.clone();
+
+        let app = router(state);
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                "/pipelines",
+                &write_token,
+                sample_pipeline("p1"),
+            ))
+            .await
+            .unwrap();
+        let delete = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/pipelines/p1")
+                    .header("authorization", &write_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(delete.status(), StatusCode::NO_CONTENT);
+
+        assert!(evals.list_for_pipeline("p1").await.unwrap().is_empty());
+        assert_eq!(evals.list_for_pipeline("p2").await.unwrap().len(), 1);
     }
 
     #[tokio::test]

@@ -121,6 +121,30 @@ impl LlmEvalResultStore {
         Ok(())
     }
 
+    /// Removes every result recorded for `pipeline_id`. Called when the
+    /// pipeline itself is deleted: this table is append-only history keyed
+    /// by the pipeline's *name*, so leftover rows would otherwise be
+    /// inherited by a new pipeline later created under the same id — its
+    /// Quality tab would show another pipeline's score history.
+    pub async fn delete_for_pipeline(&self, pipeline_id: &str) -> anyhow::Result<()> {
+        let sql = self.q("DELETE FROM llm_eval_results WHERE pipeline_id = ?");
+        match &self.pool {
+            MetadataPool::Sqlite(p) => {
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .bind(pipeline_id)
+                    .execute(p)
+                    .await?;
+            }
+            MetadataPool::Postgres(p) => {
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .bind(pipeline_id)
+                    .execute(p)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
     /// Every recorded result for `pipeline_id`, grouped by eval case and
     /// ordered oldest-first within each group — what the Quality tab renders
     /// as a per-case score history. Powers `GET /pipelines/{id}/llm-eval-results`.
@@ -247,5 +271,25 @@ mod tests {
             .unwrap();
         let stored = store.list_for_pipeline("pipe-1").await.unwrap();
         assert_eq!(stored.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn delete_for_pipeline_removes_only_that_pipelines_results() {
+        let store = LlmEvalResultStore::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        store
+            .record_all("pipe-1", 1, &[outcome("golden-1", 1, 0.9)])
+            .await
+            .unwrap();
+        store
+            .record_all("pipe-2", 1, &[outcome("golden-1", 1, 0.8)])
+            .await
+            .unwrap();
+
+        store.delete_for_pipeline("pipe-1").await.unwrap();
+
+        assert!(store.list_for_pipeline("pipe-1").await.unwrap().is_empty());
+        assert_eq!(store.list_for_pipeline("pipe-2").await.unwrap().len(), 1);
     }
 }
