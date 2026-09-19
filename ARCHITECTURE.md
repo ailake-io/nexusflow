@@ -319,6 +319,17 @@ chamada real + log estruturado (nunca prompt/resposta cru, a menos que
 `log_full_content: true`) + persistência de custo/tokens
 (`pipeline_run_llm_stats_store.rs`).
 
+**Quando o `llm` roda por linha**: só em pipeline com node `transform`
+(SQL, ex. `SELECT * FROM <nome_do_source>`) ou `python` — o caminho que
+materializa os batches (`run_transform_pipeline`). Num pipeline sem
+transform (caminho linear/passthrough) a config `llm` **não é aplicada
+às linhas**: só alimenta o golden dataset (`eval`) e o `POST /rag/query`.
+É por design — é o formato do pipeline RAG (chunk+embed+sink vetorial,
+com `llm` presente só pra responder perguntas depois) — mas significa
+que `csv → llm → csv` sem `transform` termina `success` sem coluna de
+resposta e sem nenhuma chamada ao LLM. Pra aplicar o LLM em cada linha,
+adicione um `transform` (`SELECT * FROM <source>` basta).
+
 **Cache de resposta**: `LlmNodeSpec.cache: Option<LlmCacheSpec>`
 (Redis) — chave `sha256(model+prompt+max_tokens+temperature)`, TTL
 configurável. Cache hit reporta 0 tokens, ~0 latência.
