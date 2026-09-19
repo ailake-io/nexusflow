@@ -84,6 +84,29 @@ impl QualityCheckStore {
         Ok(Self { pool })
     }
 
+    /// Removes every row recorded for `pipeline_id` in `quality_check_results`. Called when
+    /// the pipeline itself is deleted: this table is keyed by the pipeline's
+    /// *name*, so leftover rows would otherwise be inherited by a new
+    /// pipeline later created under the same id.
+    pub async fn delete_for_pipeline(&self, pipeline_id: &str) -> anyhow::Result<()> {
+        let sql = self.q("DELETE FROM quality_check_results WHERE pipeline_id = ?");
+        match &self.pool {
+            MetadataPool::Sqlite(p) => {
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .bind(pipeline_id)
+                    .execute(p)
+                    .await?;
+            }
+            MetadataPool::Postgres(p) => {
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .bind(pipeline_id)
+                    .execute(p)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
     #[allow(dead_code)] // only reached from run_transform_pipeline's quality-check hook
     pub async fn record_all(
         &self,
@@ -294,5 +317,23 @@ mod tests {
             .unwrap();
         let stored = store.list_for_pipeline("pipe-1").await.unwrap();
         assert_eq!(stored.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn delete_for_pipeline_removes_only_that_pipelines_results() {
+        let store = QualityCheckStore::connect("sqlite::memory:").await.unwrap();
+        store
+            .record_all("pipe-1", 1, &[outcome("id", "not_null", "pass")])
+            .await
+            .unwrap();
+        store
+            .record_all("pipe-2", 1, &[outcome("id", "not_null", "pass")])
+            .await
+            .unwrap();
+
+        store.delete_for_pipeline("pipe-1").await.unwrap();
+
+        assert!(store.list_for_pipeline("pipe-1").await.unwrap().is_empty());
+        assert_eq!(store.list_for_pipeline("pipe-2").await.unwrap().len(), 1);
     }
 }

@@ -16,6 +16,7 @@ import {
 import '@xyflow/react/dist/style.css'
 import { Code2, Layers, Sparkles, Terminal } from 'lucide-react'
 import { useI18n } from '@/lib/i18n'
+import { useTheme } from '@/lib/theme'
 import { ConnectorPalette } from '@/components/ConnectorPalette'
 import { dagNodeTypes } from '@/components/dag-node-types'
 import { ExecutionPanel } from '@/components/ExecutionPanel'
@@ -53,6 +54,7 @@ interface CanvasInnerProps {
 
 function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
   const { t } = useI18n()
+  const { theme } = useTheme()
   const { connectors, loading, error } = useConnectors()
   const { screenToFlowPosition } = useReactFlow()
   const wrapperRef = useRef<HTMLDivElement>(null)
@@ -409,10 +411,11 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
             onSelectionChange={onSelectionChange}
+            colorMode={theme}
             fitView
             fitViewOptions={{ maxZoom: 1 }}
           >
-            <Background gap={20} size={1} color="oklch(1 0 0 / 8%)" />
+            <Background gap={20} size={1} color="var(--flow-dots)" />
           </ReactFlow>
 
           <div className="absolute bottom-4 left-4 flex gap-2">

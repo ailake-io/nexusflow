@@ -4,6 +4,7 @@ import { Background, ReactFlow, ReactFlowProvider, type Edge, type Node } from '
 import '@xyflow/react/dist/style.css'
 import { useAuth } from '@/lib/auth-context'
 import { useI18n } from '@/lib/i18n'
+import { useTheme } from '@/lib/theme'
 import { getOrchestrationGraph, type OrchestrationGraph } from '@/lib/api'
 import { EmptyState } from '@/components/EmptyState'
 import { LineagePipelineNodeView, type LineagePipelineNodeData } from '@/components/lineage-nodes'
@@ -101,7 +102,7 @@ function toFlowElements(graph: OrchestrationGraph): { nodes: Node[]; edges: Edge
     // `all` mode edges are dashed — visually distinct so "waits for every
     // upstream" reads differently from "any one upstream fires it".
     style: {
-      stroke: 'oklch(1 0 0 / 20%)',
+      stroke: 'var(--flow-edge)',
       strokeDasharray: e.dependency_mode === 'all' ? '4 3' : undefined,
     },
   }))
@@ -111,6 +112,7 @@ function toFlowElements(graph: OrchestrationGraph): { nodes: Node[]; edges: Edge
 function OrchestrationGraphView() {
   const { token } = useAuth()
   const { t } = useI18n()
+  const { theme } = useTheme()
   const [graph, setGraph] = useState<OrchestrationGraph | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -185,11 +187,11 @@ function OrchestrationGraphView() {
             nodesDraggable={false}
             nodesConnectable={false}
             elementsSelectable={false}
-            colorMode="dark"
+            colorMode={theme}
             fitView
             fitViewOptions={{ maxZoom: 1 }}
           >
-            <Background gap={20} size={1} color="oklch(1 0 0 / 8%)" />
+            <Background gap={20} size={1} color="var(--flow-dots)" />
           </ReactFlow>
         </div>
       )}

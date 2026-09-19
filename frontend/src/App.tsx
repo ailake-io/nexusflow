@@ -21,6 +21,7 @@ import { useI18n } from '@/lib/i18n'
 import { LoginForm } from '@/components/LoginForm'
 import { Logo } from '@/components/Logo'
 import { LanguageToggle } from '@/components/LanguageToggle'
+import { ThemeToggle } from '@/components/ThemeToggle'
 import { Button } from '@/components/ui/button'
 import type { PipelineSpec } from '@/lib/dag'
 
@@ -172,7 +173,10 @@ function App() {
             {navItems.find((i) => i.id === view)?.label}
           </h1>
           <div className="flex items-center gap-4">
-            <LanguageToggle />
+            <div className="flex items-center">
+              <ThemeToggle />
+              <LanguageToggle />
+            </div>
             <div className="text-xs text-muted-foreground">{t('app.version')}</div>
           </div>
         </div>

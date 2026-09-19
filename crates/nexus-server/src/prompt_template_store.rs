@@ -126,7 +126,8 @@ impl PromptTemplateStore {
     }
 
     pub async fn latest_version(&self, name: &str) -> Result<Option<u32>, sqlx::Error> {
-        let sql = self.q("SELECT MAX(version) FROM prompt_templates WHERE name = ?");
+        let sql =
+            self.q("SELECT CAST(MAX(version) AS BIGINT) FROM prompt_templates WHERE name = ?");
         let row: (Option<i64>,) = match &self.pool {
             MetadataPool::Sqlite(p) => {
                 sqlx::query_as(sqlx::AssertSqlSafe(sql))
@@ -194,8 +195,8 @@ impl PromptTemplateStore {
     /// this scale).
     pub async fn list(&self) -> Result<Vec<PromptTemplate>, sqlx::Error> {
         let sql = self.q(
-            "SELECT name, version, template, created_at, created_by FROM prompt_templates \
-             ORDER BY name ASC, version DESC",
+            "SELECT name, CAST(version AS BIGINT), template, CAST(created_at AS TEXT), created_by \
+             FROM prompt_templates ORDER BY name ASC, version DESC",
         );
         let rows: Vec<(String, i64, String, String, Option<String>)> = match &self.pool {
             MetadataPool::Sqlite(p) => {
@@ -297,5 +298,42 @@ mod tests {
             names_versions,
             vec![("a-prompt", 2), ("a-prompt", 1), ("b-prompt", 1)]
         );
+    }
+
+    // Regression: Postgres declares `version INTEGER` (INT4) and
+    // `created_at TIMESTAMPTZ`, which sqlx refuses to decode as `i64`/
+    // `String` — SQLite is dynamically typed and never surfaced it, so the
+    // 2nd `POST /prompts` and every `GET /prompts` returned 500 on Postgres.
+    #[tokio::test]
+    async fn postgres_backend_versions_lists_and_resolves() {
+        use testcontainers_modules::postgres;
+        use testcontainers_modules::testcontainers::runners::AsyncRunner;
+
+        let container = postgres::Postgres::default().start().await.unwrap();
+        let host = container.get_host().await.unwrap();
+        let port = container.get_host_port_ipv4(5432).await.unwrap();
+        let url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
+
+        let store = PromptTemplateStore::connect(&url).await.unwrap();
+        assert!(matches!(store.pool, MetadataPool::Postgres(_)));
+
+        assert_eq!(
+            store.create("summarize", "v1 text", "alice").await.unwrap(),
+            1
+        );
+        assert_eq!(
+            store.create("summarize", "v2 text", "alice").await.unwrap(),
+            2
+        );
+        assert_eq!(store.latest_version("summarize").await.unwrap(), Some(2));
+        assert_eq!(
+            store.resolve("summarize", None).await.unwrap(),
+            Some("v2 text".to_string())
+        );
+
+        let listed = store.list().await.unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].version, 2);
+        assert!(!listed[0].created_at.is_empty());
     }
 }

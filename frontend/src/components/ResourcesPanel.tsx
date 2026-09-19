@@ -212,11 +212,16 @@ export function ResourcesPanel() {
           >
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={chartData} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid)" />
                 <XAxis dataKey="time" tick={{ fontSize: 10 }} minTickGap={30} />
                 <YAxis tick={{ fontSize: 10 }} domain={[0, 100]} unit="%" />
                 <Tooltip
-                  contentStyle={{ fontSize: 12, background: '#111', border: '1px solid #333' }}
+                  contentStyle={{
+                      fontSize: 12,
+                      background: 'var(--popover)',
+                      color: 'var(--popover-foreground)',
+                      border: '1px solid var(--border)',
+                    }}
                   formatter={(value: ValueType | undefined) => [`${Number(Array.isArray(value) ? value[0] : value).toFixed(1)}%`, t('resources.cpu')]}
                 />
                 <Area
@@ -240,11 +245,16 @@ export function ResourcesPanel() {
           >
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={chartData} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid)" />
                 <XAxis dataKey="time" tick={{ fontSize: 10 }} minTickGap={30} />
                 <YAxis tick={{ fontSize: 10 }} unit=" GB" />
                 <Tooltip
-                  contentStyle={{ fontSize: 12, background: '#111', border: '1px solid #333' }}
+                  contentStyle={{
+                      fontSize: 12,
+                      background: 'var(--popover)',
+                      color: 'var(--popover-foreground)',
+                      border: '1px solid var(--border)',
+                    }}
                   formatter={(value: ValueType | undefined) => [`${Number(Array.isArray(value) ? value[0] : value).toFixed(2)} GB`, t('resources.memory')]}
                 />
                 <Area
@@ -271,11 +281,16 @@ export function ResourcesPanel() {
             {hasDiskData ? (
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={chartData} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid)" />
                   <XAxis dataKey="time" tick={{ fontSize: 10 }} minTickGap={30} />
                   <YAxis tick={{ fontSize: 10 }} unit=" GB" />
                   <Tooltip
-                    contentStyle={{ fontSize: 12, background: '#111', border: '1px solid #333' }}
+                    contentStyle={{
+                      fontSize: 12,
+                      background: 'var(--popover)',
+                      color: 'var(--popover-foreground)',
+                      border: '1px solid var(--border)',
+                    }}
                     formatter={(value: ValueType | undefined) => [`${Number(Array.isArray(value) ? value[0] : value).toFixed(2)} GB`, t('resources.disk')]}
                   />
                   <Area

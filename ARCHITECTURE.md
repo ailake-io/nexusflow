@@ -158,7 +158,8 @@ License key (JWT, `POST`/`GET /license`, `LicenseClaims::covers`, `crates/nexus-
 - `nexus-server::scheduler` roda como um `tokio::spawn` separado, iniciado só em `run()` (nunca em `build_app`, pra não competir com asserts dos testes de integração). Faz *poll* a cada 30s: lista todos os pipelines, filtra os que têm `schedule`, calcula o próximo disparo a partir de uma âncora (`started_at` do último run, ou `created_at` se nunca rodou) e dispara via o mesmo `execute_pipeline` usado pelo endpoint manual — histórico, alertas e dbt se comportam de forma idêntica entre run manual e agendado.
 - Proteção contra sobreposição: se o run mais recente do pipeline ainda não tem `finished_at`, o tick pula esse pipeline (não empilha disparos num pipeline lento).
 - `schedule` persiste dentro do `spec_ciphertext` já existente (mesma criptografia AES-256-GCM do resto do spec) — não precisou de coluna nova nem migração.
-- Gestão completa a partir do Canvas: **Save** (`POST`/`PUT /pipelines/{id}`, cria ou atualiza), **Edit** (recarrega o spec completo — configs de conector inclusas — via `GET /pipelines/{id}/spec`, uma rota nova protegida por role `Write`, não `Read`) e **Delete** (`DELETE /pipelines/{id}`, já existente). A rota `/spec` é a única exceção deliberada ao contrato do §10 de nunca devolver config de conector puro pela API (`GET /pipelines`/`GET /pipelines/{id}` continuam mascarados) — é simétrica a criar/editar: só quem já tem permissão de digitar o segredo recebe ele de volta.
+- Gestão completa a partir do Canvas: **Save** (`POST`/`PUT /pipelines/{id}`, cria ou atualiza), **Edit** (recarrega o spec completo — configs de conector inclusas — via `GET /pipelines/{id}/spec`, uma rota nova protegida por role `Write`, não `Read`) e **Delete** (`DELETE /pipelines/{id}`, já existente — ver o parágrafo "Delete e histórico" abaixo). A rota `/spec` é a única exceção deliberada ao contrato do §10 de nunca devolver config de conector puro pela API (`GET /pipelines`/`GET /pipelines/{id}` continuam mascarados) — é simétrica a criar/editar: só quem já tem permissão de digitar o segredo recebe ele de volta.
+- **Delete e histórico**: `DELETE /pipelines/{id}` sempre remove o pipeline, suas runs/logs e seus checkpoints (um checkpoint órfão transforma um pipeline recriado com o mesmo id num run "success" que não lê nada). Já o histórico por pipeline — `llm_eval` (`llm_eval_results`), `quality` (`quality_check_results`), `dbt` (`dbt_test_results` + `dbt_lineage`), `schema` (`pipeline_schemas`) e `volume` (`pipeline_run_volume`) — é chaveado pelo *nome* do pipeline, então por padrão também é apagado: senão um pipeline novo com o mesmo id herdaria scores, schema-drift e baseline de anomalia do antigo. O usuário decide caso a caso o que **manter** com `?keep=llm_eval,volume` (lista separada por vírgula) ou `?keep=all`; valor desconhecido devolve 400 **antes** de apagar qualquer coisa. No Canvas isso aparece como checkboxes "Manter o histórico de:" na confirmação de exclusão da lista de pipelines. `llm_generations` nunca é apagado (trilha de auditoria do RAG, endereçada por id de geração, não por nome de pipeline).
 - `PipelineSummary` expõe `last_run_status`/`last_run_at` (via `LEFT JOIN` com a run mais recente de `pipeline_runs`), consumido pela aba "Status" do frontend — um flag por pipeline (verde=sucesso, amarelo=em execução, vermelho=falha, cinza=nunca rodou).
 
 ## 13. Preview de dados e dbt como ETL real
@@ -318,6 +319,17 @@ nativa, sem modo "sem auth" — `api_key_env` obrigatório).
 chamada real + log estruturado (nunca prompt/resposta cru, a menos que
 `log_full_content: true`) + persistência de custo/tokens
 (`pipeline_run_llm_stats_store.rs`).
+
+**Quando o `llm` roda por linha**: só em pipeline com node `transform`
+(SQL, ex. `SELECT * FROM <nome_do_source>`) ou `python` — o caminho que
+materializa os batches (`run_transform_pipeline`). Num pipeline sem
+transform (caminho linear/passthrough) a config `llm` **não é aplicada
+às linhas**: só alimenta o golden dataset (`eval`) e o `POST /rag/query`.
+É por design — é o formato do pipeline RAG (chunk+embed+sink vetorial,
+com `llm` presente só pra responder perguntas depois) — mas significa
+que `csv → llm → csv` sem `transform` termina `success` sem coluna de
+resposta e sem nenhuma chamada ao LLM. Pra aplicar o LLM em cada linha,
+adicione um `transform` (`SELECT * FROM <source>` basta).
 
 **Cache de resposta**: `LlmNodeSpec.cache: Option<LlmCacheSpec>`
 (Redis) — chave `sha256(model+prompt+max_tokens+temperature)`, TTL

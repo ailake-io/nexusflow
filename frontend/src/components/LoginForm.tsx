@@ -8,6 +8,7 @@ import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Logo } from '@/components/Logo'
 import { LanguageToggle } from '@/components/LanguageToggle'
+import { ThemeToggle } from '@/components/ThemeToggle'
 import { AlertCircle, ArrowRight, Database, Shield } from 'lucide-react'
 
 export function LoginForm() {
@@ -73,7 +74,10 @@ export function LoginForm() {
           <span className="text-[10px] text-muted-foreground">
             {t('auth.copyright', { year: String(new Date().getFullYear()) })}
           </span>
-          <LanguageToggle />
+          <div className="flex items-center">
+            <ThemeToggle />
+            <LanguageToggle />
+          </div>
         </div>
       </div>
 
@@ -81,7 +85,10 @@ export function LoginForm() {
         <div className="w-full max-w-sm animate-slide-in-up">
           <div className="mb-8 flex items-center justify-between lg:hidden">
             <Logo />
-            <LanguageToggle />
+            <div className="flex items-center">
+              <ThemeToggle />
+              <LanguageToggle />
+            </div>
           </div>
 
           <Card className="border-white/10 bg-card/80 backdrop-blur">

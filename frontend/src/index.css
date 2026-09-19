@@ -7,6 +7,7 @@
 
 /* NexusFlow tech theme — dark-first, cyan/violet accent, deep slate backgrounds. */
 :root {
+  color-scheme: dark;
   --background: oklch(0.125 0.02 260);
   --foreground: oklch(0.93 0.005 260);
   --card: oklch(0.16 0.02 260);
@@ -39,9 +40,15 @@
   --sidebar-accent-foreground: oklch(0.93 0.005 260);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.7 0.14 215);
+  --flow-edge: oklch(1 0 0 / 20%);
+  --flow-dots: oklch(1 0 0 / 8%);
+  --chart-grid: oklch(1 0 0 / 6%);
 }
 
 .light {
+  --flow-edge: oklch(0 0 0 / 30%);
+  --flow-dots: oklch(0 0 0 / 14%);
+  --chart-grid: oklch(0 0 0 / 10%);
   --background: oklch(0.98 0.005 260);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
@@ -73,6 +80,28 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.55 0.16 215);
+}
+
+/* Light-theme adaptation for utilities written with dark-first literals. Rather
+ * than touching ~150 call sites, remap the Tailwind theme variables they read:
+ * `border-white/10`, `bg-white/[0.02]` etc. are color-mix()es of --color-white,
+ * so making it a dark "ink" turns every white overlay into a subtle dark tint;
+ * the 200-400 text shades (tuned for a dark background) drop to their 600-800
+ * equivalents so they keep contrast on white. Never set `text-white`/`bg-white`
+ * as a solid color in components: it would flip too. */
+.light {
+  color-scheme: light;
+  --color-white: oklch(0.25 0.03 260);
+  --color-black: oklch(0.3 0.03 260);
+  --color-red-200: oklch(0.444 0.177 26.899);
+  --color-red-300: oklch(0.505 0.213 27.518);
+  --color-red-400: oklch(0.577 0.245 27.325);
+  --color-emerald-400: oklch(0.596 0.145 163.225);
+  --color-amber-300: oklch(0.555 0.163 48.998);
+  --color-amber-400: oklch(0.666 0.179 58.318);
+  --color-sky-400: oklch(0.588 0.158 241.966);
+  --color-fuchsia-400: oklch(0.591 0.293 322.896);
+  --color-cyan-400: oklch(0.609 0.126 221.723);
 }
 
 @theme inline {
@@ -163,7 +192,13 @@
   background-size: 24px 24px;
 }
 
-/* ReactFlow dark-theme overrides. */
+.light .tech-grid {
+  background-image:
+    linear-gradient(to right, oklch(0 0 0 / 5%) 1px, transparent 1px),
+    linear-gradient(to bottom, oklch(0 0 0 / 5%) 1px, transparent 1px);
+}
+
+/* ReactFlow theme overrides (edge/handle colors come from the app palette). */
 .react-flow {
   --xy-edge-stroke: oklch(0.5 0.02 260);
   --xy-edge-stroke-selected: var(--primary);
@@ -187,4 +222,10 @@
 }
 ::-webkit-scrollbar-thumb:hover {
   background: oklch(1 0 0 / 25%);
+}
+.light ::-webkit-scrollbar-thumb {
+  background: oklch(0 0 0 / 18%);
+}
+.light ::-webkit-scrollbar-thumb:hover {
+  background: oklch(0 0 0 / 30%);
 }
