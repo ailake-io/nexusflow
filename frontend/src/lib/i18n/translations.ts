@@ -75,6 +75,16 @@ export const translations = {
       delete: 'Delete',
       deleting: 'Deleting…',
       deleteConfirm: 'Delete pipeline "{id}"? This cannot be undone.',
+      keepHistory: 'Keep history of:',
+      keepHistoryHint:
+        'Checked items survive the deletion. Unchecked history is removed so a new pipeline with the same name starts clean. Runs and checkpoints are always removed.',
+      historyKind: {
+        llm_eval: 'LLM eval',
+        quality: 'Quality checks',
+        dbt: 'dbt tests',
+        schema: 'Schema',
+        volume: 'Run volume',
+      },
       confirmDelete: 'Yes, delete',
       cancelDelete: 'Cancel',
       updatedAt: 'Updated {updated}',
@@ -669,6 +679,16 @@ export const translations = {
       delete: 'Excluir',
       deleting: 'Excluindo…',
       deleteConfirm: 'Excluir pipeline "{id}"? Esta ação não pode ser desfeita.',
+      keepHistory: 'Manter o histórico de:',
+      keepHistoryHint:
+        'O que estiver marcado sobrevive à exclusão. O histórico desmarcado é removido para que um novo pipeline com o mesmo nome comece limpo. Execuções e checkpoints são sempre removidos.',
+      historyKind: {
+        llm_eval: 'Avaliação do LLM',
+        quality: 'Checagens de qualidade',
+        dbt: 'Testes dbt',
+        schema: 'Schema',
+        volume: 'Volume das execuções',
+      },
       confirmDelete: 'Sim, excluir',
       cancelDelete: 'Cancelar',
       updatedAt: 'Atualizado {updated}',

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import {
   ApiError,
+  deletePipeline,
   login,
   onUnauthorized,
   progressSocketUrl,
@@ -84,5 +85,36 @@ describe('progressSocketUrl', () => {
 
     const url = progressSocketUrl('p1', 1)
     expect(url).toBe('wss://app.example/pipelines/p1/runs/1/progress')
+  })
+})
+
+describe('deletePipeline', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  const stubNoContent = () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 204 })
+    vi.stubGlobal('fetch', fetchMock)
+    return fetchMock
+  }
+
+  it('sends no keep param by default, so all history is deleted', async () => {
+    const fetchMock = stubNoContent()
+    await deletePipeline('tok', 'p1')
+    expect(fetchMock.mock.calls[0][0]).toBe('/pipelines/p1')
+    expect(fetchMock.mock.calls[0][1].method).toBe('DELETE')
+  })
+
+  it('sends the chosen history kinds as a comma-separated keep param', async () => {
+    const fetchMock = stubNoContent()
+    await deletePipeline('tok', 'p1', ['llm_eval', 'volume'])
+    expect(fetchMock.mock.calls[0][0]).toBe('/pipelines/p1?keep=llm_eval,volume')
+  })
+
+  it('percent-encodes the pipeline id', async () => {
+    const fetchMock = stubNoContent()
+    await deletePipeline('tok', 'my pipeline/1', ['dbt'])
+    expect(fetchMock.mock.calls[0][0]).toBe('/pipelines/my%20pipeline%2F1?keep=dbt')
   })
 })
