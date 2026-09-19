@@ -409,6 +409,7 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
             onSelectionChange={onSelectionChange}
+            colorMode="dark"
             fitView
             fitViewOptions={{ maxZoom: 1 }}
           >
