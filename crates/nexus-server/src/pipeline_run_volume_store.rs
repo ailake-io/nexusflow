@@ -62,6 +62,29 @@ impl PipelineRunVolumeStore {
         Ok(Self { pool })
     }
 
+    /// Removes every row recorded for `pipeline_id` in `pipeline_run_volume`. Called when
+    /// the pipeline itself is deleted: this table is keyed by the pipeline's
+    /// *name*, so leftover rows would otherwise be inherited by a new
+    /// pipeline later created under the same id.
+    pub async fn delete_for_pipeline(&self, pipeline_id: &str) -> anyhow::Result<()> {
+        let sql = self.q("DELETE FROM pipeline_run_volume WHERE pipeline_id = ?");
+        match &self.pool {
+            MetadataPool::Sqlite(p) => {
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .bind(pipeline_id)
+                    .execute(p)
+                    .await?;
+            }
+            MetadataPool::Postgres(p) => {
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .bind(pipeline_id)
+                    .execute(p)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
     /// `ON CONFLICT DO NOTHING` on the natural `(pipeline_id, run_id)` key —
     /// same dedup idiom `resource_stats.rs` uses for its timestamp PK. A
     /// run only ever succeeds once, but this makes a caller-side retry (or
@@ -219,5 +242,19 @@ mod tests {
         let samples = store.recent("pipe-1", 10).await.unwrap();
         assert_eq!(samples.len(), 1);
         assert_eq!(samples[0].rows_written, 42);
+    }
+
+    #[tokio::test]
+    async fn delete_for_pipeline_removes_only_that_pipelines_history() {
+        let store = PipelineRunVolumeStore::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        store.record("pipe-1", 1, 100).await.unwrap();
+        store.record("pipe-2", 2, 200).await.unwrap();
+
+        store.delete_for_pipeline("pipe-1").await.unwrap();
+
+        assert!(store.recent("pipe-1", 10).await.unwrap().is_empty());
+        assert_eq!(store.recent("pipe-2", 10).await.unwrap().len(), 1);
     }
 }

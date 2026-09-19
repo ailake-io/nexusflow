@@ -42,6 +42,29 @@ impl DbtLineageStore {
         Ok(Self { pool })
     }
 
+    /// Removes every row recorded for `pipeline_id` in `dbt_lineage`. Called when
+    /// the pipeline itself is deleted: this table is keyed by the pipeline's
+    /// *name*, so leftover rows would otherwise be inherited by a new
+    /// pipeline later created under the same id.
+    pub async fn delete_for_pipeline(&self, pipeline_id: &str) -> anyhow::Result<()> {
+        let sql = self.q("DELETE FROM dbt_lineage WHERE pipeline_id = ?");
+        match &self.pool {
+            MetadataPool::Sqlite(p) => {
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .bind(pipeline_id)
+                    .execute(p)
+                    .await?;
+            }
+            MetadataPool::Postgres(p) => {
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .bind(pipeline_id)
+                    .execute(p)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
     // Only called from `lib.rs`'s `#[cfg(feature = "dbt")]` block — a build
     // without that feature never has a `DbtOutcome` to record, but this
     // store still needs to always exist (`AppState` is feature-independent).
@@ -179,5 +202,19 @@ mod tests {
 
         let all = store.get_all().await.unwrap();
         assert_eq!(all.get("pipe-1"), Some(&parent_map));
+    }
+
+    #[tokio::test]
+    async fn delete_for_pipeline_removes_only_that_pipelines_lineage() {
+        let store = DbtLineageStore::connect("sqlite::memory:").await.unwrap();
+        let parents = HashMap::from([("model.a".to_string(), vec!["source.x".to_string()])]);
+        store.record("pipe-1", &parents).await.unwrap();
+        store.record("pipe-2", &parents).await.unwrap();
+
+        store.delete_for_pipeline("pipe-1").await.unwrap();
+
+        let all = store.get_all().await.unwrap();
+        assert!(!all.contains_key("pipe-1"));
+        assert!(all.contains_key("pipe-2"));
     }
 }

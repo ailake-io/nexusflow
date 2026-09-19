@@ -961,9 +961,29 @@ export async function uploadFiles(token: string, files: FileToUpload[]): Promise
   return response.json() as Promise<UploadResult>
 }
 
-export function deletePipeline(token: string, pipelineId: string): Promise<void> {
+/** Per-pipeline history a delete can keep instead of removing — matches
+ * nexus-server's `HistoryKind` names (`DELETE /pipelines/{id}?keep=...`). */
+export type PipelineHistoryKind = 'llm_eval' | 'quality' | 'dbt' | 'schema' | 'volume'
+
+export const PIPELINE_HISTORY_KINDS: PipelineHistoryKind[] = [
+  'llm_eval',
+  'quality',
+  'dbt',
+  'schema',
+  'volume',
+]
+
+/** Deletes the pipeline and, by default, all of its history. Pass `keep` to
+ * preserve specific history categories (checkpoints and run history/logs are
+ * always removed). */
+export function deletePipeline(
+  token: string,
+  pipelineId: string,
+  keep: PipelineHistoryKind[] = [],
+): Promise<void> {
+  const query = keep.length > 0 ? `?keep=${keep.join(',')}` : ''
   return request<void>(
-    `/pipelines/${encodeURIComponent(pipelineId)}`,
+    `/pipelines/${encodeURIComponent(pipelineId)}${query}`,
     { method: 'DELETE' },
     token,
   )

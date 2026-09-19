@@ -11,6 +11,7 @@ import {
 import '@xyflow/react/dist/style.css'
 import { useAuth } from '@/lib/auth-context'
 import { useI18n } from '@/lib/i18n'
+import { useTheme } from '@/lib/theme'
 import {
   ApiError,
   getLineage,
@@ -184,7 +185,7 @@ function toFlowElements(
     source: e.from,
     target: e.to,
     animated: false,
-    style: { stroke: 'oklch(1 0 0 / 20%)' },
+    style: { stroke: 'var(--flow-edge)' },
   }))
   return { nodes, edges }
 }
@@ -341,6 +342,7 @@ function PipelineSchemaPanel({ pipelineId, onClose }: { pipelineId: string; onCl
 function LineageGraphView() {
   const { token } = useAuth()
   const { t } = useI18n()
+  const { theme } = useTheme()
   const [graph, setGraph] = useState<LineageGraph | null>(null)
   const [piiDatasetKeys, setPiiDatasetKeys] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(true)
@@ -434,11 +436,11 @@ function LineageGraphView() {
             nodesConnectable={false}
             elementsSelectable={true}
             onNodeClick={handleNodeClick}
-            colorMode="dark"
+            colorMode={theme}
             fitView
             fitViewOptions={{ maxZoom: 1 }}
           >
-            <Background gap={20} size={1} color="oklch(1 0 0 / 8%)" />
+            <Background gap={20} size={1} color="var(--flow-dots)" />
           </ReactFlow>
           {selectedPipelineId && (
             <PipelineSchemaPanel
