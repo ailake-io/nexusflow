@@ -31,8 +31,8 @@
 class Nexusflow < Formula
   desc "Universal Rust data & vector framework — ETL/ELT/streaming + AI Lakehouse Builder"
   homepage "https://github.com/ailake-io/nexusflow"
-  url "https://github.com/ailake-io/nexusflow/releases/download/v0.1.6/nexusflow-macos-arm64.tar.gz"
-  sha256 "9476693d0bf4b5c3409ad4730a103e237d399df870f00ec3ddd1cedeaa9ccc54"
+  url "https://github.com/ailake-io/nexusflow/releases/download/v0.1.7/nexusflow-macos-arm64.tar.gz"
+  sha256 "acbc28dfcd240012bec46317d40e21f13f7a19d0a0c9b4152be9af43ea3352c7"
   license "Apache-2.0"
 
   depends_on macos: :ventura
