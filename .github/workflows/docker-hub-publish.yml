@@ -10,10 +10,17 @@ name: Docker Hub Publish
 # Deliberately does NOT duplicate release.yml's `determine-version` job
 # (Cargo.toml version bump + push to main on a manual dispatch) — that
 # logic living in two places at once would race if both ran close
-# together. This workflow only ever *reads* the version already committed
-# to Cargo.toml (or takes an explicit `version` input for
-# workflow_dispatch, matching an existing GitHub Release) and builds from
-# that ref — it never mutates Cargo.toml or pushes a commit itself.
+# together. This workflow never mutates Cargo.toml or pushes a commit.
+#
+# The version and the commit to build both come from the GitHub Release's
+# *tag* — never from the commit that triggered this run. On a manual
+# Release dispatch with a new version, `determine-version` pushes a bump
+# commit AFTER the run started, so `workflow_run.head_sha` (and `main` at
+# trigger time) still says the previous version: real bug 2026-09-19, the
+# automatic run after the v0.1.7 release re-built and re-pushed the
+# already-published `v0.1.6` tag from the new code. Resolving via the tag
+# makes the image always match the release it is named after, and makes a
+# manual dispatch for an old version rebuild *that* version's commit.
 #
 # Requires two repo secrets that don't exist yet as of this writing:
 # DOCKERHUB_USERNAME and DOCKERHUB_TOKEN (a Docker Hub access token, not
@@ -38,7 +45,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to publish (e.g. 0.1.4) — must already be a published GitHub Release"
+        description: "Version to publish (e.g. 0.1.4 or v0.1.4) — must already be a published GitHub Release; the image is built from that release's tag commit"
         required: true
         type: string
 
@@ -51,36 +58,44 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          # workflow_run's default ref is this repo's default branch at
-          # trigger time, which is already correct here (Release only
-          # triggers this on a `main` run) — pinned explicitly anyway for
-          # the same "don't depend on an implicit default" reasoning
-          # release.yml's own jobs use.
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || 'main' }}
-
-      - name: Determine version and commit sha
+      - name: Determine version and commit sha (from the release tag)
         id: version
         env:
+          GH_TOKEN: ${{ github.token }}
           DISPATCH_VERSION: ${{ github.event.inputs.version }}
         run: |
           set -euo pipefail
+          repo="$GITHUB_REPOSITORY"
+          latest_tag="$(gh api "repos/$repo/releases/latest" --jq .tag_name)"
           if [ -n "${DISPATCH_VERSION:-}" ]; then
-            version="$DISPATCH_VERSION"
+            # Accept both "0.1.7" and "v0.1.7" — the two forms are easy to
+            # mix up across this repo's workflows (release.yml/this one take
+            # no "v"; the installer workflows do) and each mix-up used to be
+            # a failed run.
+            version="${DISPATCH_VERSION#v}"
           else
-            version="$(grep -A3 '^\[workspace.package\]' Cargo.toml | grep '^version' | head -1 | cut -d '"' -f2)"
+            version="${latest_tag#v}"
           fi
+          tag="v$version"
+          if ! sha="$(gh api "repos/$repo/commits/$tag" --jq .sha 2>/dev/null)" || [ -z "$sha" ]; then
+            echo "::error::No release tag $tag found — this workflow only publishes versions that already exist as a GitHub Release."
+            exit 1
+          fi
+          # `latest` must only move when this really is the newest release,
+          # so re-publishing an old version can never make it the default.
+          if [ "$tag" = "$latest_tag" ]; then is_latest=true; else is_latest=false; fi
+          echo "Publishing $tag @ $sha (latest tag moves: $is_latest)"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "is_latest=$is_latest" >> "$GITHUB_OUTPUT"
 
       # Same reasoning as release.yml's equivalent step (now removed from
       # there): every distributed artifact ships every enterprise
       # connector, license-gated, so the Store always has something to
       # sell no matter which install path someone picked — this image is
       # one of those paths. `enterprise-src`'s own Dockerfile clones its
-      # own pinned `nexusflow` checkout internally, so no further checkout
-      # of *this* repo is needed beyond the Cargo.toml version read above.
+      # own pinned `nexusflow` checkout internally (at NEXUSFLOW_REV), so this
+      # job never needs a checkout of *this* repo.
       - name: Clone nexus-connectors-enterprise (read-only deploy key)
         env:
           DEPLOY_KEY: ${{ secrets.ENTERPRISE_REPO_DEPLOY_KEY }}
@@ -112,7 +127,7 @@ jobs:
           images: thiagolange/nexusflow
           tags: |
             type=raw,value=v${{ steps.version.outputs.version }}
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ steps.version.outputs.is_latest == 'true' }}
 
       - name: Build and push Docker image (full)
         uses: docker/build-push-action@5cd11c3a4ced054e52742c5fd54dca954e0edd85 # v6.7.0
