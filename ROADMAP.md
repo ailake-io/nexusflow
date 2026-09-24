@@ -483,6 +483,20 @@ Pedido de 2026-09-24: caixas de transformação/limpeza configuráveis (sem
 escrever código), arrastáveis igual conector, encadeáveis entre 1 fonte e
 1 destino, com paleta própria na UI, separada da paleta de conectores.
 
+**Decisões fechadas com o usuário (2026-09-24):**
+- Blocos são persistidos **server-side** como lista estruturada (opção
+  (b) abaixo) — reabrir o pipeline reidrata as caixas editáveis.
+- Blocos e os nodes de código (SQL transform, Python) **coexistem no
+  produto como alternativas** — o usuário escolhe, por pipeline, se monta
+  a limpeza só com blocos configuráveis ou escreve SQL/Python; não é
+  preciso combinar os dois na mesma cadeia pro v1.
+- **Agregação (`GROUP BY`) entra no v1**, não fica pra depois — caso de
+  uso real do usuário: agregar/limpar antes de vetorizar (destino vetorial)
+  ou de gravar num data warehouse (destino relacional). Meu levantamento
+  original tinha jogado agregação pra "fora do v1" junto com join por
+  engano — só join precisa de 2 inputs; agregação é 1 input, mesmo shape
+  de todos os outros blocos, sem motivo real pra adiar.
+
 ### Como o motor funciona hoje (achado que define o desenho)
 
 - `PipelineSpec` tem UM slot opcional por "kind" de estágio (`transform:
@@ -565,7 +579,8 @@ campo novo de `PipelineSpec` toca: `lineage.rs`, `lib.rs`,
   nível do SQL transform hoje).
 - Traduções en/pt de cada bloco + labels.
 
-**Onde compilar blocos → SQL: decisão em aberto**
+**Onde compilar blocos → SQL: decidido, (b)** — mantendo o raciocínio
+das duas opções por completude:
 - (a) *Client-side* (`dag.ts` já manda o SQL final como `transform.sql`,
   sem campo novo no backend): zero mudança de API, mas reabrir um
   pipeline salvo só tem o SQL final, não os blocos — não dá pra
@@ -576,7 +591,7 @@ campo novo de `PipelineSpec` toca: `lineage.rs`, `lib.rs`,
   estavam — único jeito de cumprir "configurar, não escrever código" de
   forma persistente.
 
-### Catálogo de blocos v1 (~12, cobre a maioria dos casos de limpeza)
+### Catálogo de blocos v1 (~13, cobre a maioria dos casos de limpeza)
 
 1. **Filtrar linhas** — coluna, operador (=, !=, >, <, >=, <=, contém,
    começa com, é nulo, não é nulo), valor
@@ -595,17 +610,48 @@ campo novo de `PipelineSpec` toca: `lineage.rs`, `lib.rs`,
     2 colunas (`col_a + col_b`, concatenar) — builder bem simples, não um
     editor de fórmula genérico
 12. **Ordenar linhas** — coluna, asc/desc
+13. **Agregar (`GROUP BY`)** — `group_by: [coluna, ...]` +
+    `aggregations: [{coluna, função: soma/média/contagem/contagem
+    distinta/mín/máx, nome_saída}]`. Único bloco que muda a cardinalidade
+    das linhas (N:1) — os blocos posteriores da cadeia operam sobre o
+    resultado já agregado, não sobre as linhas originais. Compila pra
+    `SELECT <group_by>, <fn>(<coluna>) AS <nome_saída> ... GROUP BY
+    <group_by>` na CTE da vez.
 
-Fora do v1 (agregação/`GROUP BY`, split de coluna por delimitador, regex,
-pivot, join entre fontes) — cada um muda a forma do schema ou precisa de
-2 inputs, estruturalmente mais complexo; fica pra fase seguinte depois de
-validar o v1 com os básicos.
+Fora do v1 (split de coluna por delimitador, regex, pivot, join entre
+fontes) — cada um muda a forma do schema de outro jeito (join precisa de
+2 inputs) ou é composto (pivot = agregação + reshape); fica pra fase
+seguinte depois de validar o v1 com os básicos.
+
+### Uso pra vetorizar/data warehouse — restrição conhecida da ordem do motor
+
+Caso de uso do usuário: agregar/limpar dados e então (a) vetorizar num
+banco vetorial, ou (b) gravar num data warehouse relacional.
+
+- **(b) funciona direto no v1**: `source -> blocos (agregação/limpeza) ->
+  sink relacional` não usa `embedding` nenhum — a ordem fixa do motor
+  (`sources -> embedding -> llm -> transform -> python -> sinks`,
+  `runner.rs`) não entra no caminho.
+- **(a) esbarra numa restrição que já existe hoje, independente dos
+  blocos**: o motor sempre roda `embedding` **antes** do estágio de
+  transform (SQL ou blocos) — não dá pra "agregar primeiro, embeddar
+  depois" dentro de **um único** pipeline, nem pra quem já escreve SQL
+  hoje. Workaround já suportado pelo produto (Fase 26, orquestração):
+  **dois pipelines encadeados via `depends_on`** — pipeline A agrega/limpa
+  e grava numa tabela de staging; pipeline B lê essa tabela, embedda e
+  grava no banco vetorial. Não é bonito, mas funciona sem mudar a ordem
+  fixa do motor. Reordenar isso de verdade (permitir `transform` antes de
+  `embedding` na mesma run) é uma mudança de arquitetura separada, maior
+  — registrar como possível Fase 31 se virar prioridade real, não incluído
+  no escopo desta fase.
 
 ### Checklist
 
-- [ ] Decisão: compilar client-side vs. server-side (recomendo (b))
-- [ ] Decisão: `clean_blocks` e o node SQL avançado são exclusivos ou
-      combináveis no mesmo pipeline
+- [x] ~~Decisão: compilar client-side vs. server-side~~ — **server-side**,
+      confirmado com o usuário 2026-09-24.
+- [x] ~~Decisão: `clean_blocks` e o node SQL avançado são exclusivos ou
+      combináveis~~ — **alternativas**, usuário escolhe por pipeline,
+      confirmado 2026-09-24.
 - [ ] `nexus-core::clean.rs` — enum + compilador pra SQL + testes
       unitários (1 por bloco, comparando SQL gerado)
 - [ ] `PipelineSpec.clean_blocks` + validação (`dag.rs`)
@@ -635,9 +681,10 @@ validar o v1 com os básicos.
 - **Cadeia linear, sem ramificação** — pedido futuro de "dividir em 2
   caminhos" fica fora de escopo do v1; documentar a limitação na UI.
 
-**Estimativa (chute):** backend (enum+compilador+validação+testes)
-~1,5–2d; frontend (paleta+node+inspector+serialização+i18n) ~2–3d;
-docs+testes de integração ~1d. Total ~5–6 dias.
+**Estimativa (chute):** backend (enum+compilador+validação+testes,
+agregação incluída) ~2–2,5d; frontend (paleta+node+inspector+
+serialização+i18n, config de agregação é o bloco com mais campos)
+~2,5–3,5d; docs+testes de integração ~1d. Total ~6–7 dias.
 
 **Critério de pronto:** pipeline `csv -> [filtrar] -> [renomear] ->
 [remover duplicadas] -> csv` roda de ponta a ponta pelo Canvas sem o
