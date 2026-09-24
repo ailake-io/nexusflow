@@ -477,6 +477,175 @@ Escopo fechado: distribuir a **execução** de pipelines diferentes entre um poo
 
 **Critério de pronto:** N runs enfileirados, cada um reivindicado por exatamente um worker, nenhum duplo-processamento; SQLite recusa/ignora modo worker corretamente. **Atingido.**
 
+## Fase 30 — Blocos de transformação/limpeza sem código (no-code) — planejado, não implementado
+
+Pedido de 2026-09-24: caixas de transformação/limpeza configuráveis (sem
+escrever código), arrastáveis igual conector, encadeáveis entre 1 fonte e
+1 destino, com paleta própria na UI, separada da paleta de conectores.
+
+### Como o motor funciona hoje (achado que define o desenho)
+
+- `PipelineSpec` tem UM slot opcional por "kind" de estágio (`transform:
+  Option<TransformSpec>`, `python`, `dbt`, `embedding`), nunca uma lista.
+  Ordem de execução é **fixa por kind** (`sources -> embedding -> llm ->
+  transform -> python -> sinks`), não pelas arestas do canvas.
+- **As arestas do React Flow no Canvas são só visuais hoje** —
+  `toPipelineSpec` (`frontend/src/lib/dag.ts`) nunca lê `edges`, só filtra
+  nodes por tipo/role. `atMostOneTransform`/`atMostOneDbt`/etc. são
+  validados explicitamente — hoje é literalmente impossível ter 2 nodes de
+  transform no mesmo pipeline.
+- O node "Transform" existente já roda via DataFusion
+  (`crates/nexus-core/src/transform.rs::DataFusionTransform`): registra
+  cada source como tabela em memória e roda **uma** string SQL contra elas.
+- O node Python é o precedente mais próximo de "sem SQL", mas ainda é
+  escrever **código** (script Python livre), não configuração.
+- Não existe autocomplete de coluna em lugar nenhum hoje (nem no SQL
+  transform) — schema real só fica conhecido **depois** de rodar
+  (`pipeline_schema_store.rs`); `GET /pipelines/{id}/preview` exige
+  pipeline já salvo.
+
+### Decisão de arquitetura recomendada (menor risco, reaproveita tudo)
+
+**Blocos = builder visual que gera SQL, não um motor de execução novo.**
+Cada bloco é uma operação tipada (enum com tag, mesmo padrão de
+`QualityCheckKind` em `nexus-core/src/quality.rs`) que sabe se traduzir
+num fragmento SQL. N blocos encadeados viram **uma** string SQL com CTEs
+(`WITH step_0 AS (...), step_1 AS (...) SELECT * FROM step_N`), que
+alimenta o `DataFusionTransform` já existente sem tocar em `runner.rs`,
+checkpoint, lineage ou no motor de streaming CDC — zero motor de execução
+novo.
+
+Consequência prática: a cadeia de blocos é **linear** (sem ramificação/
+merge dentro da cadeia) — combina com o resto do motor (que também não
+tem fan-out/fan-in dentro de um estágio) e cobre "vários boxes conectados
+em sequência" do pedido original. Um grafo de blocos com ramificação real
+exigiria um executor de DAG genérico (reescrita grande de
+`runner.rs`/checkpoint/lineage) — não recomendado pro v1.
+
+### O que muda em cada camada
+
+**Backend (`nexus-core`)**
+- Novo `crates/nexus-core/src/clean.rs`: enum `CleanBlockKind` (tag), cada
+  variante = uma operação (catálogo abaixo), `+ fn to_sql_fragment(&self,
+  input_table: &str) -> String` por variante — puro, sem I/O, testável
+  isoladamente (comparação de string).
+- `PipelineSpec` ganha `#[serde(default)] pub clean_blocks:
+  Vec<CleanBlockSpec>` (`CleanBlockSpec{name?: String, kind:
+  CleanBlockKind}`) — a ordem da lista é a ordem de execução.
+- `compile_clean_blocks(blocks, input_table) -> String` monta a cadeia de
+  CTEs. Se `clean_blocks` não estiver vazio, o SQL compilado vira o
+  `transform.sql` efetivo antes de `DataFusionTransform::new(...)` — sem
+  novo estágio no `runner.rs`, só um passo de compilação antes do que já
+  existe. Sem migração de schema — campo novo com `#[serde(default)]`.
+
+**Backend (`nexus-server`)** — nada de novo em runtime; só refletir
+`clean_blocks` onde `transform` já é citado (mesmos pontos que qualquer
+campo novo de `PipelineSpec` toca: `lineage.rs`, `lib.rs`,
+`pipeline_store.rs`, `migrate.rs`).
+
+**Frontend**
+- `frontend/src/lib/dag.ts`: novo `kind: 'clean'` node data
+  (`{blockKind: <tag>, ...campos}`); `toPipelineSpec`/`fromPipelineSpec`
+  juntam todos os nodes `clean` em `clean_blocks: []` **na ordem em que
+  aparecem da esquerda pra direita no canvas** (posição X, não aresta) —
+  mais simples que inferir ordem por grafo, e o layout atual dos outros
+  nodes já ensina essa leitura.
+- Novo `CleanBlockPalette.tsx` (espelho de `ConnectorPalette.tsx`): lista
+  fixa (hardcoded, não vem de `GET /connectors`) dos blocos do catálogo
+  abaixo, arrastável igual conector.
+- **Abas/toggle entre as duas paletas** — pedido explícito ("clicando em
+  conectores abre os conectores, e outra com transformações"): duas abas
+  (`Conectores` / `Transformações`) no topo da paleta lateral de
+  `DagCanvas.tsx`, trocando o conteúdo abaixo, mesma largura/posição.
+- `dag-nodes.tsx` + `node-card.tsx`: novo `CleanBlockNodeView`, accent
+  novo no `NodeCard`, ícone por tipo de bloco.
+- `NodeInspector.tsx`: painel de config por `blockKind` (mesmo padrão já
+  usado pro union do node embedding — `<select>` do tipo + campos
+  condicionais). Colunas por texto livre, sem autocomplete no v1 (mesmo
+  nível do SQL transform hoje).
+- Traduções en/pt de cada bloco + labels.
+
+**Onde compilar blocos → SQL: decisão em aberto**
+- (a) *Client-side* (`dag.ts` já manda o SQL final como `transform.sql`,
+  sem campo novo no backend): zero mudança de API, mas reabrir um
+  pipeline salvo só tem o SQL final, não os blocos — não dá pra
+  "desmontar" de volta em caixas editáveis. Quebra o objetivo de UX.
+- (b) *Server-side, `clean_blocks` persistido* (recomendado): frontend
+  manda a lista estruturada, backend compila o SQL toda vez que
+  roda/valida. Reabrir o pipeline reidrata as caixas exatamente como
+  estavam — único jeito de cumprir "configurar, não escrever código" de
+  forma persistente.
+
+### Catálogo de blocos v1 (~12, cobre a maioria dos casos de limpeza)
+
+1. **Filtrar linhas** — coluna, operador (=, !=, >, <, >=, <=, contém,
+   começa com, é nulo, não é nulo), valor
+2. **Selecionar/remover colunas** — lista de colunas a manter ou remover
+3. **Renomear coluna** — de/para
+4. **Converter tipo** — coluna, tipo alvo (int, float, texto, data,
+   booleano)
+5. **Remover espaços (trim)** — coluna(s)
+6. **Buscar e substituir texto** — coluna, buscar, substituir (texto
+   literal; regex fica pra v2)
+7. **Preencher nulos** — coluna, valor padrão
+8. **Remover linhas com nulo** — coluna(s)
+9. **Remover duplicadas** — todas as colunas ou lista específica
+10. **Maiúsculas/minúsculas/capitalizar** — coluna, modo
+11. **Coluna calculada simples** — nome da nova coluna, expressão entre
+    2 colunas (`col_a + col_b`, concatenar) — builder bem simples, não um
+    editor de fórmula genérico
+12. **Ordenar linhas** — coluna, asc/desc
+
+Fora do v1 (agregação/`GROUP BY`, split de coluna por delimitador, regex,
+pivot, join entre fontes) — cada um muda a forma do schema ou precisa de
+2 inputs, estruturalmente mais complexo; fica pra fase seguinte depois de
+validar o v1 com os básicos.
+
+### Checklist
+
+- [ ] Decisão: compilar client-side vs. server-side (recomendo (b))
+- [ ] Decisão: `clean_blocks` e o node SQL avançado são exclusivos ou
+      combináveis no mesmo pipeline
+- [ ] `nexus-core::clean.rs` — enum + compilador pra SQL + testes
+      unitários (1 por bloco, comparando SQL gerado)
+- [ ] `PipelineSpec.clean_blocks` + validação (`dag.rs`)
+- [ ] Ajustar os pontos que hoje citam `transform`/`python: None` nos
+      arquivos de store/lineage/migração
+- [ ] `CleanBlockPalette.tsx` + abas Conectores/Transformações em
+      `DagCanvas.tsx`
+- [ ] `CleanBlockNodeView` + accent novo em `node-card.tsx`
+- [ ] Config por bloco em `NodeInspector.tsx`
+- [ ] `dag.ts`: serialização por posição X, ida e volta
+      (`toPipelineSpec`/`fromPipelineSpec`)
+- [ ] Traduções en/pt
+- [ ] Testes: 1 pipeline real por bloco (roda de ponta a ponta); reabrir
+      pipeline salvo reidrata os blocos corretamente; erro de validação
+      claro quando bloco referencia coluna inexistente (só detectável em
+      runtime, sem schema prévio)
+- [ ] Docs: `USER_GUIDE.md` (seção nova), `ARCHITECTURE.md` (documentar a
+      decisão "compila pra SQL" — é a parte menos óbvia)
+
+### Riscos
+
+- **Nome de coluna sem autocomplete** — mesmo nível de fricção do SQL
+  transform hoje; melhoria futura via `pipeline_schema_store` (schema da
+  última run) alimentando um dropdown, só funciona após a 1ª execução.
+- **Escapar identificador SQL** (nome de coluna com espaço/aspas) — usar
+  aspas duplas do DataFusion consistentemente; testar com nome "sujo".
+- **Cadeia linear, sem ramificação** — pedido futuro de "dividir em 2
+  caminhos" fica fora de escopo do v1; documentar a limitação na UI.
+
+**Estimativa (chute):** backend (enum+compilador+validação+testes)
+~1,5–2d; frontend (paleta+node+inspector+serialização+i18n) ~2–3d;
+docs+testes de integração ~1d. Total ~5–6 dias.
+
+**Critério de pronto:** pipeline `csv -> [filtrar] -> [renomear] ->
+[remover duplicadas] -> csv` roda de ponta a ponta pelo Canvas sem o
+usuário escrever SQL/código nenhum; salvar e reabrir mantém as 3 caixas
+editáveis; SQL gerado testado unitariamente pros 12 blocos.
+
+---
+
 ---
 
 **Critério de "MVP pronto"**: Fases 0–3 + 7 (parcial: auth básica) + 8 (canvas mínimo) funcionando end-to-end — mover dados de Postgres pra Postgres via canvas visual, com checkpoint por partição, retry e escrita idempotente. **Atingido e superado** — Fases 0–11 e 13–29 completas, só falta Fase 12 (enterprise, repo separado) e os itens condicionais/parciais marcados acima.
