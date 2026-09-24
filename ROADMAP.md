@@ -496,6 +496,15 @@ escrever código), arrastáveis igual conector, encadeáveis entre 1 fonte e
   original tinha jogado agregação pra "fora do v1" junto com join por
   engano — só join precisa de 2 inputs; agregação é 1 input, mesmo shape
   de todos os outros blocos, sem motivo real pra adiar.
+- **Preview por bloco** (2026-09-24, pedido no meio da implementação):
+  cada bloco, ao ser configurado, tem um botão "Visualizar" igual o resto
+  do produto já tem (`DataPreviewPanel.tsx`) — mostra uma amostra de como
+  os dados ficam depois daquele bloco (e de todos os anteriores na
+  cadeia), sem precisar salvar/rodar o pipeline inteiro.
+- **Tratamento de nulos mais rico** (2026-09-24): além de "preencher com
+  valor fixo" e "remover linha com nulo", o bloco de preenchimento ganha
+  mais estratégias (média da coluna, valor de outra coluna) — catálogo
+  atualizado abaixo.
 
 ### Como o motor funciona hoje (achado que define o desenho)
 
@@ -517,6 +526,16 @@ escrever código), arrastáveis igual conector, encadeáveis entre 1 fonte e
   transform) — schema real só fica conhecido **depois** de rodar
   (`pipeline_schema_store.rs`); `GET /pipelines/{id}/preview` exige
   pipeline já salvo.
+
+### Restrição nova (achada ao desenhar o preview): 1 source só no v1
+
+Preview por bloco precisa rodar a cadeia ad-hoc, sem pipeline salvo — mais
+simples de implementar (e de entender pro usuário) se `clean_blocks` só
+aceitar **exatamente 1 source**, mesma restrição que hoje já existe pro
+caminho sem transform SQL e pro node Python sozinho (`dag.rs::validate()`).
+Múltiplas fontes exigiriam registrar N tabelas antes de rodar o preview e
+o usuário escolher em qual delas cada bloco atua — fora de escopo do v1,
+mesmo raciocínio que já tirou join do catálogo.
 
 ### Decisão de arquitetura recomendada (menor risco, reaproveita tudo)
 
@@ -591,6 +610,31 @@ das duas opções por completude:
   estavam — único jeito de cumprir "configurar, não escrever código" de
   forma persistente.
 
+### Preview por bloco — reaproveita o `/connectors/preview` ad-hoc que já existe
+
+`preview_adhoc_handler` (`POST /connectors/preview`, `crates/nexus-server/
+src/lib.rs`) já prova que dá pra prever dado **sem pipeline salvo**: monta
+um `PipelineSpec` descartável só com o source, chama `build_source` +
+`read_preview_rows` (lê N batches reais do conector, sem tocar sink). Pra
+preview de bloco, o mesmo caminho + um passo: compilar `clean_blocks[0..=i]`
+pra SQL (`compile_clean_blocks`) e rodar via `DataFusionTransform` sobre os
+batches lidos, antes de virar JSON.
+
+- Refatorar `read_preview_rows` em duas partes: `read_preview_batches(source,
+  limit) -> Vec<RecordBatch>` (lê+corta, sem serializar) e a conversão pra
+  JSON por cima — `read_preview_rows` atual vira `read_preview_batches(...)`
+  + essa conversão; o handler novo reaproveita só a parte de batches.
+- Novo `POST /pipelines/preview-clean-blocks`, body `{source: NodeSpec,
+  blocks: Vec<CleanBlockSpec>, limit?: usize}` (mesmo tier de trust do
+  `/connectors/preview` — `Execute`, não precisa de pipeline salvo):
+  `build_source` no `source`, `read_preview_batches`, `compile_clean_blocks`
+  pra SQL, `DataFusionTransform::new(sql).apply([(nome_tabela, schema,
+  batches)])`, resultado vira JSON do mesmo jeito que o preview de hoje.
+- Frontend: botão "Visualizar" no painel de config de cada node `clean`
+  (`NodeInspector.tsx`), reaproveitando `DataPreviewPanel.tsx` — manda o
+  source conectado + todos os blocos até (e incluindo) o que está sendo
+  editado, na ordem por posição X do canvas.
+
 ### Catálogo de blocos v1 (~13, cobre a maioria dos casos de limpeza)
 
 1. **Filtrar linhas** — coluna, operador (=, !=, >, <, >=, <=, contém,
@@ -602,7 +646,12 @@ das duas opções por completude:
 5. **Remover espaços (trim)** — coluna(s)
 6. **Buscar e substituir texto** — coluna, buscar, substituir (texto
    literal; regex fica pra v2)
-7. **Preencher nulos** — coluna, valor padrão
+7. **Preencher nulos** — coluna + estratégia: valor fixo, média da
+   coluna (`COALESCE(col, (SELECT AVG(col) FROM <cte_anterior>))`, só
+   numérico) ou valor de outra coluna (`COALESCE(col_a, col_b)`). Mediana/
+   moda ficam fora do v1 — mediana depende de suporte a percentil no
+   DataFusion (não confirmado), moda não tem expressão SQL simples de 1
+   linha; registrar como possível v2.
 8. **Remover linhas com nulo** — coluna(s)
 9. **Remover duplicadas** — todas as colunas ou lista específica
 10. **Maiúsculas/minúsculas/capitalizar** — coluna, modo
@@ -654,7 +703,11 @@ banco vetorial, ou (b) gravar num data warehouse relacional.
       confirmado 2026-09-24.
 - [ ] `nexus-core::clean.rs` — enum + compilador pra SQL + testes
       unitários (1 por bloco, comparando SQL gerado)
-- [ ] `PipelineSpec.clean_blocks` + validação (`dag.rs`)
+- [ ] `PipelineSpec.clean_blocks` + validação (`dag.rs`) — exatamente 1
+      source, mesma regra do caminho sem transform SQL
+- [ ] Refatorar `read_preview_rows` em `read_preview_batches` + conversão
+      JSON separada (sem mudar comportamento do endpoint existente)
+- [ ] `POST /pipelines/preview-clean-blocks` (preview ad-hoc por bloco)
 - [ ] Ajustar os pontos que hoje citam `transform`/`python: None` nos
       arquivos de store/lineage/migração
 - [ ] `CleanBlockPalette.tsx` + abas Conectores/Transformações em
