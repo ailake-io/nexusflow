@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
+  DEFAULT_CLEAN_DATA,
   fromPipelineSpec,
   toPipelineSpec,
+  type CleanBlockNodeData,
   type ConnectorNodeData,
   type DagNode,
   type EmbeddingNodeData,
@@ -75,6 +77,19 @@ function embeddingNode(overrides: Partial<EmbeddingNodeData> = {}): DagNode {
       separators: '',
       ...overrides,
     },
+  }
+}
+
+function cleanNode(
+  id: string,
+  x: number,
+  overrides: Partial<CleanBlockNodeData> = {},
+): DagNode {
+  return {
+    id,
+    type: 'clean',
+    position: { x, y: 0 },
+    data: { ...DEFAULT_CLEAN_DATA, ...overrides },
   }
 }
 
@@ -204,5 +219,212 @@ describe('fromPipelineSpec', () => {
     const { nodes } = fromPipelineSpec(original)
     const roundTrip = toPipelineSpec(nodes, meta)
     expect(roundTrip.embedding).toEqual(original.embedding)
+  })
+})
+
+describe('toPipelineSpec — clean blocks (Fase 30)', () => {
+  it('serializes a single filter block', () => {
+    const spec = toPipelineSpec(
+      [
+        sourceNode(),
+        cleanNode('c1', 100, {
+          blockKind: 'filter',
+          column: 'valor',
+          operator: 'gt',
+          value: '10',
+        }),
+        sinkNode(),
+      ],
+      meta,
+    )
+    expect(spec.clean_blocks).toEqual([
+      { kind: 'filter', column: 'valor', operator: 'gt', value: '10' },
+    ])
+    expect(spec.transform).toBeUndefined()
+  })
+
+  it('orders blocks by canvas x position, not array/insertion order', () => {
+    const spec = toPipelineSpec(
+      [
+        sourceNode(),
+        cleanNode('later', 400, { blockKind: 'sort', column: 'id', direction: 'asc' }),
+        cleanNode('earlier', 100, { blockKind: 'trim', columns: 'nome' }),
+        sinkNode(),
+      ],
+      meta,
+    )
+    expect(spec.clean_blocks?.map((b) => b.kind)).toEqual(['trim', 'sort'])
+  })
+
+  it('rejects combining clean blocks with a transform node', () => {
+    expect(() =>
+      toPipelineSpec(
+        [sourceNode(), transformNode('SELECT 1'), cleanNode('c1', 100), sinkNode()],
+        meta,
+      ),
+    ).toThrow('cannot be combined')
+  })
+
+  it('rejects combining clean blocks with a python node', () => {
+    const pythonNode: DagNode = {
+      id: 'py',
+      type: 'python',
+      position: { x: 0, y: 0 },
+      data: { kind: 'python', script: 'def transform(df):\n    return df', timeoutSeconds: 0 },
+    }
+    expect(() =>
+      toPipelineSpec([sourceNode(), pythonNode, cleanNode('c1', 100), sinkNode()], meta),
+    ).toThrow('cannot be combined')
+  })
+
+  it('rejects clean blocks with more than 1 source', () => {
+    expect(() =>
+      toPipelineSpec([sourceNode(), sourceNode(), cleanNode('c1', 100), sinkNode()], meta),
+    ).toThrow('exactly 1 source')
+  })
+
+  it('allows clean blocks to fan out to multiple sinks', () => {
+    const spec = toPipelineSpec(
+      [
+        sourceNode(),
+        cleanNode('c1', 100, { blockKind: 'sort', column: 'id', direction: 'asc' }),
+        sinkNode(),
+        sinkNode(),
+      ],
+      meta,
+    )
+    expect(spec.sinks).toHaveLength(2)
+  })
+
+  it('rejects a filter block missing its column', () => {
+    expect(() =>
+      toPipelineSpec(
+        [sourceNode(), cleanNode('c1', 100, { blockKind: 'filter' }), sinkNode()],
+        meta,
+      ),
+    ).toThrow('column must not be empty')
+  })
+
+  it('rejects a comparison filter with no value', () => {
+    expect(() =>
+      toPipelineSpec(
+        [
+          sourceNode(),
+          cleanNode('c1', 100, { blockKind: 'filter', column: 'id', operator: 'eq' }),
+          sinkNode(),
+        ],
+        meta,
+      ),
+    ).toThrow('requires a value')
+  })
+
+  it('is_null/is_not_null filters need no value', () => {
+    const spec = toPipelineSpec(
+      [
+        sourceNode(),
+        cleanNode('c1', 100, { blockKind: 'filter', column: 'id', operator: 'is_null' }),
+        sinkNode(),
+      ],
+      meta,
+    )
+    expect(spec.clean_blocks?.[0]).toEqual({ kind: 'filter', column: 'id', operator: 'is_null' })
+  })
+
+  it('parses the group_by/aggregations mini-DSL', () => {
+    const spec = toPipelineSpec(
+      [
+        sourceNode(),
+        cleanNode('c1', 100, {
+          blockKind: 'aggregate',
+          groupBy: 'cidade',
+          aggregations: 'valor:sum:total_valor\nid:count:total_linhas',
+        }),
+        sinkNode(),
+      ],
+      meta,
+    )
+    expect(spec.clean_blocks?.[0]).toEqual({
+      kind: 'aggregate',
+      group_by: ['cidade'],
+      aggregations: [
+        { column: 'valor', function: 'sum', output: 'total_valor' },
+        { column: 'id', function: 'count', output: 'total_linhas' },
+      ],
+    })
+  })
+
+  it('rejects a malformed aggregation line', () => {
+    expect(() =>
+      toPipelineSpec(
+        [
+          sourceNode(),
+          cleanNode('c1', 100, { blockKind: 'aggregate', aggregations: 'not-a-valid-line' }),
+          sinkNode(),
+        ],
+        meta,
+      ),
+    ).toThrow('column:function:output')
+  })
+
+  it('fill_nulls with other_column strategy uses fallback_column, not column', () => {
+    const spec = toPipelineSpec(
+      [
+        sourceNode(),
+        cleanNode('c1', 100, {
+          blockKind: 'fill_nulls',
+          column: 'nome',
+          nullStrategy: 'other_column',
+          fallbackColumn: 'cidade',
+        }),
+        sinkNode(),
+      ],
+      meta,
+    )
+    expect(spec.clean_blocks?.[0]).toEqual({
+      kind: 'fill_nulls',
+      column: 'nome',
+      strategy: 'other_column',
+      fallback_column: 'cidade',
+    })
+  })
+})
+
+describe('fromPipelineSpec — clean blocks (Fase 30)', () => {
+  it('round-trips a chain of clean blocks, preserving order', () => {
+    const original = toPipelineSpec(
+      [
+        sourceNode(),
+        cleanNode('c1', 100, { blockKind: 'trim', columns: 'nome' }),
+        cleanNode('c2', 200, { blockKind: 'sort', column: 'id', direction: 'asc' }),
+        sinkNode(),
+      ],
+      meta,
+    )
+    const { nodes, edges } = fromPipelineSpec(original)
+    const cleanNodes = nodes.filter((n) => n.data.kind === 'clean')
+    expect(cleanNodes).toHaveLength(2)
+    // Re-serializing must reproduce the exact same order/content.
+    const roundTrip = toPipelineSpec(nodes, meta)
+    expect(roundTrip.clean_blocks).toEqual(original.clean_blocks)
+    // source -> block1 -> block2 -> sink, no edge skips the chain.
+    expect(edges).toHaveLength(3)
+  })
+
+  it('round-trips an aggregate block', () => {
+    const original = toPipelineSpec(
+      [
+        sourceNode(),
+        cleanNode('c1', 100, {
+          blockKind: 'aggregate',
+          groupBy: 'cidade',
+          aggregations: 'valor:sum:total',
+        }),
+        sinkNode(),
+      ],
+      meta,
+    )
+    const { nodes } = fromPipelineSpec(original)
+    const roundTrip = toPipelineSpec(nodes, meta)
+    expect(roundTrip.clean_blocks).toEqual(original.clean_blocks)
   })
 })

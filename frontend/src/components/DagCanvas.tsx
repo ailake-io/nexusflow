@@ -18,6 +18,7 @@ import { Code2, Layers, Sparkles, Terminal } from 'lucide-react'
 import { useI18n } from '@/lib/i18n'
 import { useTheme } from '@/lib/theme'
 import { ConnectorPalette } from '@/components/ConnectorPalette'
+import { CleanBlockPalette, CLEAN_BLOCK_DRAG_TYPE } from '@/components/CleanBlockPalette'
 import { dagNodeTypes } from '@/components/dag-node-types'
 import { ExecutionPanel } from '@/components/ExecutionPanel'
 import { NodeInspector } from '@/components/NodeInspector'
@@ -29,6 +30,8 @@ import { useRunProgress } from '@/hooks/useRunProgress'
 import {
   fromPipelineSpec,
   toPipelineSpec,
+  DEFAULT_CLEAN_DATA,
+  type CleanBlockNodeData,
   type ConnectorNodeData,
   type DagNode,
   type DagNodeData,
@@ -78,6 +81,7 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
     return stored >= 260 && stored <= 640 ? stored : 320
   })
   const resizingInspectorRef = useRef(false)
+  const [paletteTab, setPaletteTab] = useState<'connectors' | 'transformations'>('connectors')
 
   const onNodesChange: OnNodesChange<DagNode> = useCallback(
     (changes) => setNodes((current) => applyNodeChanges(changes, current)),
@@ -104,16 +108,24 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
     (event: DragEvent<HTMLDivElement>) => {
       event.preventDefault()
       const connector = event.dataTransfer.getData('application/nexusflow-connector')
-      if (!connector) return
+      const cleanBlockKind = event.dataTransfer.getData(CLEAN_BLOCK_DRAG_TYPE)
+      if (!connector && !cleanBlockKind) return
 
       const position = screenToFlowPosition({ x: event.clientX, y: event.clientY })
       const id = newNodeId()
-      const newNode: DagNode = {
-        id,
-        type: 'connector',
-        position,
-        data: { kind: 'connector', connector, role: 'source', name: '', config: '{}' },
-      }
+      const newNode: DagNode = cleanBlockKind
+        ? {
+            id,
+            type: 'clean',
+            position,
+            data: { ...DEFAULT_CLEAN_DATA, blockKind: cleanBlockKind as CleanBlockNodeData['blockKind'] },
+          }
+        : {
+            id,
+            type: 'connector',
+            position,
+            data: { kind: 'connector', connector, role: 'source', name: '', config: '{}' },
+          }
       setNodes((current) => [...current, newNode])
     },
     [screenToFlowPosition],
@@ -198,7 +210,8 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
         | Partial<TransformNodeData>
         | Partial<DbtNodeData>
         | Partial<EmbeddingNodeData>
-        | Partial<PythonNodeData>,
+        | Partial<PythonNodeData>
+        | Partial<CleanBlockNodeData>,
     ) => {
       setNodes((current) =>
         current.map((n) =>
@@ -401,7 +414,41 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
         </div>
       )}
       <div className="flex flex-1 overflow-hidden">
-        <ConnectorPalette connectors={connectors} loading={loading} error={error} />
+        <div className="flex w-60 shrink-0 flex-col overflow-hidden border-r bg-card">
+          <div className="flex border-b border-white/10" role="tablist">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={paletteTab === 'connectors'}
+              onClick={() => setPaletteTab('connectors')}
+              className={`flex-1 px-3 py-2 text-xs font-medium transition-colors ${
+                paletteTab === 'connectors'
+                  ? 'border-b-2 border-primary text-foreground'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              {t('canvas.connectors')}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={paletteTab === 'transformations'}
+              onClick={() => setPaletteTab('transformations')}
+              className={`flex-1 px-3 py-2 text-xs font-medium transition-colors ${
+                paletteTab === 'transformations'
+                  ? 'border-b-2 border-teal-400 text-foreground'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              {t('canvas.transformations')}
+            </button>
+          </div>
+          {paletteTab === 'connectors' ? (
+            <ConnectorPalette connectors={connectors} loading={loading} error={error} />
+          ) : (
+            <CleanBlockPalette />
+          )}
+        </div>
         <div ref={wrapperRef} className="relative flex-1 bg-background" onDragOver={onDragOver} onDrop={onDrop}>
           <ReactFlow
             nodes={nodes}
@@ -459,7 +506,7 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
               onMouseDown={handleInspectorResizeStart}
               className="absolute -left-1 top-0 z-10 h-full w-2 cursor-col-resize hover:bg-accent/40 active:bg-accent/60"
             />
-            <NodeInspector node={selectedNode} connectors={connectors} onChange={updateNodeData} />
+            <NodeInspector node={selectedNode} allNodes={nodes} connectors={connectors} onChange={updateNodeData} />
           </div>
         )}
       </div>

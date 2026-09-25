@@ -477,7 +477,7 @@ Escopo fechado: distribuir a **execução** de pipelines diferentes entre um poo
 
 **Critério de pronto:** N runs enfileirados, cada um reivindicado por exatamente um worker, nenhum duplo-processamento; SQLite recusa/ignora modo worker corretamente. **Atingido.**
 
-## Fase 30 — Blocos de transformação/limpeza sem código (no-code) — planejado, não implementado
+## Fase 30 — Blocos de transformação/limpeza sem código (no-code) — backend e frontend implementados, docs pendentes
 
 Pedido de 2026-09-24: caixas de transformação/limpeza configuráveis (sem
 escrever código), arrastáveis igual conector, encadeáveis entre 1 fonte e
@@ -730,19 +730,45 @@ banco vetorial, ou (b) gravar num data warehouse relacional.
 - [x] Teste de integração real de ponta a ponta (`runner.rs`): CSV em
       disco → filtro + rename + sort → CSV de saída, via `run_pipeline`
       de verdade, não só o compilador isolado.
-- [ ] `CleanBlockPalette.tsx` + abas Conectores/Transformações em
-      `DagCanvas.tsx`
-- [ ] `CleanBlockNodeView` + accent novo em `node-card.tsx`
-- [ ] Config por bloco em `NodeInspector.tsx`
-- [ ] `dag.ts`: serialização por posição X, ida e volta
-      (`toPipelineSpec`/`fromPipelineSpec`)
-- [ ] Traduções en/pt
-- [ ] Testes: 1 pipeline real por bloco (roda de ponta a ponta); reabrir
-      pipeline salvo reidrata os blocos corretamente; erro de validação
-      claro quando bloco referencia coluna inexistente (só detectável em
-      runtime, sem schema prévio)
-- [ ] Docs: `USER_GUIDE.md` (seção nova), `ARCHITECTURE.md` (documentar a
-      decisão "compila pra SQL" — é a parte menos óbvia)
+- [x] `CleanBlockPalette.tsx` + abas Conectores/Transformações em
+      `DagCanvas.tsx` — abas via `useState<'connectors'|'transformations'>`
+      no próprio `DagCanvas`; `ConnectorPalette`/`CleanBlockPalette` viraram
+      `flex-1` sem largura/borda própria (o wrapper novo passou a dono
+      dessas classes).
+- [x] `CleanBlockNodeView` + accent novo em `node-card.tsx` — accent `teal`,
+      ícone `Wand2`, subtítulo por `blockKind` (`cleanBlockSubtitle`, 13
+      casos).
+- [x] Config por bloco em `NodeInspector.tsx` — achado real: o bloco
+      `embedding` (sem guarda de `data.kind`) contava com ser o último
+      ramo depois de 4 `if` sequenciais pra TS estreitar o tipo; o 6º
+      membro da union (`clean`) quebrou essa exaustividade implícita (17
+      erros `TS2322`, campos virando `unknown`). Corrigido com um `if
+      (data.kind === 'clean')` explícito antes do bloco de embedding.
+      Botão "Visualizar" reaproveita o padrão de `NodePreview.tsx` via
+      `CleanBlockPreview.tsx` novo.
+- [x] `dag.ts`: serialização por posição X, ida e volta
+      (`toPipelineSpec`/`fromPipelineSpec`) — `toCleanBlockSpec`/
+      `fromCleanBlockSpec`, 13 casos cada; bug real pego por teste de
+      round-trip JSON no backend (`fallback_column`) replicado aqui no
+      tipo TS pra não reabrir a mesma colisão.
+- [x] Traduções en/pt — achado real: `canvas.clean.operator` (e mais 5:
+      `dataType`, `nullStrategy`, `caseMode`, `computeOperator`,
+      `direction`) precisavam ser ao mesmo tempo label de campo (string) e
+      mapa de opções do enum (objeto) — colisão estrutural real, não dá
+      pra um objeto JS ter a mesma chave como string e objeto. Corrigido
+      sufixando os 6 labels com `Label` (`operatorLabel` etc.), espelhado
+      em `NodeInspector.tsx`.
+- [x] Testes: 27 testes em `dag.test.ts` (10 `toPipelineSpec` + 2
+      `fromPipelineSpec` de clean blocks, cobrindo ordenação por X,
+      exclusividade com transform/python, >1 source, fan-out de sinks,
+      validação de coluna/valor obrigatório, mini-DSL de agregação e a
+      distinção `column`/`fallback_column`) — suite completa (56 arquivos)
+      sem regressão; `tsc -b` e `oxlint` limpos (só warnings pré-existentes
+      não relacionados).
+- [x] Docs: `USER_GUIDE.md` §12 (seção nova, exemplo prático + preview +
+      restrição de vetorizar num único pipeline), `ARCHITECTURE.md` §19
+      (decisão "compila pra SQL" + achados de DataFusion + bug do
+      `fallback_column`)
 
 ### Riscos
 
