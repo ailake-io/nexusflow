@@ -7902,6 +7902,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexus-connector-mssql"
+version = "0.1.7"
+dependencies = [
+ "adbc_core",
+ "adbc_driver_manager",
+ "arrow-array 58.4.0",
+ "arrow-schema 58.4.0",
+ "arrow-select 58.4.0",
+ "async-trait",
+ "futures",
+ "nexus-core",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "nexus-connector-mysql"
 version = "0.1.7"
 dependencies = [
@@ -8104,6 +8122,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexus-connector-redshift"
+version = "0.1.7"
+dependencies = [
+ "adbc_core",
+ "adbc_driver_manager",
+ "arrow-array 58.4.0",
+ "arrow-schema 58.4.0",
+ "async-trait",
+ "futures",
+ "nexus-core",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "nexus-connector-rest"
 version = "0.1.7"
 dependencies = [
@@ -8250,6 +8285,7 @@ dependencies = [
  "nexus-connector-milvus",
  "nexus-connector-mongodb",
  "nexus-connector-mqtt",
+ "nexus-connector-mssql",
  "nexus-connector-mysql",
  "nexus-connector-nats",
  "nexus-connector-odbc",
@@ -8261,6 +8297,7 @@ dependencies = [
  "nexus-connector-qdrant",
  "nexus-connector-rabbitmq",
  "nexus-connector-redis",
+ "nexus-connector-redshift",
  "nexus-connector-rest",
  "nexus-connector-sqlite",
  "nexus-connector-starburst",

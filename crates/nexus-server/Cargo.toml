@@ -91,7 +91,7 @@ connectors-all = [
     "mongodb", "mysql", "kafka", "mqtt", "rest", "odbc", "milvus", "qdrant", "lancedb",
     "pgvector", "pinecone", "chromadb", "deltalake", "iceberg", "parquet",
     "ailake", "csv", "clickhouse", "duckdb", "redis", "nats", "rabbitmq",
-    "starburst", "teradata", "vertica", "hana", "oracle",
+    "starburst", "teradata", "vertica", "hana", "oracle", "mssql", "redshift",
     "embeddings", "embeddings-api", "llm", "version-history",
     "postgres-cdc", "mysql-cdc", "deltalake-cdc", "iceberg-cdc", "ailake-cdc",
 ]
@@ -102,7 +102,7 @@ connectors-all-no-embeddings = [
     "mongodb", "mysql", "kafka", "mqtt", "rest", "odbc", "milvus", "qdrant", "lancedb",
     "pgvector", "pinecone", "chromadb", "deltalake", "iceberg", "parquet",
     "ailake", "csv", "clickhouse", "duckdb", "redis", "nats", "rabbitmq",
-    "starburst", "teradata", "vertica", "hana", "oracle",
+    "starburst", "teradata", "vertica", "hana", "oracle", "mssql", "redshift",
     "version-history",
     "postgres-cdc", "mysql-cdc", "deltalake-cdc", "iceberg-cdc", "ailake-cdc",
 ]
@@ -153,6 +153,8 @@ teradata = ["dep:nexus-connector-teradata"]
 vertica = ["dep:nexus-connector-vertica"]
 hana = ["dep:nexus-connector-hana"]
 oracle = ["dep:nexus-connector-oracle"]
+mssql = ["dep:nexus-connector-mssql"]
+redshift = ["dep:nexus-connector-redshift"]
 
 [dependencies]
 aes-gcm = "0.10.3"
@@ -204,6 +206,8 @@ nexus-connector-teradata = { version = "0.1.0", path = "../nexus-connectors/nexu
 nexus-connector-vertica = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-vertica", optional = true }
 nexus-connector-hana = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-hana", optional = true }
 nexus-connector-oracle = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-oracle", optional = true }
+nexus-connector-mssql = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-mssql", optional = true }
+nexus-connector-redshift = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-redshift", optional = true }
 nexus-core = { version = "0.1.0", path = "../nexus-core" }
 nexus-ai = { version = "0.1.0", path = "../nexus-ai", optional = true }
 hex = "0.4.3"

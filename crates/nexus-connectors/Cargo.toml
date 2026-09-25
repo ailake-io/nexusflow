@@ -30,6 +30,8 @@ members = [
     "nexus-connector-vertica",
     "nexus-connector-hana",
     "nexus-connector-oracle",
+    "nexus-connector-mssql",
+    "nexus-connector-redshift",
 ]
 
 [workspace.package]
