@@ -93,6 +93,7 @@ connectors-all = [
     "ailake", "csv", "clickhouse", "duckdb", "redis", "nats", "rabbitmq",
     "starburst", "teradata", "vertica", "hana", "oracle", "mssql", "redshift", "bigquery", "snowflake",
     "databricks", "elasticsearch", "weaviate", "vertex-vector-search", "azure-ai-search",
+    "kinesis", "pulsar",
     "embeddings", "embeddings-api", "llm", "version-history",
     "postgres-cdc", "mysql-cdc", "deltalake-cdc", "iceberg-cdc", "ailake-cdc",
 ]
@@ -105,6 +106,7 @@ connectors-all-no-embeddings = [
     "ailake", "csv", "clickhouse", "duckdb", "redis", "nats", "rabbitmq",
     "starburst", "teradata", "vertica", "hana", "oracle", "mssql", "redshift", "bigquery", "snowflake",
     "databricks", "elasticsearch", "weaviate", "vertex-vector-search", "azure-ai-search",
+    "kinesis", "pulsar",
     "version-history",
     "postgres-cdc", "mysql-cdc", "deltalake-cdc", "iceberg-cdc", "ailake-cdc",
 ]
@@ -164,6 +166,8 @@ elasticsearch = ["dep:nexus-connector-elasticsearch"]
 weaviate = ["dep:nexus-connector-weaviate"]
 vertex-vector-search = ["dep:nexus-connector-vertex-vector-search"]
 azure-ai-search = ["dep:nexus-connector-azure-ai-search"]
+kinesis = ["dep:nexus-connector-kinesis"]
+pulsar = ["dep:nexus-connector-pulsar"]
 
 [dependencies]
 aes-gcm = "0.10.3"
@@ -224,6 +228,8 @@ nexus-connector-elasticsearch = { version = "0.1.0", path = "../nexus-connectors
 nexus-connector-weaviate = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-weaviate", optional = true }
 nexus-connector-vertex-vector-search = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-vertex-vector-search", optional = true }
 nexus-connector-azure-ai-search = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-azure-ai-search", optional = true }
+nexus-connector-kinesis = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-kinesis", optional = true }
+nexus-connector-pulsar = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-pulsar", optional = true }
 nexus-core = { version = "0.1.0", path = "../nexus-core" }
 nexus-ai = { version = "0.1.0", path = "../nexus-ai", optional = true }
 hex = "0.4.3"

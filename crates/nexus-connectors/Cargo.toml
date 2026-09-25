@@ -39,6 +39,8 @@ members = [
     "nexus-connector-weaviate",
     "nexus-connector-vertex-vector-search",
     "nexus-connector-azure-ai-search",
+    "nexus-connector-kinesis",
+    "nexus-connector-pulsar",
 ]
 
 [workspace.package]
