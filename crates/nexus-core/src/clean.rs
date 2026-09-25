@@ -925,4 +925,63 @@ mod tests {
             .value(0);
         assert!((avg - 31.666).abs() < 0.01);
     }
+
+    /// Fase 31: a CDC source's `__opcode` column must survive a block chain
+    /// `dag.rs::validate()` allows (no `aggregate`, no `select_columns` that
+    /// drops it) — this is the actual technical guarantee that validation
+    /// rule rests on, verified against a real compiled+executed SQL chain,
+    /// not just inferred from reading `SELECT * ...`/`REPLACE`/`EXCEPT`
+    /// syntax.
+    #[tokio::test]
+    async fn opcode_column_survives_a_cdc_safe_block_chain() {
+        let schema: SchemaRef = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("age", DataType::Int64, true),
+            Field::new(crate::checkpoint::OPCODE_COLUMN, DataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![1, 2, 3])),
+                Arc::new(Int64Array::from(vec![Some(30), Some(15), Some(40)])),
+                Arc::new(StringArray::from(vec!["I", "U", "D"])),
+            ],
+        )
+        .unwrap();
+
+        let specs = vec![
+            CleanBlockSpec {
+                name: None,
+                kind: CleanBlockKind::Filter {
+                    column: "age".into(),
+                    operator: FilterOperator::Gte,
+                    value: Some("20".into()),
+                },
+            },
+            CleanBlockSpec {
+                name: None,
+                kind: CleanBlockKind::Sort {
+                    column: "id".into(),
+                    direction: SortDirection::Asc,
+                },
+            },
+        ];
+        let sql = compile_clean_blocks(&specs, "changes").unwrap();
+        let out = DataFusionTransform::new(sql)
+            .apply(vec![("changes".to_string(), schema, vec![batch])])
+            .await
+            .unwrap()
+            .remove(0);
+
+        assert!(out
+            .schema()
+            .index_of(crate::checkpoint::OPCODE_COLUMN)
+            .is_ok());
+        let ids = col_i64(&out, "id");
+        let opcodes = col_str(&out, crate::checkpoint::OPCODE_COLUMN);
+        // Row with age=15 (id=2) is filtered out by the `age >= 20` block;
+        // the other two survive, sorted by id, each keeping its own opcode.
+        assert_eq!(ids, vec![Some(1), Some(3)]);
+        assert_eq!(opcodes, vec![Some("I".to_string()), Some("D".to_string())]);
+    }
 }

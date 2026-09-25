@@ -714,8 +714,16 @@ banco vetorial, ou (b) gravar num data warehouse relacional.
       achatado — renomeado pra `fallback_column`.
 - [x] `PipelineSpec.clean_blocks` + validação (`dag.rs`) — exatamente 1
       source, mesma regra do caminho sem transform SQL; exclusividade com
-      `transform`/`python`; rejeita source `-cdc` (não preserva
-      `__opcode`). 8 testes novos em `dag.rs`.
+      `transform`/`python`. Fonte `-cdc` **passou a ser suportada**
+      (Fase 31, 2026-09-25, ver checklist da Fase 31): a rejeição total
+      original virou uma checagem específica só pro que realmente
+      derruba `__opcode` — bloco `aggregate` (muda cardinalidade,
+      incompatível com semântica por-evento do CDC) e `select_columns`
+      que exclui/derruba a coluna. 12 testes em `dag.rs` (8 originais +
+      4 da Fase 31: aceita CDC quando preserva opcode, rejeita
+      `aggregate` com CDC, rejeita `select_columns` derrubando opcode
+      nos dois modos, aceita `select_columns` mantendo opcode
+      explicitamente).
 - [x] Refatorar `read_preview_rows` em `read_preview_batches` + conversão
       JSON separada (sem mudar comportamento do endpoint existente)
 - [x] `POST /pipelines/preview-clean-blocks` (preview ad-hoc por bloco) —

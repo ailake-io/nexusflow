@@ -668,12 +668,45 @@ impl PipelineSpec {
                 ));
             }
             if self.sources[0].connector.ends_with("-cdc") {
-                return Err(NexusError::Schema(
-                    "clean_blocks doesn't support a CDC source yet (it doesn't know to \
-                     preserve the __opcode column) — use a SQL transform node \
-                     (`SELECT * FROM source0`) instead"
-                        .into(),
-                ));
+                // A CDC source works through clean_blocks (Fase 31) as long
+                // as the block chain doesn't itself drop `__opcode` before
+                // it reaches the sink — same requirement the documented
+                // `SELECT * FROM source0` SQL-transform pattern already has
+                // (runner.rs's `run_streaming_cdc_pipeline`), just checkable
+                // here because blocks are structured data, not an opaque
+                // SQL string. Two ways a block can drop it:
+                for block in &self.clean_blocks {
+                    match &block.kind {
+                        crate::clean::CleanBlockKind::Aggregate { .. } => {
+                            return Err(NexusError::Schema(
+                                "clean_blocks: 'aggregate' can't be used with a CDC source — \
+                                 it collapses multiple rows into one, which conflicts with \
+                                 CDC's one-event-per-row (insert/update/delete) semantics"
+                                    .into(),
+                            ));
+                        }
+                        crate::clean::CleanBlockKind::SelectColumns { mode, columns } => {
+                            let mentions_opcode = columns
+                                .iter()
+                                .any(|c| c == crate::checkpoint::OPCODE_COLUMN);
+                            let drops_opcode = match mode {
+                                crate::clean::SelectColumnsMode::Keep => !mentions_opcode,
+                                crate::clean::SelectColumnsMode::Drop => mentions_opcode,
+                            };
+                            if drops_opcode {
+                                return Err(NexusError::Schema(format!(
+                                    "clean_blocks: 'select_columns' would drop the \
+                                     '{}' column that a CDC source needs for insert/update/\
+                                     delete routing at the sink — for mode 'keep', include \
+                                     '{}' in the column list; for mode 'drop', don't list it",
+                                    crate::checkpoint::OPCODE_COLUMN,
+                                    crate::checkpoint::OPCODE_COLUMN,
+                                )));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
             }
         }
 
@@ -2142,16 +2175,68 @@ mod tests {
     }
 
     #[test]
-    fn rejects_clean_blocks_with_a_cdc_source() {
+    fn allows_clean_blocks_with_a_cdc_source_when_opcode_is_preserved() {
+        // Fase 31: a CDC source is fine through clean_blocks as long as no
+        // block drops `__opcode` — `sort`/`filter`/etc. all pass every
+        // column (including `__opcode`) through untouched.
         let json = r#"{
             "pipeline_id": "p",
             "sources": [{"connector": "postgres-cdc", "config": {}}],
             "sinks": [{"connector": "csv", "config": {}}],
             "clean_blocks": [{"kind": "sort", "column": "id", "direction": "asc"}]
         }"#;
+        let spec = PipelineSpec::parse(json).expect("must validate");
+        assert!(spec.has_transform());
+    }
+
+    #[test]
+    fn rejects_clean_blocks_aggregate_with_a_cdc_source() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "postgres-cdc", "config": {}}],
+            "sinks": [{"connector": "csv", "config": {}}],
+            "clean_blocks": [{"kind": "aggregate", "group_by": ["id"], "aggregations": []}]
+        }"#;
         let err = PipelineSpec::parse(json)
-            .expect_err("clean_blocks with a CDC source must be rejected (drops __opcode)");
-        assert!(err.to_string().contains("CDC source"));
+            .expect_err("aggregate collapses rows — incompatible with CDC's per-event opcode");
+        assert!(err.to_string().contains("aggregate"));
+    }
+
+    #[test]
+    fn rejects_clean_blocks_select_columns_keep_dropping_opcode_with_cdc_source() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "postgres-cdc", "config": {}}],
+            "sinks": [{"connector": "csv", "config": {}}],
+            "clean_blocks": [{"kind": "select_columns", "mode": "keep", "columns": ["id"]}]
+        }"#;
+        let err = PipelineSpec::parse(json)
+            .expect_err("keep-mode select_columns without __opcode drops CDC routing info");
+        assert!(err.to_string().contains("__opcode"));
+    }
+
+    #[test]
+    fn rejects_clean_blocks_select_columns_drop_explicitly_dropping_opcode_with_cdc_source() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "postgres-cdc", "config": {}}],
+            "sinks": [{"connector": "csv", "config": {}}],
+            "clean_blocks": [{"kind": "select_columns", "mode": "drop", "columns": ["__opcode"]}]
+        }"#;
+        let err = PipelineSpec::parse(json)
+            .expect_err("drop-mode select_columns naming __opcode drops CDC routing info");
+        assert!(err.to_string().contains("__opcode"));
+    }
+
+    #[test]
+    fn allows_clean_blocks_select_columns_keep_including_opcode_with_cdc_source() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "postgres-cdc", "config": {}}],
+            "sinks": [{"connector": "csv", "config": {}}],
+            "clean_blocks": [{"kind": "select_columns", "mode": "keep", "columns": ["id", "__opcode"]}]
+        }"#;
+        PipelineSpec::parse(json).expect("__opcode explicitly kept must validate");
     }
 
     #[test]

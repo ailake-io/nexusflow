@@ -765,7 +765,9 @@ Aplicado **antes** de qualquer transform SQL e antes de gravar no sink — o dow
 
 Alternativa ao node `transform` (SQL) e ao node `python` pra quem prefere **configurar em vez de escrever código**: uma cadeia de blocos pré-prontos (filtrar, renomear, converter tipo, preencher nulos, agregar, etc.), cada um resolvido por um `<select>` + campos, sem editor de texto nenhum. No Canvas, a paleta lateral ganhou duas abas — **Conectores** e **Transformações** — a segunda lista os 13 blocos, arrastáveis pro canvas igual um conector.
 
-Um bloco por node `clean`, encadeados **em sequência da esquerda pra direita** (a ordem de execução é a posição X no canvas, não as arestas — mesma leitura que qualquer outro node do produto). São **alternativas** ao SQL transform/Python, não combináveis no mesmo pipeline: escolha um estilo por pipeline. Exigem **exatamente 1 source** (mesma regra do node Python sozinho) e rejeitam source `-cdc` (blocos não sabem preservar a coluna `__opcode`).
+Um bloco por node `clean`, encadeados **em sequência da esquerda pra direita** (a ordem de execução é a posição X no canvas, não as arestas — mesma leitura que qualquer outro node do produto). São **alternativas** ao SQL transform/Python, não combináveis no mesmo pipeline: escolha um estilo por pipeline. Exigem **exatamente 1 source** (mesma regra do node Python sozinho).
+
+Funciona com **fonte CDC** (`postgres-cdc`, `mongodb-cdc`, etc.) desde que a cadeia de blocos não derrube a coluna `__opcode` (que o sink usa pra saber se cada linha é insert/update/delete) — na prática, isso só quebra com o bloco `aggregate` (muda a quantidade de linhas, incompatível com CDC) ou um `select_columns` que exclua `__opcode` explicitamente; os outros 11 blocos preservam todas as colunas automaticamente. Configurar `select_columns` no modo "manter" com fonte CDC exige incluir `__opcode` na lista.
 
 ```json
 {
