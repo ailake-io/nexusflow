@@ -14,11 +14,24 @@ Interface visual node-based (React Flow) sobre um core 100% Rust.
 
 Detalhes completos de stack, arquitetura e regras de código: ver [`CLAUDE.md`](./CLAUDE.md). Pra instalar e rodar agora: [`docs/GETTING_STARTED.md`](./docs/GETTING_STARTED.md).
 
+## Recursos principais
+
+- **31 conectores OSS** (fast-path ADBC pra Postgres/SQLite/DuckDB/ClickHouse, bridging genérico pro resto) + **6 CDCs nativos** (Postgres WAL, MongoDB Change Streams, MySQL binlog, Delta Lake, Iceberg, AI-Lake) — sem Debezium/Kafka no meio.
+- **Transformação sem escrever código** — blocos de limpeza/transformação configuráveis (filtrar, renomear, converter tipo, preencher nulos, agregar, etc.), encadeáveis no Canvas com preview por bloco; alternativa a escrever SQL/Python direto (ver [`docs/USER_GUIDE.md` §12](./docs/USER_GUIDE.md#12-blocos-de-transformaçãolimpeza-sem-código)).
+- **AI Lakehouse**: chunking (fixed-size/recursive/semantic) + embeddings (ONNX local ou API OpenAI-compatible) + carga em 6 bancos vetoriais (LanceDB, Qdrant, Milvus, pgvector, Pinecone, ChromaDB).
+- **LLMOps**: node `llm` em lote (OpenAI-compatible ou Anthropic nativo), RAG ad-hoc (`POST /rag/query`) sobre os mesmos bancos vetoriais, avaliação sistemática por golden dataset, versionamento git embutido de pipelines/prompts.
+- **dbt opcional** — ELT clássico ou ETL real (lê de volta o resultado transformado e grava num destino final, tudo num único run).
+- **Plataforma de dados**: catálogo pesquisável com flag de PII, orquestração cross-pipeline (`depends_on`), detecção de anomalia por volume (z-score), mascaramento de PII por tokenização determinística, distribuição de carga entre workers via fila Postgres.
+- **RBAC** (Read/Execute/Write/Admin), segredos criptografados (AES-256-GCM), alertas em 5 canais (Slack, Teams, PagerDuty, Email, webhook), observabilidade estruturada (`tracing` + OTel + Prometheus).
+- **Single binary**: um processo só, API + WebSocket + UI web embutida — sem dependência externa além do banco de metadados (SQLite ou Postgres).
+
 ## Quickstart
 
-```bash
-docker build -t nexusflow .
+Jeito mais rápido: imagem já publicada no **Docker Hub**
+(`thiagolange/nexusflow`, todos os 31 conectores já linkados), sem
+precisar buildar nada:
 
+```bash
 # volume nomeado nasce root-owned; o container roda como uid 1001 (não-root)
 docker volume create nexusflow_data
 docker run --rm -v nexusflow_data:/data alpine chown -R 1001:1001 /data
@@ -31,7 +44,7 @@ docker run -d -p 8080:8080 \
   -e NEXUS_AUTH_DB="sqlite:///data/nexusflow-auth.db" \
   -e NEXUS_PIPELINES_DB="sqlite:///data/nexusflow-pipelines.db" \
   -v nexusflow_data:/data \
-  nexusflow
+  thiagolange/nexusflow:latest
 # abre http://localhost:8080
 ```
 
@@ -39,6 +52,66 @@ docker run -d -p 8080:8080 \
 > `unable to open database file` — o binário roda como usuário não-root e
 > o diretório de trabalho padrão não é gravável por ele. Ver
 > [`docs/GETTING_STARTED.md` §3](./docs/GETTING_STARTED.md#3-vari%C3%A1veis-de-ambiente).
+
+### Docker Compose
+
+```yaml
+# docker-compose.yml
+services:
+  nexusflow:
+    image: thiagolange/nexusflow:latest
+    ports:
+      - "8080:8080"
+    environment:
+      NEXUS_JWT_SECRET: ${NEXUS_JWT_SECRET}
+      NEXUS_ENCRYPTION_KEY: ${NEXUS_ENCRYPTION_KEY}
+      NEXUS_ADMIN_USERNAME: admin
+      NEXUS_ADMIN_PASSWORD: ${NEXUS_ADMIN_PASSWORD}
+      NEXUS_CHECKPOINT_DB: sqlite:///data/nexusflow.db
+      NEXUS_AUTH_DB: sqlite:///data/nexusflow-auth.db
+      NEXUS_PIPELINES_DB: sqlite:///data/nexusflow-pipelines.db
+    volumes:
+      - nexusflow_data:/data
+    restart: unless-stopped
+
+volumes:
+  nexusflow_data:
+```
+
+```bash
+# .env (mesmo diretório do docker-compose.yml) — gerar uma vez
+cat > .env <<EOF
+NEXUS_JWT_SECRET=$(openssl rand -hex 32)
+NEXUS_ENCRYPTION_KEY=$(openssl rand -hex 32)
+NEXUS_ADMIN_PASSWORD=troque-isto
+EOF
+
+# volume nomeado nasce root-owned (mesmo motivo do docker run acima)
+docker volume create nexusflow_data
+docker run --rm -v nexusflow_data:/data alpine chown -R 1001:1001 /data
+
+docker compose up -d
+# abre http://localhost:8080
+```
+
+Pra Postgres em vez de SQLite (múltiplas réplicas), troque as 3 variáveis `NEXUS_*_DB` no `docker-compose.yml` — mesmo formato de URL da seção seguinte.
+
+### Instaladores prontos (sem Docker)
+
+Além da imagem Docker acima, já tem binário pra baixar direto — todos com **todos os 31 conectores** já linkados:
+
+| Plataforma | Como instalar | Status |
+|---|---|---|
+| Linux (qualquer distro) | `curl -fsSL https://raw.githubusercontent.com/ailake-io/nexusflow/main/scripts/install.sh \| sh` | ✅ validado |
+| Linux (Debian/Ubuntu) | `.deb` — [releases](https://github.com/ailake-io/nexusflow/releases) | ✅ validado |
+| Linux (Fedora/RHEL) | `.rpm` — [releases](https://github.com/ailake-io/nexusflow/releases) | ✅ validado |
+| Linux (qualquer distro) | AppImage — [releases](https://github.com/ailake-io/nexusflow/releases) | ✅ validado |
+| Windows | `.msi` — [releases](https://github.com/ailake-io/nexusflow/releases) | ✅ instalado numa máquina Windows real (2026-09-06) |
+| Windows | `winget install Ailake.NexusFlow` | ⏳ manifesto submetido, PR pendente de review em `microsoft/winget-pkgs` |
+| macOS (Apple Silicon) | `brew install ailake-io/nexusflow/nexusflow` | ✅ build validado num runner real; ninguém ainda rodou numa máquina física própria |
+| Kubernetes | Manifests kustomize em [`packaging/kubernetes/`](./packaging/kubernetes/) | ✅ validado num minikube real |
+
+Detalhe completo de cada instalador (variáveis de ambiente, dependências de sistema, build a partir do source): [`docs/GETTING_STARTED.md` §1](./docs/GETTING_STARTED.md#1-instalação).
 
 ### Produção: Postgres em vez de SQLite
 
@@ -52,7 +125,7 @@ docker run -d -p 8080:8080 \
   -e NEXUS_CHECKPOINT_DB="postgres://user:senha@seu-postgres:5432/nexusflow" \
   -e NEXUS_AUTH_DB="postgres://user:senha@seu-postgres:5432/nexusflow" \
   -e NEXUS_PIPELINES_DB="postgres://user:senha@seu-postgres:5432/nexusflow" \
-  nexusflow
+  thiagolange/nexusflow:latest
 ```
 
 As três podem apontar pro mesmo banco (tabelas não colidem) ou bancos separados. Com Postgres, múltiplas réplicas do NexusFlow podem compartilhar o mesmo backend com segurança (SQLite não pode — não use volume `ReadWriteMany` com ele) e o scheduler de cron coordena via `pg_try_advisory_lock`, garantindo que só uma réplica dispara cada pipeline agendado por tick. Manifests prontos pra Kubernetes/Docker Swarm (multi-réplica + Postgres compartilhado, já validados) e o guia de migração de dados existentes de SQLite: [`docs/GETTING_STARTED.md` §3](./docs/GETTING_STARTED.md#metadados-em-postgres-multi-réplica--k8s).
@@ -79,11 +152,3 @@ Mais opções (curl|sh, .deb/AppImage, build from source, habilitar conectores e
 ## Licença
 
 Community Edition sob **Apache-2.0**, liberada agora — use, modifique e distribua livremente. Conectores enterprise são distribuídos separadamente sob licença comercial — ver [`LICENSING.md`](./LICENSING.md). A Store de compra self-service (checkout Stripe) está em desenvolvimento final e deve abrir em breve; o checkout já foi validado de ponta a ponta em modo teste, ver [`docs/ENTERPRISE_LICENSING.md`](./docs/ENTERPRISE_LICENSING.md).
-
-## Stack (resumo)
-
-Rust (Edition 2021) · Apache Arrow / DataFusion · ADBC · Tokio · Axum · React Flow (frontend).
-
-> **Nota sobre validação de plataforma:** repo ficou público em 2026-09-05, e todo CI saiu do self-hosted único pra runner hospedado do GitHub (grátis/ilimitado em repo público) no mesmo dia. Linux (binário nativo, `.deb`, AppImage, `.rpm`, Docker, Kubernetes via minikube) é o caminho mais validado de ponta a ponta em máquina real, e todos os 3 pacotes Linux buildam automaticamente em CI a cada push/PR pra `main` (agora em `ubuntu-latest`). Imagem Docker publicada no **Docker Hub** (`thiagolange/nexusflow`, workflow próprio disparando automaticamente após cada release) — GHCR foi descontinuado em 2026-09-08. Windows: `.msi` via `.github/workflows/build-windows-installer.yml` (agora em `windows-latest`, dispara sozinho após cada release além do `workflow_dispatch` manual) — o setup vcpkg/OpenSSL que resolvia o bug real do `mysql_cdc` (só suporta OpenSSL nativo, sem rustls) virou passo explícito a cada execução; **já instalado e validado numa máquina Windows real** (2026-09-06), e desde 2026-09-18 há um manifesto `winget` submetido (`Ailake.NexusFlow` v0.1.7, PR aberta em `microsoft/winget-pkgs`, pendente de review externo). O job `build-windows` original dentro do `release.yml` (matrix automático a cada push/PR) segue removido dessa chain por decisão, não por bloqueio técnico. macOS: `release.yml`'s `build` job ganhou leg `macos-latest`/arm64 no mesmo dia, gerando um binário OSS-only (esse job específico usa Docker pro enterprise, indisponível em runner macOS hospedado). O binário enterprise de verdade sai de `build-macos-installer.yml` (workflow separado, `[patch]` de Cargo em vez de Docker, mesmo truque do Windows) — **rodou de verdade num `macos-latest` real em 2026-09-06** (63m54s, `connectors-all` + todo conector enterprise, achou e corrigiu bugs reais de dependência nativa) e dispara sozinho após cada release desde 2026-09-08; tap dedicado `ailake-io/homebrew-nexusflow` (`brew install ailake-io/nexusflow/nexusflow`) já criado e atualizado pra v0.1.7, `sha256` conferido contra o asset publicado — `packaging/macos/nexusflow.rb` (instalação sem tap) segue como alternativa mantida em paralelo. O que falta é só um humano de fato instalando/rodando numa máquina macOS física — nenhum ainda. Contribuições ou relatórios de teste são bem-vindos.
-
-Lista completa em [`CLAUDE.md` §2](./CLAUDE.md#%EF%B8%8F-2-tech-stack).

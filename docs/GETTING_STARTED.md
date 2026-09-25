@@ -18,7 +18,7 @@ Guia prático de instalação e uso — do zero até rodar seu primeiro pipeline
 | CPU | 2 núcleos |
 | RAM | 2 GB |
 | Disco | 1 GB livre (binário + SQLite + drivers ADBC) |
-| SO | Linux x86_64 (único caminho validado de ponta a ponta — ver `README.md`'s nota de validação de plataforma) |
+| SO | Linux x86_64 (único caminho validado de ponta a ponta — ver [nota de validação de plataforma](#validação-por-plataforma) abaixo) |
 | Rede | só o necessário pras fontes/destinos configurados |
 
 Suficiente pro binário single-node com SQLite (padrão), 1-2 pipelines
@@ -69,6 +69,47 @@ Por que esses números, não chutados:
   checkpoint SQLite com escrita frequente em CDC, e formatos de data
   lake locais (Parquet/Delta/Iceberg/AI-Lake) fazem I/O de disco
   suficiente pra HDD virar gargalo real.
+
+### Validação por plataforma
+
+> Movido do `README.md` (antes na seção "Stack (resumo)", removida de
+> lá) — aqui encaixa melhor, junto do resto de "instalação/hardware".
+
+Repo ficou público em 2026-09-05, e todo CI saiu do self-hosted único pra
+runner hospedado do GitHub (grátis/ilimitado em repo público) no mesmo
+dia. Linux (binário nativo, `.deb`, AppImage, `.rpm`, Docker, Kubernetes
+via minikube) é o caminho mais validado de ponta a ponta em máquina real,
+e todos os 3 pacotes Linux buildam automaticamente em CI a cada push/PR
+pra `main` (agora em `ubuntu-latest`). Imagem Docker publicada no
+**Docker Hub** (`thiagolange/nexusflow`, workflow próprio disparando
+automaticamente após cada release) — GHCR foi descontinuado em
+2026-09-08. Windows: `.msi` via
+`.github/workflows/build-windows-installer.yml` (agora em
+`windows-latest`, dispara sozinho após cada release além do
+`workflow_dispatch` manual) — o setup vcpkg/OpenSSL que resolvia o bug
+real do `mysql_cdc` (só suporta OpenSSL nativo, sem rustls) virou passo
+explícito a cada execução; **já instalado e validado numa máquina
+Windows real** (2026-09-06), e desde 2026-09-18 há um manifesto `winget`
+submetido (`Ailake.NexusFlow` v0.1.7, PR aberta em
+`microsoft/winget-pkgs`, pendente de review externo). O job
+`build-windows` original dentro do `release.yml` (matrix automático a
+cada push/PR) segue removido dessa chain por decisão, não por bloqueio
+técnico. macOS: `release.yml`'s `build` job ganhou leg
+`macos-latest`/arm64 no mesmo dia, gerando um binário OSS-only (esse job
+específico usa Docker pro enterprise, indisponível em runner macOS
+hospedado). O binário enterprise de verdade sai de
+`build-macos-installer.yml` (workflow separado, `[patch]` de Cargo em
+vez de Docker, mesmo truque do Windows) — **rodou de verdade num
+`macos-latest` real em 2026-09-06** (63m54s, `connectors-all` + todo
+conector enterprise, achou e corrigiu bugs reais de dependência nativa)
+e dispara sozinho após cada release desde 2026-09-08; tap dedicado
+`ailake-io/homebrew-nexusflow` (`brew install
+ailake-io/nexusflow/nexusflow`) já criado e atualizado pra v0.1.7,
+`sha256` conferido contra o asset publicado —
+`packaging/macos/nexusflow.rb` (instalação sem tap) segue como
+alternativa mantida em paralelo. O que falta é só um humano de fato
+instalando/rodando numa máquina macOS física — nenhum ainda.
+Contribuições ou relatórios de teste são bem-vindos.
 
 ## 1. Instalação
 

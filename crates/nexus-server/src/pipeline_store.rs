@@ -982,6 +982,7 @@ mod tests {
             embedding: None,
             llm: None,
             python: None,
+            clean_blocks: Vec::new(),
             channel_capacity: 100,
             partitions: 1,
             dbt: None,

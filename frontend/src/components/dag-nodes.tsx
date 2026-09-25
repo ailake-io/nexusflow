@@ -1,7 +1,7 @@
 import type { NodeProps } from '@xyflow/react'
 import type { DagNode } from '@/lib/dag'
 import { useI18n } from '@/lib/i18n'
-import { Database, Code2, Layers, Sparkles, Terminal } from 'lucide-react'
+import { Database, Code2, Layers, Sparkles, Terminal, Wand2 } from 'lucide-react'
 import { NodeBadge, NodeCard } from '@/components/node-card'
 
 /** Custom renderers for canvas nodes — read connector/role/sql straight off
@@ -86,6 +86,53 @@ export function EmbeddingNodeView({ data, selected }: NodeProps<DagNode>) {
       icon={Sparkles}
       title={t('canvas.embedding')}
       subtitle={`${data.outputColumn || t('canvas.embeddingNoColumn')} · ${data.backend}`}
+      selected={selected}
+    />
+  )
+}
+
+/** A short, human-readable summary of the block's config for the canvas
+ * card's subtitle — same idea as `TransformNodeView` showing "SQL" or
+ * `PythonNodeView` showing the script's first line, just per `blockKind`
+ * since a clean block has no single obvious field to show. */
+function cleanBlockSubtitle(data: Extract<DagNode['data'], { kind: 'clean' }>): string {
+  switch (data.blockKind) {
+    case 'filter':
+      return `${data.column || '?'} ${data.operator}`
+    case 'select_columns':
+      return `${data.selectMode}: ${data.columns || '…'}`
+    case 'rename':
+      return `${data.from || '?'} → ${data.to || '?'}`
+    case 'cast':
+      return `${data.column || '?'} → ${data.dataType}`
+    case 'trim':
+    case 'drop_nulls':
+    case 'dedupe':
+      return data.columns || '…'
+    case 'replace_text':
+      return data.column || '?'
+    case 'fill_nulls':
+      return `${data.column || '?'} (${data.nullStrategy})`
+    case 'change_case':
+      return `${data.column || '?'} → ${data.caseMode}`
+    case 'computed_column':
+      return `${data.output || '?'} = ${data.left || '?'} ${data.computeOperator} ${data.right || '?'}`
+    case 'sort':
+      return `${data.column || '?'} ${data.direction}`
+    case 'aggregate':
+      return data.groupBy || data.aggregations.split('\n')[0] || '…'
+  }
+}
+
+export function CleanBlockNodeView({ data, selected }: NodeProps<DagNode>) {
+  const { t } = useI18n()
+  if (data.kind !== 'clean') return null
+  return (
+    <NodeCard
+      accent="teal"
+      icon={Wand2}
+      title={data.name || t(`canvas.clean.kind.${data.blockKind}`)}
+      subtitle={cleanBlockSubtitle(data)}
       selected={selected}
     />
   )

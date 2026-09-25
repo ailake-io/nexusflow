@@ -12,7 +12,7 @@ import { cn } from '@/lib/utils'
  * accent spells out its full class names here instead of building them from
  * the accent name. */
 
-export type NodeAccent = 'primary' | 'accent' | 'emerald' | 'sky' | 'fuchsia'
+export type NodeAccent = 'primary' | 'accent' | 'emerald' | 'sky' | 'fuchsia' | 'teal'
 
 const ACCENTS: Record<
   NodeAccent,
@@ -64,6 +64,14 @@ const ACCENTS: Record<
     hover: 'hover:border-fuchsia-400/40',
     selected: 'border-fuchsia-400/70 ring-2 ring-fuchsia-400/25 shadow-lg shadow-fuchsia-400/20',
     handle: '!border-fuchsia-400',
+  },
+  teal: {
+    icon: 'text-teal-400',
+    chip: 'bg-teal-400/15 ring-teal-400/30',
+    line: 'via-teal-400/80',
+    hover: 'hover:border-teal-400/40',
+    selected: 'border-teal-400/70 ring-2 ring-teal-400/25 shadow-lg shadow-teal-400/20',
+    handle: '!border-teal-400',
   },
 }
 

@@ -1,6 +1,13 @@
 import { useRef } from 'react'
 import type {
+  AggFunction,
+  CaseMode,
+  CastType,
   ChunkingStrategy,
+  CleanBlockKindTag,
+  CleanBlockNodeData,
+  CleanBlockSpec,
+  ComputeOperator,
   ConnectorNodeData,
   ConnectorRole,
   DagNode,
@@ -8,19 +15,37 @@ import type {
   DbtNodeData,
   EmbeddingBackend,
   EmbeddingNodeData,
+  FilterOperator,
+  NullFillStrategy,
   PythonNodeData,
+  SelectColumnsMode,
+  SortDirection,
   TransformNodeData,
 } from '@/lib/dag'
+import { isConnectorNode, toCleanBlockSpec } from '@/lib/dag'
 import type { ConnectorDescriptor } from '@/lib/api'
 import { useI18n } from '@/lib/i18n'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { SchemaForm } from '@/components/SchemaForm'
 import { NodePreview } from '@/components/NodePreview'
-import { Database, Code2, Layers, Sparkles, Terminal, Upload } from 'lucide-react'
+import { CleanBlockPreview } from '@/components/CleanBlockPreview'
+import {
+  Database,
+  Code2,
+  Layers,
+  Sparkles,
+  Terminal,
+  Upload,
+  Wand2,
+} from 'lucide-react'
 
 interface NodeInspectorProps {
   node: DagNode
+  /** Full canvas node list — the clean-block panel needs it to find the
+   * connected source (for its preview button) and every other clean
+   * block's position (to know which ones come "before" this one). */
+  allNodes: DagNode[]
   connectors: ConnectorDescriptor[]
   onChange: (
     id: string,
@@ -29,9 +54,45 @@ interface NodeInspectorProps {
       | Partial<TransformNodeData>
       | Partial<DbtNodeData>
       | Partial<EmbeddingNodeData>
-      | Partial<PythonNodeData>,
+      | Partial<PythonNodeData>
+      | Partial<CleanBlockNodeData>,
   ) => void
 }
+
+const CLEAN_BLOCK_KINDS: CleanBlockKindTag[] = [
+  'filter',
+  'select_columns',
+  'rename',
+  'cast',
+  'trim',
+  'replace_text',
+  'fill_nulls',
+  'drop_nulls',
+  'dedupe',
+  'change_case',
+  'computed_column',
+  'sort',
+  'aggregate',
+]
+const FILTER_OPERATORS: FilterOperator[] = [
+  'eq',
+  'ne',
+  'gt',
+  'lt',
+  'gte',
+  'lte',
+  'contains',
+  'starts_with',
+  'is_null',
+  'is_not_null',
+]
+const SELECT_MODES: SelectColumnsMode[] = ['keep', 'drop']
+const CAST_TYPES: CastType[] = ['int', 'float', 'text', 'date', 'boolean']
+const NULL_STRATEGIES: NullFillStrategy['strategy'][] = ['value', 'column_average', 'other_column']
+const CASE_MODES: CaseMode[] = ['upper', 'lower', 'title']
+const COMPUTE_OPERATORS: ComputeOperator[] = ['add', 'subtract', 'multiply', 'divide', 'concat']
+const SORT_DIRECTIONS: SortDirection[] = ['asc', 'desc']
+const AGG_FUNCTIONS: AggFunction[] = ['sum', 'avg', 'count', 'count_distinct', 'min', 'max']
 
 /** `data.config` is freely-typed JSON text (edited via textarea when no
  * schema is available) — SchemaForm needs an object to bind fields onto,
@@ -56,7 +117,7 @@ function batchNameOf(connector: string): string {
   return connector.endsWith('-cdc') ? connector.slice(0, -'-cdc'.length) : connector
 }
 
-export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps) {
+export function NodeInspector({ node, allNodes, connectors, onChange }: NodeInspectorProps) {
   const { t } = useI18n()
   const data = node.data
   // Only used by the 'transform'/'python' branches below, but hooks can't
@@ -399,6 +460,489 @@ export function NodeInspector({ node, connectors, onChange }: NodeInspectorProps
                 className="mt-1.5"
               />
             </div>
+          </div>
+        </div>
+      </aside>
+    )
+  }
+
+  if (data.kind === 'clean') {
+    // Every clean node, left-to-right by canvas position — same order
+    // `toPipelineSpec` uses to build `clean_blocks`.
+    const cleanNodes = allNodes
+      .filter((n): n is DagNode & { data: CleanBlockNodeData } => n.data.kind === 'clean')
+      .slice()
+      .sort((a, b) => a.position.x - b.position.x)
+    const myIndex = cleanNodes.findIndex((n) => n.id === node.id)
+    const previewSource = allNodes.find(
+      (n) => isConnectorNode(n) && n.data.role === 'source',
+    )
+    const previewSourceSpec =
+      previewSource && isConnectorNode(previewSource)
+        ? { connector: previewSource.data.connector, config: parseConfig(previewSource.data.config) }
+        : undefined
+    let previewBlocks: CleanBlockSpec[] | null = null
+    if (myIndex >= 0) {
+      try {
+        previewBlocks = cleanNodes
+          .slice(0, myIndex + 1)
+          .map((n) => toCleanBlockSpec(n.data))
+      } catch {
+        previewBlocks = null
+      }
+    }
+
+    const set = (patch: Partial<CleanBlockNodeData>) => onChange(node.id, patch)
+
+    return (
+      <aside className="flex h-full w-full flex-col border-l bg-card">
+        <div className="border-b border-white/10 px-4 py-3">
+          <div className="flex items-center gap-2">
+            <Wand2 className="h-4 w-4 text-teal-400" />
+            <h2 className="text-sm font-semibold text-foreground">{t('canvas.clean.title')}</h2>
+          </div>
+          <p className="mt-0.5 text-[10px] text-muted-foreground">{t('canvas.clean.desc')}</p>
+        </div>
+        <div className="flex-1 overflow-auto p-4">
+          <div className="flex flex-col gap-4">
+            <div>
+              <Label htmlFor="clean-name" className="text-xs font-medium">
+                {t('canvas.clean.name')}{' '}
+                <span className="text-muted-foreground">({t('common.optional')})</span>
+              </Label>
+              <Input
+                id="clean-name"
+                value={data.name}
+                onChange={(e) => set({ name: e.target.value })}
+                className="mt-1.5"
+              />
+            </div>
+            <div>
+              <Label htmlFor="clean-kind" className="text-xs font-medium">
+                {t('canvas.clean.blockKind')}
+              </Label>
+              <select
+                id="clean-kind"
+                value={data.blockKind}
+                onChange={(e) => set({ blockKind: e.target.value as CleanBlockKindTag })}
+                className="mt-1.5 h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring"
+              >
+                {CLEAN_BLOCK_KINDS.map((k) => (
+                  <option key={k} value={k}>
+                    {t(`canvas.clean.kind.${k}`)}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {data.blockKind === 'filter' && (
+              <>
+                <div>
+                  <Label htmlFor="clean-column" className="text-xs font-medium">
+                    {t('canvas.clean.column')}
+                  </Label>
+                  <Input
+                    id="clean-column"
+                    value={data.column}
+                    onChange={(e) => set({ column: e.target.value })}
+                    className="mt-1.5"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="clean-operator" className="text-xs font-medium">
+                    {t('canvas.clean.operatorLabel')}
+                  </Label>
+                  <select
+                    id="clean-operator"
+                    value={data.operator}
+                    onChange={(e) => set({ operator: e.target.value as FilterOperator })}
+                    className="mt-1.5 h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring"
+                  >
+                    {FILTER_OPERATORS.map((op) => (
+                      <option key={op} value={op}>
+                        {t(`canvas.clean.operator.${op}`)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                {data.operator !== 'is_null' && data.operator !== 'is_not_null' && (
+                  <div>
+                    <Label htmlFor="clean-value" className="text-xs font-medium">
+                      {t('canvas.clean.value')}
+                    </Label>
+                    <Input
+                      id="clean-value"
+                      value={data.value}
+                      onChange={(e) => set({ value: e.target.value })}
+                      className="mt-1.5"
+                    />
+                  </div>
+                )}
+              </>
+            )}
+
+            {(data.blockKind === 'select_columns' ||
+              data.blockKind === 'trim' ||
+              data.blockKind === 'drop_nulls' ||
+              data.blockKind === 'dedupe') && (
+              <>
+                {data.blockKind === 'select_columns' && (
+                  <div>
+                    <Label htmlFor="clean-select-mode" className="text-xs font-medium">
+                      {t('canvas.clean.mode')}
+                    </Label>
+                    <select
+                      id="clean-select-mode"
+                      value={data.selectMode}
+                      onChange={(e) => set({ selectMode: e.target.value as SelectColumnsMode })}
+                      className="mt-1.5 h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring"
+                    >
+                      {SELECT_MODES.map((m) => (
+                        <option key={m} value={m}>
+                          {t(`canvas.clean.selectMode.${m}`)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                <div>
+                  <Label htmlFor="clean-columns" className="text-xs font-medium">
+                    {t('canvas.clean.columns')}
+                  </Label>
+                  <Input
+                    id="clean-columns"
+                    value={data.columns}
+                    placeholder="id, nome, valor"
+                    onChange={(e) => set({ columns: e.target.value })}
+                    className="mt-1.5"
+                  />
+                  {data.blockKind === 'dedupe' && (
+                    <p className="mt-1 text-[10px] text-muted-foreground">
+                      {t('canvas.clean.dedupeEmptyHint')}
+                    </p>
+                  )}
+                </div>
+              </>
+            )}
+
+            {data.blockKind === 'rename' && (
+              <>
+                <div>
+                  <Label htmlFor="clean-from" className="text-xs font-medium">
+                    {t('canvas.clean.from')}
+                  </Label>
+                  <Input
+                    id="clean-from"
+                    value={data.from}
+                    onChange={(e) => set({ from: e.target.value })}
+                    className="mt-1.5"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="clean-to" className="text-xs font-medium">
+                    {t('canvas.clean.to')}
+                  </Label>
+                  <Input
+                    id="clean-to"
+                    value={data.to}
+                    onChange={(e) => set({ to: e.target.value })}
+                    className="mt-1.5"
+                  />
+                </div>
+              </>
+            )}
+
+            {data.blockKind === 'cast' && (
+              <>
+                <div>
+                  <Label htmlFor="clean-column" className="text-xs font-medium">
+                    {t('canvas.clean.column')}
+                  </Label>
+                  <Input
+                    id="clean-column"
+                    value={data.column}
+                    onChange={(e) => set({ column: e.target.value })}
+                    className="mt-1.5"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="clean-data-type" className="text-xs font-medium">
+                    {t('canvas.clean.dataTypeLabel')}
+                  </Label>
+                  <select
+                    id="clean-data-type"
+                    value={data.dataType}
+                    onChange={(e) => set({ dataType: e.target.value as CastType })}
+                    className="mt-1.5 h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring"
+                  >
+                    {CAST_TYPES.map((dt) => (
+                      <option key={dt} value={dt}>
+                        {t(`canvas.clean.dataType.${dt}`)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </>
+            )}
+
+            {data.blockKind === 'replace_text' && (
+              <>
+                <div>
+                  <Label htmlFor="clean-column" className="text-xs font-medium">
+                    {t('canvas.clean.column')}
+                  </Label>
+                  <Input
+                    id="clean-column"
+                    value={data.column}
+                    onChange={(e) => set({ column: e.target.value })}
+                    className="mt-1.5"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="clean-find" className="text-xs font-medium">
+                    {t('canvas.clean.find')}
+                  </Label>
+                  <Input
+                    id="clean-find"
+                    value={data.find}
+                    onChange={(e) => set({ find: e.target.value })}
+                    className="mt-1.5"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="clean-replace" className="text-xs font-medium">
+                    {t('canvas.clean.replace')}
+                  </Label>
+                  <Input
+                    id="clean-replace"
+                    value={data.replace}
+                    onChange={(e) => set({ replace: e.target.value })}
+                    className="mt-1.5"
+                  />
+                </div>
+              </>
+            )}
+
+            {data.blockKind === 'fill_nulls' && (
+              <>
+                <div>
+                  <Label htmlFor="clean-column" className="text-xs font-medium">
+                    {t('canvas.clean.column')}
+                  </Label>
+                  <Input
+                    id="clean-column"
+                    value={data.column}
+                    onChange={(e) => set({ column: e.target.value })}
+                    className="mt-1.5"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="clean-null-strategy" className="text-xs font-medium">
+                    {t('canvas.clean.nullStrategyLabel')}
+                  </Label>
+                  <select
+                    id="clean-null-strategy"
+                    value={data.nullStrategy}
+                    onChange={(e) =>
+                      set({ nullStrategy: e.target.value as NullFillStrategy['strategy'] })
+                    }
+                    className="mt-1.5 h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring"
+                  >
+                    {NULL_STRATEGIES.map((s2) => (
+                      <option key={s2} value={s2}>
+                        {t(`canvas.clean.nullStrategy.${s2}`)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                {data.nullStrategy === 'value' && (
+                  <div>
+                    <Label htmlFor="clean-value" className="text-xs font-medium">
+                      {t('canvas.clean.value')}
+                    </Label>
+                    <Input
+                      id="clean-value"
+                      value={data.value}
+                      onChange={(e) => set({ value: e.target.value })}
+                      className="mt-1.5"
+                    />
+                  </div>
+                )}
+                {data.nullStrategy === 'other_column' && (
+                  <div>
+                    <Label htmlFor="clean-fallback-column" className="text-xs font-medium">
+                      {t('canvas.clean.fallbackColumn')}
+                    </Label>
+                    <Input
+                      id="clean-fallback-column"
+                      value={data.fallbackColumn}
+                      onChange={(e) => set({ fallbackColumn: e.target.value })}
+                      className="mt-1.5"
+                    />
+                  </div>
+                )}
+              </>
+            )}
+
+            {data.blockKind === 'change_case' && (
+              <>
+                <div>
+                  <Label htmlFor="clean-column" className="text-xs font-medium">
+                    {t('canvas.clean.column')}
+                  </Label>
+                  <Input
+                    id="clean-column"
+                    value={data.column}
+                    onChange={(e) => set({ column: e.target.value })}
+                    className="mt-1.5"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="clean-case-mode" className="text-xs font-medium">
+                    {t('canvas.clean.caseModeLabel')}
+                  </Label>
+                  <select
+                    id="clean-case-mode"
+                    value={data.caseMode}
+                    onChange={(e) => set({ caseMode: e.target.value as CaseMode })}
+                    className="mt-1.5 h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring"
+                  >
+                    {CASE_MODES.map((m) => (
+                      <option key={m} value={m}>
+                        {t(`canvas.clean.caseMode.${m}`)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </>
+            )}
+
+            {data.blockKind === 'computed_column' && (
+              <>
+                <div>
+                  <Label htmlFor="clean-output" className="text-xs font-medium">
+                    {t('canvas.clean.output')}
+                  </Label>
+                  <Input
+                    id="clean-output"
+                    value={data.output}
+                    onChange={(e) => set({ output: e.target.value })}
+                    className="mt-1.5"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="clean-left" className="text-xs font-medium">
+                    {t('canvas.clean.left')}
+                  </Label>
+                  <Input
+                    id="clean-left"
+                    value={data.left}
+                    onChange={(e) => set({ left: e.target.value })}
+                    className="mt-1.5"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="clean-compute-operator" className="text-xs font-medium">
+                    {t('canvas.clean.computeOperatorLabel')}
+                  </Label>
+                  <select
+                    id="clean-compute-operator"
+                    value={data.computeOperator}
+                    onChange={(e) => set({ computeOperator: e.target.value as ComputeOperator })}
+                    className="mt-1.5 h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring"
+                  >
+                    {COMPUTE_OPERATORS.map((op) => (
+                      <option key={op} value={op}>
+                        {t(`canvas.clean.computeOperator.${op}`)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <Label htmlFor="clean-right" className="text-xs font-medium">
+                    {t('canvas.clean.right')}
+                  </Label>
+                  <Input
+                    id="clean-right"
+                    value={data.right}
+                    onChange={(e) => set({ right: e.target.value })}
+                    className="mt-1.5"
+                  />
+                </div>
+              </>
+            )}
+
+            {data.blockKind === 'sort' && (
+              <>
+                <div>
+                  <Label htmlFor="clean-column" className="text-xs font-medium">
+                    {t('canvas.clean.column')}
+                  </Label>
+                  <Input
+                    id="clean-column"
+                    value={data.column}
+                    onChange={(e) => set({ column: e.target.value })}
+                    className="mt-1.5"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="clean-direction" className="text-xs font-medium">
+                    {t('canvas.clean.directionLabel')}
+                  </Label>
+                  <select
+                    id="clean-direction"
+                    value={data.direction}
+                    onChange={(e) => set({ direction: e.target.value as SortDirection })}
+                    className="mt-1.5 h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring"
+                  >
+                    {SORT_DIRECTIONS.map((d) => (
+                      <option key={d} value={d}>
+                        {t(`canvas.clean.direction.${d}`)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </>
+            )}
+
+            {data.blockKind === 'aggregate' && (
+              <>
+                <div>
+                  <Label htmlFor="clean-group-by" className="text-xs font-medium">
+                    {t('canvas.clean.groupBy')}{' '}
+                    <span className="text-muted-foreground">({t('common.optional')})</span>
+                  </Label>
+                  <Input
+                    id="clean-group-by"
+                    value={data.groupBy}
+                    placeholder="cidade, categoria"
+                    onChange={(e) => set({ groupBy: e.target.value })}
+                    className="mt-1.5"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="clean-aggregations" className="text-xs font-medium">
+                    {t('canvas.clean.aggregations')}
+                  </Label>
+                  <textarea
+                    id="clean-aggregations"
+                    value={data.aggregations}
+                    onChange={(e) => set({ aggregations: e.target.value })}
+                    rows={4}
+                    spellCheck={false}
+                    placeholder={'valor:sum:total_valor\nid:count:total_linhas'}
+                    className="mt-1.5 w-full rounded-lg border border-input bg-transparent p-3 font-mono text-xs text-foreground outline-none focus:ring-2 focus:ring-ring"
+                  />
+                  <p className="mt-1 text-[10px] text-muted-foreground">
+                    {t('canvas.clean.aggregationsHint', {
+                      functions: AGG_FUNCTIONS.join(', '),
+                    })}
+                  </p>
+                </div>
+              </>
+            )}
+
+            <CleanBlockPreview source={previewSourceSpec} blocks={previewBlocks} />
           </div>
         </div>
       </aside>
