@@ -63,22 +63,22 @@ async fn text_chunk_embed_milvus_end_to_end() {
         .await
         .expect("etcd starts");
 
-    // `minio/minio` on Docker Hub was pulled/deprecated in favor of
-    // quay.io — a plain `docker pull minio/minio` now 404s ("repository
-    // does not exist"), confirmed the hard way when this broke CI.
-    let _minio = GenericImage::new("quay.io/minio/minio", "latest")
+    // `minio/minio` (Docker Hub) then `quay.io/minio/minio` (in that
+    // order) both stopped serving anonymous pulls — confirmed the hard
+    // way when each broke CI in turn (404, then 401 unauthorized).
+    // `bitnamilegacy/minio` is Bitnami's frozen mirror of their old free
+    // image line, still pullable anonymously; its entrypoint (not the
+    // bare `minio` binary) owns startup, so no `with_cmd` override here
+    // — overriding it points the server at a data dir the entrypoint
+    // never provisions, which fails with "file access denied". Reads
+    // MINIO_ROOT_USER/MINIO_ROOT_PASSWORD, not the deprecated
+    // MINIO_ACCESS_KEY/MINIO_SECRET_KEY the official image used.
+    let _minio = GenericImage::new("bitnamilegacy/minio", "latest")
         // Same log-follow race as etcd above — minio is ready before
         // testcontainers starts tailing stdout.
         .with_wait_for(WaitFor::seconds(3))
-        .with_env_var("MINIO_ACCESS_KEY", "minioadmin")
-        .with_env_var("MINIO_SECRET_KEY", "minioadmin")
-        .with_cmd([
-            "minio",
-            "server",
-            "/minio_data",
-            "--console-address",
-            ":9001",
-        ])
+        .with_env_var("MINIO_ROOT_USER", "minioadmin")
+        .with_env_var("MINIO_ROOT_PASSWORD", "minioadmin")
         .with_network(&network)
         .with_container_name(&minio_name)
         .with_startup_timeout(std::time::Duration::from_secs(120))
