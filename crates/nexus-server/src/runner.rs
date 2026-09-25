@@ -2255,6 +2255,18 @@ mod tests {
     async fn clean_blocks_pipeline_runs_end_to_end_through_csv_files() {
         use nexus_core::{CleanBlockKind, CleanBlockSpec, FilterOperator, SortDirection};
 
+        // This is the only other test in this binary that drives a real
+        // `run_pipeline`/`run_partition` besides `lib.rs`'s
+        // `metrics_reflect_real_batches_written_by_the_engine`. Both hit
+        // `nexus_core::pipeline`'s OTel counters, which are `LazyLock` and
+        // bind to whatever meter provider is global *the first time either
+        // test's pipeline runs* — running in parallel without this, the
+        // race is real: if this test's `run_pipeline` fires first, the
+        // counters permanently latch onto the no-op provider that's global
+        // before `telemetry::init()` runs, and the metrics test fails no
+        // matter how many times it's retried. Same call as that test.
+        let _ = crate::telemetry::init();
+
         let dir = tempfile::tempdir().unwrap();
         let in_path = dir.path().join("in.csv");
         let out_path = dir.path().join("out.csv");
