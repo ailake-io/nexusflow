@@ -1,0 +1,39 @@
+[package]
+name = "nexus-connector-hana"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# odbc-api links against a driver manager (unixODBC). vendored-unix-odbc
+# builds it from source instead of requiring a system package — same
+# split nexus-connector-odbc uses (Windows has no unixODBC concept, uses
+# its own built-in driver manager instead). The actual SAP HANA driver
+# (HDBODBC, part of the SAP HANA Client) still has to be installed
+# separately at deploy time, under the customer's own SAP account — no
+# free/redistributable-by-us alternative, SAP's own license explicitly
+# forbids redistribution.
+[dependencies]
+nexus-core = { version = "0.1.0", path = "../../nexus-core" }
+arrow-array = "58.4.0"
+arrow-schema = "58.4.0"
+async-trait = "0.1.91"
+futures = "0.3.33"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+schemars = "1.2.2"
+tokio = { version = "1.53.1", features = ["rt", "sync", "time"] }
+tracing = "0.1.41"
+
+[target.'cfg(not(windows))'.dependencies]
+odbc-api = { version = "29.0.0", default-features = false, features = [
+    "odbc_version_3_5",
+    "vendored-unix-odbc",
+] }
+
+[target.'cfg(windows)'.dependencies]
+odbc-api = { version = "29.0.0", default-features = false, features = [
+    "odbc_version_3_5",
+] }
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }

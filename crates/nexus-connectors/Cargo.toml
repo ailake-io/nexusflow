@@ -26,6 +26,10 @@ members = [
     "nexus-connector-nats",
     "nexus-connector-rabbitmq",
     "nexus-connector-starburst",
+    "nexus-connector-teradata",
+    "nexus-connector-vertica",
+    "nexus-connector-hana",
+    "nexus-connector-oracle",
 ]
 
 [workspace.package]

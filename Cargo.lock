@@ -7771,6 +7771,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexus-connector-hana"
+version = "0.1.7"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-schema 58.4.0",
+ "async-trait",
+ "futures",
+ "nexus-core",
+ "odbc-api",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "nexus-connector-iceberg"
 version = "0.1.7"
 dependencies = [
@@ -7935,6 +7952,23 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "nexus-connector-oracle"
+version = "0.1.7"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-schema 58.4.0",
+ "async-trait",
+ "futures",
+ "nexus-core",
+ "odbc-api",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing",
 ]
@@ -8122,6 +8156,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexus-connector-teradata"
+version = "0.1.7"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-schema 58.4.0",
+ "async-trait",
+ "futures",
+ "nexus-core",
+ "odbc-api",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "nexus-connector-vertica"
+version = "0.1.7"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-schema 58.4.0",
+ "async-trait",
+ "futures",
+ "nexus-core",
+ "odbc-api",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "nexus-core"
 version = "0.1.7"
 dependencies = [
@@ -8175,6 +8243,7 @@ dependencies = [
  "nexus-connector-csv",
  "nexus-connector-deltalake",
  "nexus-connector-duckdb",
+ "nexus-connector-hana",
  "nexus-connector-iceberg",
  "nexus-connector-kafka",
  "nexus-connector-lancedb",
@@ -8184,6 +8253,7 @@ dependencies = [
  "nexus-connector-mysql",
  "nexus-connector-nats",
  "nexus-connector-odbc",
+ "nexus-connector-oracle",
  "nexus-connector-parquet",
  "nexus-connector-pgvector",
  "nexus-connector-pinecone",
@@ -8194,6 +8264,8 @@ dependencies = [
  "nexus-connector-rest",
  "nexus-connector-sqlite",
  "nexus-connector-starburst",
+ "nexus-connector-teradata",
+ "nexus-connector-vertica",
  "nexus-core",
  "opentelemetry",
  "opentelemetry-otlp",
