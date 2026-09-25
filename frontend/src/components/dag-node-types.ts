@@ -1,4 +1,5 @@
 import {
+  CleanBlockNodeView,
   ConnectorNodeView,
   DbtNodeView,
   EmbeddingNodeView,
@@ -12,4 +13,5 @@ export const dagNodeTypes = {
   dbt: DbtNodeView,
   embedding: EmbeddingNodeView,
   python: PythonNodeView,
+  clean: CleanBlockNodeView,
 }

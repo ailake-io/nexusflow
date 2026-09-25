@@ -15,6 +15,7 @@ Referência completa e prática: da instalação até a configuração exata de 
 9. [Agendamento automático](#9-agendamento-automático)
 10. [Observabilidade](#10-observabilidade)
 11. [Catálogo, orquestração, anomalia, masking e distribuição](#11-catálogo-orquestração-anomalia-masking-e-distribuição)
+12. [Blocos de transformação/limpeza sem código](#12-blocos-de-transformaçãolimpeza-sem-código)
 
 ---
 
@@ -757,3 +758,37 @@ Precisa de um histórico mínimo antes de começar a avaliar (evita falso positi
 Aplicado **antes** de qualquer transform SQL e antes de gravar no sink — o downstream nunca vê o valor real.
 
 **Distribuição de carga entre pipelines** — desligado por padrão (cada réplica executa o run que recebeu, como sempre). Ligando `NEXUS_QUEUE_MODE=true` no servidor (**Postgres-only**, sem efeito com SQLite), runs viram itens de uma fila e qualquer réplica rodando em modo *worker* pode reivindicar e executar — útil pra escalar execução de pipelines independentemente da API. Não paraleliza uma pipeline *única* entre máquinas (isso continua fora de escopo).
+
+---
+
+## 12. Blocos de transformação/limpeza sem código
+
+Alternativa ao node `transform` (SQL) e ao node `python` pra quem prefere **configurar em vez de escrever código**: uma cadeia de blocos pré-prontos (filtrar, renomear, converter tipo, preencher nulos, agregar, etc.), cada um resolvido por um `<select>` + campos, sem editor de texto nenhum. No Canvas, a paleta lateral ganhou duas abas — **Conectores** e **Transformações** — a segunda lista os 13 blocos, arrastáveis pro canvas igual um conector.
+
+Um bloco por node `clean`, encadeados **em sequência da esquerda pra direita** (a ordem de execução é a posição X no canvas, não as arestas — mesma leitura que qualquer outro node do produto). São **alternativas** ao SQL transform/Python, não combináveis no mesmo pipeline: escolha um estilo por pipeline. Exigem **exatamente 1 source** (mesma regra do node Python sozinho) e rejeitam source `-cdc` (blocos não sabem preservar a coluna `__opcode`).
+
+```json
+{
+  "pipeline_id": "limpa-vendas",
+  "sources": [{"connector": "csv", "config": {"path": "vendas.csv"}}],
+  "clean_blocks": [
+    {"kind": "filter", "column": "valor", "operator": "gt", "value": "0"},
+    {"kind": "fill_nulls", "column": "regiao", "strategy": "value", "value": "desconhecida"},
+    {"kind": "aggregate", "group_by": ["regiao"], "aggregations": [{"column": "valor", "function": "sum", "output": "total"}]}
+  ],
+  "sinks": [{"connector": "postgres", "config": {"uri": "...", "table": "vendas_por_regiao"}}]
+}
+```
+
+Catálogo dos 13 blocos: filtrar linhas, selecionar/remover colunas, renomear, converter tipo, remover espaços (trim), buscar/substituir texto, preencher nulos (valor fixo, média da coluna ou valor de outra coluna), remover linhas com nulo, remover duplicadas, maiúsculas/minúsculas/capitalizar, coluna calculada (`col_a + col_b`, concatenar, etc.), ordenar, agregar (`GROUP BY` — muda a cardinalidade das linhas, os blocos seguintes operam sobre o resultado já agregado).
+
+**Preview por bloco**: no painel de configuração de cada bloco no Canvas, botão "Visualizar" mostra uma amostra dos dados já passando pela source conectada e por todos os blocos até (e incluindo) o que está sendo editado — sem precisar salvar nem rodar o pipeline inteiro. Via API, o mesmo caminho ad-hoc:
+```bash
+curl -s -X POST http://localhost:8080/pipelines/preview-clean-blocks \
+  -H "authorization: Bearer $TOKEN" -H "content-type: application/json" \
+  -d '{"source": {"connector": "csv", "config": {"path": "vendas.csv"}}, "blocks": [{"kind": "filter", "column": "valor", "operator": "gt", "value": "0"}], "limit": 20}'
+```
+
+**Por baixo do capô**: cada bloco compila pra um fragmento SQL; a cadeia inteira vira uma única query com CTEs (`WITH step_0 AS (...), step_1 AS (...) SELECT * FROM step_N`) que roda no mesmo motor DataFusion do node `transform` — nenhum executor novo, sem impacto em checkpoint/lineage/streaming CDC. Ver `ARCHITECTURE.md §19` pro detalhe da decisão.
+
+**Uso pra vetorizar ou montar data warehouse**: `source → blocos → sink relacional` funciona direto num único pipeline. Já `source → blocos → embedding → sink vetorial` **não** funciona num único pipeline — o motor sempre roda `embedding` antes de qualquer transform (SQL ou blocos), não o contrário. Workaround: dois pipelines encadeados via `depends_on` (§11) — o primeiro agrega/limpa e grava numa tabela de staging, o segundo lê a staging, embedda e grava no banco vetorial.

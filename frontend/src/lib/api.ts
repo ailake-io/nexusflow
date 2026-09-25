@@ -1,4 +1,4 @@
-import type { PipelineSpec } from '@/lib/dag'
+import type { CleanBlockSpec, NodeSpec, PipelineSpec } from '@/lib/dag'
 
 /** Matches nexus-core::ConnectorCapability (ARCHITECTURE.md §3). */
 export type ConnectorCapability = 'adbc_native' | 'arrow_flight' | 'bridged'
@@ -170,6 +170,25 @@ export function previewConnector(
   return request<PreviewResult>(
     '/connectors/preview',
     { method: 'POST', body: JSON.stringify({ connector, config, limit }) },
+    token,
+  )
+}
+
+/** Fase 30 — `POST /pipelines/preview-clean-blocks`: same "no saved
+ * pipeline needed" posture as `previewConnector` above, plus running the
+ * compiled no-code block chain over the sampled rows before returning
+ * them. `source` is the connected source node's `{connector, config}`;
+ * `blocks` is every clean block up to (and including) the one being
+ * edited, in canvas left-to-right order. */
+export function previewCleanBlocks(
+  token: string,
+  source: NodeSpec,
+  blocks: CleanBlockSpec[],
+  limit = 20,
+): Promise<PreviewResult> {
+  return request<PreviewResult>(
+    '/pipelines/preview-clean-blocks',
+    { method: 'POST', body: JSON.stringify({ source, blocks, limit }) },
     token,
   )
 }

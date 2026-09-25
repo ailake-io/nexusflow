@@ -461,3 +461,43 @@ saísse pra fora):
   usada pros bancos sqlite de teste local; um deployment que queira o
   histórico persistente aponta `NEXUS_GIT_HISTORY_PATH` pra um volume
   montado, do mesmo jeito que já precisa fazer pro sqlite de metadados.
+
+## 19. Blocos de transformação/limpeza sem código (Fase 30)
+
+`crates/nexus-core/src/clean.rs`: alternativa ao node `transform`/`python`
+pra quem quer configurar em vez de escrever código. Decisão central —
+**blocos são um builder visual que gera SQL, não um motor de execução
+novo**: cada `CleanBlockKind` (enum com tag, mesmo padrão de
+`QualityCheckKind` em `quality.rs`) sabe se traduzir num fragmento SQL;
+`compile_clean_blocks` encadeia N blocos numa única string `WITH step_0
+AS (...), step_1 AS (...), ... SELECT * FROM step_N [ORDER BY ...]`, que
+alimenta o `DataFusionTransform` já existente (`transform.rs`) sem tocar
+`runner.rs`, checkpoint, lineage ou o motor de streaming CDC.
+
+`PipelineSpec.clean_blocks: Vec<CleanBlockSpec>` (`#[serde(default)]`,
+mutuamente exclusivo com `transform`/`python` — `dag.rs::validate()`
+rejeita a combinação) é a lista persistida; o servidor recompila pra SQL
+toda vez que valida/roda, nunca guarda o SQL final. É o único jeito de
+"reabrir o pipeline e ver as caixas de volta, não uma string SQL opaca".
+Exige exatamente 1 source (mesma regra do node Python sozinho) e rejeita
+source `-cdc` (blocos não sabem preservar `__opcode`).
+
+**Achados de implementação (confirmados por teste real, não assumidos):**
+- DataFusion 54.1 suporta `SELECT * REPLACE (...)`, `SELECT * EXCEPT
+  (...)`, `DISTINCT ON (...)` e `ROW_NUMBER() OVER (...)` — usados pelos
+  blocos `rename`/`select_columns`/`cast`/`trim`/`fill_nulls`/
+  `change_case`/`dedupe`.
+- `ORDER BY` dentro de uma CTE **não sobrevive** à query externa (SQL
+  padrão — resultado é não-ordenado a menos que a query mais externa
+  peça `ORDER BY`). O bloco `sort` por isso não embute `ORDER BY` no seu
+  próprio fragmento; `compile_clean_blocks` guarda a última ordenação
+  pedida e aplica só na `SELECT` final.
+- Bug real de `#[serde(flatten)]`: `FillNulls.column` (coluna alvo) e
+  `NullFillStrategy::OtherColumn.column` (coluna de fallback) colidiam
+  no mesmo nível JSON achatado — pego por um teste de round-trip
+  dedicado, corrigido renomeando o segundo campo pra `fallback_column`.
+- Preview ad-hoc (`POST /pipelines/preview-clean-blocks`) reaproveita o
+  mesmo padrão do `POST /connectors/preview` (`preview_adhoc_handler`) —
+  monta um `PipelineSpec` descartável, `build_source` + as batches lidas
+  viram input do `DataFusionTransform`, incluindo o mesmo scan de SSRF
+  (`validate_security_with`) que o preview de conector já fazia.

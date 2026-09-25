@@ -77,7 +77,7 @@ use crypto::SecretCipher;
 use error::ApiError;
 use futures_util::StreamExt;
 use license_store::{LicenseStore, LicenseStoreError};
-use nexus_core::{ConnectorRegistry, NodeSpec, PipelineSpec, ProgressSender};
+use nexus_core::{ConnectorRegistry, NodeSpec, PipelineSpec, ProgressSender, Transform};
 use pipeline_store::{
     DeleteRunOutcome, PipelineStore, PipelineStoreError, PipelineSummary, RunRecord,
 };
@@ -267,6 +267,13 @@ fn router(state: AppState) -> Router {
         // runs that check before connecting (see its doc comment). Read
         // alone isn't enough for "make an arbitrary outbound connection".
         .route("/connectors/preview", post(preview_adhoc_handler))
+        // Fase 30 — same "no saved pipeline needed" posture as
+        // `/connectors/preview` above, plus the compiled block chain run
+        // over the sampled rows before they're returned.
+        .route(
+            "/pipelines/preview-clean-blocks",
+            post(preview_clean_blocks_handler),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_role::<AppState>,
@@ -1370,9 +1377,25 @@ async fn preview_node_handler(
 /// batch count, so the row count in the response always matches `limit`
 /// exactly (when the source has that many rows to give).
 async fn read_preview_rows(
-    mut source: Box<dyn nexus_core::Source>,
+    source: Box<dyn nexus_core::Source>,
     limit: usize,
 ) -> Result<Vec<serde_json::Value>, ApiError> {
+    batches_to_preview_json(&read_preview_batches(source, limit).await?)
+}
+
+/// Pulls the first `limit` rows off a freshly-connected `Source`, as real
+/// `RecordBatch`es — split out of `read_preview_rows` (Fase 30) so
+/// `preview_clean_blocks_handler` below can run a compiled block chain over
+/// them via `DataFusionTransform` before ever converting to JSON, instead
+/// of only being able to preview a bare, untransformed source. The trimming
+/// logic exists because a connector's batch size rarely divides `limit`
+/// evenly — the last batch pulled is sliced back down instead of just
+/// capping the batch count, so the row count in the response always
+/// matches `limit` exactly (when the source has that many rows to give).
+async fn read_preview_batches(
+    mut source: Box<dyn nexus_core::Source>,
+    limit: usize,
+) -> Result<Vec<arrow_array::RecordBatch>, ApiError> {
     // A connect/read failure here is the caller actively testing their own
     // connector config in the Preview tab, so the real (sanitized) reason
     // is exactly what they need — not a flat "internal server error" that
@@ -1412,19 +1435,116 @@ async fn read_preview_rows(
             collected.push(last.slice(0, limit.saturating_sub(already)));
         }
     }
+    Ok(collected)
+}
 
-    if collected.is_empty() {
+fn batches_to_preview_json(
+    batches: &[arrow_array::RecordBatch],
+) -> Result<Vec<serde_json::Value>, ApiError> {
+    if batches.is_empty() {
         return Ok(Vec::new());
     }
     let mut buf = Vec::new();
     {
         let mut writer = arrow_json::writer::ArrayWriter::new(&mut buf);
-        for batch in &collected {
+        for batch in batches {
             writer.write(batch).map_err(ApiError::internal)?;
         }
         writer.finish().map_err(ApiError::internal)?;
     }
     serde_json::from_slice(&buf).map_err(ApiError::internal)
+}
+
+/// Body for `POST /pipelines/preview-clean-blocks` (Fase 30) — same trust
+/// tier and "no saved pipeline needed" posture as `POST /connectors/preview`
+/// above: a source config plus the no-code block chain to preview, so the
+/// Canvas can show a live sample while the pipeline is still being edited.
+#[derive(Debug, Deserialize)]
+struct PreviewCleanBlocksRequest {
+    source: NodeSpec,
+    blocks: Vec<nexus_core::CleanBlockSpec>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// `POST /pipelines/preview-clean-blocks` — reads a sample of `source`,
+/// compiles `blocks` the same way `runner.rs::run_transform_pipeline` does
+/// at real run time, and runs it through the same `DataFusionTransform`.
+/// `Execute`-tier, matching `preview_adhoc_handler`: a real, live connection
+/// to an external system with a decrypted credential, same as running a
+/// pipeline for real, just capped to a small sample.
+async fn preview_clean_blocks_handler(
+    State(state): State<AppState>,
+    Json(req): Json<PreviewCleanBlocksRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if req.blocks.is_empty() {
+        return Err(ApiError::bad_request("blocks must not be empty"));
+    }
+    // Catches a malformed block (bad column name, missing required field)
+    // before ever connecting to the source — same check
+    // `PipelineSpec::validate()` runs internally, called directly here since
+    // this probe has no sink (nothing to preview into) and would otherwise
+    // fail `validate()`'s unconditional "sinks must not be empty" rule.
+    nexus_core::compile_clean_blocks(&req.blocks, "source0")
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+
+    // Same reasoning as `preview_adhoc_handler`: this config arrives fresh
+    // on every call and was never checked by `create_pipeline_handler`'s
+    // save-time validation — run the SSRF/path-traversal scan here too.
+    let probe_spec = PipelineSpec {
+        pipeline_id: "adhoc-clean-blocks-preview".to_string(),
+        sources: vec![req.source.clone()],
+        transform: None,
+        sinks: Vec::new(),
+        embedding: None,
+        llm: None,
+        python: None,
+        channel_capacity: 100,
+        partitions: 1,
+        dbt: None,
+        post_dbt_sinks: Vec::new(),
+        schedule: None,
+        depends_on: Vec::new(),
+        dependency_mode: nexus_core::DependencyMode::Any,
+        alerts: None,
+        quality_checks: Vec::new(),
+        anomaly_alerts: false,
+        masking: Vec::new(),
+        draft: false,
+        clean_blocks: Vec::new(),
+    };
+    probe_spec
+        .validate_security_with(state.allow_internal_hosts)
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+
+    let limit = req
+        .limit
+        .unwrap_or(DEFAULT_PREVIEW_LIMIT)
+        .min(MAX_PREVIEW_LIMIT);
+
+    let active_license = state.license_store.active().await.unwrap_or(None);
+    let (table_name, source) =
+        crate::connectors::build_source(&req.source, 0, active_license.as_ref())
+            .await
+            .map_err(|e| ApiError::bad_request(crate::error::sanitize_error(&e.to_string())))?;
+    let schema = source.schema();
+    let batches = read_preview_batches(source, limit).await?;
+    if batches.is_empty() {
+        return Ok(Json(
+            serde_json::json!({ "rows": Vec::<serde_json::Value>::new() }),
+        ));
+    }
+
+    let sql = nexus_core::compile_clean_blocks(&req.blocks, &table_name)
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let output = nexus_core::DataFusionTransform::new(sql)
+        .apply(vec![(table_name, schema, batches)])
+        .await
+        .map_err(|e| ApiError::bad_request(crate::error::sanitize_error(&e.to_string())))?;
+
+    Ok(Json(
+        serde_json::json!({ "rows": batches_to_preview_json(&output)? }),
+    ))
 }
 
 /// Body for `POST /connectors/preview`.
@@ -1474,6 +1594,7 @@ async fn preview_adhoc_handler(
         embedding: None,
         llm: None,
         python: None,
+        clean_blocks: Vec::new(),
         channel_capacity: 100,
         partitions: 1,
         dbt: None,
@@ -6003,5 +6124,77 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// Fase 30 — `POST /pipelines/preview-clean-blocks` must work against a
+    /// real source with no pipeline saved anywhere, same "ad-hoc" posture as
+    /// `/connectors/preview`, and actually run the compiled block chain
+    /// (not just echo the raw rows back).
+    #[cfg(feature = "csv")]
+    #[tokio::test]
+    async fn preview_clean_blocks_runs_the_chain_over_a_real_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("in.csv");
+        std::fs::write(&path, "id,valor\n1,10\n2,25\n3,30\n").unwrap();
+
+        let state = test_state().await;
+        let token = bearer(&state, Role::Execute);
+        let app = router(state);
+
+        let body = serde_json::json!({
+            "source": {"connector": "csv", "config": {
+                "uri": path.to_str().unwrap(),
+                "has_header": true,
+                "fields": [
+                    {"name": "id", "data_type": "int64"},
+                    {"name": "valor", "data_type": "int64"},
+                ],
+            }},
+            "blocks": [
+                {"kind": "filter", "column": "valor", "operator": "gt", "value": "15"}
+            ],
+        });
+        let response = app
+            .oneshot(json_request(
+                "POST",
+                "/pipelines/preview-clean-blocks",
+                &token,
+                body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        let rows = json["rows"].as_array().unwrap();
+        assert_eq!(
+            rows.len(),
+            2,
+            "filter must drop id=1 (valor=10 is not > 15)"
+        );
+        assert_eq!(rows[0]["id"], 2);
+        assert_eq!(rows[1]["id"], 3);
+    }
+
+    #[cfg(feature = "csv")]
+    #[tokio::test]
+    async fn preview_clean_blocks_rejects_empty_block_list() {
+        let state = test_state().await;
+        let token = bearer(&state, Role::Execute);
+        let app = router(state);
+
+        let body = serde_json::json!({
+            "source": {"connector": "csv", "config": {"uri": "/nonexistent.csv"}},
+            "blocks": [],
+        });
+        let response = app
+            .oneshot(json_request(
+                "POST",
+                "/pipelines/preview-clean-blocks",
+                &token,
+                body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

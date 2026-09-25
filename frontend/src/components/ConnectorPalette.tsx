@@ -36,7 +36,7 @@ export function ConnectorPalette({ connectors, loading, error }: ConnectorPalett
     : unlockedConnectors
 
   return (
-    <aside className="flex w-60 shrink-0 flex-col border-r bg-card">
+    <aside className="flex flex-1 flex-col overflow-hidden">
       <div className="border-b border-white/10 px-4 py-3">
         <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           {t('canvas.connectors')}

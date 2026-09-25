@@ -534,6 +534,20 @@ pub struct PipelineSpec {
     /// with `draft=false` (or omitted) before running.
     #[serde(default)]
     pub draft: bool,
+    /// Fase 30 — no-code alternative to `transform`/`python`: an ordered
+    /// chain of configurable cleaning/transformation blocks
+    /// (`crate::clean::CleanBlockKind`), compiled into one SQL string
+    /// (`compile_clean_blocks`) that runs through the same
+    /// `DataFusionTransform` the SQL `transform` node uses — no separate
+    /// execution engine. Mutually exclusive with `transform` and `python`
+    /// (`validate()`): a pipeline picks one way to describe its
+    /// cleaning/transform stage, config-only blocks or code, never both.
+    /// Requires exactly 1 source (`validate()`) — fan-in across blocks
+    /// isn't supported in v1, same reasoning that already keeps `python`
+    /// (without a SQL transform) to exactly 1 source/1 sink. Empty (the
+    /// default) means no blocks, same as before this field existed.
+    #[serde(default)]
+    pub clean_blocks: Vec<crate::clean::CleanBlockSpec>,
 }
 
 fn default_channel_capacity() -> usize {
@@ -553,7 +567,7 @@ impl PipelineSpec {
     }
 
     pub fn has_transform(&self) -> bool {
-        self.transform.is_some()
+        self.transform.is_some() || !self.clean_blocks.is_empty()
     }
 
     /// Public so callers that skip [`PipelineSpec::parse`] (e.g. an Axum
@@ -631,8 +645,40 @@ impl PipelineSpec {
             }
         }
 
+        if !self.clean_blocks.is_empty() {
+            if self.transform.is_some() || self.python.is_some() {
+                return Err(NexusError::Schema(
+                    "clean_blocks cannot be combined with transform or python — a pipeline \
+                     picks one way to describe its transform stage, config-only blocks or \
+                     code, not both"
+                        .into(),
+                ));
+            }
+            // Compiling against a placeholder table name here only checks the
+            // blocks' own content (column names, required fields per kind) —
+            // the real source table name is resolved at run time
+            // (`runner.rs`), it doesn't change whether the blocks themselves
+            // are well-formed.
+            crate::clean::compile_clean_blocks(&self.clean_blocks, "source0")?;
+            if self.sources.len() != 1 {
+                return Err(NexusError::Schema(
+                    "clean_blocks requires exactly 1 source (fan-in across no-code blocks \
+                     isn't supported yet — use a SQL transform node instead)"
+                        .into(),
+                ));
+            }
+            if self.sources[0].connector.ends_with("-cdc") {
+                return Err(NexusError::Schema(
+                    "clean_blocks doesn't support a CDC source yet (it doesn't know to \
+                     preserve the __opcode column) — use a SQL transform node \
+                     (`SELECT * FROM source0`) instead"
+                        .into(),
+                ));
+            }
+        }
+
         match &self.transform {
-            None if self.python.is_none() => {
+            None if self.python.is_none() && self.clean_blocks.is_empty() => {
                 if self.sources.len() != 1 || self.sinks.len() != 1 {
                     return Err(NexusError::Schema(
                         "without a transform, the pipeline must be strictly linear: \
@@ -645,7 +691,7 @@ impl PipelineSpec {
             // there's no SQL stage to merge multiple sources into the one
             // table `python` expects. Chain a SQL transform first to join
             // sources, then `python` runs over its single output instead.
-            None => {
+            None if self.clean_blocks.is_empty() => {
                 if self.sources.len() != 1 || self.sinks.len() != 1 {
                     return Err(NexusError::Schema(
                         "without a SQL transform, a python stage still requires exactly 1 \
@@ -654,11 +700,13 @@ impl PipelineSpec {
                     ));
                 }
             }
-            Some(t) => {
-                if t.sql.trim().is_empty() {
-                    return Err(NexusError::Schema("transform.sql must not be empty".into()));
-                }
+            // `clean_blocks` non-empty (validated above) — sinks are free to
+            // fan out, same posture the SQL `transform` arm below has.
+            None => {}
+            Some(t) if t.sql.trim().is_empty() => {
+                return Err(NexusError::Schema("transform.sql must not be empty".into()));
             }
+            Some(_) => {}
         }
 
         if let Some(python) = &self.python {
@@ -2023,5 +2071,132 @@ mod tests {
         }"#;
         PipelineSpec::parse(json)
             .expect("draft must skip depends_on validation, same as everything else");
+    }
+
+    fn clean_blocks_pipeline_json(clean_blocks: &str) -> String {
+        format!(
+            r#"{{
+                "pipeline_id": "p",
+                "sources": [{{"connector": "csv", "config": {{}}}}],
+                "sinks": [{{"connector": "csv", "config": {{}}}}],
+                "clean_blocks": {clean_blocks}
+            }}"#
+        )
+    }
+
+    #[test]
+    fn parses_valid_clean_blocks_pipeline_and_has_transform_is_true() {
+        let json = clean_blocks_pipeline_json(
+            r#"[{"kind": "filter", "column": "age", "operator": "gt", "value": "18"}]"#,
+        );
+        let spec = PipelineSpec::parse(&json).expect("valid clean_blocks pipeline parses");
+        assert!(
+            spec.has_transform(),
+            "clean_blocks alone must count as having a transform stage, same as spec.transform \
+             — it's how runner.rs decides to route into run_transform_pipeline"
+        );
+    }
+
+    #[test]
+    fn rejects_clean_blocks_combined_with_sql_transform() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "csv", "config": {}}],
+            "sinks": [{"connector": "csv", "config": {}}],
+            "transform": {"sql": "SELECT * FROM source0"},
+            "clean_blocks": [{"kind": "sort", "column": "id", "direction": "asc"}]
+        }"#;
+        let err = PipelineSpec::parse(json)
+            .expect_err("clean_blocks + transform must be rejected — pick one, not both");
+        assert!(err.to_string().contains("cannot be combined"));
+    }
+
+    #[test]
+    fn rejects_clean_blocks_combined_with_python() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "csv", "config": {}}],
+            "sinks": [{"connector": "csv", "config": {}}],
+            "python": {"script": "def transform(df):\n    return df"},
+            "clean_blocks": [{"kind": "sort", "column": "id", "direction": "asc"}]
+        }"#;
+        let err = PipelineSpec::parse(json)
+            .expect_err("clean_blocks + python must be rejected — pick one, not both");
+        assert!(err.to_string().contains("cannot be combined"));
+    }
+
+    #[test]
+    fn rejects_clean_blocks_with_more_than_one_source() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [
+                {"name": "a", "connector": "csv", "config": {}},
+                {"name": "b", "connector": "csv", "config": {}}
+            ],
+            "sinks": [{"connector": "csv", "config": {}}],
+            "clean_blocks": [{"kind": "sort", "column": "id", "direction": "asc"}]
+        }"#;
+        let err = PipelineSpec::parse(json)
+            .expect_err("clean_blocks with 2 sources must be rejected (no fan-in support yet)");
+        assert!(err.to_string().contains("exactly 1 source"));
+    }
+
+    #[test]
+    fn rejects_clean_blocks_with_a_cdc_source() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "postgres-cdc", "config": {}}],
+            "sinks": [{"connector": "csv", "config": {}}],
+            "clean_blocks": [{"kind": "sort", "column": "id", "direction": "asc"}]
+        }"#;
+        let err = PipelineSpec::parse(json)
+            .expect_err("clean_blocks with a CDC source must be rejected (drops __opcode)");
+        assert!(err.to_string().contains("CDC source"));
+    }
+
+    #[test]
+    fn rejects_clean_blocks_with_invalid_block_content() {
+        // `compile_clean_blocks` itself rejects this (filter's `eq` operator
+        // needs a `value`) — validate() must surface that error, not swallow
+        // it, so a bad block is caught at save time, not at first run.
+        let json = clean_blocks_pipeline_json(
+            r#"[{"kind": "filter", "column": "age", "operator": "eq"}]"#,
+        );
+        let err = PipelineSpec::parse(&json)
+            .expect_err("a structurally invalid block must fail validate()");
+        assert!(err.to_string().contains("value"));
+    }
+
+    #[test]
+    fn clean_blocks_allows_fanning_out_to_multiple_sinks() {
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [{"connector": "csv", "config": {}}],
+            "sinks": [
+                {"name": "a", "connector": "csv", "config": {}},
+                {"name": "b", "connector": "csv", "config": {}}
+            ],
+            "clean_blocks": [{"kind": "sort", "column": "id", "direction": "asc"}]
+        }"#;
+        PipelineSpec::parse(json)
+            .expect("clean_blocks should allow fan-out to multiple sinks, same as transform does");
+    }
+
+    #[test]
+    fn empty_clean_blocks_does_not_affect_the_strictly_linear_rule() {
+        // Default (empty) clean_blocks must behave exactly like before this
+        // field existed — a plain linear pipeline with no transform/python
+        // still needs exactly 1 source and 1 sink.
+        let json = r#"{
+            "pipeline_id": "p",
+            "sources": [
+                {"name": "a", "connector": "csv", "config": {}},
+                {"name": "b", "connector": "csv", "config": {}}
+            ],
+            "sinks": [{"connector": "csv", "config": {}}]
+        }"#;
+        let err = PipelineSpec::parse(json)
+            .expect_err("2 sources with no transform/python/clean_blocks must still fail");
+        assert!(err.to_string().contains("strictly linear"));
     }
 }

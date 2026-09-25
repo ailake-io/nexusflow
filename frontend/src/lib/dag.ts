@@ -41,6 +41,86 @@ export interface PythonTransformSpec {
   timeout_seconds?: number
 }
 
+/** Matches nexus-core::FilterOperator exactly. */
+export type FilterOperator =
+  | 'eq'
+  | 'ne'
+  | 'gt'
+  | 'lt'
+  | 'gte'
+  | 'lte'
+  | 'contains'
+  | 'starts_with'
+  | 'is_null'
+  | 'is_not_null'
+
+/** Matches nexus-core::SelectColumnsMode exactly. */
+export type SelectColumnsMode = 'keep' | 'drop'
+
+/** Matches nexus-core::CaseMode exactly. */
+export type CaseMode = 'upper' | 'lower' | 'title'
+
+/** Matches nexus-core::CastType exactly. */
+export type CastType = 'int' | 'float' | 'text' | 'date' | 'boolean'
+
+/** Matches nexus-core::ComputeOperator exactly. */
+export type ComputeOperator = 'add' | 'subtract' | 'multiply' | 'divide' | 'concat'
+
+/** Matches nexus-core::SortDirection exactly. */
+export type SortDirection = 'asc' | 'desc'
+
+/** Matches nexus-core::AggFunction exactly. */
+export type AggFunction = 'sum' | 'avg' | 'count' | 'count_distinct' | 'min' | 'max'
+
+/** Matches nexus-core::Aggregation exactly. */
+export interface Aggregation {
+  column: string
+  function: AggFunction
+  output: string
+}
+
+/** Matches nexus-core::NullFillStrategy exactly — `#[serde(tag =
+ * "strategy")]`, flattened into the `fill_nulls` block below. `column` here
+ * would collide with `fill_nulls`' own `column` (the target column) at the
+ * same JSON level — that's why the Rust side calls this one
+ * `fallback_column`, not `column` (a real bug caught by a round-trip test). */
+export type NullFillStrategy =
+  | { strategy: 'value'; value: string }
+  | { strategy: 'column_average' }
+  | { strategy: 'other_column'; fallback_column: string }
+
+/** Matches nexus-core::CleanBlockKind exactly — `#[serde(tag = "kind")]`.
+ * Fase 30's no-code alternative to the `transform`/`python` nodes: each
+ * variant is a configurable operation `compile_clean_blocks` (nexus-core)
+ * turns into a SQL fragment, chained as CTEs. */
+export type CleanBlockKind =
+  | { kind: 'filter'; column: string; operator: FilterOperator; value?: string }
+  | { kind: 'select_columns'; mode: SelectColumnsMode; columns: string[] }
+  | { kind: 'rename'; from: string; to: string }
+  | { kind: 'cast'; column: string; data_type: CastType }
+  | { kind: 'trim'; columns: string[] }
+  | { kind: 'replace_text'; column: string; find: string; replace: string }
+  | ({ kind: 'fill_nulls'; column: string } & NullFillStrategy)
+  | { kind: 'drop_nulls'; columns: string[] }
+  | { kind: 'dedupe'; columns: string[] }
+  | { kind: 'change_case'; column: string; mode: CaseMode }
+  | {
+      kind: 'computed_column'
+      output: string
+      left: string
+      operator: ComputeOperator
+      right: string
+    }
+  | { kind: 'sort'; column: string; direction: SortDirection }
+  | { kind: 'aggregate'; group_by: string[]; aggregations: Aggregation[] }
+
+export type CleanBlockKindTag = CleanBlockKind['kind']
+
+/** Matches nexus-core::CleanBlockSpec exactly (`#[serde(flatten)]` on
+ * `kind`, so `name` and the tagged variant's fields sit at the same JSON
+ * level). */
+export type CleanBlockSpec = { name?: string } & CleanBlockKind
+
 /** Matches nexus-core::DbtCommand exactly. */
 export type DbtCommand = 'run' | 'build' | 'test'
 
@@ -142,6 +222,12 @@ export interface PipelineSpec {
   /** When true, the spec is saved as a draft and the server skips validation
    * of connector configs/embedding/dbt. Drafts cannot be executed. */
   draft?: boolean
+  /** Fase 30 — no-code alternative to `transform`/`python`: an ordered
+   * chain of configurable blocks, compiled server-side into the same kind
+   * of SQL a hand-written `transform.sql` would be. Mutually exclusive with
+   * `transform`/`python`; requires exactly 1 source. Empty/unset means no
+   * blocks, same as before this field existed. */
+  clean_blocks?: CleanBlockSpec[]
 }
 
 /** Matches nexus-core::column_masking::ColumnMaskingSpec exactly. */
@@ -261,12 +347,60 @@ export interface EmbeddingNodeData extends Record<string, unknown> {
   separators: string
 }
 
+/**
+ * Canvas form of `CleanBlockSpec` — same "flat superset, inspector shows
+ * only the relevant subset" pattern `EmbeddingNodeData` already uses for
+ * its own multi-variant shape. `blockKind` picks which fields matter;
+ * `columns` is a single comma-separated string shared by every block kind
+ * that takes a column *list* (trim/drop_nulls/dedupe/select_columns),
+ * parsed in `toCleanBlockSpec`. `aggregations` is a small text mini-DSL
+ * (`col:function:output`, one per line) rather than a repeatable sub-form —
+ * simplest thing that works for a config surface this deep; a real
+ * multi-row editor is a reasonable follow-up, not done here.
+ */
+export interface CleanBlockNodeData extends Record<string, unknown> {
+  kind: 'clean'
+  blockKind: CleanBlockKindTag
+  name: string
+  // filter / cast / replace_text / fill_nulls / change_case / sort (single column)
+  column: string
+  operator: FilterOperator
+  value: string
+  // select_columns / trim / drop_nulls / dedupe (column list)
+  selectMode: SelectColumnsMode
+  columns: string
+  // rename
+  from: string
+  to: string
+  // cast
+  dataType: CastType
+  // replace_text
+  find: string
+  replace: string
+  // fill_nulls
+  nullStrategy: NullFillStrategy['strategy']
+  fallbackColumn: string
+  // change_case
+  caseMode: CaseMode
+  // computed_column
+  output: string
+  left: string
+  computeOperator: ComputeOperator
+  right: string
+  // sort
+  direction: SortDirection
+  // aggregate
+  groupBy: string
+  aggregations: string
+}
+
 export type DagNodeData =
   | ConnectorNodeData
   | TransformNodeData
   | DbtNodeData
   | EmbeddingNodeData
   | PythonNodeData
+  | CleanBlockNodeData
 export type DagNode = Node<DagNodeData>
 
 export function isConnectorNode(node: DagNode): node is Node<ConnectorNodeData> {
@@ -287,6 +421,10 @@ export function isPythonNode(node: DagNode): node is Node<PythonNodeData> {
 
 export function isEmbeddingNode(node: DagNode): node is Node<EmbeddingNodeData> {
   return node.data.kind === 'embedding'
+}
+
+export function isCleanBlockNode(node: DagNode): node is Node<CleanBlockNodeData> {
+  return node.data.kind === 'clean'
 }
 
 export class DagSerializationError extends Error {}
@@ -336,6 +474,12 @@ export function toPipelineSpec(
   const dbtNodes = nodes.filter(isDbtNode)
   const embeddingNodes = nodes.filter(isEmbeddingNode)
   const pythonNodes = nodes.filter(isPythonNode)
+  // Order = left-to-right canvas position, not edges — same convention
+  // `fromPipelineSpec` uses when laying blocks back out.
+  const cleanNodes = nodes
+    .filter(isCleanBlockNode)
+    .slice()
+    .sort((a, b) => a.position.x - b.position.x)
   if (!allowDraft) {
     if (transformNodes.length > 1) {
       err('atMostOneTransform')
@@ -348,6 +492,9 @@ export function toPipelineSpec(
     }
     if (pythonNodes.length > 1) {
       err('atMostOnePython')
+    }
+    if (cleanNodes.length > 0 && (transformNodes.length > 0 || pythonNodes.length > 0)) {
+      err('cleanBlocksExclusiveWithTransformOrPython')
     }
   }
 
@@ -367,6 +514,9 @@ export function toPipelineSpec(
     if (sinks.length === 0) {
       err('sinksEmpty')
     }
+    if (cleanNodes.length > 0 && sources.length !== 1) {
+      err('cleanBlocksRequiresOneSource')
+    }
   }
 
   const transform =
@@ -379,7 +529,12 @@ export function toPipelineSpec(
   }
 
   if (!allowDraft) {
-    if (!transform && !python && (sources.length !== 1 || sinks.length !== 1)) {
+    if (
+      !transform &&
+      !python &&
+      cleanNodes.length === 0 &&
+      (sources.length !== 1 || sinks.length !== 1)
+    ) {
       err('strictLinearWithoutTransform')
     }
     if (!transform && python && (sources.length !== 1 || sinks.length !== 1)) {
@@ -410,6 +565,8 @@ export function toPipelineSpec(
       ? toEmbeddingSpec(embeddingNodes[0].data, allowDraft, t)
       : undefined
 
+  const cleanBlocks = cleanNodes.map((n) => toCleanBlockSpec(n.data, allowDraft, t))
+
   const spec: PipelineSpec = {
     pipeline_id: meta.pipelineId,
     sources,
@@ -419,6 +576,7 @@ export function toPipelineSpec(
   if (embedding) spec.embedding = embedding
   if (python) spec.python = python
   if (dbt) spec.dbt = dbt
+  if (cleanBlocks.length > 0) spec.clean_blocks = cleanBlocks
   if (meta.channelCapacity !== undefined) spec.channel_capacity = meta.channelCapacity
   if (meta.partitions !== undefined) spec.partitions = meta.partitions
   if (meta.schedule?.trim()) spec.schedule = meta.schedule.trim()
@@ -466,6 +624,15 @@ const EN_DAG_ERRORS = {
     'embedding node: similarity_threshold must be between 0.0 and 1.0',
   configNotValidJson: 'node "{name}": config is not valid JSON',
   connectorNameEmpty: 'every connector node needs a connector name',
+  cleanBlocksExclusiveWithTransformOrPython:
+    'a clean block cannot be combined with a transform or python node — pick one way to describe the transform stage',
+  cleanBlocksRequiresOneSource: 'clean blocks require exactly 1 source (fan-in is not supported yet)',
+  cleanBlockColumnEmpty: 'clean block: column must not be empty',
+  cleanBlockColumnListEmpty: 'clean block: at least one column is required',
+  cleanBlockFilterValueRequired: 'clean block: this operator requires a value',
+  cleanBlockFillValueRequired: 'clean block: a fill value is required',
+  cleanBlockAggregationMalformed: 'clean block: each aggregation line must be "column:function:output"',
+  cleanBlockAggregateEmpty: 'clean block: set at least a group-by column or one aggregation',
 }
 
 function defaultT(key: string, vars?: Record<string, string | number>): string {
@@ -570,6 +737,150 @@ function toEmbeddingSpec(
   }
 }
 
+/** Splits a comma-separated column list into trimmed, non-empty names —
+ * shared by every block kind that takes a column *list*
+ * (select_columns/trim/drop_nulls/dedupe). */
+function parseColumnList(raw: string): string[] {
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+}
+
+/** Parses the `aggregations` mini-DSL (`column:function:output`, one per
+ * line) into `Aggregation[]`. See `CleanBlockNodeData`'s doc comment for
+ * why this is a text format rather than a repeatable sub-form. */
+function parseAggregations(raw: string, err: (key: keyof typeof EN_DAG_ERRORS) => never): Aggregation[] {
+  return raw
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line) => {
+      const parts = line.split(':').map((p) => p.trim())
+      if (parts.length !== 3 || !parts[0] || !parts[2]) {
+        err('cleanBlockAggregationMalformed')
+      }
+      const [column, fn, output] = parts
+      return { column, function: fn as AggFunction, output }
+    })
+}
+
+export function toCleanBlockSpec(
+  data: CleanBlockNodeData,
+  allowDraft = false,
+  t: DagTranslator = defaultT,
+): CleanBlockSpec {
+  const err = (key: keyof typeof EN_DAG_ERRORS, vars?: Record<string, string | number>): never => {
+    throw new DagSerializationError(t(`dag.errors.${key}`, vars))
+  }
+  const name = data.name.trim() || undefined
+  const requireColumn = (value: string) => {
+    if (!allowDraft && !value.trim()) err('cleanBlockColumnEmpty')
+    return value.trim()
+  }
+
+  switch (data.blockKind) {
+    case 'filter': {
+      const column = requireColumn(data.column)
+      const needsValue = data.operator !== 'is_null' && data.operator !== 'is_not_null'
+      if (!allowDraft && needsValue && !data.value.trim()) err('cleanBlockFilterValueRequired')
+      return {
+        name,
+        kind: 'filter',
+        column,
+        operator: data.operator,
+        ...(needsValue ? { value: data.value.trim() } : {}),
+      }
+    }
+    case 'select_columns': {
+      const columns = parseColumnList(data.columns)
+      if (!allowDraft && columns.length === 0) err('cleanBlockColumnListEmpty')
+      return { name, kind: 'select_columns', mode: data.selectMode, columns }
+    }
+    case 'rename': {
+      const from = requireColumn(data.from)
+      if (!allowDraft && !data.to.trim()) err('cleanBlockColumnEmpty')
+      return { name, kind: 'rename', from, to: data.to.trim() }
+    }
+    case 'cast':
+      return { name, kind: 'cast', column: requireColumn(data.column), data_type: data.dataType }
+    case 'trim': {
+      const columns = parseColumnList(data.columns)
+      if (!allowDraft && columns.length === 0) err('cleanBlockColumnListEmpty')
+      return { name, kind: 'trim', columns }
+    }
+    case 'replace_text':
+      return {
+        name,
+        kind: 'replace_text',
+        column: requireColumn(data.column),
+        find: data.find,
+        replace: data.replace,
+      }
+    case 'fill_nulls': {
+      const column = requireColumn(data.column)
+      if (data.nullStrategy === 'value') {
+        if (!allowDraft && !data.value.trim()) err('cleanBlockFillValueRequired')
+        return { name, kind: 'fill_nulls', column, strategy: 'value', value: data.value.trim() }
+      }
+      if (data.nullStrategy === 'other_column') {
+        const fallbackColumn = data.fallbackColumn.trim()
+        if (!allowDraft && !fallbackColumn) err('cleanBlockColumnEmpty')
+        return {
+          name,
+          kind: 'fill_nulls',
+          column,
+          strategy: 'other_column',
+          fallback_column: fallbackColumn,
+        }
+      }
+      return { name, kind: 'fill_nulls', column, strategy: 'column_average' }
+    }
+    case 'drop_nulls': {
+      const columns = parseColumnList(data.columns)
+      if (!allowDraft && columns.length === 0) err('cleanBlockColumnListEmpty')
+      return { name, kind: 'drop_nulls', columns }
+    }
+    case 'dedupe':
+      return { name, kind: 'dedupe', columns: parseColumnList(data.columns) }
+    case 'change_case':
+      return {
+        name,
+        kind: 'change_case',
+        column: requireColumn(data.column),
+        mode: data.caseMode,
+      }
+    case 'computed_column': {
+      if (!allowDraft && !data.output.trim()) err('cleanBlockColumnEmpty')
+      const left = requireColumn(data.left)
+      if (!allowDraft && !data.right.trim()) err('cleanBlockColumnEmpty')
+      return {
+        name,
+        kind: 'computed_column',
+        output: data.output.trim(),
+        left,
+        operator: data.computeOperator,
+        right: data.right.trim(),
+      }
+    }
+    case 'sort':
+      return {
+        name,
+        kind: 'sort',
+        column: requireColumn(data.column),
+        direction: data.direction,
+      }
+    case 'aggregate': {
+      const groupBy = parseColumnList(data.groupBy)
+      const aggregations = parseAggregations(data.aggregations, err)
+      if (!allowDraft && groupBy.length === 0 && aggregations.length === 0) {
+        err('cleanBlockAggregateEmpty')
+      }
+      return { name, kind: 'aggregate', group_by: groupBy, aggregations }
+    }
+  }
+}
+
 function toNodeSpec(
   node: Node<ConnectorNodeData>,
   allowDraft = false,
@@ -597,6 +908,7 @@ function toNodeSpec(
 }
 
 const COLUMN_X = { source: 0, transform: 320, python: 480, sink: 640 }
+const CLEAN_BLOCK_SPACING = 160
 const ROW_HEIGHT = 100
 
 let importNodeId = 1
@@ -680,6 +992,23 @@ export function fromPipelineSpec(spec: PipelineSpec): { nodes: DagNode[]; edges:
       edges.push({ id: `${id}-${pythonId}`, source: id, target: pythonId })
     })
     upstreamIds = [pythonId]
+  }
+
+  if (spec.clean_blocks && spec.clean_blocks.length > 0) {
+    const y = ((sourceIds.length + sinkIds.length) / 2) * ROW_HEIGHT / 2
+    spec.clean_blocks.forEach((block, i) => {
+      const cleanId = `import-${importNodeId++}`
+      nodes.push({
+        id: cleanId,
+        type: 'clean',
+        position: { x: COLUMN_X.transform + i * CLEAN_BLOCK_SPACING, y },
+        data: fromCleanBlockSpec(block),
+      })
+      upstreamIds.forEach((id) => {
+        edges.push({ id: `${id}-${cleanId}`, source: id, target: cleanId })
+      })
+      upstreamIds = [cleanId]
+    })
   }
 
   upstreamIds.forEach((id) => {
@@ -767,6 +1096,96 @@ function fromEmbeddingSpec(spec: EmbeddingSpec): EmbeddingNodeData {
   }
   if (spec.chunking.strategy === 'recursive_character') {
     data.separators = (spec.chunking.separators ?? []).join('\n')
+  }
+  return data
+}
+
+/** Every block kind's default canvas data — dropping a fresh block of a
+ * given kind onto the canvas starts from this, `blockKind` overridden. */
+export const DEFAULT_CLEAN_DATA: CleanBlockNodeData = {
+  kind: 'clean',
+  blockKind: 'filter',
+  name: '',
+  column: '',
+  operator: 'eq',
+  value: '',
+  selectMode: 'keep',
+  columns: '',
+  from: '',
+  to: '',
+  dataType: 'text',
+  find: '',
+  replace: '',
+  nullStrategy: 'value',
+  fallbackColumn: '',
+  caseMode: 'upper',
+  output: '',
+  left: '',
+  computeOperator: 'add',
+  right: '',
+  direction: 'asc',
+  groupBy: '',
+  aggregations: '',
+}
+
+function fromCleanBlockSpec(spec: CleanBlockSpec): CleanBlockNodeData {
+  const data: CleanBlockNodeData = { ...DEFAULT_CLEAN_DATA, blockKind: spec.kind, name: spec.name ?? '' }
+  switch (spec.kind) {
+    case 'filter':
+      data.column = spec.column
+      data.operator = spec.operator
+      data.value = spec.value ?? ''
+      break
+    case 'select_columns':
+      data.selectMode = spec.mode
+      data.columns = spec.columns.join(', ')
+      break
+    case 'rename':
+      data.from = spec.from
+      data.to = spec.to
+      break
+    case 'cast':
+      data.column = spec.column
+      data.dataType = spec.data_type
+      break
+    case 'trim':
+      data.columns = spec.columns.join(', ')
+      break
+    case 'replace_text':
+      data.column = spec.column
+      data.find = spec.find
+      data.replace = spec.replace
+      break
+    case 'fill_nulls':
+      data.column = spec.column
+      data.nullStrategy = spec.strategy
+      if (spec.strategy === 'value') data.value = spec.value
+      if (spec.strategy === 'other_column') data.fallbackColumn = spec.fallback_column
+      break
+    case 'drop_nulls':
+      data.columns = spec.columns.join(', ')
+      break
+    case 'dedupe':
+      data.columns = spec.columns.join(', ')
+      break
+    case 'change_case':
+      data.column = spec.column
+      data.caseMode = spec.mode
+      break
+    case 'computed_column':
+      data.output = spec.output
+      data.left = spec.left
+      data.computeOperator = spec.operator
+      data.right = spec.right
+      break
+    case 'sort':
+      data.column = spec.column
+      data.direction = spec.direction
+      break
+    case 'aggregate':
+      data.groupBy = spec.group_by.join(', ')
+      data.aggregations = spec.aggregations.map((a) => `${a.column}:${a.function}:${a.output}`).join('\n')
+      break
   }
   return data
 }
