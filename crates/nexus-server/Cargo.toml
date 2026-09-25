@@ -92,7 +92,7 @@ connectors-all = [
     "pgvector", "pinecone", "chromadb", "deltalake", "iceberg", "parquet",
     "ailake", "csv", "clickhouse", "duckdb", "redis", "nats", "rabbitmq",
     "starburst", "teradata", "vertica", "hana", "oracle", "mssql", "redshift", "bigquery", "snowflake",
-    "databricks", "elasticsearch",
+    "databricks", "elasticsearch", "weaviate", "vertex-vector-search", "azure-ai-search",
     "embeddings", "embeddings-api", "llm", "version-history",
     "postgres-cdc", "mysql-cdc", "deltalake-cdc", "iceberg-cdc", "ailake-cdc",
 ]
@@ -104,7 +104,7 @@ connectors-all-no-embeddings = [
     "pgvector", "pinecone", "chromadb", "deltalake", "iceberg", "parquet",
     "ailake", "csv", "clickhouse", "duckdb", "redis", "nats", "rabbitmq",
     "starburst", "teradata", "vertica", "hana", "oracle", "mssql", "redshift", "bigquery", "snowflake",
-    "databricks", "elasticsearch",
+    "databricks", "elasticsearch", "weaviate", "vertex-vector-search", "azure-ai-search",
     "version-history",
     "postgres-cdc", "mysql-cdc", "deltalake-cdc", "iceberg-cdc", "ailake-cdc",
 ]
@@ -161,6 +161,9 @@ bigquery = ["dep:nexus-connector-bigquery"]
 snowflake = ["dep:nexus-connector-snowflake"]
 databricks = ["dep:nexus-connector-databricks"]
 elasticsearch = ["dep:nexus-connector-elasticsearch"]
+weaviate = ["dep:nexus-connector-weaviate"]
+vertex-vector-search = ["dep:nexus-connector-vertex-vector-search"]
+azure-ai-search = ["dep:nexus-connector-azure-ai-search"]
 
 [dependencies]
 aes-gcm = "0.10.3"
@@ -218,6 +221,9 @@ nexus-connector-bigquery = { version = "0.1.0", path = "../nexus-connectors/nexu
 nexus-connector-snowflake = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-snowflake", optional = true }
 nexus-connector-databricks = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-databricks", optional = true }
 nexus-connector-elasticsearch = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-elasticsearch", optional = true }
+nexus-connector-weaviate = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-weaviate", optional = true }
+nexus-connector-vertex-vector-search = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-vertex-vector-search", optional = true }
+nexus-connector-azure-ai-search = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-azure-ai-search", optional = true }
 nexus-core = { version = "0.1.0", path = "../nexus-core" }
 nexus-ai = { version = "0.1.0", path = "../nexus-ai", optional = true }
 hex = "0.4.3"

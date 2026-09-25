@@ -36,6 +36,9 @@ members = [
     "nexus-connector-snowflake",
     "nexus-connector-databricks",
     "nexus-connector-elasticsearch",
+    "nexus-connector-weaviate",
+    "nexus-connector-vertex-vector-search",
+    "nexus-connector-azure-ai-search",
 ]
 
 [workspace.package]

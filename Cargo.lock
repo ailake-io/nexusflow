@@ -7682,6 +7682,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexus-connector-azure-ai-search"
+version = "0.1.7"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-schema 58.4.0",
+ "async-trait",
+ "futures",
+ "nexus-core",
+ "reqwest 0.12.28",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
 name = "nexus-connector-bigquery"
 version = "0.1.7"
 dependencies = [
@@ -8276,6 +8293,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexus-connector-vertex-vector-search"
+version = "0.1.7"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-schema 58.4.0",
+ "async-trait",
+ "futures",
+ "jsonwebtoken",
+ "nexus-core",
+ "reqwest 0.12.28",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
 name = "nexus-connector-vertica"
 version = "0.1.7"
 dependencies = [
@@ -8290,6 +8325,23 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "nexus-connector-weaviate"
+version = "0.1.7"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-schema 58.4.0",
+ "async-trait",
+ "futures",
+ "nexus-core",
+ "reqwest 0.12.28",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+ "wiremock",
 ]
 
 [[package]]
@@ -8341,6 +8393,7 @@ dependencies = [
  "lettre",
  "nexus-ai",
  "nexus-connector-ailake",
+ "nexus-connector-azure-ai-search",
  "nexus-connector-bigquery",
  "nexus-connector-chromadb",
  "nexus-connector-clickhouse",
@@ -8374,7 +8427,9 @@ dependencies = [
  "nexus-connector-sqlite",
  "nexus-connector-starburst",
  "nexus-connector-teradata",
+ "nexus-connector-vertex-vector-search",
  "nexus-connector-vertica",
+ "nexus-connector-weaviate",
  "nexus-core",
  "opentelemetry",
  "opentelemetry-otlp",
