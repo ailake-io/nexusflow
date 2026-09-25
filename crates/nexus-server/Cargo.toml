@@ -91,6 +91,7 @@ connectors-all = [
     "mongodb", "mysql", "kafka", "mqtt", "rest", "odbc", "milvus", "qdrant", "lancedb",
     "pgvector", "pinecone", "chromadb", "deltalake", "iceberg", "parquet",
     "ailake", "csv", "clickhouse", "duckdb", "redis", "nats", "rabbitmq",
+    "starburst",
     "embeddings", "embeddings-api", "llm", "version-history",
     "postgres-cdc", "mysql-cdc", "deltalake-cdc", "iceberg-cdc", "ailake-cdc",
 ]
@@ -101,6 +102,7 @@ connectors-all-no-embeddings = [
     "mongodb", "mysql", "kafka", "mqtt", "rest", "odbc", "milvus", "qdrant", "lancedb",
     "pgvector", "pinecone", "chromadb", "deltalake", "iceberg", "parquet",
     "ailake", "csv", "clickhouse", "duckdb", "redis", "nats", "rabbitmq",
+    "starburst",
     "version-history",
     "postgres-cdc", "mysql-cdc", "deltalake-cdc", "iceberg-cdc", "ailake-cdc",
 ]
@@ -146,6 +148,7 @@ duckdb = ["dep:nexus-connector-duckdb"]
 redis = ["dep:nexus-connector-redis", "nexus-connector-redis/client"]
 nats = ["dep:nexus-connector-nats", "nexus-connector-nats/client"]
 rabbitmq = ["dep:nexus-connector-rabbitmq", "nexus-connector-rabbitmq/client"]
+starburst = ["dep:nexus-connector-starburst"]
 
 [dependencies]
 aes-gcm = "0.10.3"
@@ -192,6 +195,7 @@ nexus-connector-duckdb = { version = "0.1.0", path = "../nexus-connectors/nexus-
 nexus-connector-redis = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-redis", optional = true }
 nexus-connector-nats = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-nats", optional = true }
 nexus-connector-rabbitmq = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-rabbitmq", optional = true }
+nexus-connector-starburst = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-starburst", optional = true }
 nexus-core = { version = "0.1.0", path = "../nexus-core" }
 nexus-ai = { version = "0.1.0", path = "../nexus-ai", optional = true }
 hex = "0.4.3"

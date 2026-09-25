@@ -8105,6 +8105,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexus-connector-starburst"
+version = "0.1.7"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-schema 58.4.0",
+ "async-trait",
+ "futures",
+ "nexus-core",
+ "reqwest 0.12.28",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
 name = "nexus-core"
 version = "0.1.7"
 dependencies = [
@@ -8176,6 +8193,7 @@ dependencies = [
  "nexus-connector-redis",
  "nexus-connector-rest",
  "nexus-connector-sqlite",
+ "nexus-connector-starburst",
  "nexus-core",
  "opentelemetry",
  "opentelemetry-otlp",

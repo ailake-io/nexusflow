@@ -25,6 +25,7 @@ members = [
     "nexus-connector-redis",
     "nexus-connector-nats",
     "nexus-connector-rabbitmq",
+    "nexus-connector-starburst",
 ]
 
 [workspace.package]
