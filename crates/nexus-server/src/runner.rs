@@ -1221,10 +1221,36 @@ async fn run_transform_pipeline(
             .ok()
             .map(to_lineage_infos);
         transform.apply(inputs).await?
+    } else if !spec.clean_blocks.is_empty() {
+        // Fase 30 — compiles the no-code block chain into the same kind of
+        // SQL a hand-written `transform.sql` would be, then runs it through
+        // the exact same `DataFusionTransform`/lineage path above: no
+        // separate execution engine for blocks. `clean_blocks` is validated
+        // as exactly 1 source (`dag.rs::validate()`), so `inputs[0]`'s
+        // registered table name is what the compiled SQL's first CTE reads.
+        let table_name = inputs
+            .first()
+            .map(|(name, _, _)| name.clone())
+            .ok_or_else(|| {
+                anyhow::anyhow!("clean_blocks pipeline has no source to compile against")
+            })?;
+        let sql = nexus_core::compile_clean_blocks(&spec.clean_blocks, &table_name)
+            .map_err(|e| anyhow::anyhow!("clean_blocks: {e}"))?;
+        let transform = DataFusionTransform::new(sql);
+        let input_schemas: Vec<_> = inputs
+            .iter()
+            .map(|(n, s, _)| (n.clone(), s.clone()))
+            .collect();
+        column_lineage = transform
+            .column_lineage(input_schemas)
+            .await
+            .ok()
+            .map(to_lineage_infos);
+        transform.apply(inputs).await?
     } else {
-        // No SQL transform — a python-only pipeline, validated as exactly
-        // 1 source (dag.rs::validate()), so there's exactly one entry to
-        // unwrap here.
+        // No SQL transform and no clean_blocks — a python-only pipeline,
+        // validated as exactly 1 source (dag.rs::validate()), so there's
+        // exactly one entry to unwrap here.
         inputs
             .into_iter()
             .next()
@@ -2216,5 +2242,160 @@ mod tests {
         );
         assert_eq!(results[0].eval_name, "golden-1");
         assert!(results[0].passed, "score was {}", results[0].score);
+    }
+
+    /// Fase 30 end-to-end: `clean_blocks` compiled by `nexus_core::
+    /// compile_clean_blocks` must actually run through this file's
+    /// `run_transform_pipeline` branch, not just compile to valid SQL in
+    /// isolation (already covered by `nexus-core::clean`'s own 25 tests) —
+    /// real CSV files on disk, real `run_pipeline` dispatch, real sink
+    /// write. Filter removes a row, Rename changes a header.
+    #[cfg(feature = "csv")]
+    #[tokio::test]
+    async fn clean_blocks_pipeline_runs_end_to_end_through_csv_files() {
+        use nexus_core::{CleanBlockKind, CleanBlockSpec, FilterOperator, SortDirection};
+
+        let dir = tempfile::tempdir().unwrap();
+        let in_path = dir.path().join("in.csv");
+        let out_path = dir.path().join("out.csv");
+        std::fs::write(
+            &in_path,
+            "id,nome,valor\n1,Ana,10\n2,Bruno,25\n3,Carlos,30\n",
+        )
+        .unwrap();
+
+        let source_config = serde_json::json!({
+            "uri": in_path.to_str().unwrap(),
+            "has_header": true,
+            "fields": [
+                {"name": "id", "data_type": "int64"},
+                {"name": "nome", "data_type": "utf8"},
+                {"name": "valor", "data_type": "int64"},
+            ],
+        });
+        let sink_config = serde_json::json!({
+            "uri": out_path.to_str().unwrap(),
+            "has_header": true,
+            "primary_key": "id",
+            "fields": [
+                {"name": "id", "data_type": "int64"},
+                {"name": "cliente", "data_type": "utf8"},
+                {"name": "valor", "data_type": "int64"},
+            ],
+        });
+        let spec = PipelineSpec {
+            pipeline_id: "clean-blocks-e2e".to_string(),
+            sources: vec![NodeSpec {
+                name: None,
+                connector: "csv".to_string(),
+                config: source_config,
+            }],
+            sinks: vec![NodeSpec {
+                name: None,
+                connector: "csv".to_string(),
+                config: sink_config,
+            }],
+            transform: None,
+            embedding: None,
+            llm: None,
+            python: None,
+            channel_capacity: 100,
+            partitions: 1,
+            dbt: None,
+            post_dbt_sinks: Vec::new(),
+            schedule: None,
+            depends_on: Vec::new(),
+            dependency_mode: nexus_core::DependencyMode::Any,
+            alerts: None,
+            quality_checks: Vec::new(),
+            anomaly_alerts: false,
+            masking: Vec::new(),
+            draft: false,
+            clean_blocks: vec![
+                CleanBlockSpec {
+                    name: Some("only above 15".to_string()),
+                    kind: CleanBlockKind::Filter {
+                        column: "valor".to_string(),
+                        operator: FilterOperator::Gt,
+                        value: Some("15".to_string()),
+                    },
+                },
+                CleanBlockSpec {
+                    name: Some("rename nome".to_string()),
+                    kind: CleanBlockKind::Rename {
+                        from: "nome".to_string(),
+                        to: "cliente".to_string(),
+                    },
+                },
+                CleanBlockSpec {
+                    name: Some("sort by id".to_string()),
+                    kind: CleanBlockKind::Sort {
+                        column: "id".to_string(),
+                        direction: SortDirection::Asc,
+                    },
+                },
+            ],
+        };
+        spec.validate().expect("hand-built spec must validate");
+
+        let checkpoints = CheckpointStore::connect("sqlite::memory:").await.unwrap();
+        let schema_store =
+            crate::pipeline_schema_store::PipelineSchemaStore::connect("sqlite::memory:")
+                .await
+                .unwrap();
+        let quality_store =
+            crate::quality_check_store::QualityCheckStore::connect("sqlite::memory:")
+                .await
+                .unwrap();
+        let llm_stats_store =
+            crate::pipeline_run_llm_stats_store::PipelineRunLlmStatsStore::connect(
+                "sqlite::memory:",
+            )
+            .await
+            .unwrap();
+        let prompt_templates =
+            crate::prompt_template_store::PromptTemplateStore::connect("sqlite::memory:")
+                .await
+                .unwrap();
+        let llm_eval_store =
+            crate::llm_eval_result_store::LlmEvalResultStore::connect("sqlite::memory:")
+                .await
+                .unwrap();
+        let alerts = crate::alerts::AlertNotifier::new(crate::alerts::AlertConfig::default(), true);
+
+        run_pipeline(
+            &spec,
+            &checkpoints,
+            None,
+            None,
+            None,
+            &schema_store,
+            &alerts,
+            1,
+            &quality_store,
+            &llm_stats_store,
+            &prompt_templates,
+            &llm_eval_store,
+            None,
+        )
+        .await
+        .expect("clean_blocks pipeline must run end to end");
+
+        let output = std::fs::read_to_string(&out_path).unwrap();
+        let mut lines: Vec<&str> = output.lines().collect();
+        let header = lines.remove(0);
+        // `SELECT * EXCEPT (from), from AS to` drops the old header and moves
+        // the renamed column to the end of the list — real SQL semantics,
+        // same as a hand-written `transform.sql` doing the same thing would
+        // produce, not something clean_blocks does differently.
+        assert_eq!(
+            header, "id,valor,cliente",
+            "Rename must drop the old header"
+        );
+        assert_eq!(
+            lines,
+            vec!["2,25,Bruno", "3,30,Carlos"],
+            "Filter must drop id=1 (valor=10 is not > 15), Sort must order by id"
+        );
     }
 }

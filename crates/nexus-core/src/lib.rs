@@ -1,6 +1,7 @@
 pub mod batch_buffer;
 pub mod cdc;
 pub mod checkpoint;
+pub mod clean;
 pub mod column_masking;
 pub mod dag;
 pub mod error;
@@ -17,6 +18,11 @@ pub mod transform;
 
 pub use cdc::{project_column, split_by_opcode, CdcSplit};
 pub use checkpoint::{CheckpointCursor, Opcode, OPCODE_COLUMN};
+pub use clean::{
+    compile_clean_blocks, AggFunction, Aggregation, CaseMode, CastType, CleanBlockKind,
+    CleanBlockSpec, ComputeOperator, FilterOperator, NullFillStrategy, SelectColumnsMode,
+    SortDirection,
+};
 pub use column_masking::{ColumnMasker, ColumnMaskingSpec};
 pub use dag::{
     is_internal_ip, AlertsConfig, ChunkingSpec, DbtCommand, DbtConfig, DependencyMode,

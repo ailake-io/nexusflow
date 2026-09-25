@@ -701,15 +701,35 @@ banco vetorial, ou (b) gravar num data warehouse relacional.
 - [x] ~~Decisão: `clean_blocks` e o node SQL avançado são exclusivos ou
       combináveis~~ — **alternativas**, usuário escolhe por pipeline,
       confirmado 2026-09-24.
-- [ ] `nexus-core::clean.rs` — enum + compilador pra SQL + testes
-      unitários (1 por bloco, comparando SQL gerado)
-- [ ] `PipelineSpec.clean_blocks` + validação (`dag.rs`) — exatamente 1
-      source, mesma regra do caminho sem transform SQL
-- [ ] Refatorar `read_preview_rows` em `read_preview_batches` + conversão
+- [x] `nexus-core::clean.rs` — enum + compilador pra SQL + testes
+      unitários (25 testes, executando SQL real via `DataFusionTransform`,
+      não só comparando string). Achados no caminho: `SELECT * REPLACE
+      (...)`, `SELECT * EXCEPT (...)`, `DISTINCT ON` e `ROW_NUMBER() OVER`
+      são todos suportados por este DataFusion 54.1 (confirmado com testes
+      reais, não assumido) — "remover colunas" voltou pro catálogo v1 via
+      `EXCEPT`. `ORDER BY` dentro de uma CTE não sobrevive à query externa
+      (confirmado por um teste que falhou) — hoisted pra query final.
+      Bug real pego por um teste de round-trip JSON: `FillNulls.column` e
+      `NullFillStrategy::OtherColumn.column` colidiam no mesmo nível
+      achatado — renomeado pra `fallback_column`.
+- [x] `PipelineSpec.clean_blocks` + validação (`dag.rs`) — exatamente 1
+      source, mesma regra do caminho sem transform SQL; exclusividade com
+      `transform`/`python`; rejeita source `-cdc` (não preserva
+      `__opcode`). 8 testes novos em `dag.rs`.
+- [x] Refatorar `read_preview_rows` em `read_preview_batches` + conversão
       JSON separada (sem mudar comportamento do endpoint existente)
-- [ ] `POST /pipelines/preview-clean-blocks` (preview ad-hoc por bloco)
-- [ ] Ajustar os pontos que hoje citam `transform`/`python: None` nos
-      arquivos de store/lineage/migração
+- [x] `POST /pipelines/preview-clean-blocks` (preview ad-hoc por bloco) —
+      mesmo padrão de `/connectors/preview` (`Execute`, sem pipeline
+      salvo), com o mesmo scan de SSRF (`validate_security_with`) que o
+      ad-hoc de conector já tinha — achado ao implementar: minha primeira
+      versão esqueceu esse scan, corrigido antes de mergear.
+- [x] Ajustar os pontos que hoje citam `transform`/`python: None` nos
+      arquivos de store/lineage/migração — 5 pontos no total (achado um a
+      mais que os 4 originalmente previstos, em `data_catalog.rs`, dentro
+      de um bloco `#[cfg(test)]` que só o clippy `--all-targets` compila).
+- [x] Teste de integração real de ponta a ponta (`runner.rs`): CSV em
+      disco → filtro + rename + sort → CSV de saída, via `run_pipeline`
+      de verdade, não só o compilador isolado.
 - [ ] `CleanBlockPalette.tsx` + abas Conectores/Transformações em
       `DagCanvas.tsx`
 - [ ] `CleanBlockNodeView` + accent novo em `node-card.tsx`

@@ -569,6 +569,7 @@ mod tests {
             anomaly_alerts: false,
             masking: Vec::new(),
             draft: false,
+            clean_blocks: Vec::new(),
         }
     }
 
