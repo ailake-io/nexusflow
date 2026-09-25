@@ -7682,6 +7682,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexus-connector-bigquery"
+version = "0.1.7"
+dependencies = [
+ "adbc_core",
+ "adbc_driver_manager",
+ "arrow-array 58.4.0",
+ "arrow-schema 58.4.0",
+ "async-trait",
+ "futures",
+ "nexus-core",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "nexus-connector-chromadb"
 version = "0.1.7"
 dependencies = [
@@ -7737,6 +7754,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexus-connector-databricks"
+version = "0.1.7"
+dependencies = [
+ "adbc_core",
+ "adbc_driver_manager",
+ "arrow-array 58.4.0",
+ "arrow-schema 58.4.0",
+ "async-trait",
+ "futures",
+ "nexus-core",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "nexus-connector-deltalake"
 version = "0.1.7"
 dependencies = [
@@ -7768,6 +7802,23 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "tokio",
+]
+
+[[package]]
+name = "nexus-connector-elasticsearch"
+version = "0.1.7"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-schema 58.4.0",
+ "async-trait",
+ "futures",
+ "nexus-core",
+ "reqwest 0.12.28",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+ "wiremock",
 ]
 
 [[package]]
@@ -8158,6 +8209,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexus-connector-snowflake"
+version = "0.1.7"
+dependencies = [
+ "adbc_core",
+ "adbc_driver_manager",
+ "arrow-array 58.4.0",
+ "arrow-schema 58.4.0",
+ "async-trait",
+ "futures",
+ "nexus-core",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "nexus-connector-sqlite"
 version = "0.1.7"
 dependencies = [
@@ -8273,11 +8341,14 @@ dependencies = [
  "lettre",
  "nexus-ai",
  "nexus-connector-ailake",
+ "nexus-connector-bigquery",
  "nexus-connector-chromadb",
  "nexus-connector-clickhouse",
  "nexus-connector-csv",
+ "nexus-connector-databricks",
  "nexus-connector-deltalake",
  "nexus-connector-duckdb",
+ "nexus-connector-elasticsearch",
  "nexus-connector-hana",
  "nexus-connector-iceberg",
  "nexus-connector-kafka",
@@ -8299,6 +8370,7 @@ dependencies = [
  "nexus-connector-redis",
  "nexus-connector-redshift",
  "nexus-connector-rest",
+ "nexus-connector-snowflake",
  "nexus-connector-sqlite",
  "nexus-connector-starburst",
  "nexus-connector-teradata",

@@ -91,7 +91,8 @@ connectors-all = [
     "mongodb", "mysql", "kafka", "mqtt", "rest", "odbc", "milvus", "qdrant", "lancedb",
     "pgvector", "pinecone", "chromadb", "deltalake", "iceberg", "parquet",
     "ailake", "csv", "clickhouse", "duckdb", "redis", "nats", "rabbitmq",
-    "starburst", "teradata", "vertica", "hana", "oracle", "mssql", "redshift",
+    "starburst", "teradata", "vertica", "hana", "oracle", "mssql", "redshift", "bigquery", "snowflake",
+    "databricks", "elasticsearch",
     "embeddings", "embeddings-api", "llm", "version-history",
     "postgres-cdc", "mysql-cdc", "deltalake-cdc", "iceberg-cdc", "ailake-cdc",
 ]
@@ -102,7 +103,8 @@ connectors-all-no-embeddings = [
     "mongodb", "mysql", "kafka", "mqtt", "rest", "odbc", "milvus", "qdrant", "lancedb",
     "pgvector", "pinecone", "chromadb", "deltalake", "iceberg", "parquet",
     "ailake", "csv", "clickhouse", "duckdb", "redis", "nats", "rabbitmq",
-    "starburst", "teradata", "vertica", "hana", "oracle", "mssql", "redshift",
+    "starburst", "teradata", "vertica", "hana", "oracle", "mssql", "redshift", "bigquery", "snowflake",
+    "databricks", "elasticsearch",
     "version-history",
     "postgres-cdc", "mysql-cdc", "deltalake-cdc", "iceberg-cdc", "ailake-cdc",
 ]
@@ -155,6 +157,10 @@ hana = ["dep:nexus-connector-hana"]
 oracle = ["dep:nexus-connector-oracle"]
 mssql = ["dep:nexus-connector-mssql"]
 redshift = ["dep:nexus-connector-redshift"]
+bigquery = ["dep:nexus-connector-bigquery"]
+snowflake = ["dep:nexus-connector-snowflake"]
+databricks = ["dep:nexus-connector-databricks"]
+elasticsearch = ["dep:nexus-connector-elasticsearch"]
 
 [dependencies]
 aes-gcm = "0.10.3"
@@ -208,6 +214,10 @@ nexus-connector-hana = { version = "0.1.0", path = "../nexus-connectors/nexus-co
 nexus-connector-oracle = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-oracle", optional = true }
 nexus-connector-mssql = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-mssql", optional = true }
 nexus-connector-redshift = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-redshift", optional = true }
+nexus-connector-bigquery = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-bigquery", optional = true }
+nexus-connector-snowflake = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-snowflake", optional = true }
+nexus-connector-databricks = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-databricks", optional = true }
+nexus-connector-elasticsearch = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-elasticsearch", optional = true }
 nexus-core = { version = "0.1.0", path = "../nexus-core" }
 nexus-ai = { version = "0.1.0", path = "../nexus-ai", optional = true }
 hex = "0.4.3"

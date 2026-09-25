@@ -32,6 +32,10 @@ members = [
     "nexus-connector-oracle",
     "nexus-connector-mssql",
     "nexus-connector-redshift",
+    "nexus-connector-bigquery",
+    "nexus-connector-snowflake",
+    "nexus-connector-databricks",
+    "nexus-connector-elasticsearch",
 ]
 
 [workspace.package]
