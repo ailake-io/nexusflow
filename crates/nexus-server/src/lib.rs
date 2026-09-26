@@ -2511,13 +2511,26 @@ async fn list_run_logs_handler(
     ))
 }
 
+/// Content types this endpoint will ever echo back as-is — genuine raster
+/// image formats only. `python_viz_harness.py` duck-types a script's return
+/// value and never validates the `content_type` half of a `(bytes,
+/// content_type)` tuple, so a pipeline's own `visualization.script`
+/// (Write-tier, but not necessarily the same person as whoever later opens
+/// this URL) could otherwise hand back `text/html`/`image/svg+xml` —
+/// content a browser executes as a document/script, not renders as a
+/// picture, over this server's own origin. Anything off this list is
+/// served as an inert download instead (see the handler below), never
+/// inline.
+const SAFE_VISUALIZATION_CONTENT_TYPES: [&str; 4] =
+    ["image/png", "image/jpeg", "image/gif", "image/webp"];
+
 /// `PipelineSpec.visualization`'s rendered chart (ROADMAP.md Fase 31) — raw
-/// image bytes with whatever `Content-Type` the render actually produced
-/// (matplotlib's `image/png` by default, but a script returning a
-/// `(bytes, content_type)` tuple can be anything, `python_viz.rs`'s harness
-/// doesn't assume PNG). 404 covers both "run never set `visualization`" and
-/// "rendering failed" — `runner.rs` logs the real reason either way rather
-/// than failing the run over a chart.
+/// image bytes, `Content-Type` gated by `SAFE_VISUALIZATION_CONTENT_TYPES`
+/// above (see that constant's doc comment for why: this must never let a
+/// pipeline's chart script serve `text/html`/`image/svg+xml` and have a
+/// browser execute it as this origin's own document). 404 covers both "run
+/// never set `visualization`" and "rendering failed" — `runner.rs` logs the
+/// real reason either way rather than failing the run over a chart.
 async fn get_run_visualization_handler(
     State(state): State<AppState>,
     Path((_id, run_id)): Path<(String, i64)>,
@@ -2528,8 +2541,25 @@ async fn get_run_visualization_handler(
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found(format!("run {run_id} has no visualization")))?;
+
+    let (content_type, disposition) =
+        if SAFE_VISUALIZATION_CONTENT_TYPES.contains(&stored.content_type.as_str()) {
+            (stored.content_type.as_str(), "inline")
+        } else {
+            ("application/octet-stream", "attachment")
+        };
     Ok((
-        [(axum::http::header::CONTENT_TYPE, stored.content_type)],
+        [
+            (axum::http::header::CONTENT_TYPE, content_type.to_string()),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                disposition.to_string(),
+            ),
+            (
+                axum::http::header::HeaderName::from_static("x-content-type-options"),
+                "nosniff".to_string(),
+            ),
+        ],
         stored.image_bytes,
     ))
 }
@@ -4375,6 +4405,47 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn run_visualization_endpoint_never_serves_html_as_a_content_type() {
+        // A chart script could hand back anything as its content_type half
+        // (`python_viz_harness.py` doesn't validate it) — `text/html` here
+        // would be a stored XSS if served as-is: a browser executing
+        // arbitrary script under this server's own origin. Must always
+        // come back as a safe, non-executable download instead.
+        let state = test_state().await;
+        let read_token = bearer(&state, Role::Read);
+        state
+            .pipeline_visualizations
+            .store(8, b"<script>alert(1)</script>", "text/html")
+            .await
+            .unwrap();
+        let app = router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/pipelines/p1/runs/8/visualization")
+                    .header("authorization", &read_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "application/octet-stream"
+        );
+        assert_eq!(
+            response.headers().get("content-disposition").unwrap(),
+            "attachment"
+        );
+        assert_eq!(
+            response.headers().get("x-content-type-options").unwrap(),
+            "nosniff"
+        );
     }
 
     #[tokio::test]
