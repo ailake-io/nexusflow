@@ -1,9 +1,3 @@
-// `#[allow(dead_code)]`: lands ahead of `agent_tools.rs`'s `generate_chart`
-// consuming it (ROADMAP.md Fase 31) — exercised by this module's own tests,
-// nothing else calls `render` yet. Remove once `agent_runner.rs` wires the
-// whole tool chain together.
-#![allow(dead_code)]
-
 /// Same default as `python_transform::DEFAULT_TIMEOUT_SECONDS` — a
 /// cleaning script and a chart-rendering script are the same order of
 /// magnitude of cost (one already-in-memory batch, no network I/O of

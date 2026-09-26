@@ -359,6 +359,11 @@ git2 = { version = "0.21.0", default-features = false, features = ["vendored-lib
 similar = { version = "2.7.0", optional = true, features = ["text"] }
 
 [dev-dependencies]
+# Runs `telemetry::init()` once, unconditionally, before any test in this
+# binary executes (`#[ctor]` hooks into the binary's startup section, ahead
+# of the test harness) — see `tests::telemetry_installed_before_any_test`'s
+# doc comment for the exact bug this closes.
+ctor = "0.4.1"
 futures-util = "0.3.33"
 # `schemars` moved to real [dependencies] above (Marco L8) — connectors.rs's
 # test-only fixture connector (nexus_core::submit_enterprise_connector!)

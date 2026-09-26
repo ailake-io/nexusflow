@@ -7,12 +7,6 @@
 //! by `AgentToolKind::json_schema()`) — `agent_runner.rs` is the only
 //! caller, after a `LlmTurn::ToolCalls` entry names which tool and supplies
 //! `args`.
-//!
-//! `#[allow(dead_code)]`: lands ahead of `agent_runner.rs` (ROADMAP.md
-//! Fase 31 checklist, next step) — every function here is exercised by its
-//! own tests but nothing in the crate calls `execute_tool` yet. Remove the
-//! allow once `agent_runner.rs` exists.
-#![allow(dead_code)]
 
 use crate::AppState;
 use nexus_core::{AgentToolKind, Transform};

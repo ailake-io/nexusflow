@@ -1148,11 +1148,13 @@ fn validate_embedding_security(
 }
 
 /// Same SSRF guard as `validate_embedding_security`, for `llm.model.base_url`
-/// — an identical user-supplied outbound-request URL, same risk.
-/// `pub(crate)` so `agent.rs`'s `AgentSpec.model` (same `LlmModelConfig`
-/// type, same outbound-request shape) reuses this instead of duplicating
-/// the check.
-pub(crate) fn validate_llm_security(
+/// — an identical user-supplied outbound-request URL, same risk. `pub`
+/// (not `pub(crate)`) so nexus-server's `agent.rs` can run this same check
+/// against a bare `model_override` on `POST /agents/{id}/run` — a
+/// per-execution `LlmModelConfig` that never goes through
+/// `AgentSpec::validate_security_with` at all, since it isn't part of any
+/// saved spec.
+pub fn validate_llm_security(
     model: &LlmModelConfig,
     allow_internal_hosts: bool,
 ) -> Result<(), NexusError> {

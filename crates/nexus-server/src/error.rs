@@ -45,14 +45,6 @@ impl ApiError {
     /// handler) can fold this into its own error type instead of the
     /// `IntoResponse` body — the status code doesn't mean anything outside
     /// an HTTP response, only the message does.
-    ///
-    /// `#[allow(dead_code)]`: `agent_tools.rs` is gated behind a narrower
-    /// feature predicate than this file — a build with `llm` on but none
-    /// of the vector-search features doesn't compile `agent_tools`, so this
-    /// method (and this build) has no caller. Remove once something
-    /// unconditional calls it, or drop the allow if `agent_tools.rs`'s cfg
-    /// gate is ever loosened to match.
-    #[allow(dead_code)]
     pub(crate) fn message(&self) -> &str {
         &self.message
     }

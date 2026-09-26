@@ -6,12 +6,6 @@
 //! table/store rather than reusing `pipelines` — an agent isn't a pipeline
 //! (`agent.rs`'s own doc comment), so it doesn't belong in a table whose
 //! rows the scheduler/run engine already assume are `PipelineSpec`s.
-//!
-//! `#[allow(dead_code)]`: this store lands ahead of its consumer
-//! (`agent.rs`'s handlers, ROADMAP.md Fase 31 checklist item after this
-//! one) — every method here is exercised by its own tests but nothing in
-//! the crate calls it yet. Remove the allow once `agent.rs` exists.
-#![allow(dead_code)]
 
 use crate::crypto::SecretCipher;
 use crate::db::{rewrite_placeholders, MetadataPool};

@@ -82,6 +82,59 @@ impl AlertNotifier {
         Self { config, client }
     }
 
+    /// An agent's `RequireApproval` tool call paused, waiting on a human
+    /// (`agent_runner.rs`, ROADMAP.md Fase 31) — same global channels and
+    /// fire-and-forget contract as `notify_pipeline_failed` below (no
+    /// per-agent alert config exists yet, unlike `notify_pipeline_run`'s
+    /// per-pipeline `AlertsConfig`).
+    pub fn notify_agent_approval_needed(
+        &self,
+        agent_id: &str,
+        run_id: i64,
+        step_id: i64,
+        tool_name: &str,
+    ) {
+        if let Some(url) = self.config.slack_webhook_url.clone() {
+            let client = self.client.clone();
+            let payload = slack_approval_payload(agent_id, run_id, step_id, tool_name);
+            spawn_webhook_post(client, url, payload, "Slack");
+        }
+        if let Some(url) = self.config.teams_webhook_url.clone() {
+            let client = self.client.clone();
+            let payload = teams_approval_payload(agent_id, run_id, step_id, tool_name);
+            spawn_webhook_post(client, url, payload, "Teams");
+        }
+        if let Some(routing_key) = self.config.pagerduty_routing_key.clone() {
+            let client = self.client.clone();
+            let payload =
+                pagerduty_approval_payload(&routing_key, agent_id, run_id, step_id, tool_name);
+            spawn_webhook_post(
+                client,
+                PAGERDUTY_EVENTS_URL.to_string(),
+                payload,
+                "PagerDuty",
+            );
+        }
+        if let Some(email) = self.config.email.clone() {
+            let agent_id = agent_id.to_string();
+            let tool_name = tool_name.to_string();
+            tokio::spawn(async move {
+                match send_approval_email(&email, &agent_id, run_id, step_id, &tool_name).await {
+                    Ok(()) => crate::server_metrics::record_alert_sent("Email", "success"),
+                    Err(e) => {
+                        tracing::warn!(channel = "Email", error = %e, "failed to send alert");
+                        crate::server_metrics::record_alert_sent("Email", "failure");
+                    }
+                }
+            });
+        }
+        if let Some(url) = self.config.webhook_url.clone() {
+            let client = self.client.clone();
+            let payload = generic_webhook_approval_payload(agent_id, run_id, step_id, tool_name);
+            spawn_webhook_post(client, url, payload, "Webhook");
+        }
+    }
+
     /// Spawns one task per configured channel and returns immediately — the
     /// pipeline run handler must never wait on a third-party HTTP round trip
     /// (`tokio::spawn`, ARCHITECTURE.md §9 "Alertas Assíncronos"). Send
@@ -413,6 +466,139 @@ fn spawn_webhook_post(client: reqwest::Client, url: String, payload: Value, chan
             Ok(_) => crate::server_metrics::record_alert_sent(channel, "success"),
         }
     });
+}
+
+fn slack_approval_payload(agent_id: &str, run_id: i64, step_id: i64, tool_name: &str) -> Value {
+    json!({
+        "blocks": [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": format!(
+                        ":hourglass_flowing_sand: *Agent waiting for approval*\n*Agent:* `{agent_id}`\n*Run:* `{run_id}`\n*Step:* `{step_id}`\n*Tool:* `{tool_name}`"
+                    )
+                }
+            }
+        ]
+    })
+}
+
+fn teams_approval_payload(agent_id: &str, run_id: i64, step_id: i64, tool_name: &str) -> Value {
+    json!({
+        "type": "message",
+        "attachments": [
+            {
+                "contentType": "application/vnd.microsoft.card.adaptive",
+                "content": {
+                    "type": "AdaptiveCard",
+                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                    "version": "1.4",
+                    "body": [
+                        {
+                            "type": "TextBlock",
+                            "size": "Medium",
+                            "weight": "Bolder",
+                            "text": "⏳ Agent waiting for approval"
+                        },
+                        {
+                            "type": "FactSet",
+                            "facts": [
+                                {"title": "Agent", "value": agent_id},
+                                {"title": "Run", "value": run_id.to_string()},
+                                {"title": "Step", "value": step_id.to_string()},
+                                {"title": "Tool", "value": tool_name}
+                            ]
+                        }
+                    ]
+                }
+            }
+        ]
+    })
+}
+
+fn pagerduty_approval_payload(
+    routing_key: &str,
+    agent_id: &str,
+    run_id: i64,
+    step_id: i64,
+    tool_name: &str,
+) -> Value {
+    json!({
+        "routing_key": routing_key,
+        "event_action": "trigger",
+        "dedup_key": format!("nexusflow-agent-{agent_id}-{run_id}-{step_id}"),
+        "payload": {
+            "summary": format!(
+                "Agent '{agent_id}' run {run_id} waiting for approval on tool '{tool_name}' (step {step_id})"
+            ),
+            "source": "nexusflow",
+            "severity": "warning",
+            "custom_details": {
+                "agent_id": agent_id,
+                "run_id": run_id,
+                "step_id": step_id,
+                "tool": tool_name
+            }
+        }
+    })
+}
+
+fn generic_webhook_approval_payload(
+    agent_id: &str,
+    run_id: i64,
+    step_id: i64,
+    tool_name: &str,
+) -> Value {
+    json!({
+        "event": "agent_approval_needed",
+        "agent_id": agent_id,
+        "run_id": run_id,
+        "step_id": step_id,
+        "tool": tool_name
+    })
+}
+
+async fn send_approval_email(
+    config: &EmailConfig,
+    agent_id: &str,
+    run_id: i64,
+    step_id: i64,
+    tool_name: &str,
+) -> Result<(), NexusError> {
+    let subject = format!("[nexusflow] Agent '{agent_id}' waiting for approval");
+    let body = format!(
+        "Agent: {agent_id}\nRun: {run_id}\nStep: {step_id}\nTool: {tool_name}\n\n---\nSent by NexusFlow"
+    );
+
+    let from: Mailbox = config
+        .from
+        .parse()
+        .map_err(|e| NexusError::Connector(format!("invalid email from address: {e}")))?;
+
+    let mut builder = Message::builder().from(from).subject(subject);
+    for to in &config.to {
+        let to: Mailbox = to
+            .parse()
+            .map_err(|e| NexusError::Connector(format!("invalid email to address: {e}")))?;
+        builder = builder.to(to);
+    }
+    let message = builder
+        .body(body)
+        .map_err(|e| NexusError::Connector(format!("failed to build email: {e}")))?;
+
+    let mut mailer = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&config.smtp_host)
+        .map_err(|e| NexusError::Connector(format!("invalid SMTP host: {e}")))?
+        .port(config.smtp_port);
+    if let (Some(username), Some(password)) = (&config.username, &config.password) {
+        mailer = mailer.credentials(Credentials::new(username.clone(), password.clone()));
+    }
+    mailer
+        .build()
+        .send(message)
+        .await
+        .map_err(|e| NexusError::Connector(format!("failed to send email: {e}")))?;
+    Ok(())
 }
 
 fn slack_failure_payload(pipeline_id: &str, run_id: i64, error: &str) -> Value {

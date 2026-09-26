@@ -27,10 +27,11 @@ pub use clean::{
 };
 pub use column_masking::{ColumnMasker, ColumnMaskingSpec};
 pub use dag::{
-    is_internal_ip, AlertsConfig, ChunkingSpec, DbtCommand, DbtConfig, DependencyMode,
-    EmailAlertChannel, EmbeddingModelSpec, EmbeddingSpec, EvalScoringMode, LlmCacheSpec,
-    LlmEvalCase, LlmModelConfig, LlmNodeSpec, NodeSpec, PagerDutyAlertChannel, PipelineDependency,
-    PipelineSpec, PromptRef, PythonTransformSpec, TransformSpec, WebhookAlertChannel,
+    is_internal_ip, validate_llm_security, AlertsConfig, ChunkingSpec, DbtCommand, DbtConfig,
+    DependencyMode, EmailAlertChannel, EmbeddingModelSpec, EmbeddingSpec, EvalScoringMode,
+    LlmCacheSpec, LlmEvalCase, LlmModelConfig, LlmNodeSpec, NodeSpec, PagerDutyAlertChannel,
+    PipelineDependency, PipelineSpec, PromptRef, PythonTransformSpec, TransformSpec,
+    WebhookAlertChannel,
 };
 pub use error::{with_timeout, NexusError};
 pub use infra_registry::{

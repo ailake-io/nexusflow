@@ -1,3 +1,26 @@
+// Same predicate as `mod rag` below — `agent.rs`'s handlers call into
+// `agent_runner.rs`, which is gated the same way.
+#[cfg(all(
+    feature = "llm",
+    any(feature = "embeddings", feature = "embeddings-api"),
+    any(
+        feature = "lancedb",
+        feature = "qdrant",
+        feature = "milvus",
+        feature = "pgvector",
+        feature = "pinecone",
+        feature = "chromadb"
+    )
+))]
+mod agent;
+// Unconditional, same reasoning as `mod llm_generation_store` below — pure
+// persistence, no heavy dependencies, only actually driven by the
+// narrower-gated `agent_tools`/`agent_runner` modules just below. Kept
+// always-compiled so `AppState` can hold `AgentStore`/`AgentRunStore`
+// fields without a second, feature-gated construction path in
+// `build_state`/`test_state`.
+mod agent_run_store;
+mod agent_store;
 // Same predicate as `mod rag` below — the agent's `SearchVectors` tool
 // (`agent_tools.rs`) reuses `rag.rs`'s own `search_*` functions directly,
 // so the whole agent module family needs the vector-search backends to
@@ -14,20 +37,7 @@
         feature = "chromadb"
     )
 ))]
-mod agent_run_store;
-#[cfg(all(
-    feature = "llm",
-    any(feature = "embeddings", feature = "embeddings-api"),
-    any(
-        feature = "lancedb",
-        feature = "qdrant",
-        feature = "milvus",
-        feature = "pgvector",
-        feature = "pinecone",
-        feature = "chromadb"
-    )
-))]
-mod agent_store;
+mod agent_runner;
 #[cfg(all(
     feature = "llm",
     any(feature = "embeddings", feature = "embeddings-api"),
@@ -216,6 +226,14 @@ struct AppState {
     // as `dbt_test_results`/`quality_checks` above.
     #[allow(dead_code)]
     llm_generations: llm_generation_store::LlmGenerationStore,
+    // Only used by `agent.rs`'s CRUD handlers (ROADMAP.md Fase 31,
+    // narrower-gated than this file, same reasoning as `llm_generations`
+    // above) — `agent_runs` below is used a level deeper too, by
+    // `agent_runner.rs`.
+    #[allow(dead_code)]
+    agents: agent_store::AgentStore,
+    #[allow(dead_code)]
+    agent_runs: agent_run_store::AgentRunStore,
     progress: ProgressHub,
     alerts: AlertNotifier,
     login_rate_limiter: std::sync::Arc<rate_limit::LoginRateLimiter>,
@@ -562,6 +580,22 @@ fn router(state: AppState) -> Router {
     ))]
     let rag_state = state.clone();
 
+    // Same cfg gate and cloning reason as `rag_state` above — `agent::routes`
+    // (ROADMAP.md Fase 31) needs its own `AppState`.
+    #[cfg(all(
+        feature = "llm",
+        any(feature = "embeddings", feature = "embeddings-api"),
+        any(
+            feature = "lancedb",
+            feature = "qdrant",
+            feature = "milvus",
+            feature = "pgvector",
+            feature = "pinecone",
+            feature = "chromadb"
+        )
+    ))]
+    let agent_state = state.clone();
+
     // Cloned unconditionally (unlike `rag_state` above) — `infra::routes`
     // is never feature-gated, see that module's doc comment for why (the
     // enterprise crate it delegates to is an inventory-collected plugin,
@@ -604,6 +638,20 @@ fn router(state: AppState) -> Router {
         )
     ))]
     let app = app.merge(rag::routes(rag_state));
+
+    #[cfg(all(
+        feature = "llm",
+        any(feature = "embeddings", feature = "embeddings-api"),
+        any(
+            feature = "lancedb",
+            feature = "qdrant",
+            feature = "milvus",
+            feature = "pgvector",
+            feature = "pinecone",
+            feature = "chromadb"
+        )
+    ))]
+    let app = app.merge(agent::routes(agent_state));
 
     let app = app.merge(infra::routes(infra_state));
 
@@ -3334,6 +3382,9 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         llm_generation_store::LlmGenerationStore::connect(&config.pipelines_database_url).await?;
     let llm_eval_results =
         llm_eval_result_store::LlmEvalResultStore::connect(&config.pipelines_database_url).await?;
+    let agents = agent_store::AgentStore::connect(&config.pipelines_database_url).await?;
+    let agent_runs =
+        agent_run_store::AgentRunStore::connect(&config.pipelines_database_url).await?;
     if let Some((username, password)) = &config.bootstrap_admin {
         auth_store.seed_admin_if_empty(username, password).await?;
     }
@@ -3374,6 +3425,8 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         prompt_templates,
         llm_generations,
         llm_eval_results,
+        agents,
+        agent_runs,
         progress: ProgressHub::default(),
         alerts: AlertNotifier::new(
             AlertConfig {
@@ -3689,6 +3742,24 @@ pub(crate) mod tests {
     use axum::response::IntoResponse;
     use tower::ServiceExt;
 
+    /// Runs before any test in this binary (`#[ctor]` hooks into the
+    /// binary's startup section, ahead of the test harness picking a test
+    /// order/thread count) — closes a real bug, not just flakiness:
+    /// `nexus_core::pipeline::metrics`'s counters are `LazyLock`s that bind
+    /// to whatever `opentelemetry::global` meter provider is active on
+    /// their *first* access, and OTel's global metrics proxy (unlike its
+    /// trace proxy) never retroactively rebinds an instrument created
+    /// against the no-op provider once a real one is installed later.
+    /// Without this, whichever test happens to run a `PipelineEngine`
+    /// partition first (order is nondeterministic under parallel test
+    /// threads) permanently freezes these counters as no-ops for the rest
+    /// of the binary — any later test asserting on `/metrics` content
+    /// fails or passes depending on execution order, not on its own logic.
+    #[ctor::ctor]
+    fn telemetry_installed_before_any_test() {
+        let _ = telemetry::init();
+    }
+
     /// Fresh, isolated bare repo per call — `test_state()`/`rate_limited_state()`
     /// each get their own so parallel `#[tokio::test]`s never share one.
     /// Leaked on purpose (`.keep()`): these are short-lived test processes,
@@ -3763,6 +3834,12 @@ pub(crate) mod tests {
                 .await
                 .unwrap(),
             llm_eval_results: llm_eval_result_store::LlmEvalResultStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
+            agents: agent_store::AgentStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
+            agent_runs: agent_run_store::AgentRunStore::connect("sqlite::memory:")
                 .await
                 .unwrap(),
             progress: ProgressHub::default(),
@@ -6004,6 +6081,12 @@ pub(crate) mod tests {
                 .await
                 .unwrap(),
             llm_eval_results: llm_eval_result_store::LlmEvalResultStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
+            agents: agent_store::AgentStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
+            agent_runs: agent_run_store::AgentRunStore::connect("sqlite::memory:")
                 .await
                 .unwrap(),
             progress: ProgressHub::default(),
