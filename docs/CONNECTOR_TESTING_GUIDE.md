@@ -1,9 +1,14 @@
 # Guia de teste — Conectores OSS
 
-Passo a passo pra testar, manualmente, cada um dos 31 conectores OSS contra
-infra real (Docker local sempre que existe imagem oficial, arquivo local
-quando o conector é embutido). Os 40 conectores enterprise estão no
-`docs/CONNECTOR_TESTING_GUIDE.md` do repo privado `nexus-connectors-enterprise`.
+Passo a passo pra testar, manualmente, cada um dos 24 conectores OSS
+originais contra infra real (Docker local sempre que existe imagem
+oficial, arquivo local quando o conector é embutido). **Os 22 conectores
+que migraram do enterprise em 2026-09-25** (Fase 32 — SQL/DW, vetorial/
+busca, streaming, arquivo/storage) já têm teste automatizado real
+(`cargo test`, ver cada crate em `crates/nexus-connectors/`), só não
+ganharam guia manual passo a passo aqui ainda. Os 16 conectores
+enterprise restantes estão no `docs/CONNECTOR_TESTING_GUIDE.md` do repo
+privado `nexus-connectors-enterprise`.
 
 Cada conector aqui só lista os campos **mínimos** pra montar um teste — a
 lista completa de campos (obrigatórios e opcionais, com descrição) está em

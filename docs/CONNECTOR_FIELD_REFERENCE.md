@@ -2,7 +2,7 @@
 
 Gerado a partir do schema real (`GET /connectors`) de uma imagem `nexusflow-enterprise:full` rodando localmente (2026-09-01) — nomes de campo, obrigatoriedade e descrição vêm direto do `config_schema` de cada conector (doc comment Rust real), não inventados. Coluna "Exemplo" é um valor plausível pra preencher o formulário, não necessariamente o default real de cada conector (que pode divergir quando o schema não expõe o `default` explicitamente).
 
-Descrições ficam em inglês de propósito — são o doc comment original do Rust, traduzir risca introduzir imprecisão técnica. Cobre só os 31 conectores OSS; os 40 conectores enterprise (license-gated) estão no repo privado `nexus-connectors-enterprise`, em `docs/CONNECTOR_FIELD_REFERENCE.md`.
+Descrições ficam em inglês de propósito — são o doc comment original do Rust, traduzir risca introduzir imprecisão técnica. Cobre os 24 conectores OSS originais (snapshot de 2026-09-01, antes da Fase 32). **Os 22 conectores que migraram do enterprise em 2026-09-25** (SQL/DW, vetorial/busca, streaming, arquivo/storage — ver `LICENSING.md`) ainda não têm entrada aqui; o schema real de cada um já está disponível via `GET /connectors` (JSON Schema, mesmo mecanismo que gerou este arquivo), só falta regenerar esta referência contra um binário com `connectors-all` atualizado. Os 16 conectores enterprise restantes (license-gated) estão no repo privado `nexus-connectors-enterprise`, em `docs/CONNECTOR_FIELD_REFERENCE.md`.
 
 ## `ailake`
 
