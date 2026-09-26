@@ -31,7 +31,7 @@ pub use dag::{
     DependencyMode, EmailAlertChannel, EmbeddingModelSpec, EmbeddingSpec, EvalScoringMode,
     LlmCacheSpec, LlmEvalCase, LlmModelConfig, LlmNodeSpec, NodeSpec, PagerDutyAlertChannel,
     PipelineDependency, PipelineSpec, PromptRef, PythonTransformSpec, TransformSpec,
-    WebhookAlertChannel,
+    VisualizationSpec, WebhookAlertChannel,
 };
 pub use error::{with_timeout, NexusError};
 pub use infra_registry::{
