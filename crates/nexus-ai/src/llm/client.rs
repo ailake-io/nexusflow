@@ -1,5 +1,6 @@
-use crate::llm::common::LlmError;
+use crate::llm::common::{LlmError, LlmTurn, ToolCall, ToolDef, ToolMessage};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::time::Instant;
 
 /// Talks to an OpenAI-compatible `POST {base_url}/chat/completions` endpoint
@@ -112,6 +113,222 @@ impl LlmClient {
             latency_ms,
         })
     }
+
+    /// Spike (ROADMAP.md Fase 31): one turn of OpenAI-shaped tool-calling.
+    /// `history` is the whole conversation so far — stateless API, resent
+    /// every call. Returns `LlmTurn::ToolCalls` when the model wants a tool
+    /// run before it'll produce text, `LlmTurn::Text` otherwise.
+    pub async fn call_with_tools(
+        &self,
+        history: &[ToolMessage],
+        tools: &[ToolDef],
+        max_tokens: Option<u32>,
+        temperature: Option<f32>,
+    ) -> Result<LlmTurn, LlmError> {
+        let messages = to_openai_messages(history);
+        let wire_tools: Vec<OpenAiTool> = tools.iter().map(OpenAiTool::from).collect();
+
+        let mut request = self
+            .client
+            .post(format!(
+                "{}/chat/completions",
+                self.cfg.base_url.trim_end_matches('/')
+            ))
+            .json(&ToolChatRequest {
+                model: &self.cfg.model,
+                messages: &messages,
+                tools: &wire_tools,
+                max_tokens,
+                temperature,
+            });
+        if let Some(env_var) = &self.cfg.api_key_env {
+            let key = std::env::var(env_var).map_err(|_| {
+                LlmError::Api(format!(
+                    "environment variable '{env_var}' not set for llm API key"
+                ))
+            })?;
+            request = request.bearer_auth(key);
+        }
+
+        let response = request
+            .send()
+            .await
+            .map_err(|e| LlmError::Api(format!("request failed: {e}")))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(LlmError::Api(format!(
+                "llm API returned {status}: {}",
+                truncate(&body, 512)
+            )));
+        }
+
+        let parsed: ToolChatResponse = response
+            .json()
+            .await
+            .map_err(|e| LlmError::Api(format!("invalid response body: {e}")))?;
+
+        let message = parsed
+            .choices
+            .into_iter()
+            .next()
+            .map(|c| c.message)
+            .ok_or_else(|| LlmError::Api("llm API returned no choices".to_string()))?;
+
+        if let Some(calls) = message.tool_calls {
+            let calls = calls
+                .into_iter()
+                .map(|c| {
+                    let arguments: Value = serde_json::from_str(&c.function.arguments)
+                        .unwrap_or(Value::String(c.function.arguments));
+                    ToolCall {
+                        id: c.id,
+                        name: c.function.name,
+                        arguments,
+                    }
+                })
+                .collect();
+            return Ok(LlmTurn::ToolCalls(calls));
+        }
+
+        Ok(LlmTurn::Text(message.content.unwrap_or_default()))
+    }
+}
+
+/// Rebuilds the OpenAI `messages` array from a `ToolMessage` history —
+/// `AssistantToolCalls` becomes an assistant turn with `content: null` per
+/// the API's own shape (a tool-calling turn carries no text), `ToolResult`
+/// becomes a `role: "tool"` entry keyed by `tool_call_id`.
+fn to_openai_messages(history: &[ToolMessage]) -> Vec<OpenAiMessage> {
+    history
+        .iter()
+        .map(|m| match m {
+            ToolMessage::User(text) => OpenAiMessage {
+                role: "user",
+                content: Some(text.clone()),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            ToolMessage::AssistantToolCalls(calls) => OpenAiMessage {
+                role: "assistant",
+                content: None,
+                tool_calls: Some(
+                    calls
+                        .iter()
+                        .map(|c| OpenAiToolCall {
+                            id: c.id.clone(),
+                            call_type: "function",
+                            function: OpenAiFunctionCall {
+                                name: c.name.clone(),
+                                arguments: c.arguments.to_string(),
+                            },
+                        })
+                        .collect(),
+                ),
+                tool_call_id: None,
+            },
+            ToolMessage::ToolResult { call_id, content } => OpenAiMessage {
+                role: "tool",
+                content: Some(content.clone()),
+                tool_calls: None,
+                tool_call_id: Some(call_id.clone()),
+            },
+        })
+        .collect()
+}
+
+#[derive(Serialize)]
+struct ToolChatRequest<'a> {
+    model: &'a str,
+    messages: &'a [OpenAiMessage],
+    tools: &'a [OpenAiTool],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
+}
+
+#[derive(Serialize)]
+struct OpenAiMessage {
+    role: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<OpenAiToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct OpenAiToolCall {
+    id: String,
+    #[serde(rename = "type")]
+    call_type: &'static str,
+    function: OpenAiFunctionCall,
+}
+
+#[derive(Serialize)]
+struct OpenAiFunctionCall {
+    name: String,
+    arguments: String,
+}
+
+#[derive(Serialize)]
+struct OpenAiTool {
+    #[serde(rename = "type")]
+    tool_type: &'static str,
+    function: OpenAiFunctionDef,
+}
+
+#[derive(Serialize)]
+struct OpenAiFunctionDef {
+    name: String,
+    description: String,
+    parameters: Value,
+}
+
+impl From<&ToolDef> for OpenAiTool {
+    fn from(t: &ToolDef) -> Self {
+        OpenAiTool {
+            tool_type: "function",
+            function: OpenAiFunctionDef {
+                name: t.name.clone(),
+                description: t.description.clone(),
+                parameters: t.schema.clone(),
+            },
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct ToolChatResponse {
+    choices: Vec<ToolChatChoice>,
+}
+
+#[derive(Deserialize)]
+struct ToolChatChoice {
+    message: ToolChatMessage,
+}
+
+#[derive(Deserialize)]
+struct ToolChatMessage {
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    tool_calls: Option<Vec<ToolChatToolCall>>,
+}
+
+#[derive(Deserialize)]
+struct ToolChatToolCall {
+    id: String,
+    function: ToolChatFunctionCall,
+}
+
+#[derive(Deserialize)]
+struct ToolChatFunctionCall {
+    name: String,
+    arguments: String,
 }
 
 /// Caps how much of an upstream error body ends up in `LlmError`, which
@@ -252,5 +469,100 @@ mod tests {
     #[test]
     fn truncate_is_a_no_op_under_the_limit() {
         assert_eq!(truncate("short", 512), "short");
+    }
+
+    fn weather_tool() -> ToolDef {
+        ToolDef {
+            name: "get_weather".to_string(),
+            description: "look up current weather for a city".to_string(),
+            schema: serde_json::json!({
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"]
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn call_with_tools_parses_a_tool_call_turn() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": "{\"city\":\"Lisboa\"}"}
+                    }]
+                }}]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = LlmClient::new(LlmClientConfig {
+            base_url: server.uri(),
+            model: "gpt-test".to_string(),
+            api_key_env: None,
+        });
+        let turn = client
+            .call_with_tools(
+                &[ToolMessage::User("qual o clima em Lisboa?".to_string())],
+                &[weather_tool()],
+                Some(64),
+                None,
+            )
+            .await
+            .unwrap();
+
+        match turn {
+            LlmTurn::ToolCalls(calls) => {
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0].id, "call_1");
+                assert_eq!(calls[0].name, "get_weather");
+                assert_eq!(calls[0].arguments, serde_json::json!({"city": "Lisboa"}));
+            }
+            LlmTurn::Text(_) => panic!("expected a tool call turn"),
+        }
+    }
+
+    #[tokio::test]
+    async fn call_with_tools_continuation_after_tool_result_returns_text() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"content": "Ensolarado, 24°C em Lisboa."}}]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = LlmClient::new(LlmClientConfig {
+            base_url: server.uri(),
+            model: "gpt-test".to_string(),
+            api_key_env: None,
+        });
+        let history = vec![
+            ToolMessage::User("qual o clima em Lisboa?".to_string()),
+            ToolMessage::AssistantToolCalls(vec![ToolCall {
+                id: "call_1".to_string(),
+                name: "get_weather".to_string(),
+                arguments: serde_json::json!({"city": "Lisboa"}),
+            }]),
+            ToolMessage::ToolResult {
+                call_id: "call_1".to_string(),
+                content: "24°C, ensolarado".to_string(),
+            },
+        ];
+        let turn = client
+            .call_with_tools(&history, &[weather_tool()], Some(64), None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            turn,
+            LlmTurn::Text("Ensolarado, 24°C em Lisboa.".to_string())
+        );
     }
 }

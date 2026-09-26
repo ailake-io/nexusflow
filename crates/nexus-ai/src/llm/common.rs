@@ -1,6 +1,7 @@
 use arrow_array::{RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
+use serde_json::Value;
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -60,6 +61,49 @@ pub fn cache_key(
             .as_bytes(),
     );
     format!("nexusflow:llm-cache:{}", hex::encode(hasher.finalize()))
+}
+
+/// One tool offered to the model. `schema` is a plain JSON Schema object —
+/// both backends want the same content (name/description/parameter shape),
+/// only the wire key differs (`parameters` for OpenAI, `input_schema` for
+/// Anthropic), so each client serializes this into its own wire shape
+/// rather than this type trying to match either one directly.
+#[derive(Debug, Clone)]
+pub struct ToolDef {
+    pub name: String,
+    pub description: String,
+    pub schema: Value,
+}
+
+/// One call the model wants executed, echoed back so the caller (the
+/// agent loop, Fase 31) can attribute a result to it on the next turn.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: Value,
+}
+
+/// One model turn under tool-calling. A turn that mixes reasoning text
+/// with tool calls (Anthropic allows text blocks before `tool_use`) still
+/// collapses to `ToolCalls` here — the spike only needs to prove the round
+/// trip, not preserve incidental commentary the model emits alongside a
+/// call.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LlmTurn {
+    Text(String),
+    ToolCalls(Vec<ToolCall>),
+}
+
+/// One entry in a tool-calling conversation. Both APIs are stateless — the
+/// full history is resent on every call — so this is the minimum shape a
+/// multi-turn tool loop needs regardless of backend; there's no leaner
+/// representation that still lets a caller replay a conversation.
+#[derive(Debug, Clone)]
+pub enum ToolMessage {
+    User(String),
+    AssistantToolCalls(Vec<ToolCall>),
+    ToolResult { call_id: String, content: String },
 }
 
 /// Appends `responses` (one string per row of `batch`) as a `Utf8` column
