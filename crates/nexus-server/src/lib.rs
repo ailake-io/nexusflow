@@ -1,3 +1,7 @@
+#[cfg(feature = "llm")]
+mod agent_run_store;
+#[cfg(feature = "llm")]
+mod agent_store;
 mod alerts;
 mod anomaly_detector;
 mod auth;
