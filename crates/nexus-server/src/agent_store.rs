@@ -279,8 +279,7 @@ mod tests {
             },
             tools: vec![AgentToolConfig {
                 tool: AgentToolKind::SearchVectors {
-                    connector: "qdrant".to_string(),
-                    config: serde_json::json!({}),
+                    pipeline_id: "docs-pipeline".to_string(),
                     top_k: 5,
                 },
                 approval: ApprovalMode::Auto,

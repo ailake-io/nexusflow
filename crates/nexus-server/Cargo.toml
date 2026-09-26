@@ -23,6 +23,16 @@ dbt = ["tokio/process"]
 # still deserializes fine (it's just data), but a spec that sets it gets
 # a clear "not compiled in" error instead of silently doing nothing.
 python-transform = ["tokio/process", "dep:parquet"]
+# Agent tool `GenerateChart` (ROADMAP.md Fase 31) — sibling of
+# `python-transform` above, same isolation model (subprocess + temp-dir +
+# Parquet-in), independent feature because an agent's chart tool doesn't
+# require the batch pipeline's python transform stage to be compiled in,
+# or vice versa. Runtime image additionally needs matplotlib/seaborn/
+# plotly/kaleido pre-installed (see Dockerfile) — `visualize(df)` returns
+# either a matplotlib/seaborn `Figure` (duck-typed via `.savefig()`) or a
+# `(bytes, content_type)` tuple (Plotly/Bokeh/anything else), the harness
+# doesn't special-case any one library.
+python-viz = ["tokio/process", "dep:parquet"]
 # Embeddings pipeline stage: chunking + ONNX inference via nexus-ai. Off by
 # default because it pulls in ort, hf-hub, tokenizers and ONNX binaries, which
 # significantly increases build time and binary size when not needed.

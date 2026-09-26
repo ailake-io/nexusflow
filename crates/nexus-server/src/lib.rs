@@ -1,7 +1,46 @@
-#[cfg(feature = "llm")]
+// Same predicate as `mod rag` below — the agent's `SearchVectors` tool
+// (`agent_tools.rs`) reuses `rag.rs`'s own `search_*` functions directly,
+// so the whole agent module family needs the vector-search backends to
+// exist, not just `llm`.
+#[cfg(all(
+    feature = "llm",
+    any(feature = "embeddings", feature = "embeddings-api"),
+    any(
+        feature = "lancedb",
+        feature = "qdrant",
+        feature = "milvus",
+        feature = "pgvector",
+        feature = "pinecone",
+        feature = "chromadb"
+    )
+))]
 mod agent_run_store;
-#[cfg(feature = "llm")]
+#[cfg(all(
+    feature = "llm",
+    any(feature = "embeddings", feature = "embeddings-api"),
+    any(
+        feature = "lancedb",
+        feature = "qdrant",
+        feature = "milvus",
+        feature = "pgvector",
+        feature = "pinecone",
+        feature = "chromadb"
+    )
+))]
 mod agent_store;
+#[cfg(all(
+    feature = "llm",
+    any(feature = "embeddings", feature = "embeddings-api"),
+    any(
+        feature = "lancedb",
+        feature = "qdrant",
+        feature = "milvus",
+        feature = "pgvector",
+        feature = "pinecone",
+        feature = "chromadb"
+    )
+))]
+mod agent_tools;
 mod alerts;
 mod anomaly_detector;
 mod auth;
@@ -40,6 +79,7 @@ mod pipeline_store;
 mod progress;
 mod prompt_template_store;
 mod python_transform;
+mod python_viz;
 mod quality_check_store;
 #[cfg(all(
     feature = "llm",
@@ -1396,7 +1436,10 @@ async fn read_preview_rows(
 /// evenly — the last batch pulled is sliced back down instead of just
 /// capping the batch count, so the row count in the response always
 /// matches `limit` exactly (when the source has that many rows to give).
-async fn read_preview_batches(
+// `pub(crate)` so `agent_tools.rs`'s `QueryData`/`GenerateChart` tools can
+// reuse the exact same bounded-read logic the Canvas preview endpoints use,
+// instead of a second copy.
+pub(crate) async fn read_preview_batches(
     mut source: Box<dyn nexus_core::Source>,
     limit: usize,
 ) -> Result<Vec<arrow_array::RecordBatch>, ApiError> {
@@ -1442,7 +1485,7 @@ async fn read_preview_batches(
     Ok(collected)
 }
 
-fn batches_to_preview_json(
+pub(crate) fn batches_to_preview_json(
     batches: &[arrow_array::RecordBatch],
 ) -> Result<Vec<serde_json::Value>, ApiError> {
     if batches.is_empty() {
@@ -3638,7 +3681,7 @@ async fn shutdown_signal() {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use axum::body::Body;
     use axum::extract::ConnectInfo;
@@ -3656,7 +3699,11 @@ mod tests {
         git_history_store::GitHistoryStore::open(dir.join("history.git")).unwrap()
     }
 
-    async fn test_state() -> AppState {
+    /// `pub(crate)`: reused by `agent_tools.rs`'s own tests
+    /// (`crate::tests::test_state`) — building a full `AppState` by hand a
+    /// second time there would just be this same ~25-field literal copied,
+    /// so this stays the single source of it instead.
+    pub(crate) async fn test_state() -> AppState {
         let auth_store = AuthStore::connect("sqlite::memory:").await.unwrap();
         auth_store
             .seed_admin_if_empty("admin", "test-password")
