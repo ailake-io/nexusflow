@@ -7,7 +7,7 @@ license.workspace = true
 # Own binary protocol (not HTTP/gRPC) via the streamnative `pulsar` crate
 # — no wiremock coverage possible the way the REST-based connectors get.
 [dependencies]
-nexus-core = { version = "0.1.0", path = "../../nexus-core" }
+nexus-core = { version = "0.2.0", path = "../../nexus-core" }
 arrow-array = "58.4.0"
 arrow-schema = "58.4.0"
 async-trait = "0.1.91"

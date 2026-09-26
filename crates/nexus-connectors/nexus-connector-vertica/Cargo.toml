@@ -12,7 +12,7 @@ license.workspace = true
 # has to be installed separately at deploy time, under the customer's
 # own Vertica license — same story as Oracle/HANA/Teradata.
 [dependencies]
-nexus-core = { version = "0.1.0", path = "../../nexus-core" }
+nexus-core = { version = "0.2.0", path = "../../nexus-core" }
 arrow-array = "58.4.0"
 arrow-schema = "58.4.0"
 async-trait = "0.1.91"

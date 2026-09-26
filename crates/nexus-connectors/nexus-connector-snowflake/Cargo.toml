@@ -7,7 +7,7 @@ license.workspace = true
 # Driver via scripts/build-adbc-snowflake-driver.sh — prebuilt .so from
 # the official adbc-driver-snowflake PyPI wheel, no build/auth needed.
 [dependencies]
-nexus-core = { version = "0.1.0", path = "../../nexus-core" }
+nexus-core = { version = "0.2.0", path = "../../nexus-core" }
 adbc_core = "0.23.0"
 adbc_driver_manager = "0.23.0"
 arrow-array = "58.4.0"

@@ -15,7 +15,7 @@ arrow-schema = "58.4.0"
 arrow-select = "58.4.0"
 async-trait = "0.1.91"
 futures = "0.3.33"
-nexus-core = { version = "0.1.0", path = "../../nexus-core" }
+nexus-core = { version = "0.2.0", path = "../../nexus-core" }
 object_store = { version = "0.10.2", features = ["aws", "gcp", "azure", "http"] }
 serde = { version = "1.0.229", features = ["derive"] }
 schemars = "1.2.2"

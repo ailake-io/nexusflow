@@ -22,7 +22,7 @@ async-trait = "0.1.91"
 futures = "0.3.33"
 iceberg = "0.10.0"
 iceberg-catalog-sql = "0.10.0"
-nexus-core = { version = "0.1.0", path = "../../nexus-core" }
+nexus-core = { version = "0.2.0", path = "../../nexus-core" }
 parquet = "58.4.0"
 serde = { version = "1.0.229", features = ["derive"] }
 schemars = "1.2.2"

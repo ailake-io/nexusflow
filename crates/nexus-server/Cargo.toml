@@ -202,54 +202,54 @@ jsonwebtoken = { version = "11.0.0", default-features = false, features = ["rust
 # password-hash 0.5.0 depends on, or `SaltString::generate` has no RNG type
 # that satisfies its `CryptoRngCore` bound.
 rand_core = { version = "0.6.4", features = ["getrandom"] }
-nexus-connector-postgres = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-postgres" }
-nexus-connector-sqlite = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-sqlite" }
-nexus-connector-mongodb = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-mongodb", optional = true }
-nexus-connector-mysql = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-mysql", optional = true }
-nexus-connector-kafka = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-kafka", optional = true }
-nexus-connector-mqtt = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-mqtt", optional = true }
-nexus-connector-rest = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-rest", optional = true }
-nexus-connector-odbc = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-odbc", optional = true }
-nexus-connector-milvus = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-milvus", optional = true }
-nexus-connector-qdrant = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-qdrant", optional = true }
-nexus-connector-lancedb = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-lancedb", optional = true }
-nexus-connector-pgvector = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-pgvector", optional = true }
-nexus-connector-pinecone = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-pinecone", optional = true }
-nexus-connector-chromadb = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-chromadb", optional = true }
-nexus-connector-deltalake = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-deltalake", optional = true }
-nexus-connector-iceberg = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-iceberg", optional = true }
-nexus-connector-parquet = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-parquet", optional = true }
-nexus-connector-ailake = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-ailake", optional = true }
-nexus-connector-csv = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-csv", optional = true }
-nexus-connector-clickhouse = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-clickhouse", optional = true }
-nexus-connector-duckdb = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-duckdb", optional = true }
-nexus-connector-redis = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-redis", optional = true }
-nexus-connector-nats = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-nats", optional = true }
-nexus-connector-rabbitmq = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-rabbitmq", optional = true }
-nexus-connector-starburst = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-starburst", optional = true }
-nexus-connector-teradata = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-teradata", optional = true }
-nexus-connector-vertica = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-vertica", optional = true }
-nexus-connector-hana = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-hana", optional = true }
-nexus-connector-oracle = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-oracle", optional = true }
-nexus-connector-mssql = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-mssql", optional = true }
-nexus-connector-redshift = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-redshift", optional = true }
-nexus-connector-bigquery = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-bigquery", optional = true }
-nexus-connector-snowflake = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-snowflake", optional = true }
-nexus-connector-databricks = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-databricks", optional = true }
-nexus-connector-elasticsearch = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-elasticsearch", optional = true }
-nexus-connector-weaviate = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-weaviate", optional = true }
-nexus-connector-vertex-vector-search = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-vertex-vector-search", optional = true }
-nexus-connector-azure-ai-search = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-azure-ai-search", optional = true }
-nexus-connector-kinesis = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-kinesis", optional = true }
-nexus-connector-pulsar = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-pulsar", optional = true }
-nexus-connector-excel = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-excel", optional = true }
-nexus-connector-pdf-ocr = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-pdf-ocr", optional = true }
-nexus-connector-google-drive = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-google-drive", optional = true }
-nexus-connector-google-sheets = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-google-sheets", optional = true }
-nexus-connector-dropbox = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-dropbox", optional = true }
-nexus-connector-sharepoint = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-sharepoint", optional = true }
-nexus-core = { version = "0.1.0", path = "../nexus-core" }
-nexus-ai = { version = "0.1.0", path = "../nexus-ai", optional = true }
+nexus-connector-postgres = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-postgres" }
+nexus-connector-sqlite = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-sqlite" }
+nexus-connector-mongodb = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-mongodb", optional = true }
+nexus-connector-mysql = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-mysql", optional = true }
+nexus-connector-kafka = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-kafka", optional = true }
+nexus-connector-mqtt = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-mqtt", optional = true }
+nexus-connector-rest = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-rest", optional = true }
+nexus-connector-odbc = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-odbc", optional = true }
+nexus-connector-milvus = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-milvus", optional = true }
+nexus-connector-qdrant = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-qdrant", optional = true }
+nexus-connector-lancedb = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-lancedb", optional = true }
+nexus-connector-pgvector = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-pgvector", optional = true }
+nexus-connector-pinecone = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-pinecone", optional = true }
+nexus-connector-chromadb = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-chromadb", optional = true }
+nexus-connector-deltalake = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-deltalake", optional = true }
+nexus-connector-iceberg = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-iceberg", optional = true }
+nexus-connector-parquet = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-parquet", optional = true }
+nexus-connector-ailake = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-ailake", optional = true }
+nexus-connector-csv = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-csv", optional = true }
+nexus-connector-clickhouse = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-clickhouse", optional = true }
+nexus-connector-duckdb = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-duckdb", optional = true }
+nexus-connector-redis = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-redis", optional = true }
+nexus-connector-nats = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-nats", optional = true }
+nexus-connector-rabbitmq = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-rabbitmq", optional = true }
+nexus-connector-starburst = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-starburst", optional = true }
+nexus-connector-teradata = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-teradata", optional = true }
+nexus-connector-vertica = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-vertica", optional = true }
+nexus-connector-hana = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-hana", optional = true }
+nexus-connector-oracle = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-oracle", optional = true }
+nexus-connector-mssql = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-mssql", optional = true }
+nexus-connector-redshift = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-redshift", optional = true }
+nexus-connector-bigquery = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-bigquery", optional = true }
+nexus-connector-snowflake = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-snowflake", optional = true }
+nexus-connector-databricks = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-databricks", optional = true }
+nexus-connector-elasticsearch = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-elasticsearch", optional = true }
+nexus-connector-weaviate = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-weaviate", optional = true }
+nexus-connector-vertex-vector-search = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-vertex-vector-search", optional = true }
+nexus-connector-azure-ai-search = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-azure-ai-search", optional = true }
+nexus-connector-kinesis = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-kinesis", optional = true }
+nexus-connector-pulsar = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-pulsar", optional = true }
+nexus-connector-excel = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-excel", optional = true }
+nexus-connector-pdf-ocr = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-pdf-ocr", optional = true }
+nexus-connector-google-drive = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-google-drive", optional = true }
+nexus-connector-google-sheets = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-google-sheets", optional = true }
+nexus-connector-dropbox = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-dropbox", optional = true }
+nexus-connector-sharepoint = { version = "0.2.0", path = "../nexus-connectors/nexus-connector-sharepoint", optional = true }
+nexus-core = { version = "0.2.0", path = "../nexus-core" }
+nexus-ai = { version = "0.2.0", path = "../nexus-ai", optional = true }
 hex = "0.4.3"
 # Pipeline scheduler (background cron polling, see scheduler.rs) — matches
 # nexus-core's own cron/chrono versions (parse_cron_expression's return

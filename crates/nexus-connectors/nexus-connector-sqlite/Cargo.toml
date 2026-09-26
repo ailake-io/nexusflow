@@ -11,7 +11,7 @@ arrow-array = "58.4.0"
 arrow-schema = "58.4.0"
 async-trait = "0.1.91"
 futures = "0.3.33"
-nexus-core = { version = "0.1.0", path = "../../nexus-core" }
+nexus-core = { version = "0.2.0", path = "../../nexus-core" }
 serde = { version = "1.0.229", features = ["derive"] }
 schemars = "1.2.2"
 tokio = { version = "1.53.1", features = ["rt"] }
