@@ -41,6 +41,12 @@ members = [
     "nexus-connector-azure-ai-search",
     "nexus-connector-kinesis",
     "nexus-connector-pulsar",
+    "nexus-connector-excel",
+    "nexus-connector-pdf-ocr",
+    "nexus-connector-google-drive",
+    "nexus-connector-google-sheets",
+    "nexus-connector-dropbox",
+    "nexus-connector-sharepoint",
 ]
 
 [workspace.package]

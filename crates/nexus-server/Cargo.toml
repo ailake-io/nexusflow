@@ -93,7 +93,7 @@ connectors-all = [
     "ailake", "csv", "clickhouse", "duckdb", "redis", "nats", "rabbitmq",
     "starburst", "teradata", "vertica", "hana", "oracle", "mssql", "redshift", "bigquery", "snowflake",
     "databricks", "elasticsearch", "weaviate", "vertex-vector-search", "azure-ai-search",
-    "kinesis", "pulsar",
+    "kinesis", "pulsar", "excel", "google-drive", "google-sheets", "dropbox", "sharepoint",
     "embeddings", "embeddings-api", "llm", "version-history",
     "postgres-cdc", "mysql-cdc", "deltalake-cdc", "iceberg-cdc", "ailake-cdc",
 ]
@@ -106,7 +106,7 @@ connectors-all-no-embeddings = [
     "ailake", "csv", "clickhouse", "duckdb", "redis", "nats", "rabbitmq",
     "starburst", "teradata", "vertica", "hana", "oracle", "mssql", "redshift", "bigquery", "snowflake",
     "databricks", "elasticsearch", "weaviate", "vertex-vector-search", "azure-ai-search",
-    "kinesis", "pulsar",
+    "kinesis", "pulsar", "excel", "google-drive", "google-sheets", "dropbox", "sharepoint",
     "version-history",
     "postgres-cdc", "mysql-cdc", "deltalake-cdc", "iceberg-cdc", "ailake-cdc",
 ]
@@ -168,6 +168,18 @@ vertex-vector-search = ["dep:nexus-connector-vertex-vector-search"]
 azure-ai-search = ["dep:nexus-connector-azure-ai-search"]
 kinesis = ["dep:nexus-connector-kinesis"]
 pulsar = ["dep:nexus-connector-pulsar"]
+excel = ["dep:nexus-connector-excel"]
+# Deliberately excluded from connectors-all/connectors-all-no-embeddings
+# below — never validated against a real scanned PDF + tesseract install
+# in a real build yet (same caution the enterprise repo already applied
+# to it before this connector migrated to OSS, Fase 32). Build
+# `--features pdf-ocr` directly to test it; add it to the bundles below
+# only after that passes.
+pdf-ocr = ["dep:nexus-connector-pdf-ocr"]
+google-drive = ["dep:nexus-connector-google-drive"]
+google-sheets = ["dep:nexus-connector-google-sheets"]
+dropbox = ["dep:nexus-connector-dropbox"]
+sharepoint = ["dep:nexus-connector-sharepoint"]
 
 [dependencies]
 aes-gcm = "0.10.3"
@@ -230,6 +242,12 @@ nexus-connector-vertex-vector-search = { version = "0.1.0", path = "../nexus-con
 nexus-connector-azure-ai-search = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-azure-ai-search", optional = true }
 nexus-connector-kinesis = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-kinesis", optional = true }
 nexus-connector-pulsar = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-pulsar", optional = true }
+nexus-connector-excel = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-excel", optional = true }
+nexus-connector-pdf-ocr = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-pdf-ocr", optional = true }
+nexus-connector-google-drive = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-google-drive", optional = true }
+nexus-connector-google-sheets = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-google-sheets", optional = true }
+nexus-connector-dropbox = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-dropbox", optional = true }
+nexus-connector-sharepoint = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-sharepoint", optional = true }
 nexus-core = { version = "0.1.0", path = "../nexus-core" }
 nexus-ai = { version = "0.1.0", path = "../nexus-ai", optional = true }
 hex = "0.4.3"
