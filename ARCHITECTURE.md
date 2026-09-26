@@ -62,6 +62,21 @@ pub trait Transform: Send + Sync {
 
 `RecordBatchBuilder` é o adapter genérico usado por qualquer conector híbrido (sem ADBC nativo) para produzir `RecordBatch` a partir de linhas heterogêneas (JSON de API REST, `bson::Document` do MongoDB, etc).
 
+**Bug real corrigido (2026-09-25)**: `from_json_rows`'s branch `Utf8`
+usava `Value::as_str()` pra extrair o valor — só casa com uma string
+JSON literal. Um campo tipado `Utf8` por `infer_schema` (que assim
+tipa qualquer objeto/array aninhado, e qualquer campo cujo tipo diverge
+entre linhas da amostra) virava **`null` silenciosamente** em vez do
+texto stringificado que o próprio comentário de `infer_schema` já
+prometia ("resolved by stringifying instead of failing") — contradição
+real entre doc e código, confirmada rodando de verdade (`{"endereco":
+{"cidade": "SP"}}` saía `null`). Afeta os 4 conectores bridging que
+usam esse builder — MongoDB, Kafka, MQTT, REST — não só um. Corrigido
+pra stringificar (`Value`'s `Display`, que já produz JSON válido)
+qualquer valor presente que não seja uma string genuína, preservando o
+conteúdo em vez de descartar. 2 testes novos cobrindo objeto aninhado e
+tipo divergente entre linhas.
+
 ## 3. Roteador de conectores
 
 Decisão de fast-path vs. híbrido acontece em tempo de configuração do node (não em runtime dinâmico): cada conector se registra com uma `ConnectorCapability` (`AdbcNative`, `ArrowFlight`, `Bridged`). O roteador só escolhe a estratégia de leitura/escrita; o pipeline downstream trata tudo como `RecordBatch` — nenhuma lógica de negócio depende de qual caminho foi usado.
@@ -479,8 +494,24 @@ mutuamente exclusivo com `transform`/`python` — `dag.rs::validate()`
 rejeita a combinação) é a lista persistida; o servidor recompila pra SQL
 toda vez que valida/roda, nunca guarda o SQL final. É o único jeito de
 "reabrir o pipeline e ver as caixas de volta, não uma string SQL opaca".
-Exige exatamente 1 source (mesma regra do node Python sozinho) e rejeita
-source `-cdc` (blocos não sabem preservar `__opcode`).
+Exige exatamente 1 source (mesma regra do node Python sozinho).
+
+**Suporte a CDC (2026-09-25, Fase 31)**: fonte `-cdc` funciona desde
+que o próprio chain de blocos não derrube `__opcode` — `dag.rs::validate()`
+rejeita só o que estruturalmente derrubaria (`aggregate`, que muda
+cardinalidade e não faz sentido pra semântica por-evento do CDC; e
+`select_columns` que exclui a coluna), não todo `-cdc` de uma vez, como
+na versão original. Diferente do SQL transform (string opaca, sem jeito
+de checar em `validate()` se `SELECT * FROM source0` foi respeitado),
+blocos são dado estruturado — dá pra checar isso em tempo de validação,
+não só confiar na convenção documentada. `runner.rs::run_streaming_cdc_pipeline`
+(o caminho que já processa CDC+SQL-transform em streaming, sem
+materializar tudo em memória) ganhou o mesmo branch que
+`run_transform_pipeline` já tinha pra `clean_blocks` — compila os
+blocos pra SQL e usa como se fosse `transform.sql`, mesmo
+`DataFusionTransform` por baixo. Verificado com teste real: um chain
+`filter -> sort` contra um batch com `__opcode` preserva a coluna e os
+valores corretos por linha, não só inferido da leitura do SQL gerado.
 
 **Achados de implementação (confirmados por teste real, não assumidos):**
 - DataFusion 54.1 suporta `SELECT * REPLACE (...)`, `SELECT * EXCEPT

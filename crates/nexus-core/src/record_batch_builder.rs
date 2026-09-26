@@ -82,9 +82,21 @@ impl RecordBatchBuilder {
                         .map(|row| row.get(name).and_then(Value::as_bool))
                         .collect::<Vec<_>>(),
                 )),
-                DataType::Utf8 => Arc::new(StringArray::from_iter(
-                    rows.iter().map(|row| row.get(name).and_then(Value::as_str)),
-                )),
+                // A genuine JSON string keeps its raw content (no added
+                // quotes); anything else present (object, array, or a
+                // number/bool that landed in a column another row's string
+                // value already typed as Utf8) is stringified via `Value`'s
+                // `Display` impl (valid JSON text) instead of being dropped
+                // to null — the real bug this arm used to have: `as_str()`
+                // only matches `Value::String`, silently nulling out any
+                // non-string value even though the column can hold text.
+                DataType::Utf8 => Arc::new(StringArray::from_iter(rows.iter().map(|row| {
+                    row.get(name).and_then(|v| match v {
+                        Value::Null => None,
+                        Value::String(s) => Some(s.clone()),
+                        other => Some(other.to_string()),
+                    })
+                }))),
                 other => {
                     return Err(NexusError::Schema(format!(
                         "unsupported data type for field '{name}': {other:?}"
@@ -196,6 +208,55 @@ mod tests {
             schema.field_with_name("maybe").unwrap().data_type(),
             &DataType::Utf8
         );
+    }
+
+    #[test]
+    fn nested_object_field_is_stringified_not_nulled() {
+        // Real bug this locks in: a bridging connector's field (e.g. a
+        // MongoDB subdocument) types as Utf8 (infer_schema's object/array
+        // fallback) but used to come out `null` from from_json_rows since
+        // `Value::as_str()` never matches an object. Now it round-trips as
+        // JSON text — lossy in shape (no longer a queryable nested value)
+        // but not lossy in content, matching infer_schema's own doc comment
+        // ("resolved by stringifying instead of failing").
+        let rows = vec![json!({"endereco": {"cidade": "SP", "cep": "01000"}})];
+        let schema = RecordBatchBuilder::infer_schema(&rows);
+        assert_eq!(
+            schema.field_with_name("endereco").unwrap().data_type(),
+            &DataType::Utf8
+        );
+        let batch = RecordBatchBuilder::from_json_rows(schema, &rows).unwrap();
+        let col = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert!(!col.is_null(0), "nested object must not be dropped to null");
+        let parsed: Value = serde_json::from_str(col.value(0)).unwrap();
+        assert_eq!(parsed["cidade"], "SP");
+        assert_eq!(parsed["cep"], "01000");
+    }
+
+    #[test]
+    fn mixed_type_field_stringifies_the_mismatched_row_instead_of_nulling_it() {
+        // A field whose type locks to Utf8 from the first row's string, but
+        // a later row has a number for the same field — same "as_str only
+        // matches Value::String" bug, different trigger (type mismatch
+        // across rows instead of a genuinely nested value).
+        let rows = vec![json!({"code": "ABC"}), json!({"code": 42})];
+        let schema = RecordBatchBuilder::infer_schema(&rows);
+        assert_eq!(
+            schema.field_with_name("code").unwrap().data_type(),
+            &DataType::Utf8
+        );
+        let batch = RecordBatchBuilder::from_json_rows(schema, &rows).unwrap();
+        let col = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(col.value(0), "ABC");
+        assert_eq!(col.value(1), "42");
     }
 
     #[test]

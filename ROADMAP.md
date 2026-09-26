@@ -714,8 +714,16 @@ banco vetorial, ou (b) gravar num data warehouse relacional.
       achatado — renomeado pra `fallback_column`.
 - [x] `PipelineSpec.clean_blocks` + validação (`dag.rs`) — exatamente 1
       source, mesma regra do caminho sem transform SQL; exclusividade com
-      `transform`/`python`; rejeita source `-cdc` (não preserva
-      `__opcode`). 8 testes novos em `dag.rs`.
+      `transform`/`python`. Fonte `-cdc` **passou a ser suportada**
+      (Fase 31, 2026-09-25, ver checklist da Fase 31): a rejeição total
+      original virou uma checagem específica só pro que realmente
+      derruba `__opcode` — bloco `aggregate` (muda cardinalidade,
+      incompatível com semântica por-evento do CDC) e `select_columns`
+      que exclui/derruba a coluna. 12 testes em `dag.rs` (8 originais +
+      4 da Fase 31: aceita CDC quando preserva opcode, rejeita
+      `aggregate` com CDC, rejeita `select_columns` derrubando opcode
+      nos dois modos, aceita `select_columns` mantendo opcode
+      explicitamente).
 - [x] Refatorar `read_preview_rows` em `read_preview_batches` + conversão
       JSON separada (sem mudar comportamento do endpoint existente)
 - [x] `POST /pipelines/preview-clean-blocks` (preview ad-hoc por bloco) —
@@ -792,6 +800,236 @@ editáveis; SQL gerado testado unitariamente pros 12 blocos.
 
 ---
 
+## Fase 31 — Agente de IA com tool-calling (estilo n8n AI Agent) — planejado, não implementado
+
+Pedido de 2026-09-25: "criar um agente usando os dados processados do
+NexusFlow e fazer esse agente fazer diversas coisas tipo como é no n8n
+hoje". Inspiração explícita: o node **AI Agent** do n8n — um LLM que,
+dado um objetivo, decide sozinho **qual ferramenta chamar, em que
+ordem**, olha o resultado e decide o próximo passo, até dar uma resposta
+final ou esgotar um limite de passos. Diferente de tudo que o NexusFlow
+já tem: o node `llm` (Fase 26/`ARCHITECTURE.md §17`) é 1 chamada por
+linha sem escolha nenhuma, e o RAG (`POST /rag/query`) é um fluxo fixo
+(busca → responde), sem loop e sem ferramenta nenhuma além da busca
+vetorial embutida.
+
+**Decisões fechadas com o usuário (2026-09-25):**
+- Ferramentas reais, com efeito no mundo (não só "responder texto") —
+  automação de verdade, não um RAG mais chique.
+- Precisa **superar** o n8n hoje, não só igualar — ver seção própria
+  abaixo com os diferenciais escolhidos.
+- **As duas formas de execução de ferramenta convivem**: cada ferramenta
+  tem um modo configurável, `auto` (o agente executa sozinho) ou
+  `precisa_aprovação` (humano aprova/rejeita antes de rodar) — não é
+  uma escolha única por agente, é por ferramenta, dentro do mesmo
+  agente.
+
+### Por que isso não é o node `llm` nem o RAG — achado que define o desenho
+
+`crates/nexus-ai/src/llm/client.rs`/`anthropic_client.rs` hoje fazem
+**só completion de disparo único**: `ChatCompletionRequest` não tem
+campo `tools`, `ChatMessage` é uma mensagem só (sem histórico
+multi-turno), a resposta não tem `tool_calls`/`tool_use` nenhum. Não dá
+pra "encaixar" um loop de agente em cima disso sem adicionar de
+verdade: (1) parâmetro `tools` no request (JSON Schema por ferramenta,
+formato que OpenAI-compatible e Anthropic exigem, cada um com sintaxe
+própria), (2) histórico de mensagens multi-turno (`user` → `assistant`
+com `tool_calls` → `tool` com o resultado → repete), (3) parsing da
+resposta pra extrair qual ferramenta foi pedida e com que argumentos.
+Essa é a única peça de integração LLM genuinamente nova da fase — tudo
+mais reaproveita infraestrutura que já existe.
+
+`PipelineSpec` também não serve de molde pro agente: um agente não é
+fonte→transform→destino, é **prompt + conjunto de ferramentas + modelo
++ política de aprovação por ferramenta**. Um `AgentSpec` novo, análogo
+em espírito a `PipelineSpec` mas com forma própria, é mais simples que
+forçar isso dentro de `PipelineSpec` (que já tem `llm: Option<...>`
+pensado pra 1-chamada-por-linha, não pra loop).
+
+### Como ser melhor que o n8n hoje (diferenciais reais, não só paridade)
+
+Escolhidos por serem **infraestrutura que o NexusFlow já tem e o n8n
+não** (ou só tem via plugin/gambiarra) — diferencial de verdade, não
+lista de desejos:
+
+1. **Aprovação humana por ferramenta é configuração nativa, não um node
+   de "esperar" caseiro.** No n8n, human-in-the-loop se monta na mão
+   com um node de espera + webhook externo. Aqui é um campo
+   (`approval: auto | require_approval`) por ferramenta dentro do
+   `AgentSpec` — o motor já sabe pausar, persistir o passo pendente e
+   retomar exatamente dali quando aprovado (mesmo espírito de resumir
+   do cursor exato que o CDC já faz, `ARCHITECTURE.md §5`).
+2. **Custo/tokens por execução, nativo desde o dia 1** — reaproveita
+   exatamente o que `pipeline_run_llm_stats_store.rs` já agrega pro
+   node `llm`; no n8n isso não existe pronto, cada um constrói sozinho
+   com um node de código.
+3. **Avaliação contínua de qualidade** — o mesmo golden dataset/scoring
+   (`LlmEvalCase`, `EvalScoringMode::TokenSimilarity`/`LlmJudge`) que já
+   audita o node `llm` (Fase 26 Marco L7) passa a rodar também contra
+   respostas do agente: "ele está respondendo bem?" ao longo do tempo,
+   não só "rodou sem erro".
+4. **Versionamento de prompt com histórico real** — `PromptTemplateStore`
+   (nunca sobrescreve, cada save é versão nova) + o versionamento git
+   embutido (`git_history_store.rs`, `ARCHITECTURE.md §18`) já
+   existentes cobrem o prompt de sistema do agente de graça — dá pra
+   comparar/reverter uma mudança de prompt contra o histórico de eval
+   acima. No n8n o prompt é uma string solta dentro do node, sem
+   histórico nenhum a não ser que o usuário monte fora da ferramenta.
+5. **Auditoria amarrada ao RBAC que já existe** — quem aprovou/rejeitou
+   um passo vai pro `audit_log` (mesma tabela que já registra
+   login/CRUD de pipeline), gateado por papel (`Execute` só vê e roda;
+   aprovar ação de ferramenta exige `Write` — a decidir no detalhe,
+   ver checklist). RBAC do n8n (community) é bem mais raso que os 4
+   papéis que o NexusFlow já tem.
+
+### Design por camada
+
+**`nexus-ai` (LLM/tool-calling — a peça nova de verdade)**
+- Novo `crates/nexus-ai/src/llm/agent.rs`: `AgentTool { name, description,
+  parameters_json_schema }` (uma ferramenta descrita do jeito que a API
+  do modelo espera) e `AgentLoopStep`/`AgentLoopOutcome` (`FinalAnswer`
+  | `ToolCallRequested{tool, args}`) — o loop em si (chamar modelo →
+  decidir → chamar ferramenta → alimentar resultado de volta) fica
+  **fora** de `nexus-ai` (que não tem I/O de conector nenhum, CLAUDE.md
+  §8.3) — só a mecânica de "1 turno" mora aqui.
+- `client.rs`/`anthropic_client.rs`: estender `ChatCompletionRequest`
+  com `tools: Option<Vec<ToolSchema>>` e parsear `tool_calls` da
+  resposta (formato OpenAI-compatible); Anthropic usa `tools` +
+  `tool_use`/`tool_result` no formato próprio dele (já documentado como
+  "não é formato OpenAI" no comment existente do arquivo). Histórico de
+  mensagens vira `Vec<ChatMessage>` em vez de mensagem única.
+
+**`nexus-server` — o loop de verdade + persistência + API**
+- Novo `AgentSpec` (`nexus-core`, mesmo lugar de `PipelineSpec`):
+  `{name, prompt: PromptRef, model: LlmModelConfig, tools:
+  Vec<AgentToolConfig>, max_steps: u32}`, onde `AgentToolConfig
+  {tool: AgentToolKind, approval: ApprovalMode}` e `ApprovalMode = Auto
+  | RequireApproval`. Reaproveita `LlmModelConfig` (`Api`/`Anthropic`)
+  e `PromptRef{name, version}` que o node `llm` já usa — zero tipo
+  novo pra essas duas partes.
+- Catálogo de ferramentas v1 (`AgentToolKind`), cada uma um wrapper
+  fino sobre código que **já existe**, sem motor de execução novo:
+  1. `QueryData{source: NodeSpec, sql: Option<String>}` — roda SQL via
+     `DataFusionTransform` sobre um source, ou lê preview de um
+     pipeline salvo (`read_preview_batches`, já usado pelo preview de
+     conector e pelo de clean blocks da Fase 30).
+  2. `SearchVectors{connector, config}` — reaproveita `search.rs` dos 6
+     conectores vetoriais (mesmo motor do RAG, Fase 26).
+  3. `RunPipeline{pipeline_id, wait_for_result: bool}` — dispara um
+     pipeline salvo via o mesmo caminho de `POST /pipelines/{id}/run`
+     já existente.
+  4. `CallWebhook{url, method, body_template}` — request HTTP genérico,
+     mesma validação de SSRF (`validate_security_with`/`dns_guard.rs`)
+     que todo conector `rest`/`webhook`/alerta já passa.
+- Novo `crates/nexus-server/src/agent_runner.rs`: o loop real —
+  monta o histórico de mensagens, chama o modelo, se vier
+  `ToolCallRequested` verifica `ApprovalMode` da ferramenta: `Auto`
+  executa e alimenta o resultado de volta no loop; `RequireApproval`
+  **pausa** (grava o passo como `pending_approval`, não chama nada
+  ainda) e dispara notificação (`AlertNotifier::notify_agent_approval_needed`,
+  mesmo idioma de `notify_pipeline_run`/`notify_anomaly` — 5 canais já
+  prontos). Loop pára de vez em `max_steps` (guard-rail contra loop
+  infinito, dor real conhecida do n8n) ou em `FinalAnswer`.
+- Novas tabelas (dual-dialeto Sqlite/Postgres, mesmo padrão de
+  `pipeline_run_llm_stats_store.rs`): `agent_runs(id, agent_id,
+  status, started_at, finished_at, total_tokens, total_cost)` e
+  `agent_steps(id, run_id, step_number, kind, tool, args, result,
+  approval_status, approved_by, approved_at)` — **1 tabela de steps
+  serve tanto de trace passo-a-passo (abrir uma execução) quanto de
+  fonte pra métrica agregada** (taxa de sucesso, custo, latência ao
+  longo do tempo), sem duplicar dado em dois lugares.
+- Endpoints novos: `POST /agents` (CRUD, papel `Write`), `POST
+  /agents/{id}/run` (dispara, papel `Execute` — mesmo tier do resto),
+  `GET /agents/{id}/runs` / `GET /agents/{id}/runs/{run_id}` (trace +
+  métricas), `POST /agents/runs/{run_id}/steps/{step_id}/approve` /
+  `/reject` (papel a decidir — `Write` é o candidato natural, mesmo
+  nível de quem edita o Canvas).
+- Disparo: reaproveita os 2 mecanismos que `PipelineSpec` já tem, sem
+  inventar um terceiro — `AgentSpec.schedule: Option<String>` (mesmo
+  cron do scheduler existente) pra rodar sozinho, e o endpoint
+  `POST /agents/{id}/run` pra sob-demanda/chat. Encadeamento reativo
+  (agente dispara ao fim de um pipeline) fica de fora do v1 — poderia
+  reusar `depends_on`/`pipeline_dependencies.rs` (Fase 26) no futuro,
+  mas não é pedido agora.
+
+**Frontend**
+- Nova aba/área "Agentes" (paralela a "Pipelines", não faz parte do
+  Canvas de DAG — ferramenta não tem ordem fixa, quem decide a ordem é
+  o modelo em runtime, não o usuário arrastando nodes).
+- Painel de config do agente: prompt (reaproveita o seletor de
+  `PromptRef` que o node `llm` já tem), modelo (mesmo `<select>`
+  Api/Anthropic), lista de ferramentas ligadas com o
+  toggle `auto`/`precisa aprovação` por ferramenta.
+- Painel de execução: lista de `agent_runs` (status, custo, duração) →
+  clicar abre o trace de `agent_steps` daquela execução, passo a passo,
+  com um passo `pending_approval` mostrando botões Aprovar/Rejeitar
+  inline (sem precisar sair do painel pra aprovar).
+- Notificação de aprovação pendente: reaproveita os 5 canais de alerta
+  já configurados (Slack/Teams/PagerDuty/Email/webhook) — mensagem com
+  link direto pro passo pendente.
+
+### Riscos
+
+- **Custo de loop longo** — um agente com `max_steps` alto e ferramentas
+  caras (busca vetorial + LLM a cada passo) pode gastar muito antes de
+  parar; `max_steps` é obrigatório no `AgentSpec`, sem default "sem
+  limite".
+- **Formato de tool-calling diverge entre OpenAI-compatible e
+  Anthropic** — schemas JSON diferentes, parsing de resposta diferente;
+  self-hosted (vLLM/Ollama) pode não suportar `tools` de verdade mesmo
+  falando "OpenAI-compatible" — precisa de teste real contra pelo menos
+  1 servidor local antes de dar como pronto.
+- **Ferramenta com efeito real (`RunPipeline`/`CallWebhook`) chamada 2x
+  se o processo cair entre "executou" e "gravou o resultado"** — sem
+  idempotência nova pro v1 (fora de escopo), documentar como debate
+  conhecido, mesmo nível de risco que qualquer chamada de rede sem
+  retry idempotente hoje.
+- **Prompt injection via dado processado** — o agente lê dado real
+  (via `QueryData`/`SearchVectors`) que pode conter texto malicioso
+  tentando manipular o próximo passo do loop; ferramentas com efeito
+  real (`RunPipeline`/`CallWebhook`) começarem como `RequireApproval`
+  por padrão é a mitigação do v1, não filtro de conteúdo.
+
+### Checklist
+
+- [ ] `nexus-ai`: `tools` no request + parsing de `tool_calls`/`tool_use`
+      pros 2 backends, histórico multi-turno — testado contra mock HTTP
+      (wiremock) simulando 1 tool-call + 1 resposta final.
+- [ ] `AgentSpec` + `AgentToolKind`/`ApprovalMode` (`nexus-core`)
+- [ ] `agent_runner.rs`: loop completo, `max_steps`, pausa/retomada em
+      `RequireApproval` — teste de integração com ferramenta mock
+      (sem chamar LLM real) validando pausa exata e retomada do ponto
+      certo.
+- [ ] 4 ferramentas v1 (`QueryData`, `SearchVectors`, `RunPipeline`,
+      `CallWebhook`) — cada uma testada isoladamente contra o que já
+      reaproveita (CSV real, vetor real, pipeline real, mock HTTP).
+- [ ] `agent_runs`/`agent_steps` stores (dual-dialeto) + endpoints CRUD/
+      run/approve/reject.
+- [ ] `AlertNotifier::notify_agent_approval_needed` (5 canais).
+- [ ] Reaproveitar eval (`LlmEvalCase`) e custo/tokens
+      (`pipeline_run_llm_stats_store`-like) pro agente.
+- [ ] Frontend: aba Agentes, config de ferramentas com toggle de
+      aprovação, painel de execução com trace + aprovar/rejeitar
+      inline.
+- [ ] Docs: `USER_GUIDE.md` (seção nova), `ARCHITECTURE.md` (loop de
+      tool-calling, decisão de schema das 2 tabelas novas).
+
+**Estimativa (chute):** tool-calling em `nexus-ai` (2 backends) ~1,5d;
+`AgentSpec`+loop+persistência+aprovação ~3d; 4 ferramentas ~2d;
+frontend (aba nova + painel de execução) ~2,5d; docs+testes de
+integração ~1d. Total ~10 dias — bem maior que a Fase 30 porque o
+tool-calling em si é peça de infraestrutura genuinamente nova, não só
+composição do que já existe.
+
+**Critério de pronto:** agente configurado com `QueryData` (auto) +
+`RunPipeline` (precisa de aprovação) responde uma pergunta real
+consultando dado processado, decide sozinho chamar `QueryData`, e ao
+tentar `RunPipeline` pausa esperando aprovação — aprovar via API resume
+o loop exatamente dali e o agente conclui; todo o trace (2+ passos)
+visível em `GET /agents/{id}/runs/{run_id}`.
+
+---
+
 ---
 
 **Critério de "MVP pronto"**: Fases 0–3 + 7 (parcial: auth básica) + 8 (canvas mínimo) funcionando end-to-end — mover dados de Postgres pra Postgres via canvas visual, com checkpoint por partição, retry e escrita idempotente. **Atingido e superado** — Fases 0–11 e 13–29 completas, só falta Fase 12 (enterprise, repo separado) e os itens condicionais/parciais marcados acima.
@@ -828,3 +1066,148 @@ Mergeado em `develop` em 2026-09-07 (`518cfa3`, PR #79). Plano marco a marco em 
 **Achados reais durante a verificação** (não só desenvolvimento): notificações de tarefa em background se mostraram não confiáveis nesta sessão — "completed"/exit 0 reportado pra processos que na real tinham morrido sem rodar nada, escondendo por um tempo 2 bugs reais do Marco L8 (`schemars` só em `[dev-dependencies]` quando `capability_registry.rs` precisa dele sempre; `ConnectorCapability::Capability` sem qualificar `nexus_core::`) e um bug do L7 original (teste de scoring com duas frases cuja similaridade batia exatamente no threshold de pass/fail). Todos corrigidos depois de rodar tudo em foreground com timeout explícito.
 
 **Critério de pronto:** todos os 8 marcos + 3 rodadas extra implementados e testados (unitário + integração real via testcontainers onde fazia sentido — Redis, Postgres/pgvector, Qdrant, Milvus, ChromaDB; mock HTTP só pra Anthropic/OpenAI-compatible e Pinecone; checkout Stripe real em modo teste pra venda das capabilities). **Atingido e mergeado em `develop`** — LLMOps core em `518cfa3` (PR #79, 2026-09-07), venda + fixes em `feature/llmops-store` (2026-09-09).
+
+---
+
+## Fase 32 — Migrar conectores de "infraestrutura de dado" do enterprise pro OSS
+
+Pedido de 2026-09-25: mudança de modelo — todo conector que é
+infraestrutura de dado (banco SQL/DW, vetorial/busca, streaming,
+arquivo/storage) vira OSS; só fica pago o que é SaaS de negócio
+(ads/marketing, CRM/ERP/suporte/RH, pagamento). Fechado com o usuário
+depois de 4 rodadas de correção de escopo — a primeira lista que propus
+(baseada no checkout local, que **estava na branch errada**,
+`fix/connectors-and-build-improvements`, 25 crates) ficou incompleta;
+o `origin/develop` real do repo enterprise tem 37 crates, achado ao
+investigar por que `google-drive`/`google-sheets` (que o usuário disse
+existir) não apareciam.
+
+**Escopo final (18 migram pro OSS):**
+- SQL/DW: `bigquery`, `databricks`, `hana`, `mssql`, `oracle`,
+  `redshift`, `snowflake`, `starburst`, `teradata`, `vertica`
+- Vetorial/busca: `elasticsearch`, `weaviate`, `vertex-vector-search`,
+  `azure-ai-search`
+- Streaming: `kinesis`, `pulsar`
+- Arquivo/storage: `excel`, `pdf-ocr`, `google-drive`, `google-sheets`,
+  `dropbox`, `sharepoint`
+
+**Ficam enterprise (12):** `ga4`, `google-ads`, `linkedin-ads`,
+`meta-ads`, `tiktok-ads`, `x-ads`, `youtube-analytics` (ads/analytics de
+marketing), `salesforce`, `hubspot`, `zendesk`, `shopify`, `dynamics365`,
+`netsuite`, `servicenow`, `workday` (CRM/ERP/suporte/RH), `stripe`
+(pagamento). `nexus-infra-terraform` não é conector de dado (módulo do
+Canvas de Infra/Terraform) — fora desta fase, decisão separada.
+
+### Achado real que muda o desenho: kinesis/pulsar já têm um truque de overlay
+
+`bin/Cargo.toml` do repo enterprise documenta que `kinesis`/`pulsar` **não
+têm dependência de path** ali — a implementação real vive só no repo
+enterprise, mas é "sobreposta" (overlay) em cima de um crate-placeholder
+que já existe no repo público (`crates/nexus-connectors/nexus-connector-
+kinesis`/`-pulsar`) durante o build Docker, porque um path-dep direto
+colide com esse placeholder no lockfile (bug real documentado no próprio
+comentário: aconteceu de verdade com pulsar por um tempo, sem ninguém
+perceber, porque o crate errado — o placeholder — era o que de fato
+compilava). Migrar esses dois pro OSS de verdade **elimina esse overlay
+inteiro** — vira dependência de path normal como qualquer outro conector
+OSS, sem gambiarra de Dockerfile. Simplificação de graça, não só migração.
+
+### O que muda em cada lugar
+
+**Repo público (`nexusflow`)**
+- Novo `crates/nexus-connectors/nexus-connector-<nome>/` por conector
+  migrado (copiar source+testes reais do worktree `develop` do repo
+  enterprise — não é reescrever do zero, o código já existe e já foi
+  testado lá).
+- `crates/nexus-server/Cargo.toml`: nova feature por conector + entrada
+  em `connectors-all`/`connectors-all-no-embeddings` (mesma regra que já
+  vale pra qualquer conector OSS hoje) — exceto `pdf-ocr`, que entra só
+  com feature própria, **fora** dos bundles por enquanto (nunca validado
+  contra tesseract/PDF real, mesma cautela que o repo enterprise já
+  aplicava a ele).
+- `kinesis`/`pulsar`: crate real substitui o placeholder — remover
+  qualquer código-placeholder que só existisse pra ocupar o nome.
+- `bigquery`/`mssql`/`snowflake` usam driver ADBC via script de fetch
+  (`scripts/fetch-adbc-{bigquery,mssql,snowflake}-driver.sh`, hoje só no
+  repo enterprise) — migrar os 3 scripts também, e adicionar as 3 etapas
+  no `Dockerfile` público (estágio `adbc`, mesmo padrão de
+  postgres/sqlite/duckdb/clickhouse que já existe lá).
+- `CLAUDE.md` §4.1 (matriz de conectividade): mover as entradas ❌ "não
+  impl." dos 18 pra ✅, atualizar contagem de conectores OSS (31 → 49).
+- `docs/USER_GUIDE.md` §4 (referência de conectores): 18 seções novas.
+- `README.md`: contagem de conectores atualizada.
+- `.github/workflows/ci.yml`/`connectors-heavy.yml`: os que precisam de
+  container real pro teste (Elasticsearch, Weaviate — self-hostáveis via
+  Docker) entram no `connectors-heavy`; os só-`wiremock` entram no `ci.yml`
+  normal.
+
+**Repo privado (`nexus-connectors-enterprise`)**
+- Remover os 18 diretórios de `crates/`.
+- `Cargo.toml` (workspace members) e `bin/Cargo.toml` (dependencies +
+  features + `connectors-all`/`connectors-all-no-embeddings`): remover
+  as 18 entradas de cada lista.
+- `Dockerfile`: remover o overlay de kinesis/pulsar (não existe mais
+  motivo pra ele) e qualquer etapa de driver ADBC pros 3 que migraram
+  (bigquery/mssql/snowflake) — essas 3 passam a vir do próprio
+  `nexus-server/connectors-all` herdado via git dependency, não mais
+  buildadas aqui.
+- `docs/ENTERPRISE_CONNECTORS.md`: catálogo cai de 37 pra 19 crates.
+- `scripts/fetch-adbc-{bigquery,mssql,snowflake}-driver.sh`: remover
+  (migraram pro público).
+
+**Licenciamento/Store**
+- `LICENSING.md` (repo público): reescrever a lista OSS vs. enterprise.
+- `docs/ENTERPRISE_LICENSING.md`: mesma atualização de escopo.
+- `nexus-licensing` (repo separado, Store/checkout Stripe):
+  `products.connector_slug` — remover os 18 SKUs (sem cliente pagando
+  por nenhum ainda, confirmado com o usuário antes de começar) da
+  tabela de produtos vendáveis, se já cadastrados.
+
+### Riscos
+
+- **18 crates é grande demais pra migrar e verificar tudo numa tacada
+  só** — plano é migrar em lotes (por categoria: SQL/DW primeiro,
+  depois vetorial/busca, depois streaming, depois arquivo/storage),
+  cada lote compilando+testando antes do próximo, commit por lote.
+- **`bigquery`/`mssql`/`snowflake` dependem de driver ADBC nativo
+  (build C++/CMake)** — maior risco de quebrar o Dockerfile público
+  (mais 3 estágios de build, mais tempo de CI) — validar build Docker
+  completo antes de considerar esses 3 prontos, não só `cargo build`.
+- **`elasticsearch`/`weaviate` precisam de container real pro teste
+  ficar tão bom quanto já era no repo enterprise** — não regredir pra
+  só mock HTTP se já existia teste com container real lá.
+- **Kinesis/Pulsar removendo o overlay do Dockerfile enterprise** — like
+  conferir que nenhum outro lugar do repo enterprise ainda referencia
+  esse mecanismo antes de apagar (grep por "overlay"/"kinesis"/"pulsar"
+  no Dockerfile e scripts).
+
+### Checklist
+
+- [ ] Lote 1 — SQL/DW (10): `bigquery`, `databricks`, `hana`, `mssql`,
+      `oracle`, `redshift`, `snowflake`, `starburst`, `teradata`,
+      `vertica`
+- [ ] Lote 2 — Vetorial/busca (4): `elasticsearch`, `weaviate`,
+      `vertex-vector-search`, `azure-ai-search`
+- [ ] Lote 3 — Streaming (2): `kinesis`, `pulsar` (+ remover overlay do
+      Dockerfile enterprise)
+- [ ] Lote 4 — Arquivo/storage (6): `excel`, `pdf-ocr`, `google-drive`,
+      `google-sheets`, `dropbox`, `sharepoint`
+- [ ] Scripts ADBC (`fetch-adbc-{bigquery,mssql,snowflake}-driver.sh`)
+      migrados + `Dockerfile` público com os 3 estágios novos
+- [ ] `nexus-server/Cargo.toml`: 18 features novas + bundles atualizados
+- [ ] Repo enterprise: `Cargo.toml`/`bin/Cargo.toml`/`Dockerfile`
+      limpos das 18 entradas
+- [ ] `CLAUDE.md`, `README.md`, `docs/USER_GUIDE.md`,
+      `docs/ENTERPRISE_CONNECTORS.md` atualizados
+- [ ] `LICENSING.md`/`docs/ENTERPRISE_LICENSING.md` atualizados
+- [ ] CI (`ci.yml`/`connectors-heavy.yml`) cobrindo os 18 novos
+- [ ] Store/`nexus-licensing`: SKUs dos 18 removidos do catálogo (se
+      cadastrados)
+
+**Critério de pronto:** os 18 crates compilam e testam no repo público
+(`cargo test -p nexus-core -p nexus-server --all-features`), build
+Docker completo (`connectors-all`) passa, os 18 saem do repo enterprise
+sem quebrar o build dele, docs/licenciamento refletem o novo total (49
+OSS / 12 enterprise), nenhum breaking change pra quem já usa os 18 via
+`nexusflow-enterprise` hoje sem pagar (não existe cliente pagando ainda,
+confirmado).

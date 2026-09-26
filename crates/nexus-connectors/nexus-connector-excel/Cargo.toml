@@ -1,0 +1,26 @@
+[package]
+name = "nexus-connector-excel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nexus-core = { version = "0.1.0", path = "../../nexus-core" }
+arrow-array = "58.4.0"
+arrow-schema = "58.4.0"
+arrow-select = "58.4.0"
+async-trait = "0.1.91"
+calamine = { version = "0.36.1", features = ["chrono"] }
+chrono = "0.4.45"
+futures = "0.3.33"
+object_store = { version = "0.10.2", features = ["aws", "gcp", "azure", "http"] }
+rust_xlsxwriter = "0.98.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+schemars = "1.2.2"
+tokio = { version = "1.53.1", features = ["rt", "time"] }
+url = "2.5.7"
+
+[dev-dependencies]
+tempfile = "3.14.0"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }

@@ -2,9 +2,9 @@
 
 **Universal Rust Data & Vector Framework** — movimentação, transformação, vetorização e orquestração de dados (ETL/ELT/Streaming) de altíssima performance.
 
-> 🎉 **A partir de agora, o core open source do NexusFlow está liberado** — Apache-2.0, todos os 31 conectores OSS, use e distribua livremente (ver [`LICENSING.md`](./LICENSING.md)). A **Store de conectores enterprise** (compra self-service via Stripe) está em desenvolvimento final e deve abrir em breve — enquanto isso, o catálogo enterprise já implementado pode ser consultado em [`docs/ENTERPRISE_CONNECTORS.md`](./docs/ENTERPRISE_CONNECTORS.md).
+> 🎉 **A partir de agora, o core open source do NexusFlow está liberado** — Apache-2.0, 46 crates de conector OSS (a Fase 32, 2026-09-25, migrou 22 do enterprise pra cá — toda infraestrutura de dado é grátis agora, só sobrou pago SaaS de negócio), use e distribua livremente (ver [`LICENSING.md`](./LICENSING.md)). A **Store de conectores enterprise** (compra self-service via Stripe) está em desenvolvimento final e deve abrir em breve — enquanto isso, o catálogo enterprise já implementado pode ser consultado em [`docs/ENTERPRISE_CONNECTORS.md`](./docs/ENTERPRISE_CONNECTORS.md).
 
-> Status: ✅ MVP completo e além — 24 crates de conector (31 nomes no catálogo com as variantes CDC: Postgres/SQLite/ClickHouse/DuckDB fast-path, MySQL/MongoDB/Kafka/Redis/NATS/RabbitMQ/MQTT/REST/ODBC/CSV bridging, sinks vetoriais, data lake formats, AI Lake e webhook — Kafka já com source+sink) linkáveis via feature flag, API + UI + observabilidade + distribuição Linux + Kubernetes (`packaging/kubernetes/`, validado num minikube real) funcionando end-to-end. Além do ETL/ELT core: **catálogo de dados** pesquisável com flag de PII (`GET /catalog/datasets`), **orquestração cross-pipeline** (`depends_on` com modo `any`/`all`), **detecção de anomalia** por volume (z-score, alertando nos 5 canais já existentes), **mascaramento de PII** por tokenização determinística (`NEXUS_MASKING_SALT`), e **distribuição de carga** entre workers via fila Postgres (`NEXUS_QUEUE_MODE=true`, opt-in) — ver `ROADMAP.md` Fases 25–29. Windows já produziu e instalou um `.msi` real numa máquina real (2026-09-06) — mas o job `build-windows` do CI de release automático segue removido; macOS já buildou e rodou de ponta a ponta num runner `macos-latest` real (2026-09-06), mas ninguém instalou ainda numa máquina física própria.
+> Status: ✅ MVP completo e além — 46 crates de conector (Postgres/SQLite/ClickHouse/DuckDB/BigQuery/Snowflake/MSSQL/Redshift fast-path; MySQL/MongoDB/Kafka/Redis/NATS/RabbitMQ/MQTT/REST/ODBC/CSV/Oracle/HANA/Teradata/Vertica/Starburst/Kinesis/Pulsar/Excel/Google Drive/Google Sheets/Dropbox/SharePoint bridging; sinks vetoriais/busca (10, incluindo Weaviate/Vertex AI/Azure AI Search/Elasticsearch); data lake formats, AI Lake e webhook — CDC nativo em Postgres/MongoDB/MySQL/MSSQL/Oracle) linkáveis via feature flag, API + UI + observabilidade + distribuição Linux + Kubernetes (`packaging/kubernetes/`, validado num minikube real) funcionando end-to-end. Além do ETL/ELT core: **catálogo de dados** pesquisável com flag de PII (`GET /catalog/datasets`), **orquestração cross-pipeline** (`depends_on` com modo `any`/`all`), **detecção de anomalia** por volume (z-score, alertando nos 5 canais já existentes), **mascaramento de PII** por tokenização determinística (`NEXUS_MASKING_SALT`), e **distribuição de carga** entre workers via fila Postgres (`NEXUS_QUEUE_MODE=true`, opt-in) — ver `ROADMAP.md` Fases 25–29. Windows já produziu e instalou um `.msi` real numa máquina real (2026-09-06) — mas o job `build-windows` do CI de release automático segue removido; macOS já buildou e rodou de ponta a ponta num runner `macos-latest` real (2026-09-06), mas ninguém instalou ainda numa máquina física própria.
 
 ## O que é
 
@@ -16,7 +16,7 @@ Detalhes completos de stack, arquitetura e regras de código: ver [`CLAUDE.md`](
 
 ## Recursos principais
 
-- **31 conectores OSS** (fast-path ADBC pra Postgres/SQLite/DuckDB/ClickHouse, bridging genérico pro resto) + **6 CDCs nativos** (Postgres WAL, MongoDB Change Streams, MySQL binlog, Delta Lake, Iceberg, AI-Lake) — sem Debezium/Kafka no meio.
+- **46 crates de conector OSS** (fast-path ADBC pra Postgres/SQLite/DuckDB/ClickHouse/BigQuery/Snowflake/MSSQL/Redshift/Databricks, bridging genérico pro resto — SQL/DW, vetorial/busca, streaming, arquivo/storage: toda infraestrutura de dado é OSS, ver [`LICENSING.md`](./LICENSING.md)) + **8 CDCs nativos** (Postgres WAL, MongoDB Change Streams, MySQL binlog, MSSQL CT, Oracle LogMiner, Delta Lake, Iceberg, AI-Lake) — sem Debezium/Kafka no meio.
 - **Transformação sem escrever código** — blocos de limpeza/transformação configuráveis (filtrar, renomear, converter tipo, preencher nulos, agregar, etc.), encadeáveis no Canvas com preview por bloco; alternativa a escrever SQL/Python direto (ver [`docs/USER_GUIDE.md` §12](./docs/USER_GUIDE.md#12-blocos-de-transformaçãolimpeza-sem-código)).
 - **AI Lakehouse**: chunking (fixed-size/recursive/semantic) + embeddings (ONNX local ou API OpenAI-compatible) + carga em 6 bancos vetoriais (LanceDB, Qdrant, Milvus, pgvector, Pinecone, ChromaDB).
 - **LLMOps**: node `llm` em lote (OpenAI-compatible ou Anthropic nativo), RAG ad-hoc (`POST /rag/query`) sobre os mesmos bancos vetoriais, avaliação sistemática por golden dataset, versionamento git embutido de pipelines/prompts.
@@ -28,7 +28,7 @@ Detalhes completos de stack, arquitetura e regras de código: ver [`CLAUDE.md`](
 ## Quickstart
 
 Jeito mais rápido: imagem já publicada no **Docker Hub**
-(`thiagolange/nexusflow`, todos os 31 conectores já linkados), sem
+(`thiagolange/nexusflow`, todos os 46 crates de conector já linkados), sem
 precisar buildar nada:
 
 ```bash
@@ -98,7 +98,7 @@ Pra Postgres em vez de SQLite (múltiplas réplicas), troque as 3 variáveis `NE
 
 ### Instaladores prontos (sem Docker)
 
-Além da imagem Docker acima, já tem binário pra baixar direto — todos com **todos os 31 conectores** já linkados:
+Além da imagem Docker acima, já tem binário pra baixar direto — todos com **todos os 46 crates de conector** já linkados:
 
 | Plataforma | Como instalar | Status |
 |---|---|---|

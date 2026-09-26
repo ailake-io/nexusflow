@@ -91,6 +91,9 @@ connectors-all = [
     "mongodb", "mysql", "kafka", "mqtt", "rest", "odbc", "milvus", "qdrant", "lancedb",
     "pgvector", "pinecone", "chromadb", "deltalake", "iceberg", "parquet",
     "ailake", "csv", "clickhouse", "duckdb", "redis", "nats", "rabbitmq",
+    "starburst", "teradata", "vertica", "hana", "oracle", "mssql", "redshift", "bigquery", "snowflake",
+    "databricks", "elasticsearch", "weaviate", "vertex-vector-search", "azure-ai-search",
+    "kinesis", "pulsar", "excel", "google-drive", "google-sheets", "dropbox", "sharepoint",
     "embeddings", "embeddings-api", "llm", "version-history",
     "postgres-cdc", "mysql-cdc", "deltalake-cdc", "iceberg-cdc", "ailake-cdc",
 ]
@@ -101,6 +104,9 @@ connectors-all-no-embeddings = [
     "mongodb", "mysql", "kafka", "mqtt", "rest", "odbc", "milvus", "qdrant", "lancedb",
     "pgvector", "pinecone", "chromadb", "deltalake", "iceberg", "parquet",
     "ailake", "csv", "clickhouse", "duckdb", "redis", "nats", "rabbitmq",
+    "starburst", "teradata", "vertica", "hana", "oracle", "mssql", "redshift", "bigquery", "snowflake",
+    "databricks", "elasticsearch", "weaviate", "vertex-vector-search", "azure-ai-search",
+    "kinesis", "pulsar", "excel", "google-drive", "google-sheets", "dropbox", "sharepoint",
     "version-history",
     "postgres-cdc", "mysql-cdc", "deltalake-cdc", "iceberg-cdc", "ailake-cdc",
 ]
@@ -146,6 +152,34 @@ duckdb = ["dep:nexus-connector-duckdb"]
 redis = ["dep:nexus-connector-redis", "nexus-connector-redis/client"]
 nats = ["dep:nexus-connector-nats", "nexus-connector-nats/client"]
 rabbitmq = ["dep:nexus-connector-rabbitmq", "nexus-connector-rabbitmq/client"]
+starburst = ["dep:nexus-connector-starburst"]
+teradata = ["dep:nexus-connector-teradata"]
+vertica = ["dep:nexus-connector-vertica"]
+hana = ["dep:nexus-connector-hana"]
+oracle = ["dep:nexus-connector-oracle"]
+mssql = ["dep:nexus-connector-mssql"]
+redshift = ["dep:nexus-connector-redshift"]
+bigquery = ["dep:nexus-connector-bigquery"]
+snowflake = ["dep:nexus-connector-snowflake"]
+databricks = ["dep:nexus-connector-databricks"]
+elasticsearch = ["dep:nexus-connector-elasticsearch"]
+weaviate = ["dep:nexus-connector-weaviate"]
+vertex-vector-search = ["dep:nexus-connector-vertex-vector-search"]
+azure-ai-search = ["dep:nexus-connector-azure-ai-search"]
+kinesis = ["dep:nexus-connector-kinesis"]
+pulsar = ["dep:nexus-connector-pulsar"]
+excel = ["dep:nexus-connector-excel"]
+# Deliberately excluded from connectors-all/connectors-all-no-embeddings
+# below — never validated against a real scanned PDF + tesseract install
+# in a real build yet (same caution the enterprise repo already applied
+# to it before this connector migrated to OSS, Fase 32). Build
+# `--features pdf-ocr` directly to test it; add it to the bundles below
+# only after that passes.
+pdf-ocr = ["dep:nexus-connector-pdf-ocr"]
+google-drive = ["dep:nexus-connector-google-drive"]
+google-sheets = ["dep:nexus-connector-google-sheets"]
+dropbox = ["dep:nexus-connector-dropbox"]
+sharepoint = ["dep:nexus-connector-sharepoint"]
 
 [dependencies]
 aes-gcm = "0.10.3"
@@ -192,6 +226,28 @@ nexus-connector-duckdb = { version = "0.1.0", path = "../nexus-connectors/nexus-
 nexus-connector-redis = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-redis", optional = true }
 nexus-connector-nats = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-nats", optional = true }
 nexus-connector-rabbitmq = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-rabbitmq", optional = true }
+nexus-connector-starburst = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-starburst", optional = true }
+nexus-connector-teradata = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-teradata", optional = true }
+nexus-connector-vertica = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-vertica", optional = true }
+nexus-connector-hana = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-hana", optional = true }
+nexus-connector-oracle = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-oracle", optional = true }
+nexus-connector-mssql = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-mssql", optional = true }
+nexus-connector-redshift = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-redshift", optional = true }
+nexus-connector-bigquery = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-bigquery", optional = true }
+nexus-connector-snowflake = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-snowflake", optional = true }
+nexus-connector-databricks = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-databricks", optional = true }
+nexus-connector-elasticsearch = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-elasticsearch", optional = true }
+nexus-connector-weaviate = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-weaviate", optional = true }
+nexus-connector-vertex-vector-search = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-vertex-vector-search", optional = true }
+nexus-connector-azure-ai-search = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-azure-ai-search", optional = true }
+nexus-connector-kinesis = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-kinesis", optional = true }
+nexus-connector-pulsar = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-pulsar", optional = true }
+nexus-connector-excel = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-excel", optional = true }
+nexus-connector-pdf-ocr = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-pdf-ocr", optional = true }
+nexus-connector-google-drive = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-google-drive", optional = true }
+nexus-connector-google-sheets = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-google-sheets", optional = true }
+nexus-connector-dropbox = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-dropbox", optional = true }
+nexus-connector-sharepoint = { version = "0.1.0", path = "../nexus-connectors/nexus-connector-sharepoint", optional = true }
 nexus-core = { version = "0.1.0", path = "../nexus-core" }
 nexus-ai = { version = "0.1.0", path = "../nexus-ai", optional = true }
 hex = "0.4.3"

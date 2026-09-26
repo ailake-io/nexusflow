@@ -258,10 +258,13 @@ pub async fn run_pipeline(
     llm_eval_store: &crate::llm_eval_result_store::LlmEvalResultStore,
     masking_salt: Option<&[u8]>,
 ) -> anyhow::Result<Vec<PartitionStats>> {
-    // A `*-cdc` source with a plain SQL transform (the only documented CDC
-    // shape — `SELECT * FROM source0`, required to preserve `__opcode` for
-    // the sink's insert/update/delete routing) gets its own streaming path.
-    // `run_transform_pipeline` below fully materializes every source via
+    // A `*-cdc` source with a plain SQL transform (the documented CDC shape
+    // — `SELECT * FROM source0`, required to preserve `__opcode` for the
+    // sink's insert/update/delete routing) or with `clean_blocks` (Fase 31
+    // — `dag.rs::validate()` rejects any block chain that would drop
+    // `__opcode`, e.g. `aggregate` or a `select_columns` that excludes it)
+    // gets its own streaming path. `run_transform_pipeline` below fully
+    // materializes every source via
     // `PipelineEngine::drain_sources` *before* running the transform — for
     // a CDC source, "materialized" means "the source's `read_batches`
     // stream ended", which only happens at `max_batch_events` (default
@@ -275,7 +278,7 @@ pub async fn run_pipeline(
     // upgrade the way a plain projection/filter transform is.
     if spec.sources.len() == 1
         && spec.sources[0].connector.ends_with("-cdc")
-        && spec.transform.is_some()
+        && (spec.transform.is_some() || !spec.clean_blocks.is_empty())
         && spec.embedding.is_none()
         && spec.python.is_none()
         && spec.dbt.is_none()
@@ -692,11 +695,21 @@ async fn run_streaming_cdc_pipeline(
         None => source.schema(),
     };
 
-    let transform_spec = spec
-        .transform
-        .as_ref()
-        .expect("run_pipeline's dispatch guarantees spec.transform is Some here");
-    let transform = DataFusionTransform::new(&transform_spec.sql);
+    let sql = if let Some(transform_spec) = &spec.transform {
+        transform_spec.sql.clone()
+    } else {
+        // Fase 31 — same compile-then-run-through-DataFusionTransform
+        // pattern as `run_transform_pipeline`'s clean_blocks branch below.
+        // `dag.rs::validate()` already rejects any block chain here that
+        // would drop `__opcode` (an `aggregate` block, or a
+        // `select_columns` that excludes it), so the compiled SQL is
+        // guaranteed to carry it through same as `SELECT * FROM source0`
+        // would — the dispatch condition above guarantees one of
+        // `spec.transform`/`spec.clean_blocks` is non-empty here.
+        nexus_core::compile_clean_blocks(&spec.clean_blocks, &source_name)
+            .map_err(|e| anyhow::anyhow!("clean_blocks: {e}"))?
+    };
+    let transform = DataFusionTransform::new(sql);
 
     let output_schema = log_on_err(
         log,

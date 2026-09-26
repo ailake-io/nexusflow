@@ -83,23 +83,38 @@ nexusflow/
 - SQLite ✅                                                         - MongoDB ✅
 - MySQL (batch, ADBC) ❌ não impl.                                  - MySQL (batch, bridging) ✅
 - DuckDB ADBC ✅ (upsert real, `ON CONFLICT`)                       - Kafka ✅ (genérico, sem CDC, source+sink)
-- Snowflake ❌ não impl.                                            - ODBC ✅
-- BigQuery ❌ não impl.                                             - CSV ✅
-- ClickHouse ADBC ✅ (sink append-only, sem upsert)                 - Webhook ✅ (sink)
-                                                                    - MQTT ✅ (telemetria IoT/sensor, source apenas)
-                                                                    - Redis Streams ✅ (source+sink, sem consumer group)
-                                                                    - NATS ✅ (core, sem JetStream, source+sink)
-                                                                    - RabbitMQ ✅ (AMQP 0-9-1, auto-ack, source+sink)
+- ClickHouse ADBC ✅ (sink append-only, sem upsert)                 - ODBC ✅
+- BigQuery ✅ (driver prebuilt, sem build from source)              - CSV ✅
+- Snowflake ✅ (driver prebuilt, sem build from source)             - Webhook ✅ (sink)
+- MSSQL ✅ (+ `mssql-cdc` nativo)                                   - MQTT ✅ (telemetria IoT/sensor, source apenas)
+- Redshift ✅ (reusa o driver ADBC do Postgres — wire protocol       - Redis Streams ✅ (source+sink, sem consumer group)
+  igual)                                                            - NATS ✅ (core, sem JetStream, source+sink)
+- Databricks ✅ (driver ADBC fica a cargo do operador instalar —    - RabbitMQ ✅ (AMQP 0-9-1, auto-ack, source+sink)
+  sem redistribuível de graça)                                     - Oracle ✅ (ODBC, + `oracle-cdc` via LogMiner)
+                                                                    - SAP HANA ✅ (ODBC, driver do cliente é do operador)
+                                                                    - Teradata ✅ (ODBC)
+                                                                    - Vertica ✅ (ODBC)
+                                                                    - Starburst ✅ (HTTP, protocolo Trino)
+                                                                    - Kinesis ✅ (AWS SDK)
+                                                                    - Pulsar ✅ (protocolo binário próprio)
+                                                                    - Excel ✅ (source+sink, local ou `s3://`/`gs://`/`az://`)
+                                                                    - PDF OCR ✅ (shell-out pdftoppm+tesseract)
+                                                                    - Google Drive ✅, Google Sheets ✅ (source+sink)
+                                                                    - Dropbox ✅, SharePoint ✅
 
 [ CDC NATIVO — sem Debezium/Kafka ]
 - Postgres WAL (`postgres-cdc`) ✅
 - MongoDB Change Streams (`mongodb-cdc`) ✅
 - MySQL binlog (`mysql-cdc`) ✅
+- SQL Server CT (`mssql-cdc`) ✅
+- Oracle LogMiner (`oracle-cdc`) ✅
 ```
 
 * **Entrada (Source):** Lê via ADBC binário quando disponível. Fontes sem ADBC são convertidas via `RecordBatchBuilder`.
 * **Saída (Destination):** Descarrega via ADBC ou converte batch Arrow para queries parametrizadas (batch insert).
-* **Suporte a CDC (Change Data Capture):** Leitura de logs de transação nativos (WAL no Postgres, binlog no MySQL, Change Streams no MongoDB) convertidos em eventos Arrow contendo opcodes (`I`, `U`, `D`) para cargas incrementais. Debezium+Kafka foi removido (ver `ARCHITECTURE.md §7`, `ROADMAP.md` Fase 18).
+* **Suporte a CDC (Change Data Capture):** Leitura de logs de transação nativos (WAL no Postgres, binlog no MySQL, Change Streams no MongoDB, CT no SQL Server, LogMiner no Oracle) convertidos em eventos Arrow contendo opcodes (`I`, `U`, `D`) para cargas incrementais. Debezium+Kafka foi removido (ver `ARCHITECTURE.md §7`, `ROADMAP.md` Fase 18).
+>
+> **Fase 32 (2026-09-25)**: 22 conectores migrados do repo enterprise privado pro OSS público — toda infraestrutura de dado (SQL/DW, vetorial/busca, streaming, arquivo/storage) virou gratuita; só ficou pago SaaS de negócio (ads/marketing, CRM/ERP/suporte/RH, pagamento — ver `LICENSING.md`). Catálogo OSS: 46 crates de conector.
 >
 > Atualizações recentes: RBAC com papel `Admin` funcional e API de gestão de usuários (`GET/POST/DELETE /users`); alertas Slack, MS Teams, PagerDuty, Email e webhook genérico implementados (`nexus-server/src/alerts.rs`); rate-limit de login por IP; execução de runs em task destacada com 202 Accepted e reaper de runs órfãs no boot; `GET /pipelines/{id}/preview` (primeiras N linhas de um source/sink persistido) e dbt como ETL real via `DbtConfig.output`/`PipelineSpec.post_dbt_sinks` (ver `ARCHITECTURE.md §13`); conectores `csv` (source+sink, delimitador configurável, local ou `s3://`/`gs://`/`az://`) e sink `webhook` genérico; logs de execução por run com marcos percentuais (10%, 20%, ..., 100%) no painel do Canvas; conector `clickhouse` (ADBC nativo, driver oficial via `dbc install clickhouse`, sink append-only por não ter upsert leve).
 
@@ -134,7 +149,7 @@ Módulo intermediário que converte colunas de texto em vetores float32 e anexa 
   - `cpu` / `embeddings` (ONNX local via `ort`) — implementado e testado; baixa modelo do Hugging Face Hub em runtime, cache local.
   - `api` / `embeddings-api` (HTTP externo compatível com OpenAI) — implementado e testado com mock.
   - `cuda` (NVIDIA) e `metal` (Apple) registram o execution provider correto no ONNX Runtime, compilam, mas **não foram validados em hardware real** (sandbox é Linux sem GPU) — fallback silencioso pra CPU se driver/hardware não estiver presente.
-* **Destinos:** LanceDB, Qdrant, Milvus, Pinecone, ChromaDB e pgvector.
+* **Destinos:** LanceDB, Qdrant, Milvus, Pinecone, ChromaDB e pgvector — mais Weaviate, Vertex AI Vector Search, Azure AI Search e Elasticsearch (Fase 32, sink-only, sem busca própria via `POST /rag/query` ainda, diferente dos 6 primeiros).
 * **Integração com `nexus-server`:** o estágio de embedding é uma feature opcional do servidor (`embeddings` para ONNX local, `embeddings-api` para HTTP externo); o catálogo de conectores e o Canvas já expõem o node de embedding quando a feature está ligada.
 
 ### 4.4. Transformações Opcionais e ELT/ETL (dbt)

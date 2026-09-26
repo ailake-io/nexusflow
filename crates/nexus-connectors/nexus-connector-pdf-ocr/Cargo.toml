@@ -1,0 +1,26 @@
+[package]
+name = "nexus-connector-pdf-ocr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Real (non-dev) dependency here — source.rs shells out to pdftoppm and
+# tesseract, each into its own scratch directory of rendered page PNGs
+# that must be cleaned up regardless of success/failure/panic. Needs
+# poppler-utils/tesseract-ocr installed in whatever image ships this
+# feature (same posture as dbt/python-transform's own external-binary
+# dependencies).
+[dependencies]
+nexus-core = { version = "0.1.0", path = "../../nexus-core" }
+arrow-array = "58.4.0"
+arrow-schema = "58.4.0"
+async-trait = "0.1.91"
+futures = "0.3.33"
+schemars = "1.2.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tempfile = "3.14.0"
+tokio = { version = "1.53.1", features = ["process", "fs", "rt"] }
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }

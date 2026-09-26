@@ -1,6 +1,6 @@
 # Guia de uso do NexusFlow — instalação a conector por conector
 
-Referência completa e prática: da instalação até a configuração exata de cada um dos 31 conectores, transformações (SQL, embeddings, dbt) e recursos de execução (preview, agendamento). Para o passo a passo mínimo de "primeiro pipeline", ver [`GETTING_STARTED.md`](./GETTING_STARTED.md); para arquitetura interna, [`ARCHITECTURE.md`](../ARCHITECTURE.md).
+Referência completa e prática: da instalação até a configuração exata de cada um dos 24 conectores originais, transformações (SQL, embeddings, dbt) e recursos de execução (preview, agendamento). **Os 22 conectores que migraram do enterprise na Fase 32 (2026-09-25 — SQL/DW, vetorial/busca, streaming, arquivo/storage, ver `LICENSING.md`) ainda não têm seção própria aqui** — funcionam (testados, `GET /connectors` já expõe o schema de config de cada um via JSON Schema), só falta escrever o texto de referência. Para o passo a passo mínimo de "primeiro pipeline", ver [`GETTING_STARTED.md`](./GETTING_STARTED.md); para arquitetura interna, [`ARCHITECTURE.md`](../ARCHITECTURE.md).
 
 ## Índice
 
@@ -41,7 +41,7 @@ docker run -d --name nexusflow -p 8080:8080 \
 
 Variáveis de ambiente completas: ver [`GETTING_STARTED.md` §3](./GETTING_STARTED.md#3-variáveis-de-ambiente). As duas obrigatórias são `NEXUS_JWT_SECRET` e `NEXUS_ENCRYPTION_KEY` — sem elas o processo não sobe.
 
-**Conectores linkados no binário**: binários pré-buildados (release, `.deb`, AppImage, rpm) e a imagem Docker publicada no Docker Hub já vêm com os 31 conectores ligados (`embed-ui,connectors-all`: 25 batch + 6 CDC nativos; a feature `rest` registra `rest` e `webhook` como nomes separados no catálogo, e a feature `mongodb` registra `mongodb` e `mongodb-cdc`). Buildando a partir do source, cada conector é uma feature Cargo opcional (`cargo build --features embed-ui,connectors-all` liga todos de uma vez) — ver [`GETTING_STARTED.md` §2](./GETTING_STARTED.md#2-habilitando-conectores). O catálogo em `GET /connectors` sempre reflete exatamente o que foi compilado; a UI nunca mostra um conector que não está no binário.
+**Conectores linkados no binário**: binários pré-buildados (release, `.deb`, AppImage, rpm) e a imagem Docker publicada no Docker Hub já vêm com 54 nomes de conector ligados via `embed-ui,connectors-all` (46 batch + 8 CDC nativos; a feature `rest` registra `rest` e `webhook` como nomes separados no catálogo, `mongodb` registra `mongodb` e `mongodb-cdc`, `mssql` registra `mssql` e `mssql-cdc`, `oracle` registra `oracle` e `oracle-cdc`). `pdf-ocr` (Fase 32) fica **fora** de `connectors-all` de propósito — nunca validado contra tesseract/PDF real em build ainda; precisa de `--features pdf-ocr` explícito além do bundle. Buildando a partir do source, cada conector é uma feature Cargo opcional (`cargo build --features embed-ui,connectors-all` liga todos de uma vez, exceto `pdf-ocr`) — ver [`GETTING_STARTED.md` §2](./GETTING_STARTED.md#2-habilitando-conectores). O catálogo em `GET /connectors` sempre reflete exatamente o que foi compilado; a UI nunca mostra um conector que não está no binário.
 
 ---
 
@@ -765,7 +765,9 @@ Aplicado **antes** de qualquer transform SQL e antes de gravar no sink — o dow
 
 Alternativa ao node `transform` (SQL) e ao node `python` pra quem prefere **configurar em vez de escrever código**: uma cadeia de blocos pré-prontos (filtrar, renomear, converter tipo, preencher nulos, agregar, etc.), cada um resolvido por um `<select>` + campos, sem editor de texto nenhum. No Canvas, a paleta lateral ganhou duas abas — **Conectores** e **Transformações** — a segunda lista os 13 blocos, arrastáveis pro canvas igual um conector.
 
-Um bloco por node `clean`, encadeados **em sequência da esquerda pra direita** (a ordem de execução é a posição X no canvas, não as arestas — mesma leitura que qualquer outro node do produto). São **alternativas** ao SQL transform/Python, não combináveis no mesmo pipeline: escolha um estilo por pipeline. Exigem **exatamente 1 source** (mesma regra do node Python sozinho) e rejeitam source `-cdc` (blocos não sabem preservar a coluna `__opcode`).
+Um bloco por node `clean`, encadeados **em sequência da esquerda pra direita** (a ordem de execução é a posição X no canvas, não as arestas — mesma leitura que qualquer outro node do produto). São **alternativas** ao SQL transform/Python, não combináveis no mesmo pipeline: escolha um estilo por pipeline. Exigem **exatamente 1 source** (mesma regra do node Python sozinho).
+
+Funciona com **fonte CDC** (`postgres-cdc`, `mongodb-cdc`, etc.) desde que a cadeia de blocos não derrube a coluna `__opcode` (que o sink usa pra saber se cada linha é insert/update/delete) — na prática, isso só quebra com o bloco `aggregate` (muda a quantidade de linhas, incompatível com CDC) ou um `select_columns` que exclua `__opcode` explicitamente; os outros 11 blocos preservam todas as colunas automaticamente. Configurar `select_columns` no modo "manter" com fonte CDC exige incluir `__opcode` na lista.
 
 ```json
 {

@@ -1,0 +1,25 @@
+[package]
+name = "nexus-connector-redshift"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Reuses libadbc_driver_postgresql.so (ADBC_DRIVER_POSTGRESQL_PATH,
+# driver.rs) — Redshift speaks the Postgres wire protocol, so the same
+# driver the workspace already builds for nexus-connector-postgres
+# works here, no separate driver build needed.
+[dependencies]
+nexus-core = { version = "0.1.0", path = "../../nexus-core" }
+adbc_core = "0.23.0"
+adbc_driver_manager = "0.23.0"
+arrow-array = "58.4.0"
+arrow-schema = "58.4.0"
+async-trait = "0.1.91"
+futures = "0.3.33"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+schemars = "1.2.2"
+tokio = { version = "1.53.1", features = ["rt", "time"] }
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
