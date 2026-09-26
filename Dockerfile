@@ -117,11 +117,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && pip3 install --break-system-packages --no-cache-dir \
       pandas==2.2.3 numpy==1.26.4 pyarrow==17.0.0 polars==1.8.2 python-dateutil==2.9.0 \
       dbt-core==1.12.3 dbt-postgres==1.11.0 \
+      matplotlib==3.9.2 seaborn==0.13.2 plotly==5.24.1 kaleido==0.2.1 \
     # dbt-postgres is the baseline adapter (Postgres is the primary ADBC
     # warehouse this repo documents dbt against, CLAUDE.md §4.4) — a user
     # targeting a different warehouse (dbt-duckdb, dbt-clickhouse, etc.)
     # still needs to install that adapter into the running container
     # themselves; add it here if a real need for it shows up.
+    #
+    # matplotlib/seaborn/plotly/kaleido back the `python-viz` feature
+    # (ROADMAP.md Fase 31 — PipelineSpec.visualization and the agent's
+    # GenerateChart tool). The harness (python_viz_harness.py) duck-types
+    # its return value rather than assuming one library, so this list is
+    # additive: dropping any one of these only breaks scripts that use it,
+    # never the other three. kaleido is plotly's own static-image renderer
+    # (`fig.to_image()`) — plotly alone only produces interactive HTML.
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -r -g 1001 nexusflow \
     && useradd -r -u 1001 -g nexusflow nexusflow \

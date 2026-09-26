@@ -83,6 +83,7 @@ mod llm_generation_store;
 pub mod migrate;
 mod pipeline_dependencies;
 mod pipeline_run_llm_stats_store;
+mod pipeline_run_visualization_store;
 mod pipeline_run_volume_store;
 mod pipeline_schema_store;
 mod pipeline_store;
@@ -123,7 +124,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{DefaultBodyLimit, Extension, FromRef, Path, Query, State};
 use axum::http::StatusCode;
 use axum::middleware;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use checkpoint_store::CheckpointStore;
@@ -196,6 +197,7 @@ struct AppState {
     data_catalog: data_catalog::CatalogStore,
     pipeline_dependency_state: pipeline_dependencies::DependencyStateStore,
     pipeline_run_volume: pipeline_run_volume_store::PipelineRunVolumeStore,
+    pipeline_visualizations: pipeline_run_visualization_store::PipelineRunVisualizationStore,
     /// `NEXUS_QUEUE_MODE` (Fase 29) — `Some` means this replica enqueues
     /// pipeline runs instead of dispatching them inline, and (if the
     /// backend is Postgres) also competes to claim queued runs via
@@ -429,6 +431,10 @@ fn router(state: AppState) -> Router {
         .route(
             "/pipelines/{id}/runs/{run_id}/logs",
             get(list_run_logs_handler),
+        )
+        .route(
+            "/pipelines/{id}/runs/{run_id}/visualization",
+            get(get_run_visualization_handler),
         )
         // Observability data, not an action — same tier as /connectors and
         // /pipelines above (see resource_stats.rs).
@@ -1051,6 +1057,7 @@ async fn execute_pipeline_run(
         &state.prompt_templates,
         &state.llm_eval_results,
         state.masking_salt.as_deref(),
+        &state.pipeline_visualizations,
     )
     .await;
     state.progress.finish(run_id).await;
@@ -2504,6 +2511,29 @@ async fn list_run_logs_handler(
     ))
 }
 
+/// `PipelineSpec.visualization`'s rendered chart (ROADMAP.md Fase 31) — raw
+/// image bytes with whatever `Content-Type` the render actually produced
+/// (matplotlib's `image/png` by default, but a script returning a
+/// `(bytes, content_type)` tuple can be anything, `python_viz.rs`'s harness
+/// doesn't assume PNG). 404 covers both "run never set `visualization`" and
+/// "rendering failed" — `runner.rs` logs the real reason either way rather
+/// than failing the run over a chart.
+async fn get_run_visualization_handler(
+    State(state): State<AppState>,
+    Path((_id, run_id)): Path<(String, i64)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let stored = state
+        .pipeline_visualizations
+        .get(run_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::not_found(format!("run {run_id} has no visualization")))?;
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, stored.content_type)],
+        stored.image_bytes,
+    ))
+}
+
 /// Whole-catalog, pipeline-level lineage graph — every saved pipeline plus
 /// the resources its sources/sinks touch, computed fresh on every request
 /// (no persistence, no background task; same cost `list_summaries` already
@@ -3367,6 +3397,11 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
     let pipeline_run_volume =
         pipeline_run_volume_store::PipelineRunVolumeStore::connect(&config.pipelines_database_url)
             .await?;
+    let pipeline_visualizations =
+        pipeline_run_visualization_store::PipelineRunVisualizationStore::connect(
+            &config.pipelines_database_url,
+        )
+        .await?;
     let work_queue = if config.queue_mode {
         Some(work_queue::WorkQueueStore::connect(&config.pipelines_database_url).await?)
     } else {
@@ -3421,6 +3456,7 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         data_catalog,
         pipeline_dependency_state,
         pipeline_run_volume,
+        pipeline_visualizations,
         work_queue,
         quality_checks,
         llm_stats,
@@ -3818,6 +3854,12 @@ pub(crate) mod tests {
             )
             .await
             .unwrap(),
+            pipeline_visualizations:
+                pipeline_run_visualization_store::PipelineRunVisualizationStore::connect(
+                    "sqlite::memory:",
+                )
+                .await
+                .unwrap(),
             work_queue: None,
             quality_checks: quality_check_store::QualityCheckStore::connect("sqlite::memory:")
                 .await
@@ -4293,6 +4335,48 @@ pub(crate) mod tests {
     /// live WebSocket open for — this hits the endpoint only *after*
     /// `wait_for_terminal_run` confirms the supervisor already finished, so
     /// there's no live subscriber involved at all.
+    #[tokio::test]
+    async fn run_visualization_endpoint_serves_stored_bytes_and_404s_when_absent() {
+        let state = test_state().await;
+        let read_token = bearer(&state, Role::Read);
+        state
+            .pipeline_visualizations
+            .store(7, b"chart-bytes", "image/png")
+            .await
+            .unwrap();
+        let app = router(state);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/pipelines/p1/runs/7/visualization")
+                    .header("authorization", &read_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get("content-type").unwrap(), "image/png");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&bytes[..], b"chart-bytes");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/pipelines/p1/runs/999/visualization")
+                    .header("authorization", &read_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
     #[tokio::test]
     async fn run_logs_endpoint_replays_start_and_failure_lines_after_the_run_finished() {
         let state = test_state().await;
@@ -6065,6 +6149,12 @@ pub(crate) mod tests {
             )
             .await
             .unwrap(),
+            pipeline_visualizations:
+                pipeline_run_visualization_store::PipelineRunVisualizationStore::connect(
+                    "sqlite::memory:",
+                )
+                .await
+                .unwrap(),
             work_queue: None,
             quality_checks: quality_check_store::QualityCheckStore::connect("sqlite::memory:")
                 .await
