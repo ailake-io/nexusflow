@@ -101,9 +101,19 @@ pub enum LlmTurn {
 /// representation that still lets a caller replay a conversation.
 #[derive(Debug, Clone)]
 pub enum ToolMessage {
+    /// The agent's system prompt/persona (ROADMAP.md Fase 31) — at most one
+    /// per history, conventionally first. OpenAI serializes this as an
+    /// ordinary `role: "system"` message; Anthropic's API has no such
+    /// role, it's a separate top-level request field instead — each client
+    /// handles the difference itself, see `anthropic_client.rs`'s
+    /// `call_with_tools` doc comment.
+    System(String),
     User(String),
     AssistantToolCalls(Vec<ToolCall>),
-    ToolResult { call_id: String, content: String },
+    ToolResult {
+        call_id: String,
+        content: String,
+    },
 }
 
 /// Appends `responses` (one string per row of `batch`) as a `Utf8` column

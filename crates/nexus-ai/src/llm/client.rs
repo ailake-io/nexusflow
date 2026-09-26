@@ -204,6 +204,12 @@ fn to_openai_messages(history: &[ToolMessage]) -> Vec<OpenAiMessage> {
     history
         .iter()
         .map(|m| match m {
+            ToolMessage::System(text) => OpenAiMessage {
+                role: "system",
+                content: Some(text.clone()),
+                tool_calls: None,
+                tool_call_id: None,
+            },
             ToolMessage::User(text) => OpenAiMessage {
                 role: "user",
                 content: Some(text.clone()),
@@ -481,6 +487,40 @@ mod tests {
                 "required": ["city"]
             }),
         }
+    }
+
+    #[tokio::test]
+    async fn call_with_tools_sends_system_message_first() {
+        use wiremock::matchers::body_string_contains;
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(body_string_contains("\"role\":\"system\""))
+            .and(body_string_contains("you are a helpful agent"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"content": "ok"}}]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = LlmClient::new(LlmClientConfig {
+            base_url: server.uri(),
+            model: "gpt-test".to_string(),
+            api_key_env: None,
+        });
+        client
+            .call_with_tools(
+                &[
+                    ToolMessage::System("you are a helpful agent".to_string()),
+                    ToolMessage::User("hi".to_string()),
+                ],
+                &[weather_tool()],
+                None,
+                None,
+            )
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

@@ -127,6 +127,10 @@ impl AnthropicClient {
             ))
         })?;
 
+        let system = history.iter().find_map(|m| match m {
+            ToolMessage::System(text) => Some(text.clone()),
+            _ => None,
+        });
         let messages = to_anthropic_messages(history);
         let wire_tools: Vec<AnthropicTool> = tools.iter().map(AnthropicTool::from).collect();
 
@@ -142,6 +146,7 @@ impl AnthropicClient {
                 model: &self.cfg.model,
                 max_tokens: max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
                 temperature,
+                system: system.as_deref(),
                 messages: &messages,
                 tools: &wire_tools,
             })
@@ -193,12 +198,16 @@ impl AnthropicClient {
 fn to_anthropic_messages(history: &[ToolMessage]) -> Vec<AnthropicMessage> {
     history
         .iter()
-        .map(|m| match m {
-            ToolMessage::User(text) => AnthropicMessage {
+        .filter_map(|m| match m {
+            // No `role: "system"` in this API — lifted to the request's
+            // top-level `system` field by `call_with_tools` instead, never
+            // an entry in `messages`.
+            ToolMessage::System(_) => None,
+            ToolMessage::User(text) => Some(AnthropicMessage {
                 role: "user",
                 content: vec![AnthropicContentBlock::Text { text: text.clone() }],
-            },
-            ToolMessage::AssistantToolCalls(calls) => AnthropicMessage {
+            }),
+            ToolMessage::AssistantToolCalls(calls) => Some(AnthropicMessage {
                 role: "assistant",
                 content: calls
                     .iter()
@@ -208,14 +217,14 @@ fn to_anthropic_messages(history: &[ToolMessage]) -> Vec<AnthropicMessage> {
                         input: c.arguments.clone(),
                     })
                     .collect(),
-            },
-            ToolMessage::ToolResult { call_id, content } => AnthropicMessage {
+            }),
+            ToolMessage::ToolResult { call_id, content } => Some(AnthropicMessage {
                 role: "user",
                 content: vec![AnthropicContentBlock::ToolResult {
                     tool_use_id: call_id.clone(),
                     content: content.clone(),
                 }],
-            },
+            }),
         })
         .collect()
 }
@@ -226,6 +235,8 @@ struct ToolMessagesRequest<'a> {
     max_tokens: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system: Option<&'a str>,
     messages: &'a [AnthropicMessage],
     tools: &'a [AnthropicTool],
 }
@@ -410,6 +421,47 @@ mod tests {
                 "required": ["city"]
             }),
         }
+    }
+
+    #[tokio::test]
+    async fn call_with_tools_lifts_system_to_top_level_field() {
+        use wiremock::matchers::body_string_contains;
+
+        std::env::set_var("NEXUS_TEST_ANTHROPIC_SYSTEM_KEY", "sk-ant-test");
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(body_string_contains(
+                "\"system\":\"you are a helpful agent\"",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "content": [{"type": "text", "text": "ok"}],
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            })))
+            .mount(&server)
+            .await;
+
+        let client = AnthropicClient::new(AnthropicClientConfig {
+            base_url: server.uri(),
+            model: "claude-sonnet-5".to_string(),
+            api_key_env: "NEXUS_TEST_ANTHROPIC_SYSTEM_KEY".to_string(),
+        });
+        let turn = client
+            .call_with_tools(
+                &[
+                    ToolMessage::System("you are a helpful agent".to_string()),
+                    ToolMessage::User("hi".to_string()),
+                ],
+                &[weather_tool()],
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        // The system prompt must never leak into `messages` as a
+        // user/assistant turn — only the request's top-level field.
+        assert_eq!(turn, LlmTurn::Text("ok".to_string()));
     }
 
     #[tokio::test]
