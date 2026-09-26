@@ -30,12 +30,10 @@ fn validate_elasticsearch_config(cfg: &serde_json::Value) -> Result<(), NexusErr
         .map_err(|e| NexusError::Serialization(e.to_string()))
 }
 
-fn build_sink(
-    cfg: serde_json::Value,
-) -> BoxFuture<'static, Result<Box<dyn Sink>, NexusError>> {
+fn build_sink(cfg: serde_json::Value) -> BoxFuture<'static, Result<Box<dyn Sink>, NexusError>> {
     Box::pin(async move {
-        let parsed: ElasticsearchConnectorConfig = serde_json::from_value(cfg)
-            .map_err(|e| NexusError::Serialization(e.to_string()))?;
+        let parsed: ElasticsearchConnectorConfig =
+            serde_json::from_value(cfg).map_err(|e| NexusError::Serialization(e.to_string()))?;
         let sink = ElasticsearchSink::connect(&parsed).await?;
         Ok(Box::new(sink) as Box<dyn Sink>)
     })

@@ -51,13 +51,18 @@ fn rows_to_batch(schema: SchemaRef, rows: &[PageRow]) -> Result<RecordBatch, Nex
     let file_name: ArrayRef = Arc::new(StringArray::from_iter_values(
         rows.iter().map(|r| r.file_name.as_str()),
     ));
-    let page_number: ArrayRef =
-        Arc::new(UInt32Array::from_iter_values(rows.iter().map(|r| r.page_number)));
-    let text: ArrayRef = Arc::new(StringArray::from_iter_values(rows.iter().map(|r| r.text.as_str())));
-    let char_count: ArrayRef =
-        Arc::new(UInt32Array::from_iter_values(rows.iter().map(|r| r.char_count)));
-    let avg_confidence: ArrayRef =
-        Arc::new(Float32Array::from_iter_values(rows.iter().map(|r| r.avg_confidence)));
+    let page_number: ArrayRef = Arc::new(UInt32Array::from_iter_values(
+        rows.iter().map(|r| r.page_number),
+    ));
+    let text: ArrayRef = Arc::new(StringArray::from_iter_values(
+        rows.iter().map(|r| r.text.as_str()),
+    ));
+    let char_count: ArrayRef = Arc::new(UInt32Array::from_iter_values(
+        rows.iter().map(|r| r.char_count),
+    ));
+    let avg_confidence: ArrayRef = Arc::new(Float32Array::from_iter_values(
+        rows.iter().map(|r| r.avg_confidence),
+    ));
     let low_confidence_word_count: ArrayRef = Arc::new(UInt32Array::from_iter_values(
         rows.iter().map(|r| r.low_confidence_word_count),
     ));
@@ -159,12 +164,17 @@ fn page_number_from_filename(png_path: &Path) -> Result<u32, NexusError> {
         .chars()
         .rev()
         .collect();
-    digits
-        .parse()
-        .map_err(|_| NexusError::Connector(format!("pdf-ocr: unexpected rendered page filename {png_path:?}")))
+    digits.parse().map_err(|_| {
+        NexusError::Connector(format!(
+            "pdf-ocr: unexpected rendered page filename {png_path:?}"
+        ))
+    })
 }
 
-async fn process_pdf(pdf_path: &Path, cfg: &PdfOcrConnectorConfig) -> Result<Vec<PageRow>, NexusError> {
+async fn process_pdf(
+    pdf_path: &Path,
+    cfg: &PdfOcrConnectorConfig,
+) -> Result<Vec<PageRow>, NexusError> {
     let file_name = pdf_path
         .file_name()
         .and_then(|n| n.to_str())
@@ -178,8 +188,9 @@ async fn process_pdf(pdf_path: &Path, cfg: &PdfOcrConnectorConfig) -> Result<Vec
         _ => None,
     };
 
-    let tmp_dir = tempfile::tempdir()
-        .map_err(|e| NexusError::Connector(format!("pdf-ocr: could not create scratch dir: {e}")))?;
+    let tmp_dir = tempfile::tempdir().map_err(|e| {
+        NexusError::Connector(format!("pdf-ocr: could not create scratch dir: {e}"))
+    })?;
     let prefix = tmp_dir.path().join("page");
 
     let mut cmd = Command::new("pdftoppm");
@@ -191,9 +202,18 @@ async fn process_pdf(pdf_path: &Path, cfg: &PdfOcrConnectorConfig) -> Result<Vec
         // comma-separated set (a handful of extra rendered-but-unused
         // pages inside the bound costs far less than re-invoking the
         // rasterizer once per segment).
-        let min = *pages.iter().next().expect("non-empty, checked by parse_page_range");
-        let max = *pages.iter().next_back().expect("non-empty, checked by parse_page_range");
-        cmd.arg("-f").arg(min.to_string()).arg("-l").arg(max.to_string());
+        let min = *pages
+            .iter()
+            .next()
+            .expect("non-empty, checked by parse_page_range");
+        let max = *pages
+            .iter()
+            .next_back()
+            .expect("non-empty, checked by parse_page_range");
+        cmd.arg("-f")
+            .arg(min.to_string())
+            .arg("-l")
+            .arg(max.to_string());
     }
     cmd.arg(pdf_path).arg(&prefix);
 

@@ -45,11 +45,18 @@ pub(crate) fn build_create_table_sql(
         .map(|f| {
             let name = oracle_identifier(f.name())?;
             let sql_type = arrow_type_to_oracle(f.data_type());
-            let pk_suffix = if f.name() == primary_key { " PRIMARY KEY" } else { "" };
+            let pk_suffix = if f.name() == primary_key {
+                " PRIMARY KEY"
+            } else {
+                ""
+            };
             Ok(format!("{name} {sql_type}{pk_suffix}"))
         })
         .collect::<Result<Vec<_>, NexusError>>()?;
-    Ok(format!("CREATE TABLE {quoted_table} ({})", columns.join(", ")))
+    Ok(format!(
+        "CREATE TABLE {quoted_table} ({})",
+        columns.join(", ")
+    ))
 }
 
 /// Arrow type -> Oracle column type. Anything not explicitly matched falls
@@ -88,8 +95,11 @@ mod tests {
 
     #[test]
     fn rejects_sql_injection_in_column_name() {
-        let err = build_select_sql("events", &["id".to_string(), "x\"; DROP TABLE users; --".to_string()])
-            .expect_err("malicious column name must be rejected");
+        let err = build_select_sql(
+            "events",
+            &["id".to_string(), "x\"; DROP TABLE users; --".to_string()],
+        )
+        .expect_err("malicious column name must be rejected");
         assert!(matches!(err, NexusError::Schema(_)));
     }
 
@@ -115,7 +125,8 @@ mod tests {
         use arrow_schema::{Field, Schema};
         use std::sync::Arc;
 
-        let schema: SchemaRef = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let schema: SchemaRef =
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
         let err = build_create_table_sql("events\"; DROP TABLE users; --", "id", &schema)
             .expect_err("malicious table name must be rejected");
         assert!(matches!(err, NexusError::Schema(_)));

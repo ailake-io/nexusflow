@@ -194,7 +194,9 @@ fn write_cell(
             let arr = column
                 .as_any()
                 .downcast_ref::<Int64Array>()
-                .ok_or_else(|| NexusError::Schema("excel: column declared Int64 is not an Int64Array".into()))?;
+                .ok_or_else(|| {
+                    NexusError::Schema("excel: column declared Int64 is not an Int64Array".into())
+                })?;
             worksheet
                 .write_number(row, col, arr.value(row_in_batch) as f64)
                 .map_err(|e| NexusError::Connector(format!("excel cell write failed: {e}")))?;
@@ -203,7 +205,11 @@ fn write_cell(
             let arr = column
                 .as_any()
                 .downcast_ref::<Float64Array>()
-                .ok_or_else(|| NexusError::Schema("excel: column declared Float64 is not a Float64Array".into()))?;
+                .ok_or_else(|| {
+                    NexusError::Schema(
+                        "excel: column declared Float64 is not a Float64Array".into(),
+                    )
+                })?;
             worksheet
                 .write_number(row, col, arr.value(row_in_batch))
                 .map_err(|e| NexusError::Connector(format!("excel cell write failed: {e}")))?;
@@ -212,7 +218,11 @@ fn write_cell(
             let arr = column
                 .as_any()
                 .downcast_ref::<BooleanArray>()
-                .ok_or_else(|| NexusError::Schema("excel: column declared Boolean is not a BooleanArray".into()))?;
+                .ok_or_else(|| {
+                    NexusError::Schema(
+                        "excel: column declared Boolean is not a BooleanArray".into(),
+                    )
+                })?;
             worksheet
                 .write_boolean(row, col, arr.value(row_in_batch))
                 .map_err(|e| NexusError::Connector(format!("excel cell write failed: {e}")))?;
@@ -221,7 +231,9 @@ fn write_cell(
             let arr = column
                 .as_any()
                 .downcast_ref::<StringArray>()
-                .ok_or_else(|| NexusError::Schema("excel: column declared Utf8 is not a StringArray".into()))?;
+                .ok_or_else(|| {
+                    NexusError::Schema("excel: column declared Utf8 is not a StringArray".into())
+                })?;
             worksheet
                 .write_string(row, col, arr.value(row_in_batch))
                 .map_err(|e| NexusError::Connector(format!("excel cell write failed: {e}")))?;

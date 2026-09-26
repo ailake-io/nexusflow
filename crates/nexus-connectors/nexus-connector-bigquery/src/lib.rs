@@ -29,8 +29,8 @@ nexus_core::submit_connector!(
 );
 
 fn parse_and_validate(cfg: serde_json::Value) -> Result<BigqueryConnectorConfig, NexusError> {
-    let parsed: BigqueryConnectorConfig = serde_json::from_value(cfg)
-        .map_err(|e| NexusError::Serialization(e.to_string()))?;
+    let parsed: BigqueryConnectorConfig =
+        serde_json::from_value(cfg).map_err(|e| NexusError::Serialization(e.to_string()))?;
     parsed.validate()?;
     Ok(parsed)
 }

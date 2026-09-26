@@ -78,7 +78,9 @@ pub struct DatabricksConnectorConfig {
 impl DatabricksConnectorConfig {
     pub fn validate(&self) -> Result<(), NexusError> {
         if self.host.trim().is_empty() {
-            return Err(NexusError::Connector("databricks: host is required".to_string()));
+            return Err(NexusError::Connector(
+                "databricks: host is required".to_string(),
+            ));
         }
         if self.http_path.trim().is_empty() {
             return Err(NexusError::Connector(
@@ -111,13 +113,19 @@ impl DatabricksConnectorConfig {
             }
         }
         if self.catalog.trim().is_empty() {
-            return Err(NexusError::Connector("databricks: catalog is required".to_string()));
+            return Err(NexusError::Connector(
+                "databricks: catalog is required".to_string(),
+            ));
         }
         if self.schema.trim().is_empty() {
-            return Err(NexusError::Connector("databricks: schema is required".to_string()));
+            return Err(NexusError::Connector(
+                "databricks: schema is required".to_string(),
+            ));
         }
         if self.table.trim().is_empty() {
-            return Err(NexusError::Connector("databricks: table is required".to_string()));
+            return Err(NexusError::Connector(
+                "databricks: table is required".to_string(),
+            ));
         }
         if let Some(pk) = self.primary_key.as_deref() {
             if pk.trim().is_empty() {

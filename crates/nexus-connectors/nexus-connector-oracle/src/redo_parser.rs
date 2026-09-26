@@ -18,7 +18,10 @@ use serde_json::{Map, Value};
 /// `DATE`/`TIMESTAMP` values appear in `SQL_REDO` as function calls
 /// (`TO_DATE('...', 'fmt')`), not plain string literals — v1 doesn't
 /// parse those and fails loudly rather than silently mangling data.
-pub(crate) fn parse_redo(operation: &str, sql_redo: &str) -> Result<Map<String, Value>, NexusError> {
+pub(crate) fn parse_redo(
+    operation: &str,
+    sql_redo: &str,
+) -> Result<Map<String, Value>, NexusError> {
     match operation.to_uppercase().as_str() {
         "INSERT" => parse_insert(sql_redo),
         "UPDATE" => parse_update(sql_redo),
@@ -94,7 +97,9 @@ fn parse_update(sql: &str) -> Result<Map<String, Value>, NexusError> {
     let mut map = Map::new();
     for assignment in split_top_level(set_clause.trim(), ',') {
         let (col, val) = split_once(&assignment, '=').ok_or_else(|| {
-            NexusError::Connector(format!("oracle-cdc: malformed SET assignment '{assignment}' in: {sql}"))
+            NexusError::Connector(format!(
+                "oracle-cdc: malformed SET assignment '{assignment}' in: {sql}"
+            ))
         })?;
         let col = col.trim().trim_matches('"').to_string();
         map.insert(col, parse_sql_literal(val.trim())?);
@@ -125,15 +130,22 @@ fn parse_delete(sql: &str) -> Result<Map<String, Value>, NexusError> {
             continue;
         }
         let (col, val) = split_once(condition, '=').ok_or_else(|| {
-            NexusError::Connector(format!("oracle-cdc: malformed WHERE condition '{condition}' in: {sql}"))
+            NexusError::Connector(format!(
+                "oracle-cdc: malformed WHERE condition '{condition}' in: {sql}"
+            ))
         })?;
-        map.insert(col.trim().trim_matches('"').to_string(), parse_sql_literal(val.trim())?);
+        map.insert(
+            col.trim().trim_matches('"').to_string(),
+            parse_sql_literal(val.trim())?,
+        );
     }
     Ok(map)
 }
 
 fn redo_shape_error(operation: &str, sql: &str) -> NexusError {
-    NexusError::Connector(format!("oracle-cdc: could not parse {operation} SQL_REDO: {sql}"))
+    NexusError::Connector(format!(
+        "oracle-cdc: could not parse {operation} SQL_REDO: {sql}"
+    ))
 }
 
 /// `'v1'` → string (with `''` unescaped to `'`), bare `NULL` → JSON
@@ -165,7 +177,9 @@ fn split_once_ci<'a>(s: &'a str, sep: &str) -> Option<(&'a str, &'a str)> {
     let mut in_quote = false;
     let mut idx = 0usize;
     while idx < s.len() {
-        let Some(c) = s[idx..].chars().next() else { break };
+        let Some(c) = s[idx..].chars().next() else {
+            break;
+        };
         if c == '\'' {
             let rest = &s[idx + 1..];
             if in_quote && rest.starts_with('\'') {
@@ -250,7 +264,9 @@ fn split_top_level_and(s: &str) -> Vec<String> {
     let mut in_quote = false;
     let mut idx = 0usize;
     while idx < s.len() {
-        let Some(c) = s[idx..].chars().next() else { break };
+        let Some(c) = s[idx..].chars().next() else {
+            break;
+        };
         if c == '\'' {
             let rest = &s[idx + 1..];
             if in_quote && rest.starts_with('\'') {

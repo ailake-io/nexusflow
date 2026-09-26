@@ -27,8 +27,8 @@ nexus_core::submit_connector!(
 );
 
 fn parse_and_validate(cfg: serde_json::Value) -> Result<SnowflakeConnectorConfig, NexusError> {
-    let parsed: SnowflakeConnectorConfig = serde_json::from_value(cfg)
-        .map_err(|e| NexusError::Serialization(e.to_string()))?;
+    let parsed: SnowflakeConnectorConfig =
+        serde_json::from_value(cfg).map_err(|e| NexusError::Serialization(e.to_string()))?;
     parsed.validate()?;
     Ok(parsed)
 }

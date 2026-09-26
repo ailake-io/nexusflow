@@ -21,11 +21,9 @@ where
     R: Debug,
 {
     let detail = match &e {
-        SdkError::ServiceError(se) => format!(
-            "service error: err={:#?} raw={:#?}",
-            se.err(),
-            se.raw()
-        ),
+        SdkError::ServiceError(se) => {
+            format!("service error: err={:#?} raw={:#?}", se.err(), se.raw())
+        }
         SdkError::TimeoutError(_) => "timeout".to_string(),
         SdkError::DispatchFailure(d) => format!("dispatch failure: {d:?}"),
         SdkError::ResponseError(re) => format!("response error: {re:?}"),
@@ -172,7 +170,13 @@ impl Source for KinesisSource {
                         .send()
                         .await
                         .map_err(|e| format_sdk_error("kinesis list_shards", e))?;
-                    Ok::<_, NexusError>(output.shards().iter().map(|s| s.shard_id().to_string()).collect::<Vec<_>>())
+                    Ok::<_, NexusError>(
+                        output
+                            .shards()
+                            .iter()
+                            .map(|s| s.shard_id().to_string())
+                            .collect::<Vec<_>>(),
+                    )
                 })
                 .await
             }
@@ -221,7 +225,8 @@ impl Source for KinesisSource {
                             );
                             return None;
                         }
-                        tokio::time::sleep(Duration::from_millis(state.config.poll_interval_ms)).await;
+                        tokio::time::sleep(Duration::from_millis(state.config.poll_interval_ms))
+                            .await;
                     }
                     Err(e) => return Some((Err(e), state)),
                 }
@@ -258,10 +263,12 @@ async fn poll_all_shards(state: &mut PollState) -> Result<Vec<Value>, NexusError
             shard.iterator =
                 Some(fetch_shard_iterator(&state.client, &state.config, &shard.shard_id).await?);
         }
-        let iterator = shard
-            .iterator
-            .clone()
-            .ok_or_else(|| NexusError::Connector(format!("kinesis: no shard iterator for shard {}", shard.shard_id)))?;
+        let iterator = shard.iterator.clone().ok_or_else(|| {
+            NexusError::Connector(format!(
+                "kinesis: no shard iterator for shard {}",
+                shard.shard_id
+            ))
+        })?;
 
         let client = state.client.clone();
         let config = state.config.clone();

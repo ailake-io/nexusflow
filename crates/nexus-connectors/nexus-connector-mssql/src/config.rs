@@ -40,16 +40,24 @@ impl MssqlConnectorConfig {
             return Err(NexusError::Connector("mssql: host is required".to_string()));
         }
         if self.database.trim().is_empty() {
-            return Err(NexusError::Connector("mssql: database is required".to_string()));
+            return Err(NexusError::Connector(
+                "mssql: database is required".to_string(),
+            ));
         }
         if self.username.trim().is_empty() {
-            return Err(NexusError::Connector("mssql: username is required".to_string()));
+            return Err(NexusError::Connector(
+                "mssql: username is required".to_string(),
+            ));
         }
         if self.password.trim().is_empty() {
-            return Err(NexusError::Connector("mssql: password is required".to_string()));
+            return Err(NexusError::Connector(
+                "mssql: password is required".to_string(),
+            ));
         }
         if self.table.trim().is_empty() {
-            return Err(NexusError::Connector("mssql: table is required".to_string()));
+            return Err(NexusError::Connector(
+                "mssql: table is required".to_string(),
+            ));
         }
         if let Some(pk) = self.primary_key.as_deref() {
             if pk.trim().is_empty() {

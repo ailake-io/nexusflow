@@ -9,8 +9,8 @@ use arrow_schema::{DataType, SchemaRef};
 use async_trait::async_trait;
 use nexus_core::quote_identifier;
 use nexus_core::{
-    project_column, retry_with_backoff, split_by_opcode, with_timeout, CheckpointCursor, NexusError,
-    Sink,
+    project_column, retry_with_backoff, split_by_opcode, with_timeout, CheckpointCursor,
+    NexusError, Sink,
 };
 
 /// T-SQL sink with two execution paths:
@@ -56,7 +56,9 @@ impl MssqlSink {
                 with_timeout(cfg.timeout_seconds, "mssql connect", async {
                     tokio::task::spawn_blocking(move || open_connection(&cfg.connection_string()))
                         .await
-                        .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))?
+                        .map_err(|e| {
+                            NexusError::Connector(format!("blocking task panicked: {e}"))
+                        })?
                 })
                 .await
             }
@@ -84,7 +86,11 @@ impl MssqlSink {
 /// upstream schema (attacker-controlled); every one is validated and quoted via
 /// `quote_identifier` before that happens, same rule every `build_merge_sql` in
 /// this repo documents.
-fn build_merge_sql(table: &str, primary_key: &str, columns: &[String]) -> Result<String, NexusError> {
+fn build_merge_sql(
+    table: &str,
+    primary_key: &str,
+    columns: &[String],
+) -> Result<String, NexusError> {
     let quoted_table = quote_identifier(table)?;
     let quoted_pk = quote_identifier(primary_key)?;
     let quoted_columns = columns
@@ -92,9 +98,7 @@ fn build_merge_sql(table: &str, primary_key: &str, columns: &[String]) -> Result
         .map(|c| quote_identifier(c))
         .collect::<Result<Vec<_>, _>>()?;
 
-    let placeholders: Vec<String> = (1..=columns.len())
-        .map(|i| format!("@p{i}"))
-        .collect();
+    let placeholders: Vec<String> = (1..=columns.len()).map(|i| format!("@p{i}")).collect();
     let source_decl = quoted_columns.join(", ");
 
     let updates: Vec<String> = columns
@@ -104,10 +108,7 @@ fn build_merge_sql(table: &str, primary_key: &str, columns: &[String]) -> Result
         .map(|(_, quoted)| format!("tgt.{quoted} = src.{quoted}"))
         .collect();
     let insert_cols = quoted_columns.join(", ");
-    let insert_vals: Vec<String> = quoted_columns
-        .iter()
-        .map(|c| format!("src.{c}"))
-        .collect();
+    let insert_vals: Vec<String> = quoted_columns.iter().map(|c| format!("src.{c}")).collect();
 
     Ok(format!(
         "MERGE INTO {quoted_table} AS tgt \
@@ -124,7 +125,9 @@ fn build_merge_sql(table: &str, primary_key: &str, columns: &[String]) -> Result
 fn build_delete_sql(table: &str, primary_key: &str) -> Result<String, NexusError> {
     let quoted_table = quote_identifier(table)?;
     let quoted_pk = quote_identifier(primary_key)?;
-    Ok(format!("DELETE FROM {quoted_table} WHERE {quoted_pk} = @p1"))
+    Ok(format!(
+        "DELETE FROM {quoted_table} WHERE {quoted_pk} = @p1"
+    ))
 }
 
 /// A target table that doesn't exist yet is created from `schema`'s
@@ -145,7 +148,11 @@ fn build_create_table_sql(
         .map(|f| {
             let quoted_name = quote_identifier(f.name())?;
             let sql_type = arrow_type_to_mssql(f.data_type());
-            let pk_suffix = if f.name() == primary_key { " PRIMARY KEY" } else { "" };
+            let pk_suffix = if f.name() == primary_key {
+                " PRIMARY KEY"
+            } else {
+                ""
+            };
             Ok(format!("{quoted_name} {sql_type}{pk_suffix}"))
         })
         .collect::<Result<Vec<_>, NexusError>>()?;
@@ -396,7 +403,8 @@ mod tests {
         use arrow_schema::{Field, Schema};
         use std::sync::Arc;
 
-        let schema: SchemaRef = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let schema: SchemaRef =
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
         let err = build_create_table_sql("events\"; DROP TABLE users; --", "id", &schema)
             .expect_err("malicious table name must be rejected");
         assert!(matches!(err, NexusError::Schema(_)));

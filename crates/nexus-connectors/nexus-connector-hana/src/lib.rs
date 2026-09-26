@@ -24,11 +24,7 @@ pub use source::HanaSource;
 use futures::future::BoxFuture;
 use nexus_core::{ConnectorCapability, NexusError, Sink, Source};
 
-nexus_core::submit_connector!(
-    "hana",
-    ConnectorCapability::Bridged,
-    HanaConnectorConfig
-);
+nexus_core::submit_connector!("hana", ConnectorCapability::Bridged, HanaConnectorConfig);
 
 fn validate_hana_config(cfg: &serde_json::Value) -> Result<(), NexusError> {
     serde_json::from_value::<HanaConnectorConfig>(cfg.clone())

@@ -71,7 +71,9 @@ pub struct SnowflakeConnectorConfig {
 impl SnowflakeConnectorConfig {
     pub fn validate(&self) -> Result<(), NexusError> {
         if self.account.trim().is_empty() {
-            return Err(NexusError::Connector("snowflake: account is required".to_string()));
+            return Err(NexusError::Connector(
+                "snowflake: account is required".to_string(),
+            ));
         }
         if self.warehouse.trim().is_empty() {
             return Err(NexusError::Connector(
@@ -84,10 +86,14 @@ impl SnowflakeConnectorConfig {
             ));
         }
         if self.schema.trim().is_empty() {
-            return Err(NexusError::Connector("snowflake: schema is required".to_string()));
+            return Err(NexusError::Connector(
+                "snowflake: schema is required".to_string(),
+            ));
         }
         if self.table.trim().is_empty() {
-            return Err(NexusError::Connector("snowflake: table is required".to_string()));
+            return Err(NexusError::Connector(
+                "snowflake: table is required".to_string(),
+            ));
         }
         match &self.auth {
             SnowflakeAuth::Password { username, password } => {

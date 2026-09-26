@@ -3,7 +3,9 @@ use crate::config::VertexVectorSearchConnectorConfig;
 use crate::rows::{extract_embeddings, extract_ids};
 use arrow_array::RecordBatch;
 use async_trait::async_trait;
-use nexus_core::{project_column, split_by_opcode, with_timeout, CheckpointCursor, NexusError, Sink};
+use nexus_core::{
+    project_column, split_by_opcode, with_timeout, CheckpointCursor, NexusError, Sink,
+};
 
 /// Writes via `upsertDatapoints` — confirmed real endpoint (`POST
 /// .../indexes/{index}:upsertDatapoints`, body `{"datapoints":
@@ -33,21 +35,31 @@ impl VertexVectorSearchSink {
     }
 
     async fn post(&self, suffix: &str, body: serde_json::Value) -> Result<(), NexusError> {
-        let access_token = with_timeout(self.cfg.timeout_seconds, "vertex-vector-search authenticate", async {
-            authenticate(&self.client, &self.cfg).await
-        })
+        let access_token = with_timeout(
+            self.cfg.timeout_seconds,
+            "vertex-vector-search authenticate",
+            async { authenticate(&self.client, &self.cfg).await },
+        )
         .await?;
 
         let url = format!("{}:{suffix}", self.cfg.index_url());
-        let response = with_timeout(self.cfg.timeout_seconds, "vertex-vector-search request", async {
-            self.client
-                .post(&url)
-                .bearer_auth(&access_token)
-                .json(&body)
-                .send()
-                .await
-                .map_err(|e| NexusError::Connector(format!("vertex-vector-search {suffix} request failed: {e}")))
-        })
+        let response = with_timeout(
+            self.cfg.timeout_seconds,
+            "vertex-vector-search request",
+            async {
+                self.client
+                    .post(&url)
+                    .bearer_auth(&access_token)
+                    .json(&body)
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        NexusError::Connector(format!(
+                            "vertex-vector-search {suffix} request failed: {e}"
+                        ))
+                    })
+            },
+        )
         .await?;
 
         if !response.status().is_success() {
@@ -75,8 +87,11 @@ impl VertexVectorSearchSink {
             })
             .collect();
 
-        self.post("upsertDatapoints", serde_json::json!({ "datapoints": datapoints }))
-            .await
+        self.post(
+            "upsertDatapoints",
+            serde_json::json!({ "datapoints": datapoints }),
+        )
+        .await
     }
 
     async fn delete(&self, batch: &RecordBatch) -> Result<(), NexusError> {
@@ -86,8 +101,11 @@ impl VertexVectorSearchSink {
         let keys = project_column(batch, &self.cfg.primary_key)?;
         let ids = extract_ids(&keys, &self.cfg.primary_key)?;
 
-        self.post("removeDatapoints", serde_json::json!({ "datapointIds": ids }))
-            .await
+        self.post(
+            "removeDatapoints",
+            serde_json::json!({ "datapointIds": ids }),
+        )
+        .await
     }
 }
 

@@ -41,10 +41,14 @@ pub struct OracleConnectorConfig {
 impl OracleConnectorConfig {
     pub fn validate(&self) -> Result<(), NexusError> {
         if self.host.trim().is_empty() {
-            return Err(NexusError::Connector("oracle: host is required".to_string()));
+            return Err(NexusError::Connector(
+                "oracle: host is required".to_string(),
+            ));
         }
         if self.port == 0 {
-            return Err(NexusError::Connector("oracle: port is required".to_string()));
+            return Err(NexusError::Connector(
+                "oracle: port is required".to_string(),
+            ));
         }
         if self.service_name.trim().is_empty() {
             return Err(NexusError::Connector(

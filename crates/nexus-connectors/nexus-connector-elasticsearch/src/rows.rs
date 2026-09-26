@@ -13,7 +13,10 @@ use serde_json::{Map, Value};
 /// as a local copy rather than a shared dependency — can't import
 /// across the public/private repo boundary (`LICENSING.md §3`, same
 /// reasoning `nexus-connector-excel`'s `store.rs` already documents).
-pub(crate) fn batch_to_source(batch: &RecordBatch, skip: &[&str]) -> Result<Vec<Value>, NexusError> {
+pub(crate) fn batch_to_source(
+    batch: &RecordBatch,
+    skip: &[&str],
+) -> Result<Vec<Value>, NexusError> {
     let num_rows = batch.num_rows();
     let mut rows = vec![Map::new(); num_rows];
 
@@ -78,7 +81,10 @@ pub(crate) fn batch_to_source(batch: &RecordBatch, skip: &[&str]) -> Result<Vec<
 
 /// Reads `column_name` (a `FixedSizeList<Float32>`) as one `Vec<f32>`
 /// per row.
-pub(crate) fn extract_embeddings(batch: &RecordBatch, column_name: &str) -> Result<Vec<Vec<f32>>, NexusError> {
+pub(crate) fn extract_embeddings(
+    batch: &RecordBatch,
+    column_name: &str,
+) -> Result<Vec<Vec<f32>>, NexusError> {
     let idx = batch
         .schema()
         .index_of(column_name)
@@ -87,7 +93,9 @@ pub(crate) fn extract_embeddings(batch: &RecordBatch, column_name: &str) -> Resu
         .column(idx)
         .as_any()
         .downcast_ref::<FixedSizeListArray>()
-        .ok_or_else(|| NexusError::Schema(format!("column '{column_name}' is not a FixedSizeList")))?;
+        .ok_or_else(|| {
+            NexusError::Schema(format!("column '{column_name}' is not a FixedSizeList"))
+        })?;
 
     let mut embeddings = Vec::with_capacity(list.len());
     for row in 0..list.len() {
@@ -95,7 +103,9 @@ pub(crate) fn extract_embeddings(batch: &RecordBatch, column_name: &str) -> Resu
         let floats = values
             .as_any()
             .downcast_ref::<Float32Array>()
-            .ok_or_else(|| NexusError::Schema(format!("column '{column_name}' items are not Float32")))?;
+            .ok_or_else(|| {
+                NexusError::Schema(format!("column '{column_name}' items are not Float32"))
+            })?;
         embeddings.push(floats.values().to_vec());
     }
     Ok(embeddings)
@@ -104,7 +114,10 @@ pub(crate) fn extract_embeddings(batch: &RecordBatch, column_name: &str) -> Resu
 /// Reads `column_name` as string document IDs — both `Int64` and
 /// `Utf8` primary key columns are supported, same contract Chroma's
 /// `extract_ids` documents.
-pub(crate) fn extract_ids(batch: &RecordBatch, column_name: &str) -> Result<Vec<String>, NexusError> {
+pub(crate) fn extract_ids(
+    batch: &RecordBatch,
+    column_name: &str,
+) -> Result<Vec<String>, NexusError> {
     let idx = batch
         .schema()
         .index_of(column_name)
@@ -116,7 +129,11 @@ pub(crate) fn extract_ids(batch: &RecordBatch, column_name: &str) -> Result<Vec<
             let arr = column
                 .as_any()
                 .downcast_ref::<Int64Array>()
-                .ok_or_else(|| NexusError::Schema(format!("column '{column_name}' declared Int64 is not an Int64Array")))?;
+                .ok_or_else(|| {
+                    NexusError::Schema(format!(
+                        "column '{column_name}' declared Int64 is not an Int64Array"
+                    ))
+                })?;
             (0..arr.len())
                 .map(|i| {
                     if arr.is_null(i) {
@@ -133,7 +150,11 @@ pub(crate) fn extract_ids(batch: &RecordBatch, column_name: &str) -> Result<Vec<
             let arr = column
                 .as_any()
                 .downcast_ref::<StringArray>()
-                .ok_or_else(|| NexusError::Schema(format!("column '{column_name}' declared Utf8 is not a StringArray")))?;
+                .ok_or_else(|| {
+                    NexusError::Schema(format!(
+                        "column '{column_name}' declared Utf8 is not a StringArray"
+                    ))
+                })?;
             (0..arr.len())
                 .map(|i| {
                     if arr.is_null(i) {
@@ -186,7 +207,8 @@ mod tests {
     #[test]
     fn extract_ids_supports_int64_primary_key() {
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
-        let batch = RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![1, 2]))]).unwrap();
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![1, 2]))]).unwrap();
         let ids = extract_ids(&batch, "id").unwrap();
         assert_eq!(ids, vec!["1".to_string(), "2".to_string()]);
     }
@@ -194,8 +216,8 @@ mod tests {
     #[test]
     fn extract_ids_supports_utf8_primary_key() {
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Utf8, false)]));
-        let batch =
-            RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(vec!["a", "b"]))]).unwrap();
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(vec!["a", "b"]))])
+            .unwrap();
         let ids = extract_ids(&batch, "id").unwrap();
         assert_eq!(ids, vec!["a".to_string(), "b".to_string()]);
     }

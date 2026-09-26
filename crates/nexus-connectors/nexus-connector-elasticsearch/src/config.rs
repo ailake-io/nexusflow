@@ -44,10 +44,9 @@ pub struct ElasticsearchConnectorConfig {
 
 impl ElasticsearchConnectorConfig {
     pub(crate) fn base_url(&self) -> Result<&str, nexus_core::NexusError> {
-        self.hosts
-            .first()
-            .map(String::as_str)
-            .ok_or_else(|| nexus_core::NexusError::Schema("elasticsearch: hosts must not be empty".into()))
+        self.hosts.first().map(String::as_str).ok_or_else(|| {
+            nexus_core::NexusError::Schema("elasticsearch: hosts must not be empty".into())
+        })
     }
 }
 

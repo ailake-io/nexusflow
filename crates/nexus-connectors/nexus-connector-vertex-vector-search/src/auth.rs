@@ -34,10 +34,12 @@ pub(crate) async fn authenticate(
         iat: now,
         exp: now + 3600,
     };
-    let key = EncodingKey::from_rsa_pem(cfg.private_key.as_bytes())
-        .map_err(|e| NexusError::Connector(format!("invalid vertex-vector-search private_key PEM: {e}")))?;
-    let jwt = encode(&Header::new(Algorithm::RS256), &claims, &key)
-        .map_err(|e| NexusError::Connector(format!("failed to sign vertex-vector-search JWT: {e}")))?;
+    let key = EncodingKey::from_rsa_pem(cfg.private_key.as_bytes()).map_err(|e| {
+        NexusError::Connector(format!("invalid vertex-vector-search private_key PEM: {e}"))
+    })?;
+    let jwt = encode(&Header::new(Algorithm::RS256), &claims, &key).map_err(|e| {
+        NexusError::Connector(format!("failed to sign vertex-vector-search JWT: {e}"))
+    })?;
 
     let response = client
         .post(&cfg.token_uri)
@@ -47,7 +49,9 @@ pub(crate) async fn authenticate(
         ])
         .send()
         .await
-        .map_err(|e| NexusError::Connector(format!("vertex-vector-search token request failed: {e}")))?;
+        .map_err(|e| {
+            NexusError::Connector(format!("vertex-vector-search token request failed: {e}"))
+        })?;
 
     if !response.status().is_success() {
         let status = response.status();
@@ -57,10 +61,11 @@ pub(crate) async fn authenticate(
         )));
     }
 
-    let parsed: TokenResponse = response
-        .json()
-        .await
-        .map_err(|e| NexusError::Connector(format!("vertex-vector-search token response parse failed: {e}")))?;
+    let parsed: TokenResponse = response.json().await.map_err(|e| {
+        NexusError::Connector(format!(
+            "vertex-vector-search token response parse failed: {e}"
+        ))
+    })?;
 
     Ok(parsed.access_token)
 }

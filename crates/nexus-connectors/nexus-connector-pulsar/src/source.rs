@@ -142,7 +142,8 @@ pub(crate) struct IsolatedRuntime {
 
 impl IsolatedRuntime {
     pub(crate) fn new() -> Result<Self, NexusError> {
-        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<tokio::runtime::Handle, String>>();
+        let (ready_tx, ready_rx) =
+            std::sync::mpsc::channel::<Result<tokio::runtime::Handle, String>>();
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
         let join = std::thread::spawn(move || {
@@ -169,12 +170,8 @@ impl IsolatedRuntime {
 
         let handle = ready_rx
             .recv()
-            .map_err(|_| {
-                NexusError::Connector("isolated runtime thread died before ready".into())
-            })?
-            .map_err(|e| {
-                NexusError::Connector(format!("failed to build isolated runtime: {e}"))
-            })?;
+            .map_err(|_| NexusError::Connector("isolated runtime thread died before ready".into()))?
+            .map_err(|e| NexusError::Connector(format!("failed to build isolated runtime: {e}")))?;
 
         Ok(Self {
             handle,
@@ -187,7 +184,12 @@ impl IsolatedRuntime {
     /// `recv_timeout` on a plain `std::sync::mpsc` channel — see this
     /// type's doc comment for why that's a hard, executor-independent
     /// bound instead of `tokio::time::timeout`.
-    pub(crate) async fn run<F, T>(&self, timeout_secs: u64, op_name: &str, fut: F) -> Result<T, NexusError>
+    pub(crate) async fn run<F, T>(
+        &self,
+        timeout_secs: u64,
+        op_name: &str,
+        fut: F,
+    ) -> Result<T, NexusError>
     where
         F: std::future::Future<Output = Result<T, NexusError>> + Send + 'static,
         T: Send + 'static,

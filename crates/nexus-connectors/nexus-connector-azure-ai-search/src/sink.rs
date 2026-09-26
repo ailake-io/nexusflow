@@ -2,7 +2,9 @@ use crate::config::AzureAiSearchConnectorConfig;
 use crate::rows::{batch_to_properties, extract_embeddings, extract_ids};
 use arrow_array::RecordBatch;
 use async_trait::async_trait;
-use nexus_core::{project_column, split_by_opcode, CheckpointCursor, NexusError, Sink, OPCODE_COLUMN};
+use nexus_core::{
+    project_column, split_by_opcode, CheckpointCursor, NexusError, Sink, OPCODE_COLUMN,
+};
 use serde_json::Value;
 
 /// Writes via the Index Documents API (`POST /indexes/{index}/docs/
@@ -33,7 +35,9 @@ impl AzureAiSearchSink {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(cfg.timeout_seconds))
             .build()
-            .map_err(|e| NexusError::Connector(format!("azure ai search client build failed: {e}")))?;
+            .map_err(|e| {
+                NexusError::Connector(format!("azure ai search client build failed: {e}"))
+            })?;
 
         Ok(Self {
             client,
@@ -61,7 +65,9 @@ impl AzureAiSearchSink {
             .json(&serde_json::json!({ "value": actions }))
             .send()
             .await
-            .map_err(|e| NexusError::Connector(format!("azure ai search docs/index request failed: {e}")))?;
+            .map_err(|e| {
+                NexusError::Connector(format!("azure ai search docs/index request failed: {e}"))
+            })?;
 
         let status = response.status();
         if !status.is_success() {
@@ -71,15 +77,15 @@ impl AzureAiSearchSink {
             )));
         }
 
-        let body: Value = response
-            .json()
-            .await
-            .map_err(|e| NexusError::Connector(format!("azure ai search docs/index response parse failed: {e}")))?;
+        let body: Value = response.json().await.map_err(|e| {
+            NexusError::Connector(format!(
+                "azure ai search docs/index response parse failed: {e}"
+            ))
+        })?;
 
-        let results = body
-            .get("value")
-            .and_then(Value::as_array)
-            .ok_or_else(|| NexusError::Connector("azure ai search docs/index response missing 'value'".into()))?;
+        let results = body.get("value").and_then(Value::as_array).ok_or_else(|| {
+            NexusError::Connector("azure ai search docs/index response missing 'value'".into())
+        })?;
 
         let failures: Vec<&Value> = results
             .iter()
@@ -102,7 +108,11 @@ impl AzureAiSearchSink {
         let embeddings = extract_embeddings(batch, &self.embedding_column)?;
         let properties = batch_to_properties(
             batch,
-            &[self.embedding_column.as_str(), self.primary_key.as_str(), OPCODE_COLUMN],
+            &[
+                self.embedding_column.as_str(),
+                self.primary_key.as_str(),
+                OPCODE_COLUMN,
+            ],
         )?;
 
         let actions: Vec<Value> = ids
@@ -113,7 +123,10 @@ impl AzureAiSearchSink {
                 let mut doc = props.as_object().cloned().unwrap_or_default();
                 doc.insert("@search.action".to_string(), Value::from("mergeOrUpload"));
                 doc.insert(self.primary_key.clone(), Value::from(id.as_str()));
-                doc.insert(self.embedding_column.clone(), Value::from(embedding.clone()));
+                doc.insert(
+                    self.embedding_column.clone(),
+                    Value::from(embedding.clone()),
+                );
                 Value::Object(doc)
             })
             .collect();

@@ -21,11 +21,7 @@ pub use source::ExcelSource;
 use futures::future::BoxFuture;
 use nexus_core::{ConnectorCapability, NexusError, Sink, Source};
 
-nexus_core::submit_connector!(
-    "excel",
-    ConnectorCapability::Bridged,
-    ExcelConnectorConfig
-);
+nexus_core::submit_connector!("excel", ConnectorCapability::Bridged, ExcelConnectorConfig);
 // `path` is documented (config.rs) as a local filesystem path exactly like
 // csv/parquet's own — opts into nexus-core's `LocalPathConnector` registry
 // (added this session specifically to unblock this) so an absolute path

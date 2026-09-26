@@ -43,7 +43,10 @@ fn batch_with_embedding(id: &str) -> RecordBatch {
 
     RecordBatch::try_new(
         schema,
-        vec![Arc::new(StringArray::from(vec![id])), Arc::new(embedding_builder.finish())],
+        vec![
+            Arc::new(StringArray::from(vec![id])),
+            Arc::new(embedding_builder.finish()),
+        ],
     )
     .unwrap()
 }
@@ -120,7 +123,9 @@ async fn sink_deletes_via_opcode_split() {
     let batch = RecordBatch::try_new(
         schema,
         vec![
-            Arc::new(StringArray::from(vec!["00000000-0000-0000-0000-000000000002"])),
+            Arc::new(StringArray::from(vec![
+                "00000000-0000-0000-0000-000000000002",
+            ])),
             Arc::new(embedding_builder.finish()),
             Arc::new(StringArray::from(vec!["D"])),
         ],

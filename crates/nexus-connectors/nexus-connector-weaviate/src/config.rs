@@ -46,7 +46,9 @@ pub struct WeaviateConnectorConfig {
 impl WeaviateConnectorConfig {
     pub fn validate(&self) -> Result<(), NexusError> {
         if self.host.trim().is_empty() {
-            return Err(NexusError::Connector("weaviate: host is required".to_string()));
+            return Err(NexusError::Connector(
+                "weaviate: host is required".to_string(),
+            ));
         }
         if self.class_name.trim().is_empty() {
             return Err(NexusError::Connector(

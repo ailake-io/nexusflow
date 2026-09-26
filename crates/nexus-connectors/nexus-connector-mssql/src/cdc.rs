@@ -2,7 +2,9 @@ use crate::config::MssqlCdcConfig;
 use crate::driver::open_connection;
 use adbc_core::{Connection as _, Statement as _};
 use adbc_driver_manager::ManagedConnection;
-use arrow_array::{Array, ArrayRef, BinaryArray, BooleanArray, Int32Array, RecordBatch, StringArray};
+use arrow_array::{
+    Array, ArrayRef, BinaryArray, BooleanArray, Int32Array, RecordBatch, StringArray,
+};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use arrow_select::filter::filter_record_batch;
 use async_trait::async_trait;
@@ -62,20 +64,21 @@ impl MssqlCdcSource {
 
         let uri = cfg.connection_string();
         let table = cfg.table.clone();
-        let (connection, table_schema) = with_timeout(cfg.timeout_seconds, "mssql-cdc connect", async {
-            tokio::task::spawn_blocking(
-                move || -> Result<(ManagedConnection, arrow_schema::Schema), NexusError> {
-                    let connection = open_connection(&uri)?;
-                    let schema = connection
-                        .get_table_schema(None, None, &table)
-                        .map_err(|e| NexusError::Schema(e.to_string()))?;
-                    Ok((connection, schema))
-                },
-            )
-            .await
-            .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))?
-        })
-        .await?;
+        let (connection, table_schema) =
+            with_timeout(cfg.timeout_seconds, "mssql-cdc connect", async {
+                tokio::task::spawn_blocking(
+                    move || -> Result<(ManagedConnection, arrow_schema::Schema), NexusError> {
+                        let connection = open_connection(&uri)?;
+                        let schema = connection
+                            .get_table_schema(None, None, &table)
+                            .map_err(|e| NexusError::Schema(e.to_string()))?;
+                        Ok((connection, schema))
+                    },
+                )
+                .await
+                .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))?
+            })
+            .await?;
 
         let table_columns: Vec<String> = table_schema
             .fields()
@@ -96,9 +99,11 @@ impl MssqlCdcSource {
                 let mut conn_for_lsn = connection.clone();
                 let capture_instance_for_lsn = capture_instance.clone();
                 with_timeout(cfg.timeout_seconds, "mssql-cdc get_min_lsn", async {
-                    tokio::task::spawn_blocking(move || fetch_min_lsn(&mut conn_for_lsn, &capture_instance_for_lsn))
-                        .await
-                        .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))?
+                    tokio::task::spawn_blocking(move || {
+                        fetch_min_lsn(&mut conn_for_lsn, &capture_instance_for_lsn)
+                    })
+                    .await
+                    .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))?
                 })
                 .await?
             }
@@ -156,15 +161,24 @@ impl Source for MssqlCdcSource {
                 }
                 let mut cursor = from_lsn;
                 loop {
-                    match poll_once(&connection, &capture_instance, &table_columns, &schema, &cursor, timeout_seconds)
-                        .await
+                    match poll_once(
+                        &connection,
+                        &capture_instance,
+                        &table_columns,
+                        &schema,
+                        &cursor,
+                        timeout_seconds,
+                    )
+                    .await
                     {
                         Ok((Some(batch), next_lsn)) if batch.num_rows() > 0 => {
                             match position.lock() {
                                 Ok(mut guard) => *guard = Some(lsn_hex_literal(&next_lsn)),
                                 Err(_) => {
                                     return Some((
-                                        Err(NexusError::Connector("mssql-cdc: position mutex poisoned".into())),
+                                        Err(NexusError::Connector(
+                                            "mssql-cdc: position mutex poisoned".into(),
+                                        )),
                                         (next_lsn, events_seen),
                                     ));
                                 }
@@ -213,19 +227,24 @@ async fn poll_once(
     let from_lsn = from_lsn.to_vec();
 
     with_timeout(timeout_seconds, "mssql-cdc poll", async {
-        tokio::task::spawn_blocking(move || -> Result<(Option<RecordBatch>, Vec<u8>), NexusError> {
-            let to_lsn = fetch_max_lsn(&mut connection)?;
-            if to_lsn == from_lsn {
-                return Ok((None, from_lsn));
-            }
+        tokio::task::spawn_blocking(
+            move || -> Result<(Option<RecordBatch>, Vec<u8>), NexusError> {
+                let to_lsn = fetch_max_lsn(&mut connection)?;
+                if to_lsn == from_lsn {
+                    return Ok((None, from_lsn));
+                }
 
-            let sql = build_cdc_query(&table_columns, &capture_instance, &from_lsn, &to_lsn)?;
-            let batch = run_scalar_query(&mut connection, &sql)?;
-            let transformed = batch.as_ref().map(|b| transform_cdc_batch(b, &schema)).transpose()?;
+                let sql = build_cdc_query(&table_columns, &capture_instance, &from_lsn, &to_lsn)?;
+                let batch = run_scalar_query(&mut connection, &sql)?;
+                let transformed = batch
+                    .as_ref()
+                    .map(|b| transform_cdc_batch(b, &schema))
+                    .transpose()?;
 
-            let next_from_lsn = fetch_increment_lsn(&mut connection, &to_lsn)?;
-            Ok((transformed, next_from_lsn))
-        })
+                let next_from_lsn = fetch_increment_lsn(&mut connection, &to_lsn)?;
+                Ok((transformed, next_from_lsn))
+            },
+        )
         .await
         .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))?
     })
@@ -237,7 +256,10 @@ async fn poll_once(
 /// validated via `quote_identifier`'s charset before this, so
 /// embedding it inside single quotes as a T-SQL string literal is safe
 /// (no injection-capable character can pass that validation).
-fn fetch_min_lsn(connection: &mut ManagedConnection, capture_instance: &str) -> Result<Vec<u8>, NexusError> {
+fn fetch_min_lsn(
+    connection: &mut ManagedConnection,
+    capture_instance: &str,
+) -> Result<Vec<u8>, NexusError> {
     let sql = format!("SELECT sys.fn_cdc_get_min_lsn('{capture_instance}')");
     run_scalar_query(connection, &sql)?
         .and_then(|batch| lsn_from_batch(&batch))
@@ -251,14 +273,21 @@ fn fetch_min_lsn(connection: &mut ManagedConnection, capture_instance: &str) -> 
 fn fetch_max_lsn(connection: &mut ManagedConnection) -> Result<Vec<u8>, NexusError> {
     run_scalar_query(connection, "SELECT sys.fn_cdc_get_max_lsn()")?
         .and_then(|batch| lsn_from_batch(&batch))
-        .ok_or_else(|| NexusError::Connector("mssql-cdc: sys.fn_cdc_get_max_lsn() returned no LSN".into()))
+        .ok_or_else(|| {
+            NexusError::Connector("mssql-cdc: sys.fn_cdc_get_max_lsn() returned no LSN".into())
+        })
 }
 
-fn fetch_increment_lsn(connection: &mut ManagedConnection, lsn: &[u8]) -> Result<Vec<u8>, NexusError> {
+fn fetch_increment_lsn(
+    connection: &mut ManagedConnection,
+    lsn: &[u8],
+) -> Result<Vec<u8>, NexusError> {
     let sql = format!("SELECT sys.fn_cdc_increment_lsn({})", lsn_hex_literal(lsn));
     run_scalar_query(connection, &sql)?
         .and_then(|batch| lsn_from_batch(&batch))
-        .ok_or_else(|| NexusError::Connector("mssql-cdc: sys.fn_cdc_increment_lsn returned no LSN".into()))
+        .ok_or_else(|| {
+            NexusError::Connector("mssql-cdc: sys.fn_cdc_increment_lsn returned no LSN".into())
+        })
 }
 
 /// LSN columns are `binary(10)` in SQL Server — assumed to arrive as
@@ -300,8 +329,9 @@ fn parse_lsn_hex(hex: &str) -> Result<Vec<u8>, NexusError> {
     (0..hex.len())
         .step_by(2)
         .map(|i| {
-            u8::from_str_radix(&hex[i..i + 2], 16)
-                .map_err(|e| NexusError::Schema(format!("mssql-cdc: invalid start_lsn hex digit: {e}")))
+            u8::from_str_radix(&hex[i..i + 2], 16).map_err(|e| {
+                NexusError::Schema(format!("mssql-cdc: invalid start_lsn hex digit: {e}"))
+            })
         })
         .collect()
 }
@@ -333,14 +363,19 @@ fn build_cdc_query(
 
 /// Runs `sql` and returns the first (and only expected) `RecordBatch`
 /// from the reader, or `None` if the result set was empty.
-fn run_scalar_query(connection: &mut ManagedConnection, sql: &str) -> Result<Option<RecordBatch>, NexusError> {
+fn run_scalar_query(
+    connection: &mut ManagedConnection,
+    sql: &str,
+) -> Result<Option<RecordBatch>, NexusError> {
     let mut statement = connection
         .new_statement()
         .map_err(|e| NexusError::Connector(e.to_string()))?;
     statement
         .set_sql_query(sql)
         .map_err(|e| NexusError::Connector(e.to_string()))?;
-    let reader = statement.execute().map_err(|e| NexusError::Connector(e.to_string()))?;
+    let reader = statement
+        .execute()
+        .map_err(|e| NexusError::Connector(e.to_string()))?;
 
     let mut batches: Vec<RecordBatch> = reader
         .collect::<Result<Vec<_>, _>>()
@@ -375,7 +410,10 @@ fn opcode_letter(op: i32) -> Option<&'static str> {
 /// `int` type is 4 bytes, so this is the expected mapping, but **not
 /// confirmed against a real driver call** this session; fails loudly
 /// (not silently) if the assumption is wrong.
-fn transform_cdc_batch(batch: &RecordBatch, business_schema: &SchemaRef) -> Result<RecordBatch, NexusError> {
+fn transform_cdc_batch(
+    batch: &RecordBatch,
+    business_schema: &SchemaRef,
+) -> Result<RecordBatch, NexusError> {
     let op_idx = batch.schema().index_of(CDC_OPERATION_COLUMN).map_err(|_| {
         NexusError::Schema(format!(
             "mssql-cdc: expected column {CDC_OPERATION_COLUMN} in change-table result, not found"
@@ -406,14 +444,23 @@ fn transform_cdc_batch(batch: &RecordBatch, business_schema: &SchemaRef) -> Resu
     let filtered = filter_record_batch(batch, &mask)
         .map_err(|e| NexusError::Schema(format!("mssql-cdc: row filter failed: {e}")))?;
 
-    let filtered_op_idx = filtered.schema().index_of(CDC_OPERATION_COLUMN).map_err(|e| {
-        NexusError::Schema(format!("mssql-cdc: {CDC_OPERATION_COLUMN} missing after filter: {e}"))
-    })?;
+    let filtered_op_idx = filtered
+        .schema()
+        .index_of(CDC_OPERATION_COLUMN)
+        .map_err(|e| {
+            NexusError::Schema(format!(
+                "mssql-cdc: {CDC_OPERATION_COLUMN} missing after filter: {e}"
+            ))
+        })?;
     let filtered_op_col = filtered
         .column(filtered_op_idx)
         .as_any()
         .downcast_ref::<Int32Array>()
-        .ok_or_else(|| NexusError::Schema(format!("mssql-cdc: {CDC_OPERATION_COLUMN} type changed after filter")))?;
+        .ok_or_else(|| {
+            NexusError::Schema(format!(
+                "mssql-cdc: {CDC_OPERATION_COLUMN} type changed after filter"
+            ))
+        })?;
 
     let opcodes: StringArray = (0..filtered_op_col.len())
         .map(|i| opcode_letter(filtered_op_col.value(i)))
@@ -461,7 +508,10 @@ mod tests {
 
     #[test]
     fn parse_lsn_hex_accepts_bare_hex_without_0x_prefix() {
-        assert_eq!(parse_lsn_hex("0001ABFF").unwrap(), vec![0x00, 0x01, 0xAB, 0xFF]);
+        assert_eq!(
+            parse_lsn_hex("0001ABFF").unwrap(),
+            vec![0x00, 0x01, 0xAB, 0xFF]
+        );
     }
 
     #[test]
@@ -491,8 +541,13 @@ mod tests {
 
     #[test]
     fn build_cdc_query_rejects_sql_injection_in_capture_instance() {
-        let err = build_cdc_query(&["id".to_string()], "x; DROP TABLE users; --", &[0x00], &[0x01])
-            .expect_err("malicious capture_instance must be rejected");
+        let err = build_cdc_query(
+            &["id".to_string()],
+            "x; DROP TABLE users; --",
+            &[0x00],
+            &[0x01],
+        )
+        .expect_err("malicious capture_instance must be rejected");
         assert!(matches!(err, NexusError::Schema(_)));
     }
 

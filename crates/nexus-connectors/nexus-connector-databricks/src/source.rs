@@ -66,11 +66,7 @@ impl DatabricksSource {
                             // nexus-connector-postgres does. Revisit once
                             // tested against a real Databricks workspace.
                             let schema = connection
-                                .get_table_schema(
-                                    Some(&cfg.catalog),
-                                    Some(&cfg.schema),
-                                    &cfg.table,
-                                )
+                                .get_table_schema(Some(&cfg.catalog), Some(&cfg.schema), &cfg.table)
                                 .map_err(|e| NexusError::Schema(e.to_string()))?;
                             Ok((connection, schema))
                         },

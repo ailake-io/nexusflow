@@ -41,7 +41,10 @@ fn batch_with_embedding(id: &str) -> RecordBatch {
 
     RecordBatch::try_new(
         schema,
-        vec![Arc::new(StringArray::from(vec![id])), Arc::new(embedding_builder.finish())],
+        vec![
+            Arc::new(StringArray::from(vec![id])),
+            Arc::new(embedding_builder.finish()),
+        ],
     )
     .unwrap()
 }
@@ -61,7 +64,9 @@ async fn sink_writes_batch_upsert_successfully() {
 
     let cfg = config(&server);
     let mut sink = AzureAiSearchSink::connect(&cfg).await.unwrap();
-    sink.write_batch(batch_with_embedding("doc-1")).await.unwrap();
+    sink.write_batch(batch_with_embedding("doc-1"))
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -78,7 +83,10 @@ async fn sink_surfaces_item_level_failures() {
 
     let cfg = config(&server);
     let mut sink = AzureAiSearchSink::connect(&cfg).await.unwrap();
-    let err = sink.write_batch(batch_with_embedding("doc-1")).await.unwrap_err();
+    let err = sink
+        .write_batch(batch_with_embedding("doc-1"))
+        .await
+        .unwrap_err();
     assert!(format!("{err}").contains("item-level failures"));
 }
 

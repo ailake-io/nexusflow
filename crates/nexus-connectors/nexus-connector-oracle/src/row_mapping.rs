@@ -30,7 +30,11 @@ pub(crate) fn cell_to_literal(
                 .ok_or_else(|| NexusError::Schema("column has unexpected array type".into()))?;
             let s = format!("{:.17}", arr.value(row));
             let s = s.trim_end_matches('0').trim_end_matches('.');
-            if s.is_empty() { "0".to_string() } else { s.to_string() }
+            if s.is_empty() {
+                "0".to_string()
+            } else {
+                s.to_string()
+            }
         }
         DataType::Utf8 => {
             let arr = column

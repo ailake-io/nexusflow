@@ -6,7 +6,9 @@ use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
 use futures::stream::{self, BoxStream};
-use nexus_core::{quote_identifier, with_timeout, NexusError, RecordBatchBuilder, Source, OPCODE_COLUMN};
+use nexus_core::{
+    quote_identifier, with_timeout, NexusError, RecordBatchBuilder, Source, OPCODE_COLUMN,
+};
 use odbc_api::{Connection, ConnectionOptions, Cursor, Environment, Nullable};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
@@ -54,9 +56,13 @@ impl OracleCdcSource {
         let cfg = config.clone();
         let columns = with_timeout(config.timeout_seconds, "oracle-cdc describe_table", async {
             tokio::task::spawn_blocking(move || -> Result<Vec<OracleColumn>, NexusError> {
-                let env = Environment::new().map_err(|e| NexusError::Connector(format!("oracle-cdc env: {e}")))?;
+                let env = Environment::new()
+                    .map_err(|e| NexusError::Connector(format!("oracle-cdc env: {e}")))?;
                 let conn = env
-                    .connect_with_connection_string(&connection_string(&cfg), ConnectionOptions::default())
+                    .connect_with_connection_string(
+                        &connection_string(&cfg),
+                        ConnectionOptions::default(),
+                    )
                     .map_err(|e| NexusError::Connector(format!("oracle-cdc connect: {e}")))?;
                 describe_table(&conn, &cfg.table)
             })
@@ -66,7 +72,11 @@ impl OracleCdcSource {
         .await?;
 
         let business_schema = build_schema(&columns);
-        let mut fields: Vec<Field> = business_schema.fields().iter().map(|f| f.as_ref().clone()).collect();
+        let mut fields: Vec<Field> = business_schema
+            .fields()
+            .iter()
+            .map(|f| f.as_ref().clone())
+            .collect();
         fields.push(Field::new(OPCODE_COLUMN, DataType::Utf8, false));
         let schema: SchemaRef = Arc::new(Schema::new(fields));
 
@@ -79,16 +89,25 @@ impl OracleCdcSource {
 }
 
 fn connection_string(cfg: &OracleCdcConfig) -> String {
-    connection_string_parts(&cfg.host, cfg.port, &cfg.service_name, &cfg.username, &cfg.password)
+    connection_string_parts(
+        &cfg.host,
+        cfg.port,
+        &cfg.service_name,
+        &cfg.username,
+        &cfg.password,
+    )
 }
 
 #[async_trait]
 impl Source for OracleCdcSource {
-    async fn read_batches(&mut self) -> Result<BoxStream<'_, Result<RecordBatch, NexusError>>, NexusError> {
+    async fn read_batches(
+        &mut self,
+    ) -> Result<BoxStream<'_, Result<RecordBatch, NexusError>>, NexusError> {
         let config = self.config.clone();
         let schema = self.schema.clone();
         let position = self.position.clone();
-        let (tx, rx) = tokio::sync::mpsc::channel::<Result<RecordBatch, NexusError>>(CHANNEL_CAPACITY);
+        let (tx, rx) =
+            tokio::sync::mpsc::channel::<Result<RecordBatch, NexusError>>(CHANNEL_CAPACITY);
 
         tokio::task::spawn_blocking(move || poll_loop(&config, &schema, &tx, &position));
 
@@ -135,7 +154,8 @@ fn poll_loop_inner(
     tx: &Sender<Result<RecordBatch, NexusError>>,
     position: &Arc<Mutex<Option<String>>>,
 ) -> Result<(), NexusError> {
-    let env = Environment::new().map_err(|e| NexusError::Connector(format!("oracle-cdc env: {e}")))?;
+    let env =
+        Environment::new().map_err(|e| NexusError::Connector(format!("oracle-cdc env: {e}")))?;
     let conn = env
         .connect_with_connection_string(&connection_string(config), ConnectionOptions::default())
         .map_err(|e| NexusError::Connector(format!("oracle-cdc connect: {e}")))?;
@@ -170,7 +190,10 @@ fn poll_loop_inner(
             let mut buffer: Vec<Value> = Vec::with_capacity(rows.len());
             for (operation, sql_redo) in &rows {
                 let mut object = parse_redo(operation, sql_redo)?;
-                object.insert(OPCODE_COLUMN.to_string(), Value::String(opcode_letter(operation)?.to_string()));
+                object.insert(
+                    OPCODE_COLUMN.to_string(),
+                    Value::String(opcode_letter(operation)?.to_string()),
+                );
                 buffer.push(Value::Object(object));
             }
             events_seen += buffer.len() as u64;
@@ -192,7 +215,9 @@ fn fetch_current_scn(conn: &Connection<'_>) -> Result<i64, NexusError> {
     let mut cursor = conn
         .execute("SELECT CURRENT_SCN FROM V$DATABASE", (), None)
         .map_err(|e| NexusError::Connector(format!("oracle-cdc CURRENT_SCN query failed: {e}")))?
-        .ok_or_else(|| NexusError::Connector("oracle-cdc: V$DATABASE returned no result set".into()))?;
+        .ok_or_else(|| {
+            NexusError::Connector("oracle-cdc: V$DATABASE returned no result set".into())
+        })?;
 
     let mut row = cursor
         .next_row()
@@ -246,23 +271,28 @@ fn fetch_logmnr_contents(
 
     let mut cursor = conn
         .execute(&sql, (), None)
-        .map_err(|e| NexusError::Connector(format!("oracle-cdc V$LOGMNR_CONTENTS query failed: {e}")))?
-        .ok_or_else(|| NexusError::Connector("oracle-cdc: V$LOGMNR_CONTENTS returned no result set".into()))?;
+        .map_err(|e| {
+            NexusError::Connector(format!("oracle-cdc V$LOGMNR_CONTENTS query failed: {e}"))
+        })?
+        .ok_or_else(|| {
+            NexusError::Connector("oracle-cdc: V$LOGMNR_CONTENTS returned no result set".into())
+        })?;
 
     let mut rows = Vec::new();
-    while let Some(mut row) = cursor
-        .next_row()
-        .map_err(|e| NexusError::Connector(format!("oracle-cdc V$LOGMNR_CONTENTS fetch failed: {e}")))?
-    {
+    while let Some(mut row) = cursor.next_row().map_err(|e| {
+        NexusError::Connector(format!("oracle-cdc V$LOGMNR_CONTENTS fetch failed: {e}"))
+    })? {
         let mut op_buf = Vec::new();
         row.get_text(1, &mut op_buf)
             .map_err(|e| NexusError::Connector(format!("oracle-cdc OPERATION read failed: {e}")))?;
-        let operation = String::from_utf8(op_buf).map_err(|e| NexusError::Serialization(e.to_string()))?;
+        let operation =
+            String::from_utf8(op_buf).map_err(|e| NexusError::Serialization(e.to_string()))?;
 
         let mut redo_buf = Vec::new();
         row.get_text(2, &mut redo_buf)
             .map_err(|e| NexusError::Connector(format!("oracle-cdc SQL_REDO read failed: {e}")))?;
-        let sql_redo = String::from_utf8(redo_buf).map_err(|e| NexusError::Serialization(e.to_string()))?;
+        let sql_redo =
+            String::from_utf8(redo_buf).map_err(|e| NexusError::Serialization(e.to_string()))?;
 
         rows.push((operation, sql_redo));
     }

@@ -2,7 +2,9 @@ use crate::config::ElasticsearchConnectorConfig;
 use crate::rows::{batch_to_source, extract_embeddings, extract_ids};
 use arrow_array::RecordBatch;
 use async_trait::async_trait;
-use nexus_core::{project_column, split_by_opcode, CheckpointCursor, NexusError, Sink, OPCODE_COLUMN};
+use nexus_core::{
+    project_column, split_by_opcode, CheckpointCursor, NexusError, Sink, OPCODE_COLUMN,
+};
 use serde_json::Value;
 
 /// Writes via the Bulk API (`POST /_bulk`, NDJSON body) — confirmed
@@ -31,7 +33,9 @@ impl ElasticsearchSink {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(cfg.timeout_seconds))
             .build()
-            .map_err(|e| NexusError::Connector(format!("elasticsearch client build failed: {e}")))?;
+            .map_err(|e| {
+                NexusError::Connector(format!("elasticsearch client build failed: {e}"))
+            })?;
 
         Ok(Self {
             client,
@@ -58,10 +62,9 @@ impl ElasticsearchSink {
             request = request.basic_auth(user, Some(pass));
         }
 
-        let response = request
-            .send()
-            .await
-            .map_err(|e| NexusError::Connector(format!("elasticsearch bulk request failed: {e}")))?;
+        let response = request.send().await.map_err(|e| {
+            NexusError::Connector(format!("elasticsearch bulk request failed: {e}"))
+        })?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -71,12 +74,15 @@ impl ElasticsearchSink {
             )));
         }
 
-        let parsed: Value = response
-            .json()
-            .await
-            .map_err(|e| NexusError::Connector(format!("elasticsearch bulk response parse failed: {e}")))?;
+        let parsed: Value = response.json().await.map_err(|e| {
+            NexusError::Connector(format!("elasticsearch bulk response parse failed: {e}"))
+        })?;
 
-        if parsed.get("errors").and_then(Value::as_bool).unwrap_or(false) {
+        if parsed
+            .get("errors")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
             let failures: Vec<&Value> = parsed
                 .get("items")
                 .and_then(Value::as_array)

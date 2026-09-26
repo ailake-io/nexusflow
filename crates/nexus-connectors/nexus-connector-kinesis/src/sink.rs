@@ -83,7 +83,9 @@ impl KinesisSink {
                     .set_records(Some(batch))
                     .send()
                     .await
-                    .map_err(|e| NexusError::Connector(format!("kinesis put_records failed: {e:?}")))
+                    .map_err(|e| {
+                        NexusError::Connector(format!("kinesis put_records failed: {e:?}"))
+                    })
             })
             .await?;
 

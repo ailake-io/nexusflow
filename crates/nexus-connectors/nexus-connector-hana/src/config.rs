@@ -60,9 +60,7 @@ impl HanaConnectorConfig {
             ));
         }
         if self.table.trim().is_empty() {
-            return Err(NexusError::Connector(
-                "hana: table is required".to_string(),
-            ));
+            return Err(NexusError::Connector("hana: table is required".to_string()));
         }
         if let Some(db) = self.database.as_deref() {
             if db.trim().is_empty() {

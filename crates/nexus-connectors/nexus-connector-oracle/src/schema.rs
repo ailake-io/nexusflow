@@ -36,7 +36,9 @@ pub(crate) fn describe_table(
     let mut cursor = conn
         .execute(&sql, (), None)
         .map_err(|e| NexusError::Connector(format!("oracle describe_table query failed: {e}")))?
-        .ok_or_else(|| NexusError::Connector("oracle ALL_TAB_COLUMNS returned no result set".into()))?;
+        .ok_or_else(|| {
+            NexusError::Connector("oracle ALL_TAB_COLUMNS returned no result set".into())
+        })?;
 
     let mut columns = Vec::new();
     while let Some(mut row) = cursor
@@ -44,22 +46,32 @@ pub(crate) fn describe_table(
         .map_err(|e| NexusError::Connector(format!("oracle describe_table fetch failed: {e}")))?
     {
         let mut name_buf = Vec::new();
-        row.get_text(1, &mut name_buf)
-            .map_err(|e| NexusError::Connector(format!("oracle describe_table column_name read failed: {e}")))?;
-        let name = String::from_utf8(name_buf).map_err(|e| NexusError::Serialization(e.to_string()))?;
+        row.get_text(1, &mut name_buf).map_err(|e| {
+            NexusError::Connector(format!(
+                "oracle describe_table column_name read failed: {e}"
+            ))
+        })?;
+        let name =
+            String::from_utf8(name_buf).map_err(|e| NexusError::Serialization(e.to_string()))?;
 
         let mut type_buf = Vec::new();
-        row.get_text(2, &mut type_buf)
-            .map_err(|e| NexusError::Connector(format!("oracle describe_table data_type read failed: {e}")))?;
-        let data_type = String::from_utf8(type_buf).map_err(|e| NexusError::Serialization(e.to_string()))?;
+        row.get_text(2, &mut type_buf).map_err(|e| {
+            NexusError::Connector(format!("oracle describe_table data_type read failed: {e}"))
+        })?;
+        let data_type =
+            String::from_utf8(type_buf).map_err(|e| NexusError::Serialization(e.to_string()))?;
 
         let mut precision = Nullable::<i64>::null();
-        row.get_data(3, &mut precision)
-            .map_err(|e| NexusError::Connector(format!("oracle describe_table data_precision read failed: {e}")))?;
+        row.get_data(3, &mut precision).map_err(|e| {
+            NexusError::Connector(format!(
+                "oracle describe_table data_precision read failed: {e}"
+            ))
+        })?;
 
         let mut scale = Nullable::<i64>::null();
-        row.get_data(4, &mut scale)
-            .map_err(|e| NexusError::Connector(format!("oracle describe_table data_scale read failed: {e}")))?;
+        row.get_data(4, &mut scale).map_err(|e| {
+            NexusError::Connector(format!("oracle describe_table data_scale read failed: {e}"))
+        })?;
 
         let arrow_type = oracle_type_to_arrow(&data_type, precision.into_opt(), scale.into_opt())?;
         columns.push(OracleColumn { name, arrow_type });
@@ -105,7 +117,9 @@ fn oracle_type_to_arrow(
             (Some(p), Some(0)) if p <= 18 => DataType::Int64,
             _ => DataType::Float64,
         }),
-        "VARCHAR2" | "CHAR" | "NVARCHAR2" | "NCHAR" | "CLOB" | "NCLOB" | "LONG" => Ok(DataType::Utf8),
+        "VARCHAR2" | "CHAR" | "NVARCHAR2" | "NCHAR" | "CLOB" | "NCLOB" | "LONG" => {
+            Ok(DataType::Utf8)
+        }
         t if t == "DATE" || t.starts_with("TIMESTAMP") => Ok(DataType::Utf8),
         "RAW" | "BLOB" | "LONG RAW" => Err(NexusError::Schema(format!(
             "oracle connector does not support binary column type {data_type} yet"
@@ -122,22 +136,34 @@ mod tests {
 
     #[test]
     fn number_with_zero_scale_and_small_precision_is_int64() {
-        assert_eq!(oracle_type_to_arrow("NUMBER", Some(10), Some(0)).unwrap(), DataType::Int64);
+        assert_eq!(
+            oracle_type_to_arrow("NUMBER", Some(10), Some(0)).unwrap(),
+            DataType::Int64
+        );
     }
 
     #[test]
     fn number_with_fractional_scale_is_float64() {
-        assert_eq!(oracle_type_to_arrow("NUMBER", Some(10), Some(2)).unwrap(), DataType::Float64);
+        assert_eq!(
+            oracle_type_to_arrow("NUMBER", Some(10), Some(2)).unwrap(),
+            DataType::Float64
+        );
     }
 
     #[test]
     fn number_with_no_precision_is_float64() {
-        assert_eq!(oracle_type_to_arrow("NUMBER", None, None).unwrap(), DataType::Float64);
+        assert_eq!(
+            oracle_type_to_arrow("NUMBER", None, None).unwrap(),
+            DataType::Float64
+        );
     }
 
     #[test]
     fn number_wider_than_i64_is_float64() {
-        assert_eq!(oracle_type_to_arrow("NUMBER", Some(38), Some(0)).unwrap(), DataType::Float64);
+        assert_eq!(
+            oracle_type_to_arrow("NUMBER", Some(38), Some(0)).unwrap(),
+            DataType::Float64
+        );
     }
 
     #[test]

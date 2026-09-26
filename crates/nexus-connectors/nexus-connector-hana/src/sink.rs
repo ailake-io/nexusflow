@@ -84,11 +84,17 @@ where
     Err(last_err.unwrap_or_else(|| NexusError::Connector(format!("{op_name} retry exhausted"))))
 }
 
-fn run_worker(config: HanaConnectorConfig, rx: mpsc::Receiver<BatchRequest>) -> Result<(), NexusError> {
+fn run_worker(
+    config: HanaConnectorConfig,
+    rx: mpsc::Receiver<BatchRequest>,
+) -> Result<(), NexusError> {
     let env = Environment::new().map_err(|e| NexusError::Connector(format!("hana env: {e}")))?;
     let conn: Connection<'_> = retry_sync(&config.retry, "hana sink connect", || {
-        env.connect_with_connection_string(&connection_string(&config), ConnectionOptions::default())
-            .map_err(|e| NexusError::Connector(format!("hana connect: {e}")))
+        env.connect_with_connection_string(
+            &connection_string(&config),
+            ConnectionOptions::default(),
+        )
+        .map_err(|e| NexusError::Connector(format!("hana connect: {e}")))
     })?;
     conn.set_autocommit(false)
         .map_err(|e| NexusError::Connector(format!("hana set_autocommit(false): {e}")))?;
@@ -124,11 +130,20 @@ fn apply_batch(
     }
 }
 
-fn upsert(config: &HanaConnectorConfig, conn: &Connection<'_>, batch: &RecordBatch) -> Result<(), NexusError> {
+fn upsert(
+    config: &HanaConnectorConfig,
+    conn: &Connection<'_>,
+    batch: &RecordBatch,
+) -> Result<(), NexusError> {
     if batch.num_rows() == 0 {
         return Ok(());
     }
-    let columns: Vec<String> = batch.schema().fields().iter().map(|f| f.name().clone()).collect();
+    let columns: Vec<String> = batch
+        .schema()
+        .fields()
+        .iter()
+        .map(|f| f.name().clone())
+        .collect();
     let sql = build_upsert_sql(&config.table, &columns)?;
 
     let mut stmt = conn
@@ -138,22 +153,32 @@ fn upsert(config: &HanaConnectorConfig, conn: &Connection<'_>, batch: &RecordBat
         let params: Vec<Box<dyn InputParameter>> = (0..columns.len())
             .map(|col| cell_to_param(batch, row, col))
             .collect::<Result<_, _>>()?;
-        retry_sync(&config.retry, "hana upsert", || -> Result<(), NexusError> {
-            stmt.execute(&sql, params.as_slice())
-                .map_err(|e| NexusError::Connector(format!("hana upsert failed: {e}")))?;
-            Ok(())
-        })?;
+        retry_sync(
+            &config.retry,
+            "hana upsert",
+            || -> Result<(), NexusError> {
+                stmt.execute(&sql, params.as_slice())
+                    .map_err(|e| NexusError::Connector(format!("hana upsert failed: {e}")))?;
+                Ok(())
+            },
+        )?;
     }
     Ok(())
 }
 
-fn delete(config: &HanaConnectorConfig, conn: &Connection<'_>, batch: &RecordBatch) -> Result<(), NexusError> {
+fn delete(
+    config: &HanaConnectorConfig,
+    conn: &Connection<'_>,
+    batch: &RecordBatch,
+) -> Result<(), NexusError> {
     if batch.num_rows() == 0 {
         return Ok(());
     }
     let primary_key = config.primary_key_or_err()?;
     let pk_col = batch.schema().index_of(primary_key).map_err(|_| {
-        NexusError::Schema(format!("primary key column '{primary_key}' not found in batch"))
+        NexusError::Schema(format!(
+            "primary key column '{primary_key}' not found in batch"
+        ))
     })?;
     let sql = build_delete_sql(&config.table, primary_key)?;
 
@@ -162,11 +187,15 @@ fn delete(config: &HanaConnectorConfig, conn: &Connection<'_>, batch: &RecordBat
         .map_err(|e| NexusError::Connector(format!("hana preallocate delete: {e}")))?;
     for row in 0..batch.num_rows() {
         let param = cell_to_param(batch, row, pk_col)?;
-        retry_sync(&config.retry, "hana delete", || -> Result<(), NexusError> {
-            stmt.execute(&sql, std::slice::from_ref(&param))
-                .map_err(|e| NexusError::Connector(format!("hana delete failed: {e}")))?;
-            Ok(())
-        })?;
+        retry_sync(
+            &config.retry,
+            "hana delete",
+            || -> Result<(), NexusError> {
+                stmt.execute(&sql, std::slice::from_ref(&param))
+                    .map_err(|e| NexusError::Connector(format!("hana delete failed: {e}")))?;
+                Ok(())
+            },
+        )?;
     }
     Ok(())
 }
@@ -176,7 +205,10 @@ impl Sink for HanaSink {
     async fn write_batch(&mut self, batch: RecordBatch) -> Result<(), NexusError> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.tx
-            .send(BatchRequest { batch, response: tx })
+            .send(BatchRequest {
+                batch,
+                response: tx,
+            })
             .map_err(|_| NexusError::Connector("hana sink worker has terminated".to_string()))?;
 
         match tokio::time::timeout(std::time::Duration::from_secs(self.timeout_seconds), rx).await {

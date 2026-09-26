@@ -25,4 +25,9 @@ regexes = [
   # because this test string happens to look like an assignment (`...KEY_2"
   # .to_string()`); nothing here is secret.
   '''NEXUS_TEST_ANTHROPIC_KEY_2''',
+  # nexus-connector-vertex-vector-search's TEST_PRIVATE_KEY_PEM — throwaway
+  # RSA key used only to satisfy the connector's JWT-signing code path
+  # against a wiremock server that never checks the signature. Never paired
+  # with a real GCP service account.
+  '''MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQCdaPvqQKt02\+bG''',
 ]

@@ -35,8 +35,8 @@ nexus_core::submit_connector!(
 );
 
 fn parse_and_validate(cfg: serde_json::Value) -> Result<MssqlConnectorConfig, NexusError> {
-    let parsed: MssqlConnectorConfig = serde_json::from_value(cfg)
-        .map_err(|e| NexusError::Serialization(e.to_string()))?;
+    let parsed: MssqlConnectorConfig =
+        serde_json::from_value(cfg).map_err(|e| NexusError::Serialization(e.to_string()))?;
     parsed.validate()?;
     Ok(parsed)
 }
@@ -69,11 +69,7 @@ nexus_core::submit_sink_builder!(
     }
 );
 
-nexus_core::submit_connector!(
-    "mssql-cdc",
-    ConnectorCapability::Bridged,
-    MssqlCdcConfig
-);
+nexus_core::submit_connector!("mssql-cdc", ConnectorCapability::Bridged, MssqlCdcConfig);
 
 fn validate_mssql_cdc_config(cfg: &serde_json::Value) -> Result<(), NexusError> {
     serde_json::from_value::<MssqlCdcConfig>(cfg.clone())

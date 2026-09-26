@@ -4,16 +4,18 @@
 use arrow_array::builder::{FixedSizeListBuilder, Float32Builder};
 use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
-use nexus_connector_vertex_vector_search::{VertexVectorSearchConnectorConfig, VertexVectorSearchSink};
+use nexus_connector_vertex_vector_search::{
+    VertexVectorSearchConnectorConfig, VertexVectorSearchSink,
+};
 use nexus_core::Sink;
 use serde_json::json;
 use std::sync::Arc;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-// Throwaway RSA key, same one already used in
-// nexus-connector-ga4/nexus-connector-salesforce (this repo) test
-// suites — wiremock never checks JWT signatures.
+// Throwaway RSA key, only used to exercise this connector's JWT-signing
+// code path — wiremock never checks the signature. Allowlisted in
+// .gitleaks.toml by exact key content.
 const TEST_PRIVATE_KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----
 MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQCdaPvqQKt02+bG
 JDpT3A6ATPPAtgmwA1lCAehC6yf3qXb+5nfHolYv8+VnzHo2oAGc0pmnZYAX94oW
@@ -75,7 +77,10 @@ fn batch_with_embedding() -> RecordBatch {
 
     RecordBatch::try_new(
         schema,
-        vec![Arc::new(Int64Array::from(vec![1])), Arc::new(embedding_builder.finish())],
+        vec![
+            Arc::new(Int64Array::from(vec![1])),
+            Arc::new(embedding_builder.finish()),
+        ],
     )
     .unwrap()
 }
@@ -83,7 +88,10 @@ fn batch_with_embedding() -> RecordBatch {
 async fn mount_auth(server: &MockServer) {
     Mock::given(method("POST"))
         .and(path("/token"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "access_token": "test-access-token" })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({ "access_token": "test-access-token" })),
+        )
         .mount(server)
         .await;
 }

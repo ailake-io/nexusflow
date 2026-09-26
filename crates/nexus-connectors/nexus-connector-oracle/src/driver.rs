@@ -10,7 +10,13 @@ use crate::config::OracleConnectorConfig;
 /// verification item, not a settled fact, until checked against a real
 /// Oracle Instant Client install.
 pub(crate) fn connection_string(cfg: &OracleConnectorConfig) -> String {
-    connection_string_parts(&cfg.host, cfg.port, &cfg.service_name, &cfg.username, &cfg.password)
+    connection_string_parts(
+        &cfg.host,
+        cfg.port,
+        &cfg.service_name,
+        &cfg.username,
+        &cfg.password,
+    )
 }
 
 /// Same connection string, built from loose parts instead of

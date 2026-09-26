@@ -101,15 +101,21 @@ impl WeaviateSink {
             let class_name = class_name.clone();
             async move {
                 let request = request_builder.ok_or_else(|| {
-                    NexusError::Connector("weaviate: failed to clone batch objects request".to_string())
+                    NexusError::Connector(
+                        "weaviate: failed to clone batch objects request".to_string(),
+                    )
                 })?;
                 let response = tokio::time::timeout(
                     std::time::Duration::from_secs(timeout_seconds),
                     request.send(),
                 )
                 .await
-                .map_err(|e| NexusError::Connector(format!("weaviate batch objects request timed out: {e}")))?
-                .map_err(|e| NexusError::Connector(format!("weaviate batch objects request failed: {e}")))?;
+                .map_err(|e| {
+                    NexusError::Connector(format!("weaviate batch objects request timed out: {e}"))
+                })?
+                .map_err(|e| {
+                    NexusError::Connector(format!("weaviate batch objects request failed: {e}"))
+                })?;
 
                 if !response.status().is_success() {
                     let status = response.status();
@@ -120,14 +126,17 @@ impl WeaviateSink {
                 }
 
                 let results: Vec<Value> = response.json().await.map_err(|e| {
-                    NexusError::Connector(format!("weaviate batch objects response parse failed: {e}"))
+                    NexusError::Connector(format!(
+                        "weaviate batch objects response parse failed: {e}"
+                    ))
                 })?;
 
                 let failures: Vec<&Value> = results
                     .iter()
                     .filter(|item| {
                         item.pointer("/result/errors").is_some()
-                            || item.pointer("/result/status").and_then(Value::as_str) == Some("FAILED")
+                            || item.pointer("/result/status").and_then(Value::as_str)
+                                == Some("FAILED")
                     })
                     .collect();
                 if !failures.is_empty() {
@@ -195,15 +204,21 @@ impl WeaviateSink {
             let class_name = class_name.clone();
             async move {
                 let request = request_builder.ok_or_else(|| {
-                    NexusError::Connector("weaviate: failed to clone batch delete request".to_string())
+                    NexusError::Connector(
+                        "weaviate: failed to clone batch delete request".to_string(),
+                    )
                 })?;
                 let response = tokio::time::timeout(
                     std::time::Duration::from_secs(timeout_seconds),
                     request.send(),
                 )
                 .await
-                .map_err(|e| NexusError::Connector(format!("weaviate batch delete request timed out: {e}")))?
-                .map_err(|e| NexusError::Connector(format!("weaviate batch delete request failed: {e}")))?;
+                .map_err(|e| {
+                    NexusError::Connector(format!("weaviate batch delete request timed out: {e}"))
+                })?
+                .map_err(|e| {
+                    NexusError::Connector(format!("weaviate batch delete request failed: {e}"))
+                })?;
 
                 // 404 means the objects are already gone, which is fine for a delete.
                 if !response.status().is_success() && response.status().as_u16() != 404 {

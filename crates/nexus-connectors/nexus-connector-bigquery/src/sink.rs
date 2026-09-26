@@ -7,8 +7,8 @@ use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use async_trait::async_trait;
 use nexus_core::{
-    project_column, retry_with_backoff, split_by_opcode, with_timeout, CheckpointCursor, NexusError,
-    Sink,
+    project_column, retry_with_backoff, split_by_opcode, with_timeout, CheckpointCursor,
+    NexusError, Sink,
 };
 
 /// BigQuery has no `ON CONFLICT` — upsert here is `MERGE INTO` (standard
@@ -56,7 +56,9 @@ impl BigquerySink {
                 with_timeout(cfg.timeout_seconds, "bigquery connect", async {
                     tokio::task::spawn_blocking(move || open_connection(&cfg))
                         .await
-                        .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))?
+                        .map_err(|e| {
+                            NexusError::Connector(format!("blocking task panicked: {e}"))
+                        })?
                 })
                 .await
             }

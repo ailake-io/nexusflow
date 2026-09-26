@@ -43,7 +43,10 @@ fn batch_with_embedding() -> RecordBatch {
 
     RecordBatch::try_new(
         schema,
-        vec![Arc::new(Int64Array::from(vec![1])), Arc::new(embedding_builder.finish())],
+        vec![
+            Arc::new(Int64Array::from(vec![1])),
+            Arc::new(embedding_builder.finish()),
+        ],
     )
     .unwrap()
 }
@@ -54,7 +57,9 @@ async fn sink_writes_bulk_upsert_successfully() {
 
     Mock::given(method("POST"))
         .and(path("/_bulk"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "errors": false, "items": [] })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({ "errors": false, "items": [] })),
+        )
         .mount(&server)
         .await;
 
@@ -88,7 +93,9 @@ async fn sink_deletes_via_opcode_split() {
 
     Mock::given(method("POST"))
         .and(path("/_bulk"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "errors": false, "items": [] })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({ "errors": false, "items": [] })),
+        )
         .mount(&server)
         .await;
 

@@ -83,14 +83,20 @@ where
     Err(last_err.unwrap_or_else(|| NexusError::Connector(format!("{op_name} retry exhausted"))))
 }
 
-fn run_worker(config: OracleConnectorConfig, rx: mpsc::Receiver<BatchRequest>) -> Result<(), NexusError> {
+fn run_worker(
+    config: OracleConnectorConfig,
+    rx: mpsc::Receiver<BatchRequest>,
+) -> Result<(), NexusError> {
     tracing::info!("oracle sink worker starting");
     let env = Environment::new().map_err(|e| NexusError::Connector(format!("oracle env: {e}")))?;
     tracing::info!("oracle environment created");
     let conn: Connection<'_> = retry_sync(&config.retry, "oracle sink connect", || {
         tracing::info!("oracle connecting with connection string");
-        env.connect_with_connection_string(&connection_string(&config), ConnectionOptions::default())
-            .map_err(|e| NexusError::Connector(format!("oracle connect: {e}")))
+        env.connect_with_connection_string(
+            &connection_string(&config),
+            ConnectionOptions::default(),
+        )
+        .map_err(|e| NexusError::Connector(format!("oracle connect: {e}")))
     })?;
     tracing::info!("oracle connection established");
     conn.set_autocommit(false)
@@ -136,7 +142,9 @@ fn ensure_table_exists(
                 Ok(())
             } else {
                 let _ = conn.rollback();
-                Err(NexusError::Connector(format!("oracle create table failed: {e}")))
+                Err(NexusError::Connector(format!(
+                    "oracle create table failed: {e}"
+                )))
             }
         }
     }
@@ -173,14 +181,25 @@ fn apply_batch(
 /// than one statement per row.
 const ORACLE_MERGE_BATCH_SIZE: usize = 1000;
 
-fn upsert(config: &OracleConnectorConfig, conn: &Connection<'_>, batch: &RecordBatch) -> Result<(), NexusError> {
+fn upsert(
+    config: &OracleConnectorConfig,
+    conn: &Connection<'_>,
+    batch: &RecordBatch,
+) -> Result<(), NexusError> {
     if batch.num_rows() == 0 {
         return Ok(());
     }
     let primary_key = config.primary_key_or_err()?;
-    let columns: Vec<String> = batch.schema().fields().iter().map(|f| f.name().clone()).collect();
+    let columns: Vec<String> = batch
+        .schema()
+        .fields()
+        .iter()
+        .map(|f| f.name().clone())
+        .collect();
     let pk_col = batch.schema().index_of(primary_key).map_err(|_| {
-        NexusError::Schema(format!("primary key column '{primary_key}' not found in batch"))
+        NexusError::Schema(format!(
+            "primary key column '{primary_key}' not found in batch"
+        ))
     })?;
     let non_pk_cols: Vec<usize> = (0..columns.len()).filter(|c| *c != pk_col).collect();
     let table = crate::sql::oracle_identifier(&config.table)?;
@@ -191,7 +210,11 @@ fn upsert(config: &OracleConnectorConfig, conn: &Connection<'_>, batch: &RecordB
         .collect::<Result<Vec<_>, _>>()?;
 
     let num_rows = batch.num_rows();
-    tracing::info!("oracle upsert {} rows in batches of {}", num_rows, ORACLE_MERGE_BATCH_SIZE);
+    tracing::info!(
+        "oracle upsert {} rows in batches of {}",
+        num_rows,
+        ORACLE_MERGE_BATCH_SIZE
+    );
 
     let mut row = 0;
     while row < num_rows {
@@ -203,7 +226,12 @@ fn upsert(config: &OracleConnectorConfig, conn: &Connection<'_>, batch: &RecordB
                 .collect::<Result<Vec<_>, _>>()?;
             selects.push(format!(
                 "SELECT {} FROM DUAL",
-                parts.iter().zip(col_names.iter()).map(|(v, c)| format!("{v} AS {c}")).collect::<Vec<_>>().join(", ")
+                parts
+                    .iter()
+                    .zip(col_names.iter())
+                    .map(|(v, c)| format!("{v} AS {c}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         }
 
@@ -228,24 +256,35 @@ fn upsert(config: &OracleConnectorConfig, conn: &Connection<'_>, batch: &RecordB
             tracing::info!("oracle first batched merge sql length: {}", sql.len());
         }
 
-        retry_sync(&config.retry, "oracle batched merge", || -> Result<(), NexusError> {
-            conn.execute(&sql, (), None)
-                .map_err(|e| NexusError::Connector(format!("oracle batched merge failed: {e}")))?;
-            Ok(())
-        })?;
+        retry_sync(
+            &config.retry,
+            "oracle batched merge",
+            || -> Result<(), NexusError> {
+                conn.execute(&sql, (), None).map_err(|e| {
+                    NexusError::Connector(format!("oracle batched merge failed: {e}"))
+                })?;
+                Ok(())
+            },
+        )?;
 
         row = end;
     }
     Ok(())
 }
 
-fn delete(config: &OracleConnectorConfig, conn: &Connection<'_>, batch: &RecordBatch) -> Result<(), NexusError> {
+fn delete(
+    config: &OracleConnectorConfig,
+    conn: &Connection<'_>,
+    batch: &RecordBatch,
+) -> Result<(), NexusError> {
     if batch.num_rows() == 0 {
         return Ok(());
     }
     let primary_key = config.primary_key_or_err()?;
     let pk_col = batch.schema().index_of(primary_key).map_err(|_| {
-        NexusError::Schema(format!("primary key column '{primary_key}' not found in batch"))
+        NexusError::Schema(format!(
+            "primary key column '{primary_key}' not found in batch"
+        ))
     })?;
     let table = crate::sql::oracle_identifier(&config.table)?;
     let pk_name = crate::sql::oracle_identifier(primary_key)?;
@@ -253,11 +292,15 @@ fn delete(config: &OracleConnectorConfig, conn: &Connection<'_>, batch: &RecordB
     for row in 0..batch.num_rows() {
         let pk_literal = cell_to_literal(batch, row, pk_col)?;
         let sql = format!("DELETE FROM {table} WHERE {pk_name} = {pk_literal}");
-        retry_sync(&config.retry, "oracle delete", || -> Result<(), NexusError> {
-            conn.execute(&sql, (), None)
-                .map_err(|e| NexusError::Connector(format!("oracle delete failed: {e}")))?;
-            Ok(())
-        })?;
+        retry_sync(
+            &config.retry,
+            "oracle delete",
+            || -> Result<(), NexusError> {
+                conn.execute(&sql, (), None)
+                    .map_err(|e| NexusError::Connector(format!("oracle delete failed: {e}")))?;
+                Ok(())
+            },
+        )?;
     }
     Ok(())
 }
@@ -267,7 +310,10 @@ impl Sink for OracleSink {
     async fn write_batch(&mut self, batch: RecordBatch) -> Result<(), NexusError> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.tx
-            .send(BatchRequest { batch, response: tx })
+            .send(BatchRequest {
+                batch,
+                response: tx,
+            })
             .map_err(|_| NexusError::Connector("oracle sink worker has terminated".to_string()))?;
 
         match tokio::time::timeout(std::time::Duration::from_secs(self.timeout_seconds), rx).await {

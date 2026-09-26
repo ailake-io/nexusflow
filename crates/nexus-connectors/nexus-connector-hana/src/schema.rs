@@ -32,7 +32,9 @@ pub(crate) fn describe_table(
     let mut cursor = conn
         .execute(&sql, (), None)
         .map_err(|e| NexusError::Connector(format!("hana describe_table query failed: {e}")))?
-        .ok_or_else(|| NexusError::Connector("hana SYS.TABLE_COLUMNS returned no result set".into()))?;
+        .ok_or_else(|| {
+            NexusError::Connector("hana SYS.TABLE_COLUMNS returned no result set".into())
+        })?;
 
     let mut columns = Vec::new();
     while let Some(mut row) = cursor
@@ -40,14 +42,20 @@ pub(crate) fn describe_table(
         .map_err(|e| NexusError::Connector(format!("hana describe_table fetch failed: {e}")))?
     {
         let mut name_buf = Vec::new();
-        row.get_text(1, &mut name_buf)
-            .map_err(|e| NexusError::Connector(format!("hana describe_table column_name read failed: {e}")))?;
-        let name = String::from_utf8(name_buf).map_err(|e| NexusError::Serialization(e.to_string()))?;
+        row.get_text(1, &mut name_buf).map_err(|e| {
+            NexusError::Connector(format!("hana describe_table column_name read failed: {e}"))
+        })?;
+        let name =
+            String::from_utf8(name_buf).map_err(|e| NexusError::Serialization(e.to_string()))?;
 
         let mut type_buf = Vec::new();
-        row.get_text(2, &mut type_buf)
-            .map_err(|e| NexusError::Connector(format!("hana describe_table data_type_name read failed: {e}")))?;
-        let data_type = String::from_utf8(type_buf).map_err(|e| NexusError::Serialization(e.to_string()))?;
+        row.get_text(2, &mut type_buf).map_err(|e| {
+            NexusError::Connector(format!(
+                "hana describe_table data_type_name read failed: {e}"
+            ))
+        })?;
+        let data_type =
+            String::from_utf8(type_buf).map_err(|e| NexusError::Serialization(e.to_string()))?;
 
         let arrow_type = hana_type_to_arrow(&data_type)?;
         columns.push(HanaColumn { name, arrow_type });
@@ -122,7 +130,16 @@ mod tests {
 
     #[test]
     fn text_types_map_to_utf8() {
-        for t in ["VARCHAR", "NVARCHAR", "CHAR", "NCHAR", "CLOB", "NCLOB", "TEXT", "SHORTTEXT"] {
+        for t in [
+            "VARCHAR",
+            "NVARCHAR",
+            "CHAR",
+            "NCHAR",
+            "CLOB",
+            "NCLOB",
+            "TEXT",
+            "SHORTTEXT",
+        ] {
             assert_eq!(hana_type_to_arrow(t).unwrap(), DataType::Utf8);
         }
     }

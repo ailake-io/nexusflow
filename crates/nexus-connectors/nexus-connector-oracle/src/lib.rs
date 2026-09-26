@@ -74,11 +74,7 @@ nexus_core::submit_sink_builder!(
     }
 );
 
-nexus_core::submit_connector!(
-    "oracle-cdc",
-    ConnectorCapability::Bridged,
-    OracleCdcConfig
-);
+nexus_core::submit_connector!("oracle-cdc", ConnectorCapability::Bridged, OracleCdcConfig);
 
 fn validate_oracle_cdc_config(cfg: &serde_json::Value) -> Result<(), NexusError> {
     serde_json::from_value::<OracleCdcConfig>(cfg.clone())

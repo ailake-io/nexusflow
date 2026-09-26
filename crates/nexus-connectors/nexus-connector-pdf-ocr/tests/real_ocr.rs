@@ -27,7 +27,9 @@ fn write_minimal_pdf(path: &std::path::Path, text: &str) {
     for off in &offsets {
         out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
     }
-    out.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\n", objects.len() + 1).as_bytes());
+    out.extend_from_slice(
+        format!("trailer\n<< /Size {} /Root 1 0 R >>\n", objects.len() + 1).as_bytes(),
+    );
     out.extend_from_slice(format!("startxref\n{xref_offset}\n%%EOF").as_bytes());
 
     std::fs::write(path, out).unwrap();
@@ -48,8 +50,13 @@ async fn extracts_text_from_a_real_pdf_via_pdftoppm_and_tesseract() {
         low_confidence_threshold: 60,
     };
 
-    let mut source = PdfOcrSource::connect(&cfg).await.expect("connect should succeed");
-    let mut stream = source.read_batches().await.expect("read_batches should succeed");
+    let mut source = PdfOcrSource::connect(&cfg)
+        .await
+        .expect("connect should succeed");
+    let mut stream = source
+        .read_batches()
+        .await
+        .expect("read_batches should succeed");
 
     use futures::StreamExt;
     let batch = stream.next().await.expect("one batch").expect("batch ok");
@@ -73,5 +80,8 @@ async fn extracts_text_from_a_real_pdf_via_pdftoppm_and_tesseract() {
         .as_any()
         .downcast_ref::<arrow_array::Float32Array>()
         .unwrap();
-    assert!(confidence_col.value(0) > 80.0, "expected high confidence on clean rendered text");
+    assert!(
+        confidence_col.value(0) > 80.0,
+        "expected high confidence on clean rendered text"
+    );
 }

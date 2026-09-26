@@ -8,8 +8,8 @@ use arrow_schema::SchemaRef;
 use async_trait::async_trait;
 use nexus_core::quote_identifier;
 use nexus_core::{
-    project_column, retry_with_backoff, split_by_opcode, with_timeout, CheckpointCursor, NexusError,
-    Sink,
+    project_column, retry_with_backoff, split_by_opcode, with_timeout, CheckpointCursor,
+    NexusError, Sink,
 };
 
 /// Snowflake has no `ON CONFLICT` (Postgres) — upsert here is `MERGE INTO`
@@ -49,7 +49,9 @@ impl SnowflakeSink {
                 with_timeout(cfg.timeout_seconds, "snowflake connect", async {
                     tokio::task::spawn_blocking(move || open_connection(&cfg))
                         .await
-                        .map_err(|e| NexusError::Connector(format!("blocking task panicked: {e}")))?
+                        .map_err(|e| {
+                            NexusError::Connector(format!("blocking task panicked: {e}"))
+                        })?
                 })
                 .await
             }

@@ -51,19 +51,29 @@ pub struct RedshiftConnectorConfig {
 impl RedshiftConnectorConfig {
     pub fn validate(&self) -> Result<(), NexusError> {
         if self.host.trim().is_empty() {
-            return Err(NexusError::Connector("redshift: host is required".to_string()));
+            return Err(NexusError::Connector(
+                "redshift: host is required".to_string(),
+            ));
         }
         if self.database.trim().is_empty() {
-            return Err(NexusError::Connector("redshift: database is required".to_string()));
+            return Err(NexusError::Connector(
+                "redshift: database is required".to_string(),
+            ));
         }
         if self.username.trim().is_empty() {
-            return Err(NexusError::Connector("redshift: username is required".to_string()));
+            return Err(NexusError::Connector(
+                "redshift: username is required".to_string(),
+            ));
         }
         if self.password.trim().is_empty() {
-            return Err(NexusError::Connector("redshift: password is required".to_string()));
+            return Err(NexusError::Connector(
+                "redshift: password is required".to_string(),
+            ));
         }
         if self.table.trim().is_empty() {
-            return Err(NexusError::Connector("redshift: table is required".to_string()));
+            return Err(NexusError::Connector(
+                "redshift: table is required".to_string(),
+            ));
         }
         if let Some(pk) = self.primary_key.as_deref() {
             if pk.trim().is_empty() {

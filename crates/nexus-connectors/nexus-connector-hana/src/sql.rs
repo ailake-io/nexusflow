@@ -78,8 +78,11 @@ mod tests {
 
     #[test]
     fn rejects_sql_injection_in_column_name() {
-        let err = build_select_sql("events", &["id".to_string(), "x\"; DROP TABLE users; --".to_string()])
-            .expect_err("malicious column name must be rejected");
+        let err = build_select_sql(
+            "events",
+            &["id".to_string(), "x\"; DROP TABLE users; --".to_string()],
+        )
+        .expect_err("malicious column name must be rejected");
         assert!(matches!(err, NexusError::Schema(_)));
     }
 }
