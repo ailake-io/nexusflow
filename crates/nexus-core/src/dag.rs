@@ -1149,7 +1149,10 @@ fn validate_embedding_security(
 
 /// Same SSRF guard as `validate_embedding_security`, for `llm.model.base_url`
 /// — an identical user-supplied outbound-request URL, same risk.
-fn validate_llm_security(
+/// `pub(crate)` so `agent.rs`'s `AgentSpec.model` (same `LlmModelConfig`
+/// type, same outbound-request shape) reuses this instead of duplicating
+/// the check.
+pub(crate) fn validate_llm_security(
     model: &LlmModelConfig,
     allow_internal_hosts: bool,
 ) -> Result<(), NexusError> {
@@ -1293,7 +1296,10 @@ fn validate_dbt_project_dir(project_dir: &str) -> Result<(), NexusError> {
     Ok(())
 }
 
-fn http_host(s: &str) -> Option<String> {
+/// `pub(crate)` so `agent.rs`'s `AgentToolKind::CallWebhook` validation can
+/// reuse the exact same host-extraction the alerts/embedding/llm SSRF
+/// checks in this file already use, instead of re-parsing the URL itself.
+pub(crate) fn http_host(s: &str) -> Option<String> {
     let url = url::Url::parse(s).ok()?;
     url.host_str().map(|h| h.to_lowercase())
 }

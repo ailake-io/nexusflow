@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod batch_buffer;
 pub mod cdc;
 pub mod checkpoint;
@@ -16,6 +17,7 @@ pub mod sql;
 pub mod traits;
 pub mod transform;
 
+pub use agent::{AgentSpec, AgentToolConfig, AgentToolKind, ApprovalMode};
 pub use cdc::{project_column, split_by_opcode, CdcSplit};
 pub use checkpoint::{CheckpointCursor, Opcode, OPCODE_COLUMN};
 pub use clean::{
