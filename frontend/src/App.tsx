@@ -15,6 +15,8 @@ import {
   Cloud,
   Database,
   GitBranch,
+  Bot,
+  MessageSquare,
 } from 'lucide-react'
 import { useAuth } from '@/lib/auth-context'
 import { useI18n } from '@/lib/i18n'
@@ -38,6 +40,8 @@ const PipelineDependencyGraph = lazy(() => import('@/components/PipelineDependen
 const QualityPanel = lazy(() => import('@/components/QualityPanel'))
 const DataPreviewPanel = lazy(() => import('@/components/DataPreviewPanel'))
 const PromptLibrary = lazy(() => import('@/components/PromptLibrary'))
+const AgentsPanel = lazy(() => import('@/components/AgentsPanel'))
+const RagChatPanel = lazy(() => import('@/components/RagChatPanel'))
 
 type View =
   | 'canvas'
@@ -52,6 +56,8 @@ type View =
   | 'quality'
   | 'preview'
   | 'prompts'
+  | 'agents'
+  | 'rag'
   | 'admin'
 
 function ViewFallback() {
@@ -102,6 +108,8 @@ function App() {
     { id: 'quality', label: t('nav.quality'), icon: BadgeCheck },
     { id: 'preview', label: t('nav.preview'), icon: BarChart3 },
     { id: 'prompts', label: t('nav.prompts'), icon: BookText },
+    { id: 'agents', label: t('nav.agents'), icon: Bot },
+    { id: 'rag', label: t('nav.rag'), icon: MessageSquare },
     // Client-side gating only decides visibility of the nav item — the
     // /users routes are Admin-enforced server-side regardless (auth.rs).
     ...(role === 'admin'
@@ -199,6 +207,8 @@ function App() {
             {view === 'quality' && <QualityPanel />}
             {view === 'preview' && <DataPreviewPanel />}
             {view === 'prompts' && <PromptLibrary />}
+            {view === 'agents' && <AgentsPanel />}
+            {view === 'rag' && <RagChatPanel />}
             {view === 'admin' && <UsersPanel />}
           </Suspense>
         </div>

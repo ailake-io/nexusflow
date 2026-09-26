@@ -25,6 +25,12 @@ export default defineConfig({
       '/health': 'http://localhost:8080',
       '/system': 'http://localhost:8080',
       '/lineage': 'http://localhost:8080',
+      '/rag': 'http://localhost:8080',
+      '/agents': 'http://localhost:8080',
+      // Pre-existing gap, fixed in passing: missing here meant
+      // PromptLibrary.tsx's GET/POST /prompts 404'd under `npm run dev`
+      // (silently worked in the embed-ui production build, same origin).
+      '/prompts': 'http://localhost:8080',
     },
   },
 })
