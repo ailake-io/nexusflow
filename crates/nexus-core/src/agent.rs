@@ -59,25 +59,26 @@ pub enum ApprovalMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum AgentToolKind {
-    /// Runs a SQL query (or a plain preview) over a source, same engine
+    /// Runs a SQL query (or a plain preview, if the model's tool call
+    /// omits `sql`) over a fixed source — `source` is the static config
+    /// (which connector this tool is scoped to, set when the agent is
+    /// configured); the SQL text itself is a *dynamic* tool-call argument
+    /// the model supplies per call (`json_schema()` below), same engine
     /// as a saved pipeline's preview (`DataFusionTransform`).
-    QueryData {
-        source: NodeSpec,
-        #[serde(default)]
-        sql: Option<String>,
-    },
-    /// Vector similarity search against one of the connectors RAG
-    /// already knows how to search (`rag.rs`'s own dispatch table).
+    QueryData { source: NodeSpec },
+    /// Vector similarity search, reusing a saved pipeline's own
+    /// `embedding`+vector-sink config exactly like `POST /rag/query`
+    /// does (`rag.rs`) — the query text itself is a dynamic tool-call
+    /// argument, not part of this static config.
     SearchVectors {
-        connector: String,
-        #[serde(default)]
-        config: Value,
+        pipeline_id: String,
         #[serde(default = "default_top_k")]
         top_k: usize,
     },
     /// Triggers a saved pipeline the same way `POST /pipelines/{id}/run`
     /// does — real side effect, defaults to `RequireApproval` in
-    /// practice (not enforced by the type, a config choice).
+    /// practice (not enforced by the type, a config choice). No dynamic
+    /// argument: the model just invokes it, nothing to parameterize.
     RunPipeline {
         pipeline_id: String,
         #[serde(default)]
@@ -85,21 +86,23 @@ pub enum AgentToolKind {
     },
     /// Generic outbound HTTP call — same SSRF posture as every
     /// `rest`/`webhook` connector and alert channel already in this
-    /// codebase (`validate_security_with`/`dns_guard.rs`).
+    /// codebase (`validate_security_with`/`dns_guard.rs`). `url`/`method`
+    /// are static; the JSON body is a dynamic tool-call argument.
     CallWebhook {
         url: String,
         #[serde(default = "default_webhook_method")]
         method: String,
-        #[serde(default)]
-        body_template: Option<String>,
     },
-    /// Runs a user's Python `visualize(df)` in an isolated subprocess
-    /// (sibling of `PipelineSpec.python`/`python_transform.rs`) and
-    /// returns the resulting image bytes instead of appending a column.
+    /// Runs a fixed, operator-authored Python `visualize(df)` in an
+    /// isolated subprocess (sibling of `PipelineSpec.python`/
+    /// `python_transform.rs`) over a fixed source, returning image bytes
+    /// instead of appending a column. `script` is static and never
+    /// model-authored — letting the model generate arbitrary code to
+    /// execute would be a materially bigger risk than the SQL-string
+    /// argument `QueryData` accepts; only the SQL filter (dynamic, same
+    /// as `QueryData`) is model-controlled here.
     GenerateChart {
         source: NodeSpec,
-        #[serde(default)]
-        sql: Option<String>,
         script: String,
         #[serde(default)]
         timeout_seconds: Option<u64>,
@@ -127,6 +130,50 @@ impl AgentToolKind {
             AgentToolKind::RunPipeline { .. } => "run_pipeline",
             AgentToolKind::CallWebhook { .. } => "call_webhook",
             AgentToolKind::GenerateChart { .. } => "generate_chart",
+        }
+    }
+
+    /// JSON Schema for this tool's *dynamic* argument — what the model
+    /// fills in per call, as opposed to the static config above (set once,
+    /// at agent-configuration time). Fed into `ToolDef.schema`
+    /// (`nexus-ai::llm::common`) when `agent_runner.rs` builds the
+    /// tool-calling request.
+    pub fn json_schema(&self) -> Value {
+        match self {
+            AgentToolKind::QueryData { .. } | AgentToolKind::GenerateChart { .. } => {
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "sql": {
+                            "type": "string",
+                            "description": "Optional SQL query over the configured source \
+                                (table name \"source0\"). Omit for a plain preview of the raw rows."
+                        }
+                    }
+                })
+            }
+            AgentToolKind::SearchVectors { .. } => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Natural-language text to search for."
+                    }
+                },
+                "required": ["query"]
+            }),
+            AgentToolKind::RunPipeline { .. } => serde_json::json!({
+                "type": "object",
+                "properties": {}
+            }),
+            AgentToolKind::CallWebhook { .. } => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "body": {
+                        "description": "JSON body to send with the request."
+                    }
+                }
+            }),
         }
     }
 }
@@ -199,7 +246,14 @@ impl AgentSpec {
                         )));
                     }
                 }
-                AgentToolKind::QueryData { .. } | AgentToolKind::SearchVectors { .. } => {}
+                AgentToolKind::SearchVectors { pipeline_id, .. } => {
+                    if pipeline_id.trim().is_empty() {
+                        return Err(NexusError::Schema(format!(
+                            "tools[{i}]: search_vectors.pipeline_id must not be empty"
+                        )));
+                    }
+                }
+                AgentToolKind::QueryData { .. } => {}
             }
         }
         Ok(())
@@ -259,8 +313,7 @@ mod tests {
             },
             tools: vec![AgentToolConfig {
                 tool: AgentToolKind::SearchVectors {
-                    connector: "qdrant".to_string(),
-                    config: serde_json::json!({}),
+                    pipeline_id: "docs-pipeline".to_string(),
                     top_k: 5,
                 },
                 approval: ApprovalMode::Auto,
@@ -310,13 +363,50 @@ mod tests {
     }
 
     #[test]
+    fn rejects_search_vectors_with_empty_pipeline_id() {
+        let mut spec = base_spec();
+        spec.tools[0].tool = AgentToolKind::SearchVectors {
+            pipeline_id: "".to_string(),
+            top_k: 5,
+        };
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn json_schema_dynamic_args_match_the_tool() {
+        let query_data = AgentToolKind::QueryData {
+            source: NodeSpec {
+                name: None,
+                connector: "postgres".to_string(),
+                config: serde_json::json!({}),
+            },
+        };
+        assert_eq!(query_data.json_schema()["type"], "object");
+        assert!(query_data.json_schema()["properties"]["sql"].is_object());
+
+        let search = AgentToolKind::SearchVectors {
+            pipeline_id: "docs-pipeline".to_string(),
+            top_k: 5,
+        };
+        assert_eq!(search.json_schema()["required"][0], "query");
+
+        let run_pipeline = AgentToolKind::RunPipeline {
+            pipeline_id: "docs-pipeline".to_string(),
+            wait_for_result: true,
+        };
+        assert_eq!(
+            run_pipeline.json_schema()["properties"],
+            serde_json::json!({})
+        );
+    }
+
+    #[test]
     fn rejects_call_webhook_with_unsupported_method() {
         let mut spec = base_spec();
         spec.tools.push(AgentToolConfig {
             tool: AgentToolKind::CallWebhook {
                 url: "https://example.com/hook".to_string(),
                 method: "TRACE".to_string(),
-                body_template: None,
             },
             approval: ApprovalMode::RequireApproval,
         });
@@ -343,7 +433,6 @@ mod tests {
             tool: AgentToolKind::CallWebhook {
                 url: "http://10.0.0.5/internal".to_string(),
                 method: "POST".to_string(),
-                body_template: None,
             },
             approval: ApprovalMode::RequireApproval,
         });
@@ -357,7 +446,6 @@ mod tests {
             tool: AgentToolKind::CallWebhook {
                 url: "http://10.0.0.5/internal".to_string(),
                 method: "POST".to_string(),
-                body_template: None,
             },
             approval: ApprovalMode::RequireApproval,
         });
@@ -373,7 +461,6 @@ mod tests {
                     connector: "postgres".to_string(),
                     config: serde_json::json!({}),
                 },
-                sql: None,
             }
             .name(),
             "query_data"
@@ -385,7 +472,6 @@ mod tests {
                     connector: "postgres".to_string(),
                     config: serde_json::json!({}),
                 },
-                sql: None,
                 script: "def visualize(df): ...".to_string(),
                 timeout_seconds: None,
             }
