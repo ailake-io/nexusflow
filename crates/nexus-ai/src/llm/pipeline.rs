@@ -14,7 +14,15 @@ pub enum LlmBackend {
 }
 
 pub fn load_llm_backend(spec: &LlmNodeSpec) -> LlmBackend {
-    match &spec.model {
+    load_llm_backend_for_model(&spec.model)
+}
+
+/// Same dispatch as [`load_llm_backend`], taking the model config directly
+/// — for a caller that doesn't have a full `LlmNodeSpec` around it (the
+/// agent loop, ROADMAP.md Fase 31: `AgentSpec.model`/a run's
+/// `model_override` are both bare `LlmModelConfig`, not a batch node).
+pub fn load_llm_backend_for_model(model: &LlmModelConfig) -> LlmBackend {
+    match model {
         LlmModelConfig::Api {
             base_url,
             model,

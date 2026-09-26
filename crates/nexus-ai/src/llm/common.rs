@@ -95,6 +95,18 @@ pub enum LlmTurn {
     ToolCalls(Vec<ToolCall>),
 }
 
+/// `call_with_tools`'s full result — the turn plus token usage, so a
+/// multi-turn caller (the agent loop, ROADMAP.md Fase 31) can accumulate
+/// cost across every call the way `pipeline_run_llm_stats_store.rs` does
+/// for the single-call batch `llm` node, instead of losing usage data on
+/// every turn but the last.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolTurn {
+    pub turn: LlmTurn,
+    pub tokens_prompt: u32,
+    pub tokens_completion: u32,
+}
+
 /// One entry in a tool-calling conversation. Both APIs are stateless — the
 /// full history is resent on every call — so this is the minimum shape a
 /// multi-turn tool loop needs regardless of backend; there's no leaner

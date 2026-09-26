@@ -133,6 +133,30 @@ impl AgentToolKind {
         }
     }
 
+    /// Human-readable description the model sees for this tool
+    /// (`ToolDef.description`, `nexus-ai::llm::common`) — fixed per kind,
+    /// not derived from the instance's own config fields (the model needs
+    /// to know *what the tool does*, not the operator's connector details).
+    pub fn description(&self) -> &'static str {
+        match self {
+            AgentToolKind::QueryData { .. } => {
+                "Run a SQL query (or preview raw rows if no SQL is given) against the \
+                 configured data source. The source is available as table \"source0\"."
+            }
+            AgentToolKind::SearchVectors { .. } => {
+                "Search for semantically similar content in the configured vector store."
+            }
+            AgentToolKind::RunPipeline { .. } => "Trigger the configured data pipeline to run.",
+            AgentToolKind::CallWebhook { .. } => {
+                "Send an HTTP request to the configured webhook URL."
+            }
+            AgentToolKind::GenerateChart { .. } => {
+                "Render a chart from the configured data source (optionally filtered by SQL) \
+                 using the pre-configured visualization script."
+            }
+        }
+    }
+
     /// JSON Schema for this tool's *dynamic* argument — what the model
     /// fills in per call, as opposed to the static config above (set once,
     /// at agent-configuration time). Fed into `ToolDef.schema`

@@ -89,6 +89,11 @@ impl ApprovalStatus {
 pub struct AgentRun {
     pub id: i64,
     pub agent_id: String,
+    /// The question this run was started with — needed to rebuild the
+    /// tool-calling conversation history on resume after an approval
+    /// (`agent_runner.rs`), since `agent_steps` alone only has the turns
+    /// *after* the first user message.
+    pub question: String,
     pub status: RunStatus,
     pub started_at: String,
     pub finished_at: Option<String>,
@@ -133,6 +138,7 @@ impl AgentRunStore {
                     CREATE TABLE IF NOT EXISTS agent_runs (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         agent_id TEXT NOT NULL,
+                        question TEXT NOT NULL,
                         status TEXT NOT NULL,
                         started_at TEXT NOT NULL DEFAULT (datetime('now')),
                         finished_at TEXT,
@@ -179,6 +185,7 @@ impl AgentRunStore {
                     CREATE TABLE IF NOT EXISTS agent_runs (
                         id BIGSERIAL PRIMARY KEY,
                         agent_id TEXT NOT NULL,
+                        question TEXT NOT NULL,
                         status TEXT NOT NULL,
                         started_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')),
                         finished_at TEXT,
@@ -224,20 +231,24 @@ impl AgentRunStore {
         Ok(Self { pool })
     }
 
-    pub async fn start_run(&self, agent_id: &str) -> Result<i64, sqlx::Error> {
-        let sql = self.q("INSERT INTO agent_runs (agent_id, status) VALUES (?, 'running')");
+    pub async fn start_run(&self, agent_id: &str, question: &str) -> Result<i64, sqlx::Error> {
+        let sql =
+            self.q("INSERT INTO agent_runs (agent_id, question, status) VALUES (?, ?, 'running')");
         let id = match &self.pool {
             MetadataPool::Sqlite(p) => sqlx::query(sqlx::AssertSqlSafe(sql))
                 .bind(agent_id)
+                .bind(question)
                 .execute(p)
                 .await?
                 .last_insert_rowid(),
             MetadataPool::Postgres(p) => {
                 let sql = self.q(
-                    "INSERT INTO agent_runs (agent_id, status) VALUES (?, 'running') RETURNING id",
+                    "INSERT INTO agent_runs (agent_id, question, status) VALUES (?, ?, 'running') \
+                     RETURNING id",
                 );
                 let (id,): (i64,) = sqlx::query_as(sqlx::AssertSqlSafe(sql))
                     .bind(agent_id)
+                    .bind(question)
                     .fetch_one(p)
                     .await?;
                 id
@@ -320,10 +331,19 @@ impl AgentRunStore {
 
     pub async fn get_run(&self, run_id: i64) -> Result<AgentRun, AgentRunStoreError> {
         let sql = self.q(
-            "SELECT id, agent_id, status, started_at, finished_at, total_tokens, total_cost \
-             FROM agent_runs WHERE id = ?",
+            "SELECT id, agent_id, question, status, started_at, finished_at, total_tokens, \
+             total_cost FROM agent_runs WHERE id = ?",
         );
-        type Row = (i64, String, String, String, Option<String>, i64, f64);
+        type Row = (
+            i64,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            i64,
+            f64,
+        );
         let row: Option<Row> = match &self.pool {
             MetadataPool::Sqlite(p) => {
                 sqlx::query_as(sqlx::AssertSqlSafe(sql))
@@ -338,11 +358,12 @@ impl AgentRunStore {
                     .await?
             }
         };
-        let (id, agent_id, status, started_at, finished_at, total_tokens, total_cost) =
+        let (id, agent_id, question, status, started_at, finished_at, total_tokens, total_cost) =
             row.ok_or(AgentRunStoreError::RunNotFound(run_id))?;
         Ok(AgentRun {
             id,
             agent_id,
+            question,
             status: RunStatus::from_str(&status),
             started_at,
             finished_at,
@@ -353,10 +374,19 @@ impl AgentRunStore {
 
     pub async fn list_runs(&self, agent_id: &str) -> Result<Vec<AgentRun>, sqlx::Error> {
         let sql = self.q(
-            "SELECT id, agent_id, status, started_at, finished_at, total_tokens, total_cost \
-             FROM agent_runs WHERE agent_id = ? ORDER BY id DESC",
+            "SELECT id, agent_id, question, status, started_at, finished_at, total_tokens, \
+             total_cost FROM agent_runs WHERE agent_id = ? ORDER BY id DESC",
         );
-        type Row = (i64, String, String, String, Option<String>, i64, f64);
+        type Row = (
+            i64,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            i64,
+            f64,
+        );
         let rows: Vec<Row> = match &self.pool {
             MetadataPool::Sqlite(p) => {
                 sqlx::query_as(sqlx::AssertSqlSafe(sql))
@@ -374,10 +404,20 @@ impl AgentRunStore {
         Ok(rows
             .into_iter()
             .map(
-                |(id, agent_id, status, started_at, finished_at, total_tokens, total_cost)| {
+                |(
+                    id,
+                    agent_id,
+                    question,
+                    status,
+                    started_at,
+                    finished_at,
+                    total_tokens,
+                    total_cost,
+                )| {
                     AgentRun {
                         id,
                         agent_id,
+                        question,
                         status: RunStatus::from_str(&status),
                         started_at,
                         finished_at,
@@ -631,7 +671,7 @@ mod tests {
     #[tokio::test]
     async fn start_run_and_get_run_roundtrips() {
         let store = AgentRunStore::connect("sqlite::memory:").await.unwrap();
-        let run_id = store.start_run("agent-1").await.unwrap();
+        let run_id = store.start_run("agent-1", "test question").await.unwrap();
 
         let run = store.get_run(run_id).await.unwrap();
         assert_eq!(run.agent_id, "agent-1");
@@ -642,7 +682,7 @@ mod tests {
     #[tokio::test]
     async fn finish_run_sets_status_and_finished_at() {
         let store = AgentRunStore::connect("sqlite::memory:").await.unwrap();
-        let run_id = store.start_run("agent-1").await.unwrap();
+        let run_id = store.start_run("agent-1", "test question").await.unwrap();
         store
             .finish_run(run_id, RunStatus::Completed)
             .await
@@ -656,7 +696,7 @@ mod tests {
     #[tokio::test]
     async fn add_usage_accumulates() {
         let store = AgentRunStore::connect("sqlite::memory:").await.unwrap();
-        let run_id = store.start_run("agent-1").await.unwrap();
+        let run_id = store.start_run("agent-1", "test question").await.unwrap();
         store.add_usage(run_id, 100, 0.01).await.unwrap();
         store.add_usage(run_id, 50, 0.005).await.unwrap();
 
@@ -668,7 +708,7 @@ mod tests {
     #[tokio::test]
     async fn append_step_numbers_are_sequential_per_run() {
         let store = AgentRunStore::connect("sqlite::memory:").await.unwrap();
-        let run_id = store.start_run("agent-1").await.unwrap();
+        let run_id = store.start_run("agent-1", "test question").await.unwrap();
 
         let step1 = store
             .append_step(
@@ -702,8 +742,8 @@ mod tests {
     #[tokio::test]
     async fn append_step_numbering_is_independent_per_run() {
         let store = AgentRunStore::connect("sqlite::memory:").await.unwrap();
-        let run_a = store.start_run("agent-1").await.unwrap();
-        let run_b = store.start_run("agent-1").await.unwrap();
+        let run_a = store.start_run("agent-1", "test question").await.unwrap();
+        let run_b = store.start_run("agent-1", "test question").await.unwrap();
 
         let step_a = store
             .append_step(
@@ -735,7 +775,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_step_approve_sets_result_and_approver() {
         let store = AgentRunStore::connect("sqlite::memory:").await.unwrap();
-        let run_id = store.start_run("agent-1").await.unwrap();
+        let run_id = store.start_run("agent-1", "test question").await.unwrap();
         let step_id = store
             .append_step(
                 run_id,
@@ -767,7 +807,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_step_reject_keeps_result_none() {
         let store = AgentRunStore::connect("sqlite::memory:").await.unwrap();
-        let run_id = store.start_run("agent-1").await.unwrap();
+        let run_id = store.start_run("agent-1", "test question").await.unwrap();
         let step_id = store
             .append_step(
                 run_id,
@@ -803,7 +843,7 @@ mod tests {
     #[tokio::test]
     async fn list_steps_returns_run_trace_in_order() {
         let store = AgentRunStore::connect("sqlite::memory:").await.unwrap();
-        let run_id = store.start_run("agent-1").await.unwrap();
+        let run_id = store.start_run("agent-1", "test question").await.unwrap();
         store
             .append_step(
                 run_id,
@@ -836,9 +876,9 @@ mod tests {
     #[tokio::test]
     async fn list_runs_scoped_to_agent_and_ordered_newest_first() {
         let store = AgentRunStore::connect("sqlite::memory:").await.unwrap();
-        let r1 = store.start_run("agent-1").await.unwrap();
-        let r2 = store.start_run("agent-1").await.unwrap();
-        store.start_run("agent-2").await.unwrap();
+        let r1 = store.start_run("agent-1", "test question").await.unwrap();
+        let r2 = store.start_run("agent-1", "test question").await.unwrap();
+        store.start_run("agent-2", "test question").await.unwrap();
 
         let runs = store.list_runs("agent-1").await.unwrap();
         assert_eq!(runs.len(), 2);

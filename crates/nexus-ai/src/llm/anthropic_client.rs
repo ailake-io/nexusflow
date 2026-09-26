@@ -1,5 +1,5 @@
 use crate::llm::client::LlmResponse;
-use crate::llm::common::{LlmError, LlmTurn, ToolCall, ToolDef, ToolMessage};
+use crate::llm::common::{LlmError, LlmTurn, ToolCall, ToolDef, ToolMessage, ToolTurn};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Instant;
@@ -106,20 +106,21 @@ impl AnthropicClient {
         })
     }
 
-    /// Spike (ROADMAP.md Fase 31): one turn of Anthropic-shaped
-    /// tool-calling. `history` is the whole conversation so far (stateless
-    /// API, resent every call). Each `ToolMessage` maps to exactly one API
-    /// message — fine for the single-tool-call-per-turn shape Fase 31's v1
-    /// tools use; a turn with several parallel `tool_use` blocks would need
-    /// their results merged into one `user` message instead, which this
-    /// doesn't do.
+    /// One turn of Anthropic-shaped tool-calling (ROADMAP.md Fase 31).
+    /// `history` is the whole conversation so far (stateless API, resent
+    /// every call). Each `ToolMessage` maps to exactly one API message —
+    /// fine for the single-tool-call-per-turn shape Fase 31's v1 tools use;
+    /// a turn with several parallel `tool_use` blocks would need their
+    /// results merged into one `user` message instead, which this doesn't
+    /// do. `ToolTurn.tokens_prompt`/`tokens_completion` let the agent loop
+    /// accumulate cost per turn.
     pub async fn call_with_tools(
         &self,
         history: &[ToolMessage],
         tools: &[ToolDef],
         max_tokens: Option<u32>,
         temperature: Option<f32>,
-    ) -> Result<LlmTurn, LlmError> {
+    ) -> Result<ToolTurn, LlmError> {
         let key = std::env::var(&self.cfg.api_key_env).map_err(|_| {
             LlmError::Api(format!(
                 "environment variable '{}' not set for llm API key",
@@ -168,6 +169,8 @@ impl AnthropicClient {
             .await
             .map_err(|e| LlmError::Api(format!("invalid response body: {e}")))?;
 
+        let tokens_prompt = parsed.usage.input_tokens;
+        let tokens_completion = parsed.usage.output_tokens;
         let calls: Vec<ToolCall> = parsed
             .content
             .iter()
@@ -179,7 +182,11 @@ impl AnthropicClient {
             })
             .collect();
         if !calls.is_empty() {
-            return Ok(LlmTurn::ToolCalls(calls));
+            return Ok(ToolTurn {
+                turn: LlmTurn::ToolCalls(calls),
+                tokens_prompt,
+                tokens_completion,
+            });
         }
 
         let text = parsed
@@ -187,7 +194,11 @@ impl AnthropicClient {
             .into_iter()
             .find_map(|b| (b.block_type == "text").then_some(b.text.unwrap_or_default()))
             .ok_or_else(|| LlmError::Api("anthropic API returned no text block".to_string()))?;
-        Ok(LlmTurn::Text(text))
+        Ok(ToolTurn {
+            turn: LlmTurn::Text(text),
+            tokens_prompt,
+            tokens_completion,
+        })
     }
 }
 
@@ -285,6 +296,7 @@ impl From<&ToolDef> for AnthropicTool {
 #[derive(Deserialize)]
 struct ToolMessagesResponse {
     content: Vec<ToolContentBlock>,
+    usage: Usage,
 }
 
 #[derive(Deserialize)]
@@ -446,7 +458,7 @@ mod tests {
             model: "claude-sonnet-5".to_string(),
             api_key_env: "NEXUS_TEST_ANTHROPIC_SYSTEM_KEY".to_string(),
         });
-        let turn = client
+        let result = client
             .call_with_tools(
                 &[
                     ToolMessage::System("you are a helpful agent".to_string()),
@@ -461,7 +473,7 @@ mod tests {
 
         // The system prompt must never leak into `messages` as a
         // user/assistant turn — only the request's top-level field.
-        assert_eq!(turn, LlmTurn::Text("ok".to_string()));
+        assert_eq!(result.turn, LlmTurn::Text("ok".to_string()));
     }
 
     #[tokio::test]
@@ -487,7 +499,7 @@ mod tests {
             model: "claude-sonnet-5".to_string(),
             api_key_env: "NEXUS_TEST_ANTHROPIC_TOOLS_KEY".to_string(),
         });
-        let turn = client
+        let result = client
             .call_with_tools(
                 &[ToolMessage::User("qual o clima em Lisboa?".to_string())],
                 &[weather_tool()],
@@ -497,7 +509,9 @@ mod tests {
             .await
             .unwrap();
 
-        match turn {
+        assert_eq!(result.tokens_prompt, 10);
+        assert_eq!(result.tokens_completion, 3);
+        match result.turn {
             LlmTurn::ToolCalls(calls) => {
                 assert_eq!(calls.len(), 1);
                 assert_eq!(calls[0].id, "toolu_1");
@@ -538,13 +552,13 @@ mod tests {
                 content: "24°C, ensolarado".to_string(),
             },
         ];
-        let turn = client
+        let result = client
             .call_with_tools(&history, &[weather_tool()], None, None)
             .await
             .unwrap();
 
         assert_eq!(
-            turn,
+            result.turn,
             LlmTurn::Text("Ensolarado, 24°C em Lisboa.".to_string())
         );
     }

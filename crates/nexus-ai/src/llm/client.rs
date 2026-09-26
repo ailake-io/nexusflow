@@ -1,4 +1,4 @@
-use crate::llm::common::{LlmError, LlmTurn, ToolCall, ToolDef, ToolMessage};
+use crate::llm::common::{LlmError, LlmTurn, ToolCall, ToolDef, ToolMessage, ToolTurn};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Instant;
@@ -114,17 +114,19 @@ impl LlmClient {
         })
     }
 
-    /// Spike (ROADMAP.md Fase 31): one turn of OpenAI-shaped tool-calling.
+    /// One turn of OpenAI-shaped tool-calling (ROADMAP.md Fase 31).
     /// `history` is the whole conversation so far — stateless API, resent
-    /// every call. Returns `LlmTurn::ToolCalls` when the model wants a tool
-    /// run before it'll produce text, `LlmTurn::Text` otherwise.
+    /// every call. `ToolTurn.turn` is `LlmTurn::ToolCalls` when the model
+    /// wants a tool run before it'll produce text, `LlmTurn::Text`
+    /// otherwise; `tokens_prompt`/`tokens_completion` let the agent loop
+    /// accumulate cost per turn, same as the batch `llm` node does per row.
     pub async fn call_with_tools(
         &self,
         history: &[ToolMessage],
         tools: &[ToolDef],
         max_tokens: Option<u32>,
         temperature: Option<f32>,
-    ) -> Result<LlmTurn, LlmError> {
+    ) -> Result<ToolTurn, LlmError> {
         let messages = to_openai_messages(history);
         let wire_tools: Vec<OpenAiTool> = tools.iter().map(OpenAiTool::from).collect();
 
@@ -169,6 +171,12 @@ impl LlmClient {
             .await
             .map_err(|e| LlmError::Api(format!("invalid response body: {e}")))?;
 
+        let tokens_prompt = parsed.usage.as_ref().map(|u| u.prompt_tokens).unwrap_or(0);
+        let tokens_completion = parsed
+            .usage
+            .as_ref()
+            .map(|u| u.completion_tokens)
+            .unwrap_or(0);
         let message = parsed
             .choices
             .into_iter()
@@ -189,10 +197,18 @@ impl LlmClient {
                     }
                 })
                 .collect();
-            return Ok(LlmTurn::ToolCalls(calls));
+            return Ok(ToolTurn {
+                turn: LlmTurn::ToolCalls(calls),
+                tokens_prompt,
+                tokens_completion,
+            });
         }
 
-        Ok(LlmTurn::Text(message.content.unwrap_or_default()))
+        Ok(ToolTurn {
+            turn: LlmTurn::Text(message.content.unwrap_or_default()),
+            tokens_prompt,
+            tokens_completion,
+        })
     }
 }
 
@@ -310,6 +326,8 @@ impl From<&ToolDef> for OpenAiTool {
 #[derive(Deserialize)]
 struct ToolChatResponse {
     choices: Vec<ToolChatChoice>,
+    #[serde(default)]
+    usage: Option<ChatUsage>,
 }
 
 #[derive(Deserialize)]
@@ -536,7 +554,8 @@ mod tests {
                         "type": "function",
                         "function": {"name": "get_weather", "arguments": "{\"city\":\"Lisboa\"}"}
                     }]
-                }}]
+                }}],
+                "usage": {"prompt_tokens": 42, "completion_tokens": 7}
             })))
             .mount(&server)
             .await;
@@ -546,7 +565,7 @@ mod tests {
             model: "gpt-test".to_string(),
             api_key_env: None,
         });
-        let turn = client
+        let result = client
             .call_with_tools(
                 &[ToolMessage::User("qual o clima em Lisboa?".to_string())],
                 &[weather_tool()],
@@ -556,7 +575,9 @@ mod tests {
             .await
             .unwrap();
 
-        match turn {
+        assert_eq!(result.tokens_prompt, 42);
+        assert_eq!(result.tokens_completion, 7);
+        match result.turn {
             LlmTurn::ToolCalls(calls) => {
                 assert_eq!(calls.len(), 1);
                 assert_eq!(calls[0].id, "call_1");
@@ -595,13 +616,13 @@ mod tests {
                 content: "24°C, ensolarado".to_string(),
             },
         ];
-        let turn = client
+        let result = client
             .call_with_tools(&history, &[weather_tool()], Some(64), None)
             .await
             .unwrap();
 
         assert_eq!(
-            turn,
+            result.turn,
             LlmTurn::Text("Ensolarado, 24°C em Lisboa.".to_string())
         );
     }
