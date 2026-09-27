@@ -6,7 +6,9 @@
 //! its own spec shape instead of being forced into `PipelineSpec.llm`
 //! (which is 1-call-per-row, no tools, no loop).
 
-use crate::dag::{http_host, is_internal_host, validate_llm_security, LlmModelConfig, NodeSpec};
+use crate::dag::{
+    http_host, is_internal_host, validate_llm_security, LlmCacheSpec, LlmModelConfig, NodeSpec,
+};
 use crate::error::NexusError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -33,6 +35,19 @@ pub struct AgentSpec {
     /// only runs on demand (`POST /agents/{id}/run`).
     #[serde(default)]
     pub schedule: Option<String>,
+    /// Response cache for the agent's tool-calling turns — reuses the batch
+    /// `llm` node's own `LlmCacheSpec` (same Redis-backed cache, same
+    /// `ttl_seconds` knob). `None` means every turn hits the model API.
+    /// Deliberately deferred past the rest of Fase 31 (ROADMAP.md checklist)
+    /// — the loop, tools and approval flow needed to work first. Keyed on
+    /// the *whole* conversation so far (`nexus_ai::llm::tool_turn_cache_key`),
+    /// not just the latest message — a hit replays that exact turn (text or
+    /// tool call) without spending tokens; only useful for a question asked
+    /// again from a fresh run (the model rarely repeats a full history
+    /// mid-loop), same trade-off `pipeline_run_llm_stats_store` accepts for
+    /// the batch node.
+    #[serde(default)]
+    pub cache: Option<LlmCacheSpec>,
 }
 
 /// One tool made available to the agent, plus whether it needs a human's
@@ -344,6 +359,7 @@ mod tests {
             }],
             max_steps: 8,
             schedule: None,
+            cache: None,
         }
     }
 

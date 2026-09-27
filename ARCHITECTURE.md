@@ -629,7 +629,7 @@ falha no script só loga, nunca derruba o run.
 
 **Loop (`agent_runner.rs`)**: monta o histórico como `Vec<ToolMessage>`,
 resolve o backend via `load_llm_backend_for_model`, chama
-`call_with_tools`. Em `ToolTurn::ToolCalls`, verifica `ApprovalMode` da
+`call_with_tools_cached` (ver cache abaixo). Em `ToolTurn::ToolCalls`, verifica `ApprovalMode` da
 ferramenta pedida — `Auto` executa via `agent_tools.rs` e injeta o
 resultado de volta no histórico, continuando o loop; `RequireApproval`
 grava o passo como `pending_approval` **sem executar nada ainda**,
@@ -644,6 +644,29 @@ faz (§5), aplicado a um loop de agente em vez de um WAL/binlog.
 (`agent_runs.model_override_json`) pra retomar com o mesmo modelo. Loop
 pára em `max_steps` (guard-rail contra loop infinito) ou em resposta
 final de texto.
+
+**Cache de resposta (2026-09-27)**: `AgentSpec.cache: Option<LlmCacheSpec>`
+reaproveita literalmente o mesmo tipo/Redis/`ttl_seconds` que o node `llm`
+já usa (§17) — `runner.rs::connect_llm_cache` só deixou de receber
+`&LlmNodeSpec` pra receber `Option<&LlmCacheSpec>` solto, pra servir os
+dois chamadores sem duplicar o wrapper sobre `RedisKvClient`. A chave,
+porém, é diferente da do node `llm`: `cache_key` (§17) hasheia só
+`model+prompt+max_tokens+temperature` porque cada chamada do node é
+isolada (1 linha, sem histórico); um turno de agente depende da
+**conversa inteira até ali** — `nexus_ai::llm::tool_turn_cache_key` hasheia
+model + cada mensagem do histórico (`ToolMessage::System`/`User`/
+`AssistantToolCalls`/`ToolResult`, cada uma com seu próprio prefixo pra
+não colidir tipos diferentes de mensagem com o mesmo texto) + o catálogo
+de ferramentas disponíveis (nome+schema) + `max_tokens`/`temperature`. Um
+hit (`call_with_tools_cached`, `nexus-ai/src/llm/pipeline.rs`) devolve o
+`LlmTurn` (`Text` ou `ToolCalls`) cacheado com tokens zerados — mesma
+convenção do node `llm` — mas só o **turno do modelo** é cacheado, nunca
+a execução: um `ToolCalls` reidratado do cache ainda passa por
+`agent_tools::execute_tool` normalmente. Na prática só acerta cache
+quando a mesma pergunta é feita de novo desde um run novo (o modelo
+raramente repete o histórico inteiro no meio de um loop já em
+andamento) — mesmo trade-off que `pipeline_run_llm_stats_store` aceita
+pro node batch.
 
 **Persistência (dual-dialeto Sqlite/Postgres, mesmo padrão de
 `pipeline_run_llm_stats_store.rs`)**: `agent_store.rs` (CRUD de

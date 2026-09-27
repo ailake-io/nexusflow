@@ -280,6 +280,7 @@ mod tests {
             }],
             max_steps: 8,
             schedule: None,
+            cache: None,
         }
     }
 

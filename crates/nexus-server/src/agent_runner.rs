@@ -8,7 +8,7 @@
 use crate::agent_run_store::{AgentRunStoreError, ApprovalStatus, RunStatus};
 use crate::agent_tools::{self, ToolOutput};
 use crate::AppState;
-use nexus_ai::llm::{LlmBackend, LlmTurn, ToolCall, ToolDef, ToolMessage, ToolTurn};
+use nexus_ai::llm::{LlmTurn, ToolCall, ToolDef, ToolMessage, ToolTurn};
 use nexus_core::{AgentSpec, ApprovalMode, LlmModelConfig};
 use serde_json::Value;
 
@@ -272,6 +272,10 @@ async fn run_loop(
     step_start: u32,
 ) {
     let model = model_override.as_ref().unwrap_or(&agent.model);
+    let model_name: &str = match model {
+        LlmModelConfig::Api { model, .. } => model,
+        LlmModelConfig::Anthropic { model, .. } => model,
+    };
     let backend = nexus_ai::llm::load_llm_backend_for_model(model);
     let (cost_per_1k_prompt, cost_per_1k_completion) = cost_rates(model);
     let tool_defs: Vec<ToolDef> = agent
@@ -283,20 +287,28 @@ async fn run_loop(
             schema: tc.tool.json_schema(),
         })
         .collect();
+    let cache = match crate::runner::connect_llm_cache(agent.cache.as_ref()).await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(run_id, error = %e, "agent run failed to connect llm cache");
+            record_error_step(state, run_id, &e.to_string()).await;
+            let _ = state.agent_runs.finish_run(run_id, RunStatus::Failed).await;
+            return;
+        }
+    };
+    let cache_ttl_seconds = agent.cache.as_ref().map(|c| c.ttl_seconds);
 
     for _ in step_start..agent.max_steps {
-        let call_result = match &backend {
-            LlmBackend::Api(client) => {
-                client
-                    .call_with_tools(&history, &tool_defs, None, None)
-                    .await
-            }
-            LlmBackend::Anthropic(client) => {
-                client
-                    .call_with_tools(&history, &tool_defs, None, None)
-                    .await
-            }
-        };
+        let call_result = nexus_ai::llm::call_with_tools_cached(
+            &backend,
+            model_name,
+            &history,
+            &tool_defs,
+            None,
+            None,
+            cache.as_deref().zip(cache_ttl_seconds),
+        )
+        .await;
         let ToolTurn {
             turn,
             tokens_prompt,

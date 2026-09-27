@@ -1043,8 +1043,15 @@ lista de desejos:
       tool-calling, schema das tabelas novas).
 - [ ] Teste real contra OpenRouter (chave do usuário) — usuário roda por
       conta própria, não fabricado/simulado aqui.
-- [ ] Cache de resposta do LLM pro agente — decisão explícita do usuário
-      de deixar como próximo passo, depois de tudo implementado.
+- [x] Cache de resposta do LLM pro agente (2026-09-27) — `AgentSpec.cache:
+      Option<LlmCacheSpec>`, reaproveita literalmente o mesmo
+      `LlmCacheSpec`/Redis/`connect_llm_cache` do node `llm` (§17), só
+      generalizado pra aceitar `Option<&LlmCacheSpec>` solto em vez de só
+      `&LlmNodeSpec`. Chave do cache (`tool_turn_cache_key`, nova) é o
+      hash de modelo+histórico inteiro+ferramentas+params, não só o
+      prompt — um hit substitui o turno (texto **ou** tool call) sem
+      gastar token, mas a ferramenta ainda é executada de verdade pelo
+      loop (só o turno do modelo é cacheado, nunca a execução).
 
 **Estimativa (chute):** tool-calling em `nexus-ai` (2 backends) ~1,5d;
 `AgentSpec`+loop+persistência+aprovação ~3d; 4 ferramentas ~2d;

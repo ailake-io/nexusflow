@@ -1,6 +1,9 @@
 use crate::llm::anthropic_client::{AnthropicClient, AnthropicClientConfig};
 use crate::llm::client::{LlmClient, LlmClientConfig};
-use crate::llm::common::{append_text_column, cache_key, LlmCache, LlmError};
+use crate::llm::common::{
+    append_text_column, cache_key, tool_turn_cache_key, LlmCache, LlmError, LlmTurn, ToolDef,
+    ToolMessage, ToolTurn,
+};
 use arrow_array::RecordBatch;
 use arrow_cast::display::array_value_to_string;
 use nexus_core::{LlmModelConfig, LlmNodeSpec};
@@ -44,6 +47,66 @@ pub fn load_llm_backend_for_model(model: &LlmModelConfig) -> LlmBackend {
             api_key_env: api_key_env.clone(),
         })),
     }
+}
+
+/// One tool-calling turn (ROADMAP.md Fase 31's agent loop), checking
+/// `cache` first and writing to it after a miss — same convention as
+/// [`apply_llm`]'s cache handling (LLMOPS_IMPLEMENTATION_PLAN.md Marco L3):
+/// a hit replays the previously-decided [`LlmTurn`] with zero tokens, since
+/// no real call was made. Only the model's *decision* is cached, never its
+/// execution — a cached `LlmTurn::ToolCalls` still gets executed for real
+/// by the caller (`agent_runner.rs`); this only saves the LLM round trip
+/// that produced it, same as it would for the caller's next identical
+/// question.
+///
+/// `cache` is `Some((impl, ttl_seconds))` when the agent has a cache
+/// configured — kept as a tuple rather than a dedicated struct since this
+/// is the only place that needs both together.
+pub async fn call_with_tools_cached(
+    backend: &LlmBackend,
+    model_name: &str,
+    history: &[ToolMessage],
+    tools: &[ToolDef],
+    max_tokens: Option<u32>,
+    temperature: Option<f32>,
+    cache: Option<(&dyn LlmCache, u64)>,
+) -> Result<ToolTurn, LlmError> {
+    let key = cache
+        .is_some()
+        .then(|| tool_turn_cache_key(model_name, history, tools, max_tokens, temperature));
+
+    if let (Some(key), Some((cache, _))) = (&key, cache) {
+        if let Some(cached_json) = cache.get(key).await {
+            if let Ok(turn) = serde_json::from_str::<LlmTurn>(&cached_json) {
+                return Ok(ToolTurn {
+                    turn,
+                    tokens_prompt: 0,
+                    tokens_completion: 0,
+                });
+            }
+        }
+    }
+
+    let result = match backend {
+        LlmBackend::Api(client) => {
+            client
+                .call_with_tools(history, tools, max_tokens, temperature)
+                .await
+        }
+        LlmBackend::Anthropic(client) => {
+            client
+                .call_with_tools(history, tools, max_tokens, temperature)
+                .await
+        }
+    }?;
+
+    if let (Some(key), Some((cache, ttl_seconds))) = (&key, cache) {
+        if let Ok(json) = serde_json::to_string(&result.turn) {
+            cache.set(key, &json, ttl_seconds).await;
+        }
+    }
+
+    Ok(result)
 }
 
 /// Metadata for one LLM call, returned alongside the transformed batch so
@@ -389,5 +452,91 @@ mod tests {
 
         // Only the miss (first call) ever wrote to the cache.
         assert_eq!(cache.sets.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn call_with_tools_cached_replays_text_turn_on_hit() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"content": "the answer is 42"}}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 4}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let backend = LlmBackend::Api(LlmClient::new(LlmClientConfig {
+            base_url: server.uri(),
+            model: "gpt-test".to_string(),
+            api_key_env: None,
+        }));
+        let cache = InMemoryCache::new();
+        let history = vec![ToolMessage::User("what is 6*7?".to_string())];
+
+        let first = call_with_tools_cached(
+            &backend,
+            "gpt-test",
+            &history,
+            &[],
+            None,
+            None,
+            Some((&cache, 60)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(first.tokens_prompt, 10);
+        assert!(matches!(first.turn, LlmTurn::Text(ref t) if t == "the answer is 42"));
+
+        let second = call_with_tools_cached(
+            &backend,
+            "gpt-test",
+            &history,
+            &[],
+            None,
+            None,
+            Some((&cache, 60)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(second.tokens_prompt, 0);
+        assert_eq!(second.tokens_completion, 0);
+        assert!(matches!(second.turn, LlmTurn::Text(ref t) if t == "the answer is 42"));
+    }
+
+    #[tokio::test]
+    async fn call_with_tools_cached_without_cache_calls_every_time() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"content": "hi"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1}
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let backend = LlmBackend::Api(LlmClient::new(LlmClientConfig {
+            base_url: server.uri(),
+            model: "gpt-test".to_string(),
+            api_key_env: None,
+        }));
+        let history = vec![ToolMessage::User("hello".to_string())];
+
+        for _ in 0..2 {
+            let turn =
+                call_with_tools_cached(&backend, "gpt-test", &history, &[], None, None, None)
+                    .await
+                    .unwrap();
+            assert_eq!(turn.tokens_prompt, 1);
+        }
     }
 }

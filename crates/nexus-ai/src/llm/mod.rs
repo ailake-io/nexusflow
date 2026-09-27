@@ -24,6 +24,6 @@ pub use common::{
 };
 pub use eval::{run_eval_cases, score_answer, LlmEvalOutcome, EVAL_PASS_THRESHOLD};
 pub use pipeline::{
-    apply_llm, build_prompt, load_llm_backend, load_llm_backend_for_model, LlmApplyResult,
-    LlmBackend, LlmCallStats,
+    apply_llm, build_prompt, call_with_tools_cached, load_llm_backend, load_llm_backend_for_model,
+    LlmApplyResult, LlmBackend, LlmCallStats,
 };

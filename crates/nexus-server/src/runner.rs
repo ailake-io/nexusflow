@@ -1604,21 +1604,23 @@ impl nexus_ai::llm::LlmCache for RedisLlmCache {
     }
 }
 
-/// Connects the cache backend `spec.cache` asks for, if any. A `Some(cache)`
-/// spec on a binary built without the "redis" feature is a clear
-/// config/build-mismatch error, not a silent no-cache fallback — same
+/// Connects the cache backend `cache_spec` asks for, if any — shared by the
+/// batch `llm` node (`apply_llm_stage`, below) and the agent loop
+/// (`agent_runner.rs`, ROADMAP.md Fase 31), both of which carry their own
+/// `Option<LlmCacheSpec>` rather than one being nested in the other. A
+/// `Some(cache_spec)` on a binary built without the "redis" feature is a
+/// clear config/build-mismatch error, not a silent no-cache fallback — same
 /// posture as the embedding backend's "not compiled into this binary"
 /// errors.
 #[cfg(feature = "llm")]
-async fn connect_llm_cache(
-    spec: &nexus_core::LlmNodeSpec,
+pub(crate) async fn connect_llm_cache(
+    cache_spec: Option<&nexus_core::LlmCacheSpec>,
 ) -> anyhow::Result<Option<Box<dyn nexus_ai::llm::LlmCache>>> {
-    if spec.cache.is_none() {
+    let Some(cache_spec) = cache_spec else {
         return Ok(None);
-    }
+    };
     #[cfg(feature = "redis")]
     {
-        let cache_spec = spec.cache.as_ref().expect("checked above");
         let client = nexus_connector_redis::RedisKvClient::connect(&cache_spec.url).await?;
         Ok(Some(
             Box::new(RedisLlmCache(client)) as Box<dyn nexus_ai::llm::LlmCache>
@@ -1626,9 +1628,7 @@ async fn connect_llm_cache(
     }
     #[cfg(not(feature = "redis"))]
     {
-        anyhow::bail!(
-            "pipeline's llm node has a cache configured but the server was built without the 'redis' feature"
-        )
+        anyhow::bail!("a cache is configured but the server was built without the 'redis' feature")
     }
 }
 
@@ -1672,7 +1672,7 @@ async fn apply_llm_stage(
     };
 
     let backend = nexus_ai::llm::load_llm_backend(spec);
-    let cache = connect_llm_cache(spec).await?;
+    let cache = connect_llm_cache(spec.cache.as_ref()).await?;
     let (model, cost_per_1k_prompt_tokens, cost_per_1k_completion_tokens) = match &spec.model {
         nexus_core::LlmModelConfig::Api {
             model,

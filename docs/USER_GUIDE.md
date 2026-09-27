@@ -821,6 +821,8 @@ Aba **Agentes** — diferente de um pipeline (que sempre roda fonte→transform�
 
 O **argumento de cada chamada** (a query SQL, o texto de busca, o corpo do webhook) é decidido pelo modelo em tempo real, não fica fixo na configuração do agente — só a parte estrutural (qual source, qual pipeline, qual URL) é configurada de antemão.
 
+**Cache de resposta (opcional)**: campo `cache` no agente (`{"url": "redis://...", "ttl_seconds": 3600}`) — mesma config Redis que o node `llm` já usa. Uma pergunta repetida do zero (nova execução, mesma conversa inicial) reaproveita a decisão do modelo (texto ou chamada de ferramenta) sem gastar token nem chamar a API de novo; a ferramenta, se for o caso, ainda roda de verdade — só a decisão do modelo é reaproveitada, não o efeito dela. Sem `cache` configurado, toda chamada vai pra API normalmente.
+
 **Rodar e acompanhar**: `POST /agents/{id}/run` com a pergunta e, opcionalmente, um `model_override` — troca de modelo só pra essa execução, sem editar a config salva do agente (útil pra testar contra um provider diferente, ex. OpenRouter, sem mexer no agente de produção). O painel mostra a lista de execuções (status, custo, duração) e, ao abrir uma, o trace passo a passo — inclusive o passo `pending_approval`, com botões Aprovar/Rejeitar diretamente ali.
 
 ```bash
