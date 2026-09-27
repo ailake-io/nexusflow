@@ -1272,10 +1272,10 @@ OSS, sem gambiarra de Dockerfile. Simplificação de graça, não só migração
       contradição interna corrigido em `ENTERPRISE_CONNECTORS.md` —
       Salesforce marcado como não implementado numa lista e implementado
       noutra).
-      `docs/USER_GUIDE.md` **ainda não** — sem seção de referência (§4)
-      pra nenhum dos 22 conectores migrados; o doc já admite isso na sua
-      própria nota do topo, não é regressão desta auditoria, é trabalho
-      de redação ainda não feito.
+      `docs/USER_GUIDE.md §4.10-4.13` — escritas 2026-09-27, uma seção
+      por conector com exemplo de config real (campos exatos dos structs
+      Rust) + tabela-resumo (§4.8) e CDC nativo (§4.9, `mssql-cdc`/
+      `oracle-cdc`) atualizados.
 - [x] `LICENSING.md`/`docs/ENTERPRISE_LICENSING.md` atualizados —
       `LICENSING.md` confirmado correto (16 crates, `nexus-infra-terraform`
       mencionado); `ENTERPRISE_LICENSING.md` nunca fez claim de contagem
