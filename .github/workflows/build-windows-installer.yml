@@ -36,6 +36,12 @@ on:
 
 permissions:
   contents: write
+  # Read-only, needed by the SignPath signing step below to fetch the
+  # unsigned-artifact upload it just made — harmless on a public repo
+  # (docs.signpath.io says this is only strictly required when the repo is
+  # private and the SignPath GitHub App isn't installed), kept explicit
+  # anyway since it costs nothing.
+  actions: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -313,6 +319,56 @@ jobs:
           }
           "path=$($msi.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "name=$($msi.Name)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      # Authenticode signing (SignPath, free for OSS — 2026-09-27, added
+      # after a winget-pkgs submission review flagged the unsigned .msi as
+      # a plausible contributing factor to its "Validation-Executable-Error"
+      # label, though the exact cause was never confirmed — this is a
+      # real quality improvement regardless of whether it's the actual fix).
+      # Gated on SIGNPATH_API_TOKEN existing so this job keeps producing a
+      # working (just unsigned) .msi exactly as before until that secret is
+      # actually added — signing setup on signpath.io (org, project linked
+      # to the "GitHub.com" Trusted Build System, a signing policy, and an
+      # API token with submitter permissions) is a one-time step only a
+      # repo admin can do, not something this workflow can bootstrap itself.
+      # Required repo configuration once that's done:
+      #   Secret:    SIGNPATH_API_TOKEN
+      #   Variables: SIGNPATH_ORG_ID, SIGNPATH_PROJECT_SLUG,
+      #              SIGNPATH_SIGNING_POLICY_SLUG
+      # See https://docs.signpath.io/trusted-build-systems/github.
+      - name: Upload unsigned .msi (SignPath input)
+        id: upload-unsigned-msi
+        if: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+        uses: actions/upload-artifact@834a144ee995460fba8ed112a2fc961b36a5ec5a # v4.4.3
+        with:
+          name: unsigned-msi
+          path: ${{ steps.msi.outputs.path }}
+
+      - name: Sign .msi via SignPath
+        if: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORG_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.upload-unsigned-msi.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed-msi
+
+      # Overwrites the same path `steps.msi.outputs.path` points at, so
+      # every step below (artifact upload, release attach) needs no
+      # change to pick up the signed file instead of the unsigned one.
+      - name: Replace .msi with the signed one
+        if: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+        shell: pwsh
+        run: |
+          $signed = Get-ChildItem -Path signed-msi -Filter *.msi | Select-Object -First 1
+          if (-not $signed) {
+            Write-Error "SignPath step reported success but no .msi found under signed-msi"
+            exit 1
+          }
+          Copy-Item $signed.FullName "${{ steps.msi.outputs.path }}" -Force
 
       # Only needed when no `version` was given — the artifact is the
       # whole output then, a human downloads and publishes it by hand.

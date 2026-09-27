@@ -107,7 +107,7 @@ Além da imagem Docker acima, já tem binário pra baixar direto — todos com *
 | Linux (Fedora/RHEL) | `.rpm` — [releases](https://github.com/ailake-io/nexusflow/releases) | ✅ validado |
 | Linux (qualquer distro) | AppImage — [releases](https://github.com/ailake-io/nexusflow/releases) | ✅ validado |
 | Windows | `.msi` — [releases](https://github.com/ailake-io/nexusflow/releases) | ✅ instalado numa máquina Windows real (2026-09-06) |
-| Windows | `winget install Ailake.NexusFlow` | ⏳ manifesto submetido, PR pendente de review em `microsoft/winget-pkgs` |
+| Windows | `winget install Ailake.NexusFlow` | ⏳ manifesto submetido, [PR #436825](https://github.com/microsoft/winget-pkgs/pull/436825) travado — CLA da Microsoft não assinada + erro de validação pós-instalação, exige ação do mantenedor |
 | macOS (Apple Silicon) | `brew install ailake-io/nexusflow/nexusflow` | ✅ build validado num runner real; ninguém ainda rodou numa máquina física própria |
 | Kubernetes | Manifests kustomize em [`packaging/kubernetes/`](./packaging/kubernetes/) | ✅ validado num minikube real |
 
