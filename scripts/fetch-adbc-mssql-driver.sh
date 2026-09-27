@@ -15,21 +15,36 @@
 #   ./scripts/fetch-adbc-mssql-driver.sh [OUT_DIR]
 #
 # Output: $OUT_DIR/libadbc_driver_mssql.so
+#
+# Env (both pinned below — found in a security review, 2026-09-27:
+# unpinned `dbc install mssql` would silently pull whatever's newest at
+# build time, same reproducibility gap `DUCKDB_VERSION` already closes
+# for the duckdb fetch):
+#   DBC_CLI_VERSION      pinned `dbc` CLI release (`dbc install --version`
+#                        confirms `dbc install DRIVER=X.Y.Z` constraint
+#                        syntax; the CLI itself still needs its own pin)
+#   MSSQL_ADBC_VERSION   pinned mssql driver release. `dbc install` verifies
+#                        the driver's signature+checksum by default (no
+#                        `--no-verify`/`--insecure-no-checksum` flag used
+#                        here) — pinning the version is about reproducible
+#                        builds, not integrity (integrity is already covered).
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_DIR="${1:-$REPO_ROOT/target/adbc}"
+DBC_CLI_VERSION="${DBC_CLI_VERSION:-0.3.0}"
+MSSQL_ADBC_VERSION="${MSSQL_ADBC_VERSION:-1.6.2}"
 mkdir -p "$OUT_DIR"
 
 if ! command -v dbc >/dev/null 2>&1; then
-    echo "==> installing dbc CLI (Columnar Technologies, MIT-licensed installer)"
-    curl -LsSf https://dbc.columnar.tech/install.sh | sh
+    echo "==> installing dbc CLI ${DBC_CLI_VERSION} (Columnar Technologies, MIT-licensed installer)"
+    curl -LsSf https://dbc.columnar.tech/install.sh | sh -s -- --version "$DBC_CLI_VERSION"
     export PATH="$HOME/.local/bin:$PATH"
 fi
 
-echo "==> dbc install mssql (no auth needed, unlike oracle/hana/teradata)"
-dbc install mssql
+echo "==> dbc install mssql=${MSSQL_ADBC_VERSION} (no auth needed, unlike oracle/hana/teradata)"
+dbc install "mssql=${MSSQL_ADBC_VERSION}"
 
 # `dbc` places the driver under a manifest directory that varies by
 # environment (conda prefix, ~/.local, XDG config dir, etc.) — read the

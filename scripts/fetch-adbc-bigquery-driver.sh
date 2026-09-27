@@ -8,15 +8,24 @@
 #
 # Usage: scripts/fetch-adbc-bigquery-driver.sh [output_dir]
 # Writes: <output_dir>/libadbc_driver_bigquery.so (default output_dir: ./target/adbc)
+#
+# Env:
+#   BIGQUERY_ADBC_VERSION   pinned adbc-driver-bigquery PyPI release
+#                           (default below) — unpinned `pip download` would
+#                           silently pull whatever's newest on PyPI at build
+#                           time (found in a security review, 2026-09-27:
+#                           same reproducibility gap `DUCKDB_VERSION` already
+#                           closes for the duckdb fetch).
 set -euo pipefail
 
 OUT_DIR="${1:-./target/adbc}"
+BIGQUERY_ADBC_VERSION="${BIGQUERY_ADBC_VERSION:-1.11.0}"
 mkdir -p "$OUT_DIR"
 
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
-pip download adbc-driver-bigquery --no-deps \
+pip download "adbc-driver-bigquery==${BIGQUERY_ADBC_VERSION}" --no-deps \
   --platform manylinux2014_x86_64 --only-binary=:all: \
   -d "$WORK_DIR" >/dev/null
 
