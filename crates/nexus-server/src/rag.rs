@@ -250,7 +250,7 @@ async fn rag_query_handler(
 // `search.rs` produces directly.
 
 #[cfg(feature = "lancedb")]
-async fn search_lancedb(
+pub(crate) async fn search_lancedb(
     sink_config: &serde_json::Value,
     source_column: &str,
     query_vector: Vec<f32>,
@@ -290,7 +290,7 @@ async fn search_lancedb(
     Ok((keys, texts))
 }
 #[cfg(not(feature = "lancedb"))]
-async fn search_lancedb(
+pub(crate) async fn search_lancedb(
     _sink_config: &serde_json::Value,
     _source_column: &str,
     _query_vector: Vec<f32>,
@@ -302,7 +302,7 @@ async fn search_lancedb(
 }
 
 #[cfg(feature = "qdrant")]
-async fn search_qdrant(
+pub(crate) async fn search_qdrant(
     sink_config: &serde_json::Value,
     source_column: &str,
     query_vector: Vec<f32>,
@@ -321,7 +321,7 @@ async fn search_qdrant(
         .unzip())
 }
 #[cfg(not(feature = "qdrant"))]
-async fn search_qdrant(
+pub(crate) async fn search_qdrant(
     _sink_config: &serde_json::Value,
     _source_column: &str,
     _query_vector: Vec<f32>,
@@ -333,7 +333,7 @@ async fn search_qdrant(
 }
 
 #[cfg(feature = "milvus")]
-async fn search_milvus(
+pub(crate) async fn search_milvus(
     sink_config: &serde_json::Value,
     source_column: &str,
     query_vector: Vec<f32>,
@@ -353,7 +353,7 @@ async fn search_milvus(
         .unzip())
 }
 #[cfg(not(feature = "milvus"))]
-async fn search_milvus(
+pub(crate) async fn search_milvus(
     _sink_config: &serde_json::Value,
     _source_column: &str,
     _query_vector: Vec<f32>,
@@ -365,7 +365,7 @@ async fn search_milvus(
 }
 
 #[cfg(feature = "pgvector")]
-async fn search_pgvector(
+pub(crate) async fn search_pgvector(
     sink_config: &serde_json::Value,
     source_column: &str,
     query_vector: Vec<f32>,
@@ -390,7 +390,7 @@ async fn search_pgvector(
         .unzip())
 }
 #[cfg(not(feature = "pgvector"))]
-async fn search_pgvector(
+pub(crate) async fn search_pgvector(
     _sink_config: &serde_json::Value,
     _source_column: &str,
     _query_vector: Vec<f32>,
@@ -402,7 +402,7 @@ async fn search_pgvector(
 }
 
 #[cfg(feature = "pinecone")]
-async fn search_pinecone(
+pub(crate) async fn search_pinecone(
     sink_config: &serde_json::Value,
     source_column: &str,
     query_vector: Vec<f32>,
@@ -421,7 +421,7 @@ async fn search_pinecone(
         .unzip())
 }
 #[cfg(not(feature = "pinecone"))]
-async fn search_pinecone(
+pub(crate) async fn search_pinecone(
     _sink_config: &serde_json::Value,
     _source_column: &str,
     _query_vector: Vec<f32>,
@@ -433,7 +433,7 @@ async fn search_pinecone(
 }
 
 #[cfg(feature = "chromadb")]
-async fn search_chromadb(
+pub(crate) async fn search_chromadb(
     sink_config: &serde_json::Value,
     source_column: &str,
     query_vector: Vec<f32>,
@@ -453,7 +453,7 @@ async fn search_chromadb(
         .unzip())
 }
 #[cfg(not(feature = "chromadb"))]
-async fn search_chromadb(
+pub(crate) async fn search_chromadb(
     _sink_config: &serde_json::Value,
     _source_column: &str,
     _query_vector: Vec<f32>,

@@ -80,6 +80,15 @@ function embeddingNode(overrides: Partial<EmbeddingNodeData> = {}): DagNode {
   }
 }
 
+function visualizationNode(script = 'def visualize(df):\n    return df.plot().figure'): DagNode {
+  return {
+    id: 'n5',
+    type: 'visualization',
+    position: { x: 0, y: 0 },
+    data: { kind: 'visualization', script, timeoutSeconds: 0 },
+  }
+}
+
 function cleanNode(
   id: string,
   x: number,
@@ -190,6 +199,47 @@ describe('toPipelineSpec', () => {
   })
 })
 
+describe('toPipelineSpec — visualization', () => {
+  it('serializes a visualization node branching off a transform', () => {
+    const spec = toPipelineSpec(
+      [sourceNode(), transformNode('SELECT 1'), visualizationNode(), sinkNode()],
+      meta,
+    )
+    expect(spec.visualization?.script).toContain('def visualize')
+    expect(spec.transform?.sql).toBe('SELECT 1')
+  })
+
+  it('rejects more than one visualization node', () => {
+    expect(() =>
+      toPipelineSpec(
+        [
+          sourceNode(),
+          transformNode('SELECT 1'),
+          visualizationNode(),
+          visualizationNode(),
+          sinkNode(),
+        ],
+        meta,
+      ),
+    ).toThrow('at most one visualization')
+  })
+
+  it('rejects an empty visualization script', () => {
+    expect(() =>
+      toPipelineSpec(
+        [sourceNode(), transformNode('SELECT 1'), visualizationNode('  '), sinkNode()],
+        meta,
+      ),
+    ).toThrow('script must not be empty')
+  })
+
+  it('rejects visualization without a transform/clean/python stage', () => {
+    expect(() =>
+      toPipelineSpec([sourceNode(), visualizationNode(), sinkNode()], meta),
+    ).toThrow('requires a transform stage')
+  })
+})
+
 describe('fromPipelineSpec', () => {
   it('round-trips a linear pipeline', () => {
     const original = toPipelineSpec([sourceNode(), sinkNode()], meta)
@@ -219,6 +269,26 @@ describe('fromPipelineSpec', () => {
     const { nodes } = fromPipelineSpec(original)
     const roundTrip = toPipelineSpec(nodes, meta)
     expect(roundTrip.embedding).toEqual(original.embedding)
+  })
+
+  it('round-trips a visualization node without disturbing sink wiring', () => {
+    const original = toPipelineSpec(
+      [sourceNode(), transformNode('SELECT 1'), visualizationNode(), sinkNode()],
+      meta,
+    )
+    const { nodes, edges } = fromPipelineSpec(original)
+    const vizNode = nodes.find((n) => n.data.kind === 'visualization')
+    expect(vizNode).toBeDefined()
+    // The visualization node observes the transform's output but must not
+    // sit between it and the sink — sink still gets an edge straight from
+    // the transform (mirrors runner.rs never routing through it).
+    const sinkNodeId = nodes.find((n) => n.data.kind === 'connector' && n.data.role === 'sink')?.id
+    const transformNodeId = nodes.find((n) => n.data.kind === 'transform')?.id
+    expect(edges).toContainEqual(
+      expect.objectContaining({ source: transformNodeId, target: sinkNodeId }),
+    )
+    const roundTrip = toPipelineSpec(nodes, meta)
+    expect(roundTrip.visualization).toEqual(original.visualization)
   })
 })
 

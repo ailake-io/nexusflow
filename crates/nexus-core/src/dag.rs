@@ -57,6 +57,24 @@ pub struct PythonTransformSpec {
     pub timeout_seconds: Option<u64>,
 }
 
+/// A chart rendered from this pipeline's final output, right before it's
+/// written to the sink(s) — a side observation, never altering what the
+/// sink receives (unlike `python`, which transforms the data itself).
+/// Sibling of `PythonTransformSpec`: same `python3` subprocess isolation
+/// (`python_viz.rs`), same duck-typed `visualize(df)` contract as the
+/// agent's `GenerateChart` tool. Only wired into the "unpartitioned,
+/// fully materialized" pipeline shape (`runner.rs::run_transform_pipeline`)
+/// — a plain linear copy or a `-cdc` stream never fully materializes in
+/// memory, so there's no single finite `df` to hand a chart script
+/// (`validate()` rejects setting this without a transform/clean_blocks/
+/// python stage present).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VisualizationSpec {
+    pub script: String,
+    #[serde(default)]
+    pub timeout_seconds: Option<u64>,
+}
+
 /// One upstream pipeline this pipeline waits on before `pipeline_dependencies.rs`
 /// (Fase 26) automatically triggers a run — a `schedule` cron expression
 /// remains the only other automatic trigger, and both can coexist on the
@@ -459,6 +477,11 @@ pub struct PipelineSpec {
     /// first.
     #[serde(default)]
     pub python: Option<PythonTransformSpec>,
+    /// Optional chart rendered from the final output, right before the
+    /// sinks — a side observation (see `VisualizationSpec`'s own doc
+    /// comment for why this requires `transform`/`clean_blocks`/`python`).
+    #[serde(default)]
+    pub visualization: Option<VisualizationSpec>,
     #[serde(default = "default_channel_capacity")]
     pub channel_capacity: usize,
     #[serde(default = "default_partitions")]
@@ -749,6 +772,27 @@ impl PipelineSpec {
             if python.timeout_seconds == Some(0) {
                 return Err(NexusError::Schema(
                     "python.timeout_seconds must be > 0".into(),
+                ));
+            }
+        }
+
+        if let Some(visualization) = &self.visualization {
+            if visualization.script.trim().is_empty() {
+                return Err(NexusError::Schema(
+                    "visualization.script must not be empty".into(),
+                ));
+            }
+            if visualization.timeout_seconds == Some(0) {
+                return Err(NexusError::Schema(
+                    "visualization.timeout_seconds must be > 0".into(),
+                ));
+            }
+            if self.transform.is_none() && self.clean_blocks.is_empty() && self.python.is_none() {
+                return Err(NexusError::Schema(
+                    "visualization requires a transform stage (SQL transform, clean_blocks, or \
+                     python) — a plain linear or CDC pipeline never fully materializes its \
+                     output in memory, so there's no finite dataset to chart"
+                        .into(),
                 ));
             }
         }
@@ -1148,8 +1192,13 @@ fn validate_embedding_security(
 }
 
 /// Same SSRF guard as `validate_embedding_security`, for `llm.model.base_url`
-/// — an identical user-supplied outbound-request URL, same risk.
-fn validate_llm_security(
+/// — an identical user-supplied outbound-request URL, same risk. `pub`
+/// (not `pub(crate)`) so nexus-server's `agent.rs` can run this same check
+/// against a bare `model_override` on `POST /agents/{id}/run` — a
+/// per-execution `LlmModelConfig` that never goes through
+/// `AgentSpec::validate_security_with` at all, since it isn't part of any
+/// saved spec.
+pub fn validate_llm_security(
     model: &LlmModelConfig,
     allow_internal_hosts: bool,
 ) -> Result<(), NexusError> {
@@ -1293,7 +1342,10 @@ fn validate_dbt_project_dir(project_dir: &str) -> Result<(), NexusError> {
     Ok(())
 }
 
-fn http_host(s: &str) -> Option<String> {
+/// `pub(crate)` so `agent.rs`'s `AgentToolKind::CallWebhook` validation can
+/// reuse the exact same host-extraction the alerts/embedding/llm SSRF
+/// checks in this file already use, instead of re-parsing the URL itself.
+pub(crate) fn http_host(s: &str) -> Option<String> {
     let url = url::Url::parse(s).ok()?;
     url.host_str().map(|h| h.to_lowercase())
 }
@@ -1422,6 +1474,44 @@ mod tests {
         let err =
             PipelineSpec::parse(json).expect_err("sink with no uri/file_path must be rejected");
         assert!(err.to_string().contains("uri' or 'file_path'"));
+    }
+
+    #[test]
+    fn rejects_visualization_without_a_transform_stage() {
+        let json = r#"{
+            "pipeline_id": "p1",
+            "sources": [{"connector": "postgres", "config": {"table": "events"}}],
+            "sinks": [{"connector": "sqlite", "config": {"table": "t", "uri": ":memory:"}}],
+            "visualization": {"script": "def visualize(df): ..."}
+        }"#;
+        let err = PipelineSpec::parse(json)
+            .expect_err("visualization on a plain linear pipeline must be rejected");
+        assert!(err.to_string().contains("requires a transform stage"));
+    }
+
+    #[test]
+    fn accepts_visualization_alongside_a_sql_transform() {
+        let json = r#"{
+            "pipeline_id": "p1",
+            "sources": [{"connector": "postgres", "config": {"table": "events"}, "name": "source0"}],
+            "transform": {"sql": "SELECT * FROM source0"},
+            "sinks": [{"connector": "sqlite", "config": {"table": "t", "uri": ":memory:"}}],
+            "visualization": {"script": "def visualize(df): ..."}
+        }"#;
+        PipelineSpec::parse(json).expect("visualization alongside a transform is valid");
+    }
+
+    #[test]
+    fn rejects_empty_visualization_script() {
+        let json = r#"{
+            "pipeline_id": "p1",
+            "sources": [{"connector": "postgres", "config": {"table": "events"}, "name": "source0"}],
+            "transform": {"sql": "SELECT * FROM source0"},
+            "sinks": [{"connector": "sqlite", "config": {"table": "t", "uri": ":memory:"}}],
+            "visualization": {"script": ""}
+        }"#;
+        let err = PipelineSpec::parse(json).expect_err("empty script must be rejected");
+        assert!(err.to_string().contains("script must not be empty"));
     }
 
     #[test]

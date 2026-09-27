@@ -5,6 +5,7 @@ import {
   EmbeddingNodeView,
   PythonNodeView,
   TransformNodeView,
+  VisualizationNodeView,
 } from '@/components/dag-nodes'
 
 export const dagNodeTypes = {
@@ -13,5 +14,6 @@ export const dagNodeTypes = {
   dbt: DbtNodeView,
   embedding: EmbeddingNodeView,
   python: PythonNodeView,
+  visualization: VisualizationNodeView,
   clean: CleanBlockNodeView,
 }

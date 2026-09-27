@@ -557,6 +557,7 @@ mod tests {
             embedding: None,
             llm: None,
             python: None,
+            visualization: None,
             channel_capacity: 100,
             partitions: 1,
             dbt: None,

@@ -18,8 +18,12 @@ mod pipeline;
 
 pub use anthropic_client::{AnthropicClient, AnthropicClientConfig};
 pub use client::{LlmClient, LlmClientConfig, LlmResponse};
-pub use common::{append_text_column, cache_key, LlmCache, LlmError};
+pub use common::{
+    append_text_column, cache_key, LlmCache, LlmError, LlmTurn, ToolCall, ToolDef, ToolMessage,
+    ToolTurn,
+};
 pub use eval::{run_eval_cases, score_answer, LlmEvalOutcome, EVAL_PASS_THRESHOLD};
 pub use pipeline::{
-    apply_llm, build_prompt, load_llm_backend, LlmApplyResult, LlmBackend, LlmCallStats,
+    apply_llm, build_prompt, call_with_tools_cached, load_llm_backend, load_llm_backend_for_model,
+    LlmApplyResult, LlmBackend, LlmCallStats,
 };

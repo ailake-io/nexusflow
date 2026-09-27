@@ -14,7 +14,7 @@ import {
   type OnSelectionChangeFunc,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { Code2, Layers, Sparkles, Terminal } from 'lucide-react'
+import { Code2, Layers, Sparkles, Terminal, BarChart3 } from 'lucide-react'
 import { useI18n } from '@/lib/i18n'
 import { useTheme } from '@/lib/theme'
 import { ConnectorPalette } from '@/components/ConnectorPalette'
@@ -41,6 +41,7 @@ import {
   type PipelineSpec,
   type PythonNodeData,
   type TransformNodeData,
+  type VisualizationNodeData,
 } from '@/lib/dag'
 
 function newNodeId(): string {
@@ -170,6 +171,19 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
     ])
   }, [])
 
+  const addVisualizationNode = useCallback(() => {
+    const id = newNodeId()
+    setNodes((current) => [
+      ...current,
+      {
+        id,
+        type: 'visualization',
+        position: { x: 560, y: 200 },
+        data: { kind: 'visualization', script: '', timeoutSeconds: 0 },
+      },
+    ])
+  }, [])
+
   const addEmbeddingNode = useCallback(() => {
     const id = newNodeId()
     setNodes((current) => [
@@ -211,6 +225,7 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
         | Partial<DbtNodeData>
         | Partial<EmbeddingNodeData>
         | Partial<PythonNodeData>
+        | Partial<VisualizationNodeData>
         | Partial<CleanBlockNodeData>,
     ) => {
       setNodes((current) =>
@@ -489,6 +504,14 @@ function CanvasInner({ pipelineToLoad, onPipelineLoaded }: CanvasInnerProps) {
             >
               <Terminal className="h-3.5 w-3.5 text-sky-400" />
               {t('canvas.addPython')}
+            </button>
+            <button
+              type="button"
+              onClick={addVisualizationNode}
+              className="flex items-center gap-2 rounded-lg border border-white/10 bg-card/90 px-3 py-2 text-sm font-medium text-foreground shadow-lg backdrop-blur transition-all hover:border-violet-400/40 hover:bg-card"
+            >
+              <BarChart3 className="h-3.5 w-3.5 text-violet-400" />
+              {t('canvas.addVisualization')}
             </button>
             <button
               type="button"

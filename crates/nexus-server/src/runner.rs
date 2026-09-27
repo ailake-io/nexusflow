@@ -257,6 +257,7 @@ pub async fn run_pipeline(
     prompt_templates: &crate::prompt_template_store::PromptTemplateStore,
     llm_eval_store: &crate::llm_eval_result_store::LlmEvalResultStore,
     masking_salt: Option<&[u8]>,
+    visualization_store: &crate::pipeline_run_visualization_store::PipelineRunVisualizationStore,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     // A `*-cdc` source with a plain SQL transform (the documented CDC shape
     // — `SELECT * FROM source0`, required to preserve `__opcode` for the
@@ -312,6 +313,7 @@ pub async fn run_pipeline(
             prompt_templates,
             llm_eval_store,
             masking_salt,
+            visualization_store,
         )
         .await
     } else {
@@ -1121,6 +1123,7 @@ async fn run_transform_pipeline(
     prompt_templates: &crate::prompt_template_store::PromptTemplateStore,
     llm_eval_store: &crate::llm_eval_result_store::LlmEvalResultStore,
     masking_salt: Option<&[u8]>,
+    visualization_store: &crate::pipeline_run_visualization_store::PipelineRunVisualizationStore,
 ) -> anyhow::Result<Vec<PartitionStats>> {
     // Same reasoning as `run_passthrough_pipeline`'s `is_cdc` check: a `-cdc`
     // source is meant to run again every scheduler tick, using
@@ -1289,6 +1292,40 @@ async fn run_transform_pipeline(
     } else {
         output
     };
+
+    // Side observation, never alters `output` — the sinks below still get
+    // exactly what the transform/python stage produced, chart rendering
+    // failure is logged but never fails the run (same posture as a quality
+    // check finding: informational, not a gate) since a broken chart
+    // script is a much smaller problem than a pipeline that stops moving
+    // data over it.
+    if let Some(viz_spec) = &spec.visualization {
+        if let Some(schema) = output.first().map(|b| b.schema()) {
+            log_info(log, "rendering visualization").await;
+            match crate::python_viz::render(
+                schema,
+                output.clone(),
+                &viz_spec.script,
+                viz_spec.timeout_seconds,
+            )
+            .await
+            {
+                Ok(chart) => {
+                    if let Err(e) = visualization_store
+                        .store(run_id, &chart.bytes, &chart.content_type)
+                        .await
+                    {
+                        log_info(log, &format!("failed to persist visualization: {e}")).await;
+                    } else {
+                        log_info(log, "visualization rendered").await;
+                    }
+                }
+                Err(e) => {
+                    log_info(log, &format!("visualization failed: {e}")).await;
+                }
+            }
+        }
+    }
 
     // `__opcode` (CDC metadata, added by the source, carried through
     // untouched by `SELECT * FROM source0`) is never a real destination
@@ -1567,21 +1604,23 @@ impl nexus_ai::llm::LlmCache for RedisLlmCache {
     }
 }
 
-/// Connects the cache backend `spec.cache` asks for, if any. A `Some(cache)`
-/// spec on a binary built without the "redis" feature is a clear
-/// config/build-mismatch error, not a silent no-cache fallback — same
+/// Connects the cache backend `cache_spec` asks for, if any — shared by the
+/// batch `llm` node (`apply_llm_stage`, below) and the agent loop
+/// (`agent_runner.rs`, ROADMAP.md Fase 31), both of which carry their own
+/// `Option<LlmCacheSpec>` rather than one being nested in the other. A
+/// `Some(cache_spec)` on a binary built without the "redis" feature is a
+/// clear config/build-mismatch error, not a silent no-cache fallback — same
 /// posture as the embedding backend's "not compiled into this binary"
 /// errors.
 #[cfg(feature = "llm")]
-async fn connect_llm_cache(
-    spec: &nexus_core::LlmNodeSpec,
+pub(crate) async fn connect_llm_cache(
+    cache_spec: Option<&nexus_core::LlmCacheSpec>,
 ) -> anyhow::Result<Option<Box<dyn nexus_ai::llm::LlmCache>>> {
-    if spec.cache.is_none() {
+    let Some(cache_spec) = cache_spec else {
         return Ok(None);
-    }
+    };
     #[cfg(feature = "redis")]
     {
-        let cache_spec = spec.cache.as_ref().expect("checked above");
         let client = nexus_connector_redis::RedisKvClient::connect(&cache_spec.url).await?;
         Ok(Some(
             Box::new(RedisLlmCache(client)) as Box<dyn nexus_ai::llm::LlmCache>
@@ -1589,9 +1628,7 @@ async fn connect_llm_cache(
     }
     #[cfg(not(feature = "redis"))]
     {
-        anyhow::bail!(
-            "pipeline's llm node has a cache configured but the server was built without the 'redis' feature"
-        )
+        anyhow::bail!("a cache is configured but the server was built without the 'redis' feature")
     }
 }
 
@@ -1635,7 +1672,7 @@ async fn apply_llm_stage(
     };
 
     let backend = nexus_ai::llm::load_llm_backend(spec);
-    let cache = connect_llm_cache(spec).await?;
+    let cache = connect_llm_cache(spec.cache.as_ref()).await?;
     let (model, cost_per_1k_prompt_tokens, cost_per_1k_completion_tokens) = match &spec.model {
         nexus_core::LlmModelConfig::Api {
             model,
@@ -2324,6 +2361,7 @@ mod tests {
             embedding: None,
             llm: None,
             python: None,
+            visualization: None,
             channel_capacity: 100,
             partitions: 1,
             dbt: None,
@@ -2387,6 +2425,12 @@ mod tests {
                 .await
                 .unwrap();
         let alerts = crate::alerts::AlertNotifier::new(crate::alerts::AlertConfig::default(), true);
+        let visualization_store =
+            crate::pipeline_run_visualization_store::PipelineRunVisualizationStore::connect(
+                "sqlite::memory:",
+            )
+            .await
+            .unwrap();
 
         run_pipeline(
             &spec,
@@ -2402,6 +2446,7 @@ mod tests {
             &prompt_templates,
             &llm_eval_store,
             None,
+            &visualization_store,
         )
         .await
         .expect("clean_blocks pipeline must run end to end");
@@ -2422,5 +2467,140 @@ mod tests {
             vec!["2,25,Bruno", "3,30,Carlos"],
             "Filter must drop id=1 (valor=10 is not > 15), Sort must order by id"
         );
+    }
+
+    /// `PipelineSpec.visualization` (ROADMAP.md Fase 31) end to end: real
+    /// CSV source, a plain SQL transform (enters `run_transform_pipeline`),
+    /// a chart script — the sink still receives the untouched transform
+    /// output (visualization never alters it) and the rendered chart lands
+    /// in `pipeline_run_visualization_store.rs` keyed by this run's id.
+    #[cfg(all(feature = "csv", feature = "python-viz"))]
+    #[tokio::test]
+    async fn visualization_renders_and_persists_without_altering_sink_output() {
+        let _ = crate::telemetry::init();
+
+        let dir = tempfile::tempdir().unwrap();
+        let in_path = dir.path().join("in.csv");
+        let out_path = dir.path().join("out.csv");
+        std::fs::write(&in_path, "id,valor\n1,10\n2,25\n").unwrap();
+
+        let source_config = serde_json::json!({
+            "uri": in_path.to_str().unwrap(),
+            "has_header": true,
+            "fields": [
+                {"name": "id", "data_type": "int64"},
+                {"name": "valor", "data_type": "int64"},
+            ],
+        });
+        let sink_config = serde_json::json!({
+            "uri": out_path.to_str().unwrap(),
+            "has_header": true,
+            "primary_key": "id",
+            "fields": [
+                {"name": "id", "data_type": "int64"},
+                {"name": "valor", "data_type": "int64"},
+            ],
+        });
+        let spec = PipelineSpec {
+            pipeline_id: "visualization-e2e".to_string(),
+            sources: vec![NodeSpec {
+                name: Some("source0".to_string()),
+                connector: "csv".to_string(),
+                config: source_config,
+            }],
+            sinks: vec![NodeSpec {
+                name: None,
+                connector: "csv".to_string(),
+                config: sink_config,
+            }],
+            transform: Some(nexus_core::TransformSpec {
+                sql: "SELECT * FROM source0".to_string(),
+            }),
+            embedding: None,
+            llm: None,
+            python: None,
+            visualization: Some(nexus_core::VisualizationSpec {
+                script: "def visualize(df):\n    return (b'fake-chart', 'image/png')\n".to_string(),
+                timeout_seconds: None,
+            }),
+            channel_capacity: 100,
+            partitions: 1,
+            dbt: None,
+            post_dbt_sinks: Vec::new(),
+            schedule: None,
+            depends_on: Vec::new(),
+            dependency_mode: nexus_core::DependencyMode::Any,
+            alerts: None,
+            quality_checks: Vec::new(),
+            anomaly_alerts: false,
+            masking: Vec::new(),
+            draft: false,
+            clean_blocks: Vec::new(),
+        };
+        spec.validate().expect("hand-built spec must validate");
+
+        let checkpoints = CheckpointStore::connect("sqlite::memory:").await.unwrap();
+        let schema_store =
+            crate::pipeline_schema_store::PipelineSchemaStore::connect("sqlite::memory:")
+                .await
+                .unwrap();
+        let quality_store =
+            crate::quality_check_store::QualityCheckStore::connect("sqlite::memory:")
+                .await
+                .unwrap();
+        let llm_stats_store =
+            crate::pipeline_run_llm_stats_store::PipelineRunLlmStatsStore::connect(
+                "sqlite::memory:",
+            )
+            .await
+            .unwrap();
+        let prompt_templates =
+            crate::prompt_template_store::PromptTemplateStore::connect("sqlite::memory:")
+                .await
+                .unwrap();
+        let llm_eval_store =
+            crate::llm_eval_result_store::LlmEvalResultStore::connect("sqlite::memory:")
+                .await
+                .unwrap();
+        let alerts = crate::alerts::AlertNotifier::new(crate::alerts::AlertConfig::default(), true);
+        let visualization_store =
+            crate::pipeline_run_visualization_store::PipelineRunVisualizationStore::connect(
+                "sqlite::memory:",
+            )
+            .await
+            .unwrap();
+
+        run_pipeline(
+            &spec,
+            &checkpoints,
+            None,
+            None,
+            None,
+            &schema_store,
+            &alerts,
+            42,
+            &quality_store,
+            &llm_stats_store,
+            &prompt_templates,
+            &llm_eval_store,
+            None,
+            &visualization_store,
+        )
+        .await
+        .expect("visualization pipeline must run end to end");
+
+        let output = std::fs::read_to_string(&out_path).unwrap();
+        assert!(
+            output.contains("1,10") && output.contains("2,25"),
+            "sink must receive the untouched transform output: {output}"
+        );
+
+        let chart = visualization_store
+            .get(42)
+            .await
+            .unwrap()
+            .expect("visualization must be persisted for this run");
+        assert_eq!(chart.image_bytes, b"fake-chart");
+        assert_eq!(chart.content_type, "image/png");
     }
 }

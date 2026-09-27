@@ -41,6 +41,15 @@ export interface PythonTransformSpec {
   timeout_seconds?: number
 }
 
+/** Matches nexus-core::VisualizationSpec exactly — a chart rendered from
+ * the pipeline's final output right before the sinks, a side observation
+ * that never alters what the sinks receive (unlike `python` above, which
+ * transforms the data itself). */
+export interface VisualizationSpec {
+  script: string
+  timeout_seconds?: number
+}
+
 /** Matches nexus-core::FilterOperator exactly. */
 export type FilterOperator =
   | 'eq'
@@ -184,6 +193,12 @@ export interface PipelineSpec {
   /** Cleaning/transformation stage, chained after `transform` (if present)
    * and before the sinks — CLAUDE.md §4.4. */
   python?: PythonTransformSpec
+  /** Chart rendered from the final output, right before the sinks — a side
+   * observation (ROADMAP.md Fase 31), never alters the sinks' input.
+   * Requires `transform`/`clean_blocks`/`python` (server-side `validate()`
+   * rejects it on a plain linear or CDC pipeline, which never fully
+   * materializes in memory). */
+  visualization?: VisualizationSpec
   channel_capacity?: number
   partitions?: number
   dbt?: DbtConfig
@@ -311,6 +326,14 @@ export interface PythonNodeData extends Record<string, unknown> {
   timeoutSeconds: number
 }
 
+/** Canvas form of `VisualizationSpec` — same convention as `PythonNodeData`
+ * (`timeoutSeconds: 0` means unset). */
+export interface VisualizationNodeData extends Record<string, unknown> {
+  kind: 'visualization'
+  script: string
+  timeoutSeconds: number
+}
+
 export type EmbeddingBackend = 'onnx' | 'api'
 export type ChunkingStrategy = 'fixed_window' | 'recursive_character' | 'semantic'
 
@@ -400,6 +423,7 @@ export type DagNodeData =
   | DbtNodeData
   | EmbeddingNodeData
   | PythonNodeData
+  | VisualizationNodeData
   | CleanBlockNodeData
 export type DagNode = Node<DagNodeData>
 
@@ -417,6 +441,10 @@ export function isDbtNode(node: DagNode): node is Node<DbtNodeData> {
 
 export function isPythonNode(node: DagNode): node is Node<PythonNodeData> {
   return node.data.kind === 'python'
+}
+
+export function isVisualizationNode(node: DagNode): node is Node<VisualizationNodeData> {
+  return node.data.kind === 'visualization'
 }
 
 export function isEmbeddingNode(node: DagNode): node is Node<EmbeddingNodeData> {
@@ -474,6 +502,7 @@ export function toPipelineSpec(
   const dbtNodes = nodes.filter(isDbtNode)
   const embeddingNodes = nodes.filter(isEmbeddingNode)
   const pythonNodes = nodes.filter(isPythonNode)
+  const visualizationNodes = nodes.filter(isVisualizationNode)
   // Order = left-to-right canvas position, not edges — same convention
   // `fromPipelineSpec` uses when laying blocks back out.
   const cleanNodes = nodes
@@ -492,6 +521,9 @@ export function toPipelineSpec(
     }
     if (pythonNodes.length > 1) {
       err('atMostOnePython')
+    }
+    if (visualizationNodes.length > 1) {
+      err('atMostOneVisualization')
     }
     if (cleanNodes.length > 0 && (transformNodes.length > 0 || pythonNodes.length > 0)) {
       err('cleanBlocksExclusiveWithTransformOrPython')
@@ -528,6 +560,12 @@ export function toPipelineSpec(
     python.timeout_seconds = pythonNodes[0].data.timeoutSeconds
   }
 
+  const visualization: VisualizationSpec | undefined =
+    visualizationNodes.length === 1 ? { script: visualizationNodes[0].data.script } : undefined
+  if (visualization && visualizationNodes[0].data.timeoutSeconds > 0) {
+    visualization.timeout_seconds = visualizationNodes[0].data.timeoutSeconds
+  }
+
   if (!allowDraft) {
     if (
       !transform &&
@@ -545,6 +583,12 @@ export function toPipelineSpec(
     }
     if (python && !python.script.trim()) {
       err('pythonScriptEmpty')
+    }
+    if (visualization && !visualization.script.trim()) {
+      err('visualizationScriptEmpty')
+    }
+    if (visualization && !transform && cleanNodes.length === 0 && !python) {
+      err('visualizationRequiresTransformStage')
     }
   }
 
@@ -575,6 +619,7 @@ export function toPipelineSpec(
   if (transform) spec.transform = transform
   if (embedding) spec.embedding = embedding
   if (python) spec.python = python
+  if (visualization) spec.visualization = visualization
   if (dbt) spec.dbt = dbt
   if (cleanBlocks.length > 0) spec.clean_blocks = cleanBlocks
   if (meta.channelCapacity !== undefined) spec.channel_capacity = meta.channelCapacity
@@ -602,6 +647,7 @@ const EN_DAG_ERRORS = {
   atMostOneDbt: 'at most one dbt node is allowed',
   atMostOneEmbedding: 'at most one embedding node is allowed',
   atMostOnePython: 'at most one python node is allowed',
+  atMostOneVisualization: 'at most one visualization node is allowed',
   sourcesEmpty: 'sources must not be empty',
   sinksEmpty: 'sinks must not be empty',
   strictLinearWithoutTransform:
@@ -610,6 +656,9 @@ const EN_DAG_ERRORS = {
     'without a SQL transform, a python node still requires exactly 1 source and 1 sink',
   transformSqlEmpty: 'transform.sql must not be empty',
   pythonScriptEmpty: 'python node: script must not be empty',
+  visualizationScriptEmpty: 'visualization node: script must not be empty',
+  visualizationRequiresTransformStage:
+    'visualization requires a transform stage (SQL transform, clean blocks, or python) — a plain linear or CDC pipeline never fully materializes its output in memory',
   dbtProjectDirEmpty: 'dbt node: project_dir must not be empty',
   embeddingSourceColumnEmpty: 'embedding node: source_column must not be empty',
   embeddingOutputColumnEmpty: 'embedding node: output_column must not be empty',
@@ -907,7 +956,7 @@ function toNodeSpec(
   return spec
 }
 
-const COLUMN_X = { source: 0, transform: 320, python: 480, sink: 640 }
+const COLUMN_X = { source: 0, transform: 320, python: 480, visualization: 560, sink: 640 }
 const CLEAN_BLOCK_SPACING = 160
 const ROW_HEIGHT = 100
 
@@ -1008,6 +1057,26 @@ export function fromPipelineSpec(spec: PipelineSpec): { nodes: DagNode[]; edges:
         edges.push({ id: `${id}-${cleanId}`, source: id, target: cleanId })
       })
       upstreamIds = [cleanId]
+    })
+  }
+
+  if (spec.visualization) {
+    const vizId = `import-${importNodeId++}`
+    nodes.push({
+      id: vizId,
+      type: 'visualization',
+      position: { x: COLUMN_X.visualization, y: -ROW_HEIGHT },
+      data: {
+        kind: 'visualization',
+        script: spec.visualization.script,
+        timeoutSeconds: spec.visualization.timeout_seconds ?? 0,
+      },
+    })
+    // Read-only observer of the last stage's output — never becomes the new
+    // upstream, unlike transform/python/clean_blocks, since it doesn't feed
+    // the sinks (mirrors runner.rs: side effect, never mutates `output`).
+    upstreamIds.forEach((id) => {
+      edges.push({ id: `${id}-${vizId}`, source: id, target: vizId })
     })
   }
 
