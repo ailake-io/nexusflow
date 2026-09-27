@@ -1628,7 +1628,10 @@ pub(crate) async fn connect_llm_cache(
     }
     #[cfg(not(feature = "redis"))]
     {
-        anyhow::bail!("a cache is configured but the server was built without the 'redis' feature")
+        anyhow::bail!(
+            "cache at {} is configured but the server was built without the 'redis' feature",
+            cache_spec.url
+        )
     }
 }
 
