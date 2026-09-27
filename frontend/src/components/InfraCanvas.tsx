@@ -332,7 +332,7 @@ function CanvasInner() {
     } finally {
       setGenerating(false)
     }
-  }, [token, nodes, edges])
+  }, [token, nodes, edges, region])
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId) ?? null
   const selectedEdge = edges.find((e) => e.id === selectedEdgeId) ?? null

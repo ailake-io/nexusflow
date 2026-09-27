@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Bot, Plus, Loader2, Check, X, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -102,18 +102,21 @@ export function AgentsPanel() {
 
   useEffect(refresh, [token])
 
-  const refreshRuns = (agentId: string) => {
-    if (!token) return
-    listAgentRuns(token, agentId)
-      .then(setRuns)
-      .catch(() => setRuns([]))
-  }
+  const refreshRuns = useCallback(
+    (agentId: string) => {
+      if (!token) return
+      listAgentRuns(token, agentId)
+        .then(setRuns)
+        .catch(() => setRuns([]))
+    },
+    [token],
+  )
 
   useEffect(() => {
     if (selectedId) refreshRuns(selectedId)
     else setRuns([])
     setSelectedRun(null)
-  }, [selectedId, token])
+  }, [selectedId, refreshRuns])
 
   // Poll while a run is active — same lightweight approach the rest of
   // this frontend uses for pipeline runs, no WebSocket for agents in v1.
