@@ -609,7 +609,7 @@ Configuração completa por conector:
 
 ### 4.10 SQL / Data Warehouse (migraram do enterprise na Fase 32)
 
-Nenhum builda o driver from source no Dockerfile público — via ODBC (driver instalado pelo operador) ou ADBC com driver externo (`ADBC_DRIVER_*_PATH`), dependendo do banco. Isso é uma limitação real e documentada, não um esquecimento (ver `ROADMAP.md` Fase 32).
+`bigquery`/`snowflake`/`mssql` já vêm empacotados no Dockerfile público (drivers prebuilt via PyPI/`dbc install`, sem compilar nada — desde 2026-09-27, ver `ROADMAP.md` Fase 32). `oracle`/`hana`/`teradata`/`vertica` são via ODBC — driver do vendor fica a cargo do operador instalar (sem redistribuível de graça); `databricks` também depende do operador instalar o driver ADBC. Todos usam `ADBC_DRIVER_*_PATH`/DSN ODBC pra apontar pro driver.
 
 #### `bigquery` — source + sink
 ```json
@@ -622,7 +622,7 @@ Nenhum builda o driver from source no Dockerfile público — via ODBC (driver i
   "timeout_seconds": 60
 }}
 ```
-Requer `ADBC_DRIVER_BIGQUERY_PATH` (driver prebuilt — instalar por conta própria, sem build from source no Dockerfile público). Upsert real via `MERGE INTO`. `location` (região, ex. `US`/`EU`) opcional.
+Requer `ADBC_DRIVER_BIGQUERY_PATH` — já vem empacotado no Dockerfile público (fetch da wheel oficial do PyPI, sem compilar nada). Upsert real via `MERGE INTO`. `location` (região, ex. `US`/`EU`) opcional.
 
 #### `snowflake` — source + sink
 ```json
@@ -635,7 +635,7 @@ Requer `ADBC_DRIVER_BIGQUERY_PATH` (driver prebuilt — instalar por conta próp
   "timeout_seconds": 60
 }}
 ```
-Requer `ADBC_DRIVER_SNOWFLAKE_PATH` (driver prebuilt). Dois métodos de auth: `password` (`username`+`password`) ou `key_pair` (recomendado pra automação — `private_key` PKCS#8 DER base64, `private_key_password` opcional se a chave for criptografada). `role` opcional. Upsert via `MERGE INTO` (Snowflake não tem `ON CONFLICT`).
+Requer `ADBC_DRIVER_SNOWFLAKE_PATH` — já vem empacotado no Dockerfile público (fetch da wheel oficial do PyPI, sem compilar nada). Dois métodos de auth: `password` (`username`+`password`) ou `key_pair` (recomendado pra automação — `private_key` PKCS#8 DER base64, `private_key_password` opcional se a chave for criptografada). `role` opcional. Upsert via `MERGE INTO` (Snowflake não tem `ON CONFLICT`).
 
 #### `mssql` — source + sink (mesmo crate cobre Azure Synapse — mesmo protocolo TDS)
 ```json
@@ -646,7 +646,7 @@ Requer `ADBC_DRIVER_SNOWFLAKE_PATH` (driver prebuilt). Dois métodos de auth: `p
   "timeout_seconds": 30
 }}
 ```
-Requer `ADBC_DRIVER_MSSQL_PATH`. Upsert via `MERGE INTO` (T-SQL real, GA também em Synapse dedicated SQL pool). Mesmo shape de config serve pro Synapse — só trocar `host` pro endpoint do workspace (`<workspace>.sql.azuresynapse.net`). CDC nativo via `mssql-cdc`, ver §4.9.
+Requer `ADBC_DRIVER_MSSQL_PATH` — já vem empacotado no Dockerfile público (`dbc install`, verificação de assinatura/checksum por padrão, sem compilar nada). Upsert via `MERGE INTO` (T-SQL real, GA também em Synapse dedicated SQL pool). Mesmo shape de config serve pro Synapse — só trocar `host` pro endpoint do workspace (`<workspace>.sql.azuresynapse.net`). CDC nativo via `mssql-cdc`, ver §4.9.
 
 #### `redshift` — source + sink
 ```json
