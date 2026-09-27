@@ -16,6 +16,7 @@ Referência completa e prática: da instalação até a configuração exata de 
 10. [Observabilidade](#10-observabilidade)
 11. [Catálogo, orquestração, anomalia, masking e distribuição](#11-catálogo-orquestração-anomalia-masking-e-distribuição)
 12. [Blocos de transformação/limpeza sem código](#12-blocos-de-transformaçãolimpeza-sem-código)
+13. [Agente com tool-calling, chat RAG e visualização](#13-agente-com-tool-calling-chat-rag-e-visualização)
 
 ---
 
@@ -794,3 +795,50 @@ curl -s -X POST http://localhost:8080/pipelines/preview-clean-blocks \
 **Por baixo do capô**: cada bloco compila pra um fragmento SQL; a cadeia inteira vira uma única query com CTEs (`WITH step_0 AS (...), step_1 AS (...) SELECT * FROM step_N`) que roda no mesmo motor DataFusion do node `transform` — nenhum executor novo, sem impacto em checkpoint/lineage/streaming CDC. Ver `ARCHITECTURE.md §19` pro detalhe da decisão.
 
 **Uso pra vetorizar ou montar data warehouse**: `source → blocos → sink relacional` funciona direto num único pipeline. Já `source → blocos → embedding → sink vetorial` **não** funciona num único pipeline — o motor sempre roda `embedding` antes de qualquer transform (SQL ou blocos), não o contrário. Workaround: dois pipelines encadeados via `depends_on` (§11) — o primeiro agrega/limpa e grava numa tabela de staging, o segundo lê a staging, embedda e grava no banco vetorial.
+
+## 13. Agente com tool-calling, chat RAG e visualização
+
+Três recursos novos na aba lateral (fora do Canvas de DAG): **Agentes**, **RAG** e o node **Visualização** dentro do Canvas. Detalhe de arquitetura em `ARCHITECTURE.md §20`.
+
+### 13.1 Chat RAG
+
+Aba **RAG** — interface de chat sobre `POST /rag/query`, que já existia mas não tinha tela. Escolha um pipeline salvo (só aparecem os que têm um sink vetorial — LanceDB, Qdrant, Milvus, pgvector, Pinecone ou ChromaDB) e pergunte em linguagem natural; cada resposta mostra as fontes usadas (`context_keys`). Sem estado de conversa no servidor — cada pergunta é independente, igual o endpoint em si.
+
+### 13.2 Agentes
+
+Aba **Agentes** — diferente de um pipeline (que sempre roda fonte→transform→destino na mesma ordem), um agente **decide sozinho, a cada pergunta, qual ferramenta chamar e em que ordem**, olha o resultado, decide o próximo passo, até responder ou esgotar o limite de passos configurado.
+
+**Criar um agente**: nome, prompt de sistema (reaproveita o mesmo catálogo de prompts versionado do node `llm`), modelo (`Api` — qualquer endpoint OpenAI-compatible: OpenAI, Ollama, OpenRouter, Kimi/Moonshot etc. — ou `Anthropic` nativo), `max_steps` (obrigatório — guard-rail contra loop infinito, sem opção de "sem limite"), e a lista de ferramentas ligadas. Cada ferramenta tem duas opções:
+- **Automática**: o agente executa sozinho e continua o loop com o resultado.
+- **Precisa de aprovação**: o agente pausa exatamente ali, dispara um alerta (Slack/Teams/PagerDuty/Email/webhook — os mesmos 5 canais já configurados pra falha de pipeline) e espera um humano aprovar ou rejeitar via API/painel antes de continuar.
+
+**Ferramentas disponíveis**:
+1. `query_data` — roda uma consulta SQL (escolhida pelo modelo no momento da chamada) sobre um source configurado.
+2. `search_vectors` — busca semântica num pipeline salvo com sink vetorial (mesmo motor do RAG).
+3. `run_pipeline` — dispara um pipeline salvo, com opção de esperar o resultado.
+4. `call_webhook` — chamada HTTP genérica (mesma proteção contra SSRF de qualquer conector REST/webhook do produto).
+5. `generate_chart` — roda um script Python (ver §13.3) sobre um source e devolve um gráfico como imagem.
+
+O **argumento de cada chamada** (a query SQL, o texto de busca, o corpo do webhook) é decidido pelo modelo em tempo real, não fica fixo na configuração do agente — só a parte estrutural (qual source, qual pipeline, qual URL) é configurada de antemão.
+
+**Rodar e acompanhar**: `POST /agents/{id}/run` com a pergunta e, opcionalmente, um `model_override` — troca de modelo só pra essa execução, sem editar a config salva do agente (útil pra testar contra um provider diferente, ex. OpenRouter, sem mexer no agente de produção). O painel mostra a lista de execuções (status, custo, duração) e, ao abrir uma, o trace passo a passo — inclusive o passo `pending_approval`, com botões Aprovar/Rejeitar diretamente ali.
+
+```bash
+curl -s -X POST http://localhost:8080/agents/analista-vendas/run \
+  -H "authorization: Bearer $TOKEN" -H "content-type: application/json" \
+  -d '{"question": "Qual foi o total de vendas da região sul mês passado?"}'
+```
+
+### 13.3 Visualização (gráfico via Python)
+
+Node **Visualização** no Canvas (paleta de Transformações), ou a ferramenta `generate_chart` do agente — os dois rodam o mesmo motor: um script Python isolado em subprocess (mesmo modelo de segurança do node `python`, §5), com uma função `visualize(df)` que recebe os dados já processados e devolve um gráfico. Bibliotecas disponíveis: **matplotlib**, **seaborn** e **plotly** — o harness detecta o tipo do retorno automaticamente (uma `Figure` com `.savefig()`, ou uma tupla `(bytes, content_type)` já pronta), sem precisar escolher a biblioteca na configuração.
+
+```python
+def visualize(df):
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots()
+    df.groupby("regiao")["valor"].sum().plot(kind="bar", ax=ax)
+    return fig
+```
+
+No Canvas, o node **exige um estágio de transformação antes dele** (SQL transform, blocos de limpeza ou Python) — um pipeline puramente linear ou CDC nunca materializa o resultado inteiro em memória de um jeito que dê pra plotar. O gráfico gerado por um run de pipeline fica disponível em `GET /pipelines/{id}/runs/{run_id}/visualization`; uma falha no script nunca derruba o run — só fica sem gráfico pra aquela execução, e o motivo vai pro log.

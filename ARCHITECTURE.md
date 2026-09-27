@@ -532,3 +532,159 @@ valores corretos por linha, não só inferido da leitura do SQL gerado.
   monta um `PipelineSpec` descartável, `build_source` + as batches lidas
   viram input do `DataFusionTransform`, incluindo o mesmo scan de SSRF
   (`validate_security_with`) que o preview de conector já fazia.
+
+## 20. Agente com tool-calling (Fase 31)
+
+Diferente do node `llm` (§17, 1 chamada por linha, sem escolha) e do
+RAG (§17, fluxo fixo busca→responde): um agente é um LLM que decide
+sozinho, a cada passo, **qual ferramenta chamar e com que argumentos**,
+olha o resultado e decide o próximo passo, até responder ou esgotar
+`max_steps`. Estilo n8n AI Agent — decisão de produto e design completo
+em `ROADMAP.md` §31. Plano marco a marco original também em
+`docs/LLMOPS_IMPLEMENTATION_PLAN.md` (o agente reaproveita a
+infraestrutura de custo/cache/prompt daquele plano, não duplica).
+
+**Tool-calling em `nexus-ai` (`crates/nexus-ai/src/llm/`)**: `common.rs`
+define `ToolDef`/`ToolCall`/`ToolMessage`/`ToolTurn` — um turno de
+resposta carrega `Text(String)` ou `ToolCalls(Vec<ToolCall>)`, mais
+`tokens_prompt`/`tokens_completion` pro custo agregado (mesmo princípio
+de `pipeline_run_llm_stats_store.rs`, §17). Os dois protocolos divergem
+de verdade e cada client trata a própria forma:
+- `client.rs` (OpenAI-compatible): `ToolMessage::System` vira uma
+  mensagem `role: "system"` no array, `role: "tool"` carrega o
+  resultado de cada `tool_call_id`.
+- `anthropic_client.rs` (Messages API nativa): não existe `role:
+  "tool"` — `system` é campo top-level do request (extraído do
+  histórico via `find_map`), e o resultado de ferramenta vira um
+  content block `tool_result` dentro de uma mensagem `user`. Anthropic
+  também não aceita a mensagem `System` dentro do array de mensagens —
+  `to_anthropic_messages` filtra ela fora (`filter_map`).
+
+`pipeline.rs::load_llm_backend_for_model(model: &LlmModelConfig)`
+resolve `Api`/`Anthropic` pra fora de um `LlmModelConfig` solto (não só
+de dentro de um `LlmNodeSpec`) — necessário porque o modelo do agente
+pode vir de `AgentSpec.model` **ou** de um `model_override` por
+execução (decisão de produto: trocar de modelo pra testar, ex. contra
+OpenRouter, sem editar a config salva do agente).
+
+**`AgentSpec` (`nexus-core/src/agent.rs`)**: `{agent_id, name, prompt:
+PromptRef, model: LlmModelConfig, tools: Vec<AgentToolConfig>,
+max_steps: u32, schedule: Option<String>}` — reaproveita `PromptRef` e
+`LlmModelConfig` que o node `llm` já usa, zero tipo novo pra essas duas
+partes. `AgentToolConfig{tool: AgentToolKind, approval: ApprovalMode}`
+— aprovação humana é **por ferramenta dentro do mesmo agente**, não uma
+escolha única por agente. `AgentToolKind` deliberadamente não carrega
+argumento de chamada fixo (ex. não tem `sql: Option<String>` fixo) —
+cada variante carrega só a parte *estática* (qual source, qual
+pipeline, qual URL) e expõe `.json_schema()` com o argumento dinâmico
+que o modelo decide por chamada. Misturar as duas coisas no mesmo campo
+foi tentado e revertido cedo (ver histórico do commit `808b5c1`) —
+argumento por chamada pertence ao turno do modelo, não à config
+persistida do agente:
+
+```rust
+pub enum AgentToolKind {
+    QueryData { source: NodeSpec },
+    SearchVectors { pipeline_id: String, top_k: usize },
+    RunPipeline { pipeline_id: String, wait_for_result: bool },
+    CallWebhook { url: String, method: String },
+    GenerateChart { source: NodeSpec, script: String, timeout_seconds: Option<u64> },
+}
+```
+
+**Ferramentas (`nexus-server/src/agent_tools.rs`)** — cada uma um
+wrapper fino sobre código que já existe, sem motor de execução novo:
+`QueryData`/`GenerateChart` reaproveitam `connectors::build_source` +
+`read_preview_batches` (mesmo preview de conector/clean-block da Fase
+30) e `DataFusionTransform`; `SearchVectors` reaproveita literalmente as
+mesmas 6 funções `search_*` do RAG (§17); `RunPipeline` reaproveita
+`start_pipeline_run` (mesmo caminho de `POST /pipelines/{id}/run`);
+`CallWebhook` usa o mesmo `dns_guard::SsrfSafeResolver`/
+`validate_llm_security` que todo `rest`/`webhook`/alerta já passa
+(`validate_llm_security` foi promovida de `pub(crate)` pra `pub` em
+`nexus-core` só pra esse reuso cross-crate).
+
+`GenerateChart` é a 5ª ferramenta, fora do design original do
+`ROADMAP.md` — decisão de produto de ter visualização em dois lugares:
+ferramenta de agente **e** node `visualization` no Canvas
+(`PipelineSpec.visualization: Option<VisualizationSpec>`, mesma forma
+de `PythonTransformSpec`). Implementada como sibling de
+`python_transform.rs`: `python_viz.rs` isola em subprocess +
+`temp-dir`, harness novo (`python_viz_harness.py`) chama
+`visualize(df)` do script do usuário e faz duck-typing no retorno —
+`matplotlib.Figure`/`plotly.Figure` (`.savefig()`) ou uma tupla
+`(bytes, content_type)` já pronta, cobrindo matplotlib/seaborn/plotly
+sem acoplar numa lib só. Resultado do node fica em
+`pipeline_run_visualizations(run_id, image_bytes, content_type,
+created_at)`, servido por `GET
+/pipelines/{id}/runs/{run_id}/visualization` — o handler valida
+`content_type` contra uma allowlist (`image/png|jpeg|gif|webp`) antes
+de refletir no header HTTP; fora da allowlist cai pra
+`application/octet-stream` + `Content-Disposition: attachment` +
+`X-Content-Type-Options: nosniff` (achado de review de segurança:
+content-type controlado por script do usuário refletido direto no
+header de resposta é XSS armazenado). No `runner.rs`, o node roda como
+observador *depois* do estágio Python — nunca reescreve `output`, e uma
+falha no script só loga, nunca derruba o run.
+
+**Loop (`agent_runner.rs`)**: monta o histórico como `Vec<ToolMessage>`,
+resolve o backend via `load_llm_backend_for_model`, chama
+`call_with_tools`. Em `ToolTurn::ToolCalls`, verifica `ApprovalMode` da
+ferramenta pedida — `Auto` executa via `agent_tools.rs` e injeta o
+resultado de volta no histórico, continuando o loop; `RequireApproval`
+grava o passo como `pending_approval` **sem executar nada ainda**,
+dispara `AlertNotifier::notify_agent_approval_needed` (5 canais, mesmo
+fan-out de `notify_pipeline_run`) e retorna — loop suspenso. Resumir
+(`POST /agents/runs/{run_id}/steps/{step_id}/approve`) reconstrói o
+histórico a partir dos `agent_steps` já persistidos
+(`rebuild_history_prefix`), executa a ferramenta aprovada e continua do
+ponto exato — mesmo espírito de retomar do cursor exato que o CDC já
+faz (§5), aplicado a um loop de agente em vez de um WAL/binlog.
+`model_override`, quando usado, é persistido junto do run
+(`agent_runs.model_override_json`) pra retomar com o mesmo modelo. Loop
+pára em `max_steps` (guard-rail contra loop infinito) ou em resposta
+final de texto.
+
+**Persistência (dual-dialeto Sqlite/Postgres, mesmo padrão de
+`pipeline_run_llm_stats_store.rs`)**: `agent_store.rs` (CRUD de
+`AgentSpec`, criptografado em repouso via `SecretCipher` — um
+`AgentToolKind::QueryData`/`CallWebhook` pode embutir config de
+conector com segredo, mesma regra do `PipelineSpec`, CLAUDE.md §5) e
+`agent_run_store.rs` — `agent_runs(id, agent_id, question,
+model_override_json, status, started_at, finished_at, total_tokens,
+total_cost)` e `agent_steps(id, run_id, step_number, kind, tool, args,
+result, approval_status, approved_by, approved_at)`. Uma única tabela
+de steps serve de trace passo-a-passo **e** de fonte de métrica
+agregada, sem duplicar dado em dois lugares.
+
+**API (`agent.rs`)**: `POST/GET/DELETE /agents` (papel `Write`/`Read`),
+`GET /agents/{id}/spec` (`Write`, spec completa — a listagem normal usa
+`AgentSummary` redigida), `POST /agents/{id}/run` (`Execute`, valida
+`model_override` via `validate_llm_security` — nunca aceita um host
+interno sem `NEXUS_ALLOW_INTERNAL_HOSTS`), `GET /agents/{id}/runs` /
+`GET /agents/{id}/runs/{run_id}` (`Read`), `POST
+/agents/runs/{run_id}/steps/{step_id}/approve` / `/reject` (`Write` —
+mesmo tier de quem edita o Canvas).
+
+**Frontend**: `AgentsPanel.tsx` (config + trigger de run + trace com
+aprovar/rejeitar inline, polling de 2s enquanto `running`/
+`waiting_approval`) e `RagChatPanel.tsx` (gap fechado no mesmo lote —
+`POST /rag/query`, §17, não tinha nenhuma tela) são abas próprias, fora
+do Canvas de DAG — ferramenta de agente não tem ordem fixa, quem decide
+a ordem é o modelo em runtime. O node `visualization`, ao contrário,
+mora no Canvas (`dag.ts`/`DagCanvas.tsx`/`dag-nodes.tsx`/
+`NodeInspector.tsx`) porque `PipelineSpec.visualization` é parte de um
+DAG normal — branch off do upstream sem virar o novo upstream (é
+observador read-only, nunca se coloca entre um estágio e os sinks).
+
+**Bug real encontrado e corrigido durante esta fase, sem relação direta
+com o agente**: `metrics_reflect_real_batches_written_by_the_engine`
+(teste de `nexus_core::pipeline::metrics`) era flaky só em suíte
+completa, nunca isolado. Causa: os contadores OTel são
+`LazyLock<Counter>` que se ligam **permanentemente** ao meter provider
+global no primeiro acesso — se qualquer teste anterior rodasse um
+pipeline antes de `telemetry::init()` instalar o provider real, os
+contadores ficavam mudos (no-op) pro resto do processo de teste. Fix:
+`#[ctor::ctor]` em `nexus-server/src/lib.rs` (dentro do módulo de
+testes) garante que `telemetry::init()` roda antes de qualquer teste,
+não só antes do primeiro que "por acaso" precisa dele.

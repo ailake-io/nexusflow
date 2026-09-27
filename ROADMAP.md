@@ -800,7 +800,29 @@ editáveis; SQL gerado testado unitariamente pros 12 blocos.
 
 ---
 
-## Fase 31 — Agente de IA com tool-calling (estilo n8n AI Agent) — planejado, não implementado
+## Fase 31 — Agente de IA com tool-calling (estilo n8n AI Agent) — implementado
+
+> **Estado real (2026-09-26)**: implementado ponta a ponta em
+> `feature/agent-tool-calling-spike` — `nexus-ai` (tool-calling nos 2
+> backends), `AgentSpec`/loop/pausa-retomada, 5 ferramentas (a 4ª virou
+> `GenerateChart`, ver abaixo), stores + endpoints, alertas de
+> aprovação, e frontend (`AgentsPanel.tsx`/`RagChatPanel.tsx` + node de
+> Visualização no Canvas). Diferença do design original: `AgentToolKind`
+> não carrega argumento fixo por ferramenta (`sql`/`body_template` etc.)
+> — cada ferramenta expõe um `json_schema()` dinâmico e o próprio modelo
+> escolhe o argumento por chamada, não a config salva do agente. Também
+> saiu do escopo original: RAG chat ganhou tela própria no mesmo lote
+> (gap que não tinha nada no frontend), e uma 5ª ferramenta
+> `GenerateChart` (Python/matplotlib-seaborn-plotly, mesmo isolamento de
+> subprocess do `python` transform) que também existe como node
+> `visualization` no `PipelineSpec`/Canvas. **Não verificado ainda**:
+> teste de ponta a ponta contra um provider OpenRouter real (chave do
+> usuário) — planejado pro usuário rodar por conta própria.
+>
+> **Não fica pago** (mesma decisão da Fase 32 de virar tudo infra-de-dado
+> OSS): agente inteiro é OSS. O resto da seção abaixo é o design
+> original, mantido como contexto — ver checklist no fim pro que mudou
+> de fato.
 
 Pedido de 2026-09-25: "criar um agente usando os dados processados do
 NexusFlow e fazer esse agente fazer diversas coisas tipo como é no n8n
@@ -992,27 +1014,37 @@ lista de desejos:
 
 ### Checklist
 
-- [ ] `nexus-ai`: `tools` no request + parsing de `tool_calls`/`tool_use`
+- [x] `nexus-ai`: `tools` no request + parsing de `tool_calls`/`tool_use`
       pros 2 backends, histórico multi-turno — testado contra mock HTTP
       (wiremock) simulando 1 tool-call + 1 resposta final.
-- [ ] `AgentSpec` + `AgentToolKind`/`ApprovalMode` (`nexus-core`)
-- [ ] `agent_runner.rs`: loop completo, `max_steps`, pausa/retomada em
+- [x] `AgentSpec` + `AgentToolKind`/`ApprovalMode` (`nexus-core`) — args
+      por ferramenta viraram dinâmicos (`json_schema()`), não fixos na
+      config salva (mudança de design vs. rascunho original).
+- [x] `agent_runner.rs`: loop completo, `max_steps`, pausa/retomada em
       `RequireApproval` — teste de integração com ferramenta mock
       (sem chamar LLM real) validando pausa exata e retomada do ponto
       certo.
-- [ ] 4 ferramentas v1 (`QueryData`, `SearchVectors`, `RunPipeline`,
-      `CallWebhook`) — cada uma testada isoladamente contra o que já
-      reaproveita (CSV real, vetor real, pipeline real, mock HTTP).
-- [ ] `agent_runs`/`agent_steps` stores (dual-dialeto) + endpoints CRUD/
+- [x] 5 ferramentas v1 (`QueryData`, `SearchVectors`, `RunPipeline`,
+      `CallWebhook`, `GenerateChart` — a 5ª não estava no design
+      original) — cada uma testada isoladamente contra o que já
+      reaproveita (CSV/sqlite-ADBC real, vetor real, pipeline real, mock
+      HTTP, subprocess Python real).
+- [x] `agent_runs`/`agent_steps` stores (dual-dialeto) + endpoints CRUD/
       run/approve/reject.
-- [ ] `AlertNotifier::notify_agent_approval_needed` (5 canais).
-- [ ] Reaproveitar eval (`LlmEvalCase`) e custo/tokens
-      (`pipeline_run_llm_stats_store`-like) pro agente.
-- [ ] Frontend: aba Agentes, config de ferramentas com toggle de
+- [x] `AlertNotifier::notify_agent_approval_needed` (5 canais).
+- [ ] Reaproveitar eval (`LlmEvalCase`) pro agente — **fora do escopo
+      deste lote**, não pedido ainda.
+- [x] Frontend: `AgentsPanel.tsx` (config de ferramentas com toggle de
       aprovação, painel de execução com trace + aprovar/rejeitar
-      inline.
-- [ ] Docs: `USER_GUIDE.md` (seção nova), `ARCHITECTURE.md` (loop de
-      tool-calling, decisão de schema das 2 tabelas novas).
+      inline), `RagChatPanel.tsx` (gap que não tinha tela nenhuma), node
+      `visualization` no Canvas (`DagCanvas.tsx`/`dag-nodes.tsx`/
+      `NodeInspector.tsx`).
+- [x] Docs: `USER_GUIDE.md` (seção nova), `ARCHITECTURE.md` (loop de
+      tool-calling, schema das tabelas novas).
+- [ ] Teste real contra OpenRouter (chave do usuário) — usuário roda por
+      conta própria, não fabricado/simulado aqui.
+- [ ] Cache de resposta do LLM pro agente — decisão explícita do usuário
+      de deixar como próximo passo, depois de tudo implementado.
 
 **Estimativa (chute):** tool-calling em `nexus-ai` (2 backends) ~1,5d;
 `AgentSpec`+loop+persistência+aprovação ~3d; 4 ferramentas ~2d;
