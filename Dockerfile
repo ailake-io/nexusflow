@@ -34,14 +34,25 @@ RUN npm run build
 # local dev and CI (.github/workflows/ci.yml's `test` job).
 FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241 AS adbc
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      git ca-certificates cmake make g++ pkg-config libpq-dev libsqlite3-dev libfmt-dev unzip curl \
+      git ca-certificates cmake make g++ pkg-config libpq-dev libsqlite3-dev libfmt-dev unzip curl python3 python3-pip \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
-COPY scripts/build-adbc-postgresql-driver.sh scripts/build-adbc-sqlite-driver.sh scripts/build-adbc-duckdb-driver.sh scripts/
+COPY scripts/build-adbc-postgresql-driver.sh scripts/build-adbc-sqlite-driver.sh scripts/build-adbc-duckdb-driver.sh \
+     scripts/fetch-adbc-bigquery-driver.sh scripts/fetch-adbc-snowflake-driver.sh scripts/fetch-adbc-mssql-driver.sh \
+     scripts/
 ARG DUCKDB_VERSION=1.5.5
+# bigquery/snowflake: prebuilt Go .so shipped inside the driver's own PyPI
+# wheel (`pip download`, no compile) — same "no Go toolchain needed"
+# rationale as the duckdb fetch above, just from PyPI instead of GitHub
+# releases. mssql: `dbc install` (ADBC Driver Foundry's CLI, MIT-licensed
+# installer, no auth needed for this one driver, "Permissive Binary
+# License" — see the script's own header for what was confirmed and how).
 RUN scripts/build-adbc-postgresql-driver.sh /out \
  && scripts/build-adbc-sqlite-driver.sh /out \
- && DUCKDB_VERSION="${DUCKDB_VERSION}" scripts/build-adbc-duckdb-driver.sh /out
+ && DUCKDB_VERSION="${DUCKDB_VERSION}" scripts/build-adbc-duckdb-driver.sh /out \
+ && scripts/fetch-adbc-bigquery-driver.sh /out \
+ && scripts/fetch-adbc-snowflake-driver.sh /out \
+ && scripts/fetch-adbc-mssql-driver.sh /out
 
 FROM rust:1-slim-trixie@sha256:8e8cf8f7fd54a2d23d5a743b3a03f56e26b6c774276c33fa0595111704ebb15c AS clickhouse-adbc
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -142,7 +153,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && mkdir -p /home/nexusflow && chown 1001:1001 /home/nexusflow
 
 COPY --from=builder /tmp/nexusflow-bin /usr/lib/nexusflow/nexusflow-bin
-COPY --from=adbc /out/libadbc_driver_postgresql.so /out/libadbc_driver_sqlite.so /out/libadbc_driver_duckdb.so /usr/lib/nexusflow/
+COPY --from=adbc /out/libadbc_driver_postgresql.so /out/libadbc_driver_sqlite.so /out/libadbc_driver_duckdb.so \
+     /out/libadbc_driver_bigquery.so /out/libadbc_driver_snowflake.so /out/libadbc_driver_mssql.so /usr/lib/nexusflow/
 COPY --from=clickhouse-adbc /out/libadbc_clickhouse.so /usr/lib/nexusflow/
 COPY packaging/linux/nexusflow-wrapper.sh /usr/bin/nexusflow
 RUN chmod +x /usr/bin/nexusflow \
