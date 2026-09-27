@@ -1,7 +1,7 @@
 import type { NodeProps } from '@xyflow/react'
 import type { DagNode } from '@/lib/dag'
 import { useI18n } from '@/lib/i18n'
-import { Database, Code2, Layers, Sparkles, Terminal, Wand2 } from 'lucide-react'
+import { Database, Code2, Layers, Sparkles, Terminal, Wand2, BarChart3 } from 'lucide-react'
 import { NodeBadge, NodeCard } from '@/components/node-card'
 
 /** Custom renderers for canvas nodes — read connector/role/sql straight off
@@ -71,6 +71,21 @@ export function PythonNodeView({ data, selected }: NodeProps<DagNode>) {
       accent="sky"
       icon={Terminal}
       title={t('canvas.python')}
+      subtitle={firstLine || t('canvas.noScriptSet')}
+      selected={selected}
+    />
+  )
+}
+
+export function VisualizationNodeView({ data, selected }: NodeProps<DagNode>) {
+  const { t } = useI18n()
+  if (data.kind !== 'visualization') return null
+  const firstLine = data.script.trim().split('\n')[0]
+  return (
+    <NodeCard
+      accent="violet"
+      icon={BarChart3}
+      title={t('canvas.visualization')}
       subtitle={firstLine || t('canvas.noScriptSet')}
       selected={selected}
     />
