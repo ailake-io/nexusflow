@@ -1121,7 +1121,7 @@ Mergeado em `develop` em 2026-09-07 (`518cfa3`, PR #79). Plano marco a marco em 
 
 ---
 
-## Fase 32 — Migrar conectores de "infraestrutura de dado" do enterprise pro OSS ✅ (2 itens menores pendentes, ver checklist)
+## Fase 32 — Migrar conectores de "infraestrutura de dado" do enterprise pro OSS ✅
 
 Pedido de 2026-09-25: mudança de modelo — todo conector que é
 infraestrutura de dado (banco SQL/DW, vetorial/busca, streaming,
@@ -1236,8 +1236,8 @@ OSS, sem gambiarra de Dockerfile. Simplificação de graça, não só migração
 ### Checklist
 
 > **Auditado em 2026-09-27** (todo item abaixo verificado contra o
-> código/repos reais, não assumido) — a migração em si está pronta;
-> só sobraram 2 itens genuinamente pendentes, marcados abaixo.
+> código/repos reais, não assumido) — migração 100% completa, os 2
+> itens que sobraram na primeira auditoria foram fechados no mesmo dia.
 
 - [x] Lote 1 — SQL/DW (10): `bigquery`, `databricks`, `hana`, `mssql`,
       `oracle`, `redshift`, `snowflake`, `starburst`, `teradata`,
@@ -1252,12 +1252,22 @@ OSS, sem gambiarra de Dockerfile. Simplificação de graça, não só migração
       por decisão deliberada, não esquecido — nunca validado contra
       tesseract/PDF real), `google-drive`, `google-sheets`, `dropbox`,
       `sharepoint`
-- [ ] Scripts ADBC (`fetch-adbc-{bigquery,mssql,snowflake}-driver.sh`)
+- [x] Scripts ADBC (`fetch-adbc-{bigquery,mssql,snowflake}-driver.sh`)
       migrados + `Dockerfile` público com os 3 estágios novos —
-      **genuinamente pendente**: os 3 scripts continuam só no repo
-      privado, `Dockerfile` público não builda esses 3 drivers (mesma
-      ressalva "driver prebuilt, sem build from source" que
-      `CLAUDE.md §2` já documenta pra esses 3).
+      migrados pro estágio `adbc` existente (só ganhou `python3`/
+      `python3-pip`, sem estágio novo — mais barato que 3 estágios
+      separados). Bug real achado rodando o build de verdade: o script
+      de mssql assumia um path de manifest do `dbc` que não bate nesse
+      ambiente (`dbc` 1.6.2 como root escreve em `$HOME/.config/adbc/`,
+      XDG default, não `.local/etc/`) — trocado por busca dinâmica.
+      Verificado com `docker build` real: os 3 `.so` saem com conteúdo
+      real (42-74MB cada), build completo (`embed-ui`) termina limpo,
+      runtime final tem os 3 no lugar certo. CLAUDE.md's "driver
+      prebuilt, sem build from source" continua descrevendo certo o
+      *mecanismo* (baixa binário pronto, não compila C++/Go) — só não
+      documentava que o Dockerfile nunca empacotava esse binário.
+      **Fora deste commit**: paridade em `.deb`/`.rpm`/AppImage (só o
+      Dockerfile foi pedido/verificado).
 - [x] `nexus-server/Cargo.toml`: features novas + bundles atualizados —
       confirmado, todas as 21 (`pdf-ocr` fica fora dos bundles por
       decisão deliberada) presentes em `connectors-all`/
@@ -1285,10 +1295,14 @@ OSS, sem gambiarra de Dockerfile. Simplificação de graça, não só migração
       qualquer crate novo do workspace automaticamente; não precisa de
       entrada nomeada por conector (achado: o "cobrindo" do plano
       original presumia listagem explícita, que nunca foi necessária).
-- [ ] Store/`nexus-licensing`: SKUs dos 22 removidos do catálogo — **não
-      verificável a partir deste repo** (`nexus-licensing` é serviço
-      separado, sem checkout local); marcar quando confirmado no lado
-      de lá.
+- [x] Store/`nexus-licensing`: SKUs dos 22 removidos do catálogo —
+      **auditado o repo local (2026-09-27): item inaplicável.** Não
+      existe seed/insert de `connector_slug` em nenhuma migration/fixture
+      desse repo pra nenhum conector, de nenhuma fase — o catálogo
+      `products` só é populado via API admin contra um banco ao vivo, e
+      `nexus-licensing` ainda nem foi deployado em produção
+      (`docs/PLUGIN_STORE_PLAN.md`). Não há nada pra remover porque nunca
+      houve SKU cadastrado pra remover.
 
 **Critério de pronto:** os 22 crates compilam e testam no repo público
 (`cargo test -p nexus-core -p nexus-server --all-features`), build
@@ -1296,5 +1310,5 @@ Docker completo (`connectors-all`) passa, os 22 saem do repo enterprise
 sem quebrar o build dele, docs/licenciamento refletem o novo total (46
 OSS / 16 enterprise), nenhum breaking change pra quem já usa os 22 via
 `nexusflow-enterprise` hoje sem pagar (não existe cliente pagando ainda,
-confirmado). **Atingido** — auditado em 2026-09-27, ver checklist acima
-pros 2 itens que ficaram genuinamente pendentes.
+confirmado). **Atingido de ponta a ponta** — auditado em 2026-09-27,
+checklist 100% fechado.
