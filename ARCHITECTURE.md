@@ -711,3 +711,65 @@ contadores ficavam mudos (no-op) pro resto do processo de teste. Fix:
 `#[ctor::ctor]` em `nexus-server/src/lib.rs` (dentro do módulo de
 testes) garante que `telemetry::init()` roda antes de qualquer teste,
 não só antes do primeiro que "por acaso" precisa dele.
+
+## 21. Aba Infra — gerador de Terraform por módulos curados (enterprise)
+
+Construído 2026-09-10/13, sem seção própria em nenhuma doc até esta
+auditoria (2026-09-27) — só existia espalhado em comentário de código
+(`infra.rs`/`infra_registry.rs`) e uma linha em `LICENSING.md`. **Não é**
+o Canvas de recurso-AWS-por-recurso com `terraform plan` real que
+`ROADMAP.md` Fase 25 planejou — aquele plano nunca foi construído; o que
+existe é um desenho diferente, decidido em paralelo
+(`docs/ENTERPRISE_LICENSING.md`, 2026-09-10): arrastar **módulos
+Terraform curados e prontos** (não recursos individuais) num canvas,
+conectar as dependências entre eles, e baixar os `.tf` gerados — sem
+`plan`/`apply`, só codegen. Ver `ROADMAP.md` Fase 25 pro registro de por
+que o plano original não é isso.
+
+**Mecanismo de plugin — reaproveita literalmente o padrão de conector**
+(`ARCHITECTURE.md §3`): o catálogo de módulos e o `generate()` real
+vivem só no crate privado `nexus-infra-terraform`
+(`nexus-connectors-enterprise` repo) — `nexus-server` nunca depende dele
+direto. Dois tipos `inventory` novos em `nexus_core::infra_registry`,
+paralelos a `ConnectorDescriptor`/`SourceBuilder`:
+- `InfraModuleDescriptor` — um por módulo curado (`id`, `name`,
+  `category`, `provider`, `config_schema` via `schemars::schema_for!`
+  — mesmo truque de fn-pointer que `ConnectorDescriptor` já usa, então
+  o frontend reaproveita o `SchemaForm.tsx` genérico sem nenhum form
+  bespoke por módulo), registrado via `submit_infra_module!`.
+- `InfraGenerator` — exatamente 0 ou 1 entrada, expõe a função real
+  `generate(&InfraGraph) -> Result<GeneratedFiles, NexusError>`,
+  registrado via `submit_infra_generator!`.
+
+`InfraGraph` é grafo genérico nó+aresta (`InfraNode{id, module, config}`
++ `InfraEdge{from, to, output, input}`, mais um campo `provider` livre
+pra settings tipo região) — não o par fixo source/sink de
+`PipelineSpec`, porque dependência entre módulos de infra não tem forma
+fixa. Uma aresta declara que o `input` de um módulo referencia o
+`output` de outro, virando `module.<from>.<output>` na HCL gerada em vez
+de valor literal.
+
+**Dois portões de license, mesmo padrão de todo conector enterprise real**
+(`connectors.rs`): 1) `check_connector_license("infra-terraform-generator",
+...)` — a license instalada cobre o slug?; 2) `InfraGenerator::get()` —
+o binário sequer tem o crate `nexus-infra-terraform` linkado? Os dois
+handlers (`GET /infra/modules` papel `Read`, `POST /infra/generate`
+papel `Execute`) tratam "sem license" e "binário sem o crate" do mesmo
+jeito pro cliente (lista vazia / erro "feature not available") — a
+distinção entre os dois só importa pra quem decide o que exibir no
+futuro, não muda o resultado hoje.
+
+**Gate de license é da aba inteira, não por módulo** (diferente da Store
+de conectores, que é por-conector) — decisão de 2026-09-10: um produto
+só, uma compra, libera tudo. Frontend (`InfraCanvas.tsx`) reaproveita o
+mesmo formulário de checkout que `Store.tsx` já validou de ponta a ponta
+(Excel) em vez de inventar um segundo fluxo de compra.
+
+**Nunca roda `terraform` de verdade** — só gera texto HCL em memória
+(`GeneratedFiles.files: BTreeMap<String, String>`, ordenado, servido pro
+frontend baixar); não existe nenhum caminho de código pra `init`/
+`plan`/`apply`. Isso é mais conservador que o que a Fase 25 original
+cogitava (que incluía `terraform plan` real contra credencial AWS
+read-only) — trade-off aceito na decisão de 2026-09-10: menos
+capacidade, zero superfície nova de execução de processo externo/
+credencial cloud no servidor.

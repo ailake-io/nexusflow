@@ -139,7 +139,7 @@ Parte da arquitetura já revisada em `ARCHITECTURE.md` v2: crate-por-conector, b
 
 - Repo privado `ailake-io/nexus-connectors-enterprise` criado e ativo.
 - Mecanismo de license key (JWT Ed25519) validado em `nexus-server` antes de expor node enterprise no catálogo — `check_connector_license` chamado de verdade em `validate_source_config`/`validate_sink_config`/`build_source`/`build_sink` (`connectors.rs`), não só armazenado.
-- Primeiro candidato foi Excel — repo privado cresceu bem além disso: **37 crates** hoje (contagem via `Cargo.toml`, 2026-09-05 — sobe com frequência, ver `docs/ENTERPRISE_CONNECTORS.md` pra lista viva por categoria e `docs/DOCKER_LOCAL_TESTING.md` do repo privado pra config completa por conector).
+- Primeiro candidato foi Excel — repo privado cresceu bem além disso, depois encolheu de novo: chegou a 37 crates (2026-09-05), a Fase 32 (2026-09-25) migrou 22 pro OSS público, restando **16 crates de conector** + `nexus-infra-terraform` (não é conector de dado, ver `ARCHITECTURE.md`) — ver `docs/ENTERPRISE_CONNECTORS.md` pra lista viva por categoria e `docs/DOCKER_LOCAL_TESTING.md` do repo privado pra config completa por conector.
 
 **Critério de pronto:** feature flag `enterprise` compilando um binário que só expõe o conector premium com license key válida. **Atingido** — falta só o serviço de cobrança (`nexus-licensing`, Bloco 2) e o storefront/checkout (Bloco 4), que nunca foram pré-requisito técnico deste marco.
 

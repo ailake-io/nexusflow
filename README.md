@@ -144,7 +144,7 @@ Mais opções (curl|sh, .deb/AppImage, build from source, habilitar conectores e
 | [`ROADMAP.md`](./ROADMAP.md) | Fases de desenvolvimento, milestones, critérios de conclusão do MVP |
 | [`CONTRIBUTING.md`](./CONTRIBUTING.md) | Como contribuir, convenções de código, processo de PR |
 | [`LICENSING.md`](./LICENSING.md) | Modelo open-core: o que é OSS vs. o que é pago |
-| [`docs/ENTERPRISE_CONNECTORS.md`](./docs/ENTERPRISE_CONNECTORS.md) | Catálogo de conectores enterprise já implementados no repo privado (37 crates) e lógica de priorização do que falta |
+| [`docs/ENTERPRISE_CONNECTORS.md`](./docs/ENTERPRISE_CONNECTORS.md) | Catálogo de conectores enterprise já implementados no repo privado (16 crates desde a Fase 32) e lógica de priorização do que falta |
 | [`docs/ENTERPRISE_LICENSING.md`](./docs/ENTERPRISE_LICENSING.md) | Design do sistema de licenciamento enterprise — verificação JWT/Ed25519 e checkout Stripe/`nexus-licensing` já validados de ponta a ponta (modo teste); deploy com credenciais Stripe live é trabalho futuro |
 | [`packaging/kubernetes/README.md`](./packaging/kubernetes/README.md) | Deploy em Kubernetes via kustomize — validado num minikube real |
 | [`LICENSE`](./LICENSE) | Apache License 2.0 (community edition) |

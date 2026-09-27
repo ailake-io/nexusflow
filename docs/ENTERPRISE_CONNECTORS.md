@@ -91,7 +91,7 @@ mode` também nunca viraram SKU separado — os básicos já são OSS
 Ordenado por (demanda de mercado × disposição a pagar), não por
 dificuldade técnica — dos 16 que restam:
 
-1. **Salesforce** — o conector mais pedido em ferramentas comerciais concorrentes, ainda não implementado.
+1. **Salesforce** — o conector mais pedido em ferramentas comerciais concorrentes, já implementado (Bulk API 2.0, `describe` de schema, source+sink).
 2. **HubSpot, Zendesk, Shopify, Dynamics 365, NetSuite, ServiceNow, Workday** — CRM/ERP/suporte/RH, todos já implementados.
 3. **Marketing/Ads** (GA4, Google Ads, Meta Ads, TikTok Ads, X Ads, LinkedIn Ads, YouTube Analytics, Stripe) — alto volume, ticket médio menor, bom motor de PLG — todos já implementados, 5 ainda travados até validação real de conta.
 4. **SAP (BAPI/IDoc/S/4HANA)** — legado enterprise, ticket alto, mas bloqueio legal (sem SDK redistribuível).

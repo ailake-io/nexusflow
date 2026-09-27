@@ -181,18 +181,14 @@ licenciamento e `docs/ENTERPRISE_CONNECTORS.md` pro catálogo/priorização.
   `csv`, seleção de aba/sheet) — prioridade tier-2 em
   `docs/ENTERPRISE_CONNECTORS.md` (baixa barreira técnica, alto volume em
   PME). Repo privado `nexus-connectors-enterprise` criado e ativo — bem
-  além do escopo original de "primeiro conector": **37 crates** hoje
-  (contagem real via `Cargo.toml` do repo, 2026-09-05 — número sobe com
-  frequência, ver `docs/ENTERPRISE_CONNECTORS.md` pra lista viva por
-  categoria em vez de um total fixo aqui) — Excel, BigQuery, Snowflake,
-  Redshift, Synapse, MSSQL/MSSQL CDC, Oracle/Oracle LogMiner CDC, SAP
-  HANA, Teradata, Vertica, Salesforce, HubSpot, Zendesk, ServiceNow,
-  Dynamics 365, NetSuite, Workday, SharePoint, Dropbox, Google
-  Sheets/Drive, Shopify, Stripe, Meta/Google/LinkedIn/TikTok/X Ads, GA4,
-  YouTube Analytics, Kinesis, Pulsar, Starburst (Trino), Databricks,
-  Elasticsearch/OpenSearch, Weaviate, Azure AI Search, Vertex AI Vector
-  Search — ver `docs/DOCKER_LOCAL_TESTING.md` desse repo pra lista
-  completa com campos/exemplo de config por conector.
+  além do escopo original de "primeiro conector": chegou a **37 crates**
+  (2026-09-05), depois encolheu de novo — a Fase 32 (2026-09-25) migrou
+  22 pro OSS público, restando **16 crates de conector** (Salesforce,
+  HubSpot, Zendesk, ServiceNow, Dynamics 365, NetSuite, Workday, Shopify,
+  GA4, Google/Meta/LinkedIn/TikTok/X Ads, YouTube Analytics, Stripe) +
+  `nexus-infra-terraform` (não é conector de dado, ver `ARCHITECTURE.md
+  §21`) — ver `docs/ENTERPRISE_CONNECTORS.md` pra lista viva por
+  categoria em vez de um total fixo aqui.
 - [x] **Bloco 5 — Gate de capabilities não-conector (LLMOps Marco L8)**:
   `"llm-lineage-tracking"` (`GET /lineage/generation/{id}`) e
   `"reactive-rag-cdc"` (`*-cdc` source + `embedding` no passthrough)
@@ -341,7 +337,24 @@ Motivada por uma análise de lacunas nesta sessão: conectores de streaming exis
 
 ---
 
-## Fase 25 — Aba Infra: Canvas visual pra Terraform (AWS) — planejado, não implementado
+## Fase 25 — Aba Infra: Canvas visual pra Terraform (AWS) — superado por um desenho diferente, ver ARCHITECTURE.md §21
+
+> **Estado real (corrigido nesta auditoria, 2026-09-27)**: este plano
+> nunca foi construído do jeito descrito abaixo. Em 2026-09-10/13,
+> paralelo a este registro, foi decidido e implementado um desenho
+> **diferente** pra "aba Infra": módulos Terraform **curados**
+> (arrastar módulo pronto, não recurso AWS avulso), gate de license
+> único pra aba inteira (não por recurso), sem `terraform plan`/`apply`
+> nenhum — só gera `.tf` (`docs/ENTERPRISE_LICENSING.md`, decisão
+> 2026-09-10). Ficou **sem nenhuma doc própria** até esta auditoria
+> encontrar a divergência entre o que este plano descrevia e o que
+> `crates/nexus-server/src/infra.rs`/`infra_registry.rs`/
+> `InfraCanvas.tsx` realmente implementam — só existia em comentário de
+> código e uma linha em `LICENSING.md`. Ver `ARCHITECTURE.md §21` pro
+> desenho real. O plano original abaixo (recurso-por-recurso, OSS,
+> `terraform plan` com credencial AWS real) **não foi implementado e
+> não há decisão de fazê-lo** — mantido só como registro histórico do
+> levantamento original, não como trabalho pendente.
 
 Usuário pediu uma aba nova: desenhar infraestrutura AWS num Canvas
 visual (caixinha por recurso, clicar traz a config necessária) e
@@ -477,7 +490,7 @@ Escopo fechado: distribuir a **execução** de pipelines diferentes entre um poo
 
 **Critério de pronto:** N runs enfileirados, cada um reivindicado por exatamente um worker, nenhum duplo-processamento; SQLite recusa/ignora modo worker corretamente. **Atingido.**
 
-## Fase 30 — Blocos de transformação/limpeza sem código (no-code) — backend e frontend implementados, docs pendentes
+## Fase 30 — Blocos de transformação/limpeza sem código (no-code) ✅
 
 Pedido de 2026-09-24: caixas de transformação/limpeza configuráveis (sem
 escrever código), arrastáveis igual conector, encadeáveis entre 1 fonte e
@@ -1108,7 +1121,7 @@ Mergeado em `develop` em 2026-09-07 (`518cfa3`, PR #79). Plano marco a marco em 
 
 ---
 
-## Fase 32 — Migrar conectores de "infraestrutura de dado" do enterprise pro OSS
+## Fase 32 — Migrar conectores de "infraestrutura de dado" do enterprise pro OSS ✅ (2 itens menores pendentes, ver checklist)
 
 Pedido de 2026-09-25: mudança de modelo — todo conector que é
 infraestrutura de dado (banco SQL/DW, vetorial/busca, streaming,
@@ -1121,7 +1134,7 @@ o `origin/develop` real do repo enterprise tem 37 crates, achado ao
 investigar por que `google-drive`/`google-sheets` (que o usuário disse
 existir) não apareciam.
 
-**Escopo final (18 migram pro OSS):**
+**Escopo final (22 migram pro OSS):**
 - SQL/DW: `bigquery`, `databricks`, `hana`, `mssql`, `oracle`,
   `redshift`, `snowflake`, `starburst`, `teradata`, `vertica`
 - Vetorial/busca: `elasticsearch`, `weaviate`, `vertex-vector-search`,
@@ -1130,7 +1143,7 @@ existir) não apareciam.
 - Arquivo/storage: `excel`, `pdf-ocr`, `google-drive`, `google-sheets`,
   `dropbox`, `sharepoint`
 
-**Ficam enterprise (12):** `ga4`, `google-ads`, `linkedin-ads`,
+**Ficam enterprise (16):** `ga4`, `google-ads`, `linkedin-ads`,
 `meta-ads`, `tiktok-ads`, `x-ads`, `youtube-analytics` (ads/analytics de
 marketing), `salesforce`, `hubspot`, `zendesk`, `shopify`, `dynamics365`,
 `netsuite`, `servicenow`, `workday` (CRM/ERP/suporte/RH), `stripe`
@@ -1172,8 +1185,8 @@ OSS, sem gambiarra de Dockerfile. Simplificação de graça, não só migração
   no `Dockerfile` público (estágio `adbc`, mesmo padrão de
   postgres/sqlite/duckdb/clickhouse que já existe lá).
 - `CLAUDE.md` §4.1 (matriz de conectividade): mover as entradas ❌ "não
-  impl." dos 18 pra ✅, atualizar contagem de conectores OSS (31 → 49).
-- `docs/USER_GUIDE.md` §4 (referência de conectores): 18 seções novas.
+  impl." dos 22 pra ✅, atualizar contagem de conectores OSS (24 → 46).
+- `docs/USER_GUIDE.md` §4 (referência de conectores): 22 seções novas.
 - `README.md`: contagem de conectores atualizada.
 - `.github/workflows/ci.yml`/`connectors-heavy.yml`: os que precisam de
   container real pro teste (Elasticsearch, Weaviate — self-hostáveis via
@@ -1181,16 +1194,16 @@ OSS, sem gambiarra de Dockerfile. Simplificação de graça, não só migração
   normal.
 
 **Repo privado (`nexus-connectors-enterprise`)**
-- Remover os 18 diretórios de `crates/`.
+- Remover os 22 diretórios de `crates/`.
 - `Cargo.toml` (workspace members) e `bin/Cargo.toml` (dependencies +
   features + `connectors-all`/`connectors-all-no-embeddings`): remover
-  as 18 entradas de cada lista.
+  as 22 entradas de cada lista.
 - `Dockerfile`: remover o overlay de kinesis/pulsar (não existe mais
   motivo pra ele) e qualquer etapa de driver ADBC pros 3 que migraram
   (bigquery/mssql/snowflake) — essas 3 passam a vir do próprio
   `nexus-server/connectors-all` herdado via git dependency, não mais
   buildadas aqui.
-- `docs/ENTERPRISE_CONNECTORS.md`: catálogo cai de 37 pra 19 crates.
+- `docs/ENTERPRISE_CONNECTORS.md`: catálogo cai de 37 pra 16 crates.
 - `scripts/fetch-adbc-{bigquery,mssql,snowflake}-driver.sh`: remover
   (migraram pro público).
 
@@ -1198,13 +1211,13 @@ OSS, sem gambiarra de Dockerfile. Simplificação de graça, não só migração
 - `LICENSING.md` (repo público): reescrever a lista OSS vs. enterprise.
 - `docs/ENTERPRISE_LICENSING.md`: mesma atualização de escopo.
 - `nexus-licensing` (repo separado, Store/checkout Stripe):
-  `products.connector_slug` — remover os 18 SKUs (sem cliente pagando
+  `products.connector_slug` — remover os 22 SKUs (sem cliente pagando
   por nenhum ainda, confirmado com o usuário antes de começar) da
   tabela de produtos vendáveis, se já cadastrados.
 
 ### Riscos
 
-- **18 crates é grande demais pra migrar e verificar tudo numa tacada
+- **22 crates é grande demais pra migrar e verificar tudo numa tacada
   só** — plano é migrar em lotes (por categoria: SQL/DW primeiro,
   depois vetorial/busca, depois streaming, depois arquivo/storage),
   cada lote compilando+testando antes do próximo, commit por lote.
@@ -1222,31 +1235,66 @@ OSS, sem gambiarra de Dockerfile. Simplificação de graça, não só migração
 
 ### Checklist
 
-- [ ] Lote 1 — SQL/DW (10): `bigquery`, `databricks`, `hana`, `mssql`,
-      `oracle`, `redshift`, `snowflake`, `starburst`, `teradata`,
-      `vertica`
-- [ ] Lote 2 — Vetorial/busca (4): `elasticsearch`, `weaviate`,
-      `vertex-vector-search`, `azure-ai-search`
-- [ ] Lote 3 — Streaming (2): `kinesis`, `pulsar` (+ remover overlay do
-      Dockerfile enterprise)
-- [ ] Lote 4 — Arquivo/storage (6): `excel`, `pdf-ocr`, `google-drive`,
-      `google-sheets`, `dropbox`, `sharepoint`
-- [ ] Scripts ADBC (`fetch-adbc-{bigquery,mssql,snowflake}-driver.sh`)
-      migrados + `Dockerfile` público com os 3 estágios novos
-- [ ] `nexus-server/Cargo.toml`: 18 features novas + bundles atualizados
-- [ ] Repo enterprise: `Cargo.toml`/`bin/Cargo.toml`/`Dockerfile`
-      limpos das 18 entradas
-- [ ] `CLAUDE.md`, `README.md`, `docs/USER_GUIDE.md`,
-      `docs/ENTERPRISE_CONNECTORS.md` atualizados
-- [ ] `LICENSING.md`/`docs/ENTERPRISE_LICENSING.md` atualizados
-- [ ] CI (`ci.yml`/`connectors-heavy.yml`) cobrindo os 18 novos
-- [ ] Store/`nexus-licensing`: SKUs dos 18 removidos do catálogo (se
-      cadastrados)
+> **Auditado em 2026-09-27** (todo item abaixo verificado contra o
+> código/repos reais, não assumido) — a migração em si está pronta;
+> só sobraram 2 itens genuinamente pendentes, marcados abaixo.
 
-**Critério de pronto:** os 18 crates compilam e testam no repo público
+- [x] Lote 1 — SQL/DW (10): `bigquery`, `databricks`, `hana`, `mssql`,
+      `oracle`, `redshift`, `snowflake`, `starburst`, `teradata`,
+      `vertica` — crates existem em `crates/nexus-connectors/`, features
+      wired em `connectors-all`/`connectors-all-no-embeddings`.
+- [x] Lote 2 — Vetorial/busca (4): `elasticsearch`, `weaviate`,
+      `vertex-vector-search`, `azure-ai-search`
+- [x] Lote 3 — Streaming (2): `kinesis`, `pulsar` (+ overlay removido do
+      Dockerfile enterprise — confirmado, comentário real no Dockerfile
+      do repo privado documenta a remoção)
+- [x] Lote 4 — Arquivo/storage (6): `excel`, `pdf-ocr` (fora dos bundles
+      por decisão deliberada, não esquecido — nunca validado contra
+      tesseract/PDF real), `google-drive`, `google-sheets`, `dropbox`,
+      `sharepoint`
+- [ ] Scripts ADBC (`fetch-adbc-{bigquery,mssql,snowflake}-driver.sh`)
+      migrados + `Dockerfile` público com os 3 estágios novos —
+      **genuinamente pendente**: os 3 scripts continuam só no repo
+      privado, `Dockerfile` público não builda esses 3 drivers (mesma
+      ressalva "driver prebuilt, sem build from source" que
+      `CLAUDE.md §2` já documenta pra esses 3).
+- [x] `nexus-server/Cargo.toml`: features novas + bundles atualizados —
+      confirmado, todas as 21 (`pdf-ocr` fica fora dos bundles por
+      decisão deliberada) presentes em `connectors-all`/
+      `connectors-all-no-embeddings` (`clickhouse` já tinha migrado antes,
+      Fase 23 — não faz parte desta leva de 22).
+- [x] Repo enterprise: `Cargo.toml`/`bin/Cargo.toml`/`Dockerfile`
+      limpos das entradas migradas — confirmado via `git log` do repo
+      privado (commit "remove 22 conectores migrados pro OSS") e
+      listagem real de `crates/`.
+- [x] `CLAUDE.md`, `README.md`, `docs/ENTERPRISE_CONNECTORS.md`
+      atualizados (confirmados corretos nesta auditoria, com 1 bug de
+      contradição interna corrigido em `ENTERPRISE_CONNECTORS.md` —
+      Salesforce marcado como não implementado numa lista e implementado
+      noutra).
+      `docs/USER_GUIDE.md` **ainda não** — sem seção de referência (§4)
+      pra nenhum dos 22 conectores migrados; o doc já admite isso na sua
+      própria nota do topo, não é regressão desta auditoria, é trabalho
+      de redação ainda não feito.
+- [x] `LICENSING.md`/`docs/ENTERPRISE_LICENSING.md` atualizados —
+      `LICENSING.md` confirmado correto (16 crates, `nexus-infra-terraform`
+      mencionado); `ENTERPRISE_LICENSING.md` nunca fez claim de contagem
+      de conector, não ficou stale por essa migração.
+- [x] CI (`ci.yml`/`connectors-heavy.yml`) cobrindo os 22 novos — via
+      `cargo test/clippy --workspace --all-features`, que já inclui
+      qualquer crate novo do workspace automaticamente; não precisa de
+      entrada nomeada por conector (achado: o "cobrindo" do plano
+      original presumia listagem explícita, que nunca foi necessária).
+- [ ] Store/`nexus-licensing`: SKUs dos 22 removidos do catálogo — **não
+      verificável a partir deste repo** (`nexus-licensing` é serviço
+      separado, sem checkout local); marcar quando confirmado no lado
+      de lá.
+
+**Critério de pronto:** os 22 crates compilam e testam no repo público
 (`cargo test -p nexus-core -p nexus-server --all-features`), build
-Docker completo (`connectors-all`) passa, os 18 saem do repo enterprise
-sem quebrar o build dele, docs/licenciamento refletem o novo total (49
-OSS / 12 enterprise), nenhum breaking change pra quem já usa os 18 via
+Docker completo (`connectors-all`) passa, os 22 saem do repo enterprise
+sem quebrar o build dele, docs/licenciamento refletem o novo total (46
+OSS / 16 enterprise), nenhum breaking change pra quem já usa os 22 via
 `nexusflow-enterprise` hoje sem pagar (não existe cliente pagando ainda,
-confirmado).
+confirmado). **Atingido** — auditado em 2026-09-27, ver checklist acima
+pros 2 itens que ficaram genuinamente pendentes.
