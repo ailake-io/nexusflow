@@ -9,7 +9,7 @@
 //! `args`.
 
 use crate::AppState;
-use nexus_core::{AgentToolKind, Transform};
+use nexus_core::{AgentToolKind, ConnectorRegistry, Transform};
 use serde_json::Value;
 
 #[derive(Debug, thiserror::Error)]
@@ -63,7 +63,113 @@ pub async fn execute_tool(
             script,
             timeout_seconds,
         } => generate_chart(state, source, script, *timeout_seconds, args).await,
+        AgentToolKind::DraftPipeline => draft_pipeline(state, args).await,
     }
+}
+
+/// Live `ToolDef.schema` for `draft_pipeline` — the one variant whose
+/// argument shape needs real I/O (the connector catalog), which
+/// `nexus-core` deliberately never touches. `agent_runner.rs` calls this
+/// instead of `AgentToolKind::json_schema()` for this one tool; every other
+/// tool still uses the pure method. Kept in the same shape as
+/// `AgentToolKind::DraftPipeline`'s own static fallback, just with a real
+/// `enum` of connector names instead of a bare string.
+pub fn draft_pipeline_schema() -> Value {
+    let connector_names: Vec<&'static str> = ConnectorRegistry::all()
+        .filter(|d| d.capability != nexus_core::ConnectorCapability::Capability)
+        .map(|d| d.name)
+        .collect();
+    let node_schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "connector": {
+                "type": "string",
+                "enum": connector_names,
+                "description": "Connector name from the live catalog (GET /connectors)."
+            },
+            "config": {
+                "type": "object",
+                "description": "Connector-specific config — field names vary per connector \
+                    (e.g. csv wants \"path\"/\"fields\", postgres wants \"uri\"/\"table\"). If \
+                    unsure, a first query_data-style attempt with a best guess is fine — a \
+                    validation error comes back describing what's wrong."
+            }
+        },
+        "required": ["connector", "config"]
+    });
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "pipeline_id": {
+                "type": "string",
+                "description": "Unique id for the new pipeline, e.g. \"vendas-por-regiao\" \
+                    (letters, digits, '_', '-' only)."
+            },
+            "sources": {"type": "array", "items": node_schema.clone()},
+            "sinks": {"type": "array", "items": node_schema},
+            "transform": {
+                "type": "object",
+                "properties": {
+                    "sql": {
+                        "type": "string",
+                        "description": "Optional SQL over the source(s), referenced as \
+                            source0/source1/... Required whenever there's more than one \
+                            source or sink."
+                    }
+                }
+            },
+            "schedule": {
+                "type": "string",
+                "description": "Optional cron expression to run this pipeline automatically. \
+                    Omit to leave it on-demand only."
+            }
+        },
+        "required": ["pipeline_id", "sources", "sinks"]
+    })
+}
+
+/// Builds a brand-new saved pipeline from the model's structured argument.
+/// Deliberately reuses the exact same validation a human-drawn pipeline
+/// goes through (`PipelineSpec::validate`/`validate_security_with`) —
+/// there's no separate, looser path for an agent-authored spec. A
+/// deserialization or validation failure becomes this tool's result text,
+/// which `agent_runner.rs` feeds back into the conversation so the model
+/// can retry with a corrected spec on its next turn.
+async fn draft_pipeline(state: &AppState, args: &Value) -> Result<ToolOutput, AgentToolError> {
+    let mut spec: nexus_core::PipelineSpec = serde_json::from_value(args.clone())
+        .map_err(|e| AgentToolError(format!("draft_pipeline: invalid pipeline spec: {e}")))?;
+    // The model only ever fills in the fields exposed by
+    // `draft_pipeline_schema()` above — every other `PipelineSpec` field
+    // already has a `#[serde(default)]` (channel_capacity/partitions get
+    // sensible non-zero defaults, everything else empty/None), so this
+    // partial JSON deserializes into a complete, well-formed spec. `draft`
+    // is forced `false` explicitly anyway (not just relying on its default)
+    // — this tool only ever produces a pipeline meant to be run for real,
+    // never the Canvas's own "save incomplete work" draft flag.
+    spec.draft = false;
+
+    spec.validate()
+        .map_err(|e| AgentToolError(format!("draft_pipeline: {e}")))?;
+    spec.validate_security_with(state.allow_internal_hosts)
+        .map_err(|e| AgentToolError(format!("draft_pipeline: {e}")))?;
+
+    state
+        .pipelines
+        .create(&spec, &state.secrets, "agent")
+        .await
+        .map_err(|e| AgentToolError(format!("draft_pipeline: failed to save: {e}")))?;
+
+    Ok(ToolOutput::Text(format!(
+        "created pipeline {:?} with {} source(s) and {} sink(s){}",
+        spec.pipeline_id,
+        spec.sources.len(),
+        spec.sinks.len(),
+        if spec.schedule.is_some() {
+            " (scheduled)"
+        } else {
+            " (on-demand only, not scheduled)"
+        }
+    )))
 }
 
 fn optional_sql_arg(args: &Value) -> Option<&str> {
@@ -577,6 +683,81 @@ mod tests {
             panic!("expected Text output");
         };
         assert!(text.contains("200"));
+    }
+
+    #[tokio::test]
+    async fn draft_pipeline_creates_a_real_saved_pipeline() {
+        let state = crate::tests::test_state().await;
+        let (_src_dir, source_node) = sqlite_fixture("items").await;
+        let source_config = source_node.config;
+        let sink_dir = tempfile::tempdir().unwrap();
+        let sink_path = sink_dir.path().join("sink.db");
+
+        let args = serde_json::json!({
+            "pipeline_id": "agent-drafted-pipeline",
+            "sources": [{"connector": "sqlite", "config": source_config}],
+            "sinks": [{"connector": "sqlite", "config": {
+                "file_path": sink_path.display().to_string(),
+                "table": "items_copy",
+                "primary_key": "id"
+            }}]
+        });
+
+        let output = execute_tool(&state, &AgentToolKind::DraftPipeline, &args)
+            .await
+            .unwrap();
+        let ToolOutput::Text(text) = output else {
+            panic!("expected Text output");
+        };
+        assert!(
+            text.contains("agent-drafted-pipeline"),
+            "unexpected: {text}"
+        );
+
+        // Not just "the tool said so" — confirm it's a real, fully valid,
+        // runnable saved pipeline (same store any human-created one uses).
+        let saved = state
+            .pipelines
+            .get_spec("agent-drafted-pipeline", &state.secrets)
+            .await
+            .unwrap();
+        assert_eq!(saved.sources.len(), 1);
+        assert_eq!(saved.sinks.len(), 1);
+        assert!(!saved.draft);
+    }
+
+    #[tokio::test]
+    async fn draft_pipeline_rejects_invalid_spec_with_a_retryable_error() {
+        let state = crate::tests::test_state().await;
+        // Two sources, no transform — PipelineSpec::validate() rejects this
+        // (fan-in needs a transform) exactly like it would for a human.
+        let args = serde_json::json!({
+            "pipeline_id": "agent-invalid-pipeline",
+            "sources": [
+                {"connector": "csv", "config": {"path": "/tmp/a.csv"}},
+                {"connector": "csv", "config": {"path": "/tmp/b.csv"}}
+            ],
+            "sinks": [{"connector": "csv", "config": {"path": "/tmp/out.csv"}}]
+        });
+
+        let err = execute_tool(&state, &AgentToolKind::DraftPipeline, &args)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("transform"),
+            "expected a validate()-shaped error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn draft_pipeline_rejects_malformed_json_shape() {
+        let state = crate::tests::test_state().await;
+        let args = serde_json::json!({"pipeline_id": "bad-shape", "sources": "not-an-array"});
+
+        let err = execute_tool(&state, &AgentToolKind::DraftPipeline, &args)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("invalid pipeline spec"));
     }
 
     #[tokio::test]

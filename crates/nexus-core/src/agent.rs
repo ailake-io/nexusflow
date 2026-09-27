@@ -122,6 +122,25 @@ pub enum AgentToolKind {
         #[serde(default)]
         timeout_seconds: Option<u64>,
     },
+    /// Builds a brand-new saved pipeline from a natural-language request —
+    /// unlike every other tool above, has **no static config at all**: the
+    /// model supplies the entire `PipelineSpec`-shaped payload (sources,
+    /// optional transform, sinks, optional schedule) as the dynamic
+    /// tool-call argument. Execution (`agent_tools.rs::draft_pipeline`)
+    /// deserializes it into a real `PipelineSpec`, runs the exact same
+    /// `validate()`/`validate_security_with()` any human-drawn pipeline
+    /// passes, and saves it via `PipelineStore::create` — no bypass, no
+    /// new validation path. A validation/deserialization failure comes
+    /// back as this tool's result text, same "error feeds into the next
+    /// turn" loop already proven end-to-end against a real local model
+    /// (2026-09-27, Ollama) for `QueryData`'s SQL argument.
+    ///
+    /// `json_schema()` below is a static fallback — the real schema needs
+    /// the live connector catalog (I/O, `nexus-core` has none), so
+    /// `agent_runner.rs` special-cases this variant and calls
+    /// `agent_tools::draft_pipeline_schema(state)` instead when building
+    /// the tool-calling request.
+    DraftPipeline,
 }
 
 fn default_top_k() -> usize {
@@ -145,6 +164,7 @@ impl AgentToolKind {
             AgentToolKind::RunPipeline { .. } => "run_pipeline",
             AgentToolKind::CallWebhook { .. } => "call_webhook",
             AgentToolKind::GenerateChart { .. } => "generate_chart",
+            AgentToolKind::DraftPipeline => "draft_pipeline",
         }
     }
 
@@ -168,6 +188,12 @@ impl AgentToolKind {
             AgentToolKind::GenerateChart { .. } => {
                 "Render a chart from the configured data source (optionally filtered by SQL) \
                  using the pre-configured visualization script."
+            }
+            AgentToolKind::DraftPipeline => {
+                "Create a new saved data pipeline from a structured spec (sources, optional \
+                 transform, sinks, optional schedule). The pipeline is saved but never run \
+                 automatically — a human (or the run_pipeline tool, in a later step) has to \
+                 trigger it."
             }
         }
     }
@@ -212,6 +238,50 @@ impl AgentToolKind {
                         "description": "JSON body to send with the request."
                     }
                 }
+            }),
+            // Static fallback only — `agent_runner.rs` calls
+            // `agent_tools::draft_pipeline_schema(state)` instead whenever it
+            // can (needs the live connector list, I/O this crate doesn't
+            // have). Kept close in shape so the two never drift far apart.
+            AgentToolKind::DraftPipeline => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "pipeline_id": {
+                        "type": "string",
+                        "description": "Unique id for the new pipeline, e.g. \"vendas-por-regiao\"."
+                    },
+                    "sources": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "connector": {"type": "string"},
+                                "config": {"type": "object"}
+                            },
+                            "required": ["connector", "config"]
+                        }
+                    },
+                    "sinks": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "connector": {"type": "string"},
+                                "config": {"type": "object"}
+                            },
+                            "required": ["connector", "config"]
+                        }
+                    },
+                    "transform": {
+                        "type": "object",
+                        "properties": {"sql": {"type": "string"}}
+                    },
+                    "schedule": {
+                        "type": "string",
+                        "description": "Optional cron expression to run this pipeline automatically."
+                    }
+                },
+                "required": ["pipeline_id", "sources", "sinks"]
             }),
         }
     }
@@ -292,7 +362,7 @@ impl AgentSpec {
                         )));
                     }
                 }
-                AgentToolKind::QueryData { .. } => {}
+                AgentToolKind::QueryData { .. } | AgentToolKind::DraftPipeline => {}
             }
         }
         Ok(())
@@ -518,5 +588,26 @@ mod tests {
             .name(),
             "generate_chart"
         );
+        assert_eq!(AgentToolKind::DraftPipeline.name(), "draft_pipeline");
+    }
+
+    #[test]
+    fn draft_pipeline_has_no_static_config_to_validate() {
+        let mut spec = base_spec();
+        spec.tools.push(AgentToolConfig {
+            tool: AgentToolKind::DraftPipeline,
+            approval: ApprovalMode::RequireApproval,
+        });
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn draft_pipeline_fallback_schema_matches_expected_shape() {
+        let schema = AgentToolKind::DraftPipeline.json_schema();
+        assert_eq!(schema["type"], "object");
+        assert!(schema["properties"]["sources"].is_object());
+        assert!(schema["properties"]["sinks"].is_object());
+        assert!(schema["properties"]["transform"].is_object());
+        assert_eq!(schema["required"][0], "pipeline_id");
     }
 }

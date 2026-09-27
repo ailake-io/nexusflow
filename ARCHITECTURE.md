@@ -589,6 +589,7 @@ pub enum AgentToolKind {
     RunPipeline { pipeline_id: String, wait_for_result: bool },
     CallWebhook { url: String, method: String },
     GenerateChart { source: NodeSpec, script: String, timeout_seconds: Option<u64> },
+    DraftPipeline, // sem config estática — ver detalhe abaixo
 }
 ```
 
@@ -626,6 +627,50 @@ content-type controlado por script do usuário refletido direto no
 header de resposta é XSS armazenado). No `runner.rs`, o node roda como
 observador *depois* do estágio Python — nunca reescreve `output`, e uma
 falha no script só loga, nunca derruba o run.
+
+**`DraftPipeline` (2026-09-27) é a 6ª ferramenta** — cria um
+`PipelineSpec` novo a partir de um pedido em linguagem natural, a única
+sem config estática nenhuma (`AgentToolKind::DraftPipeline`, variante
+unitária): o modelo manda o `PipelineSpec` inteiro (`pipeline_id`,
+`sources`/`sinks`, `transform.sql` opcional, `schedule` opcional) como
+argumento *dinâmico* de uma vez só (decisão de produto: one-shot, não
+incremental — motivo abaixo). `agent_tools::draft_pipeline` desserializa
+esse JSON direto em `nexus_core::PipelineSpec` (os campos que o modelo
+não manda pegam o `#[serde(default)]` de cada um, igual qualquer outro
+`PipelineSpec` incompleto) e roda **exatamente** `PipelineSpec::validate()`
++ `validate_security_with(state.allow_internal_hosts)` — a mesma dupla
+que qualquer pipeline desenhado por humano passa em `POST /pipelines`,
+sem exceção nem caminho mais frouxo pro que vem do agente. Erro de
+shape ou de `validate()` vira o texto de resultado dessa ferramenta,
+que `agent_runner.rs` já alimenta de volta no histórico normalmente —
+reaproveita 100% o mesmo loop de retry-com-erro comprovado contra um
+Ollama real (2026-09-27) pro argumento SQL do `QueryData`.
+
+É a única ferramenta cujo `ToolDef.schema` não pode vir do
+`AgentToolKind::json_schema()` puro: precisa da lista viva de
+conectores (`ConnectorRegistry::all()`, I/O que `nexus-core` não tem)
+pra listar as opções válidas de `connector` como `enum` — sem isso o
+modelo chutaria nomes de conector, gastando um turno inteiro só pra
+descobrir que "postgresql" não existe (o nome real é "postgres"). Por
+isso `agent_runner.rs`, ao montar `Vec<ToolDef>`, faz um `match`
+especial: `DraftPipeline` chama `agent_tools::draft_pipeline_schema()`
+em vez do método puro; toda outra ferramenta usa `json_schema()`
+normalmente. `config_schema` de cada conector individual (o JSON Schema
+via `schemars` que `GET /connectors` já expõe) não entra no schema da
+ferramenta — ficaria grande demais pra caber no contexto de um modelo
+pequeno; o modelo tenta um `config` plausível e usa o erro de
+`validate()`/deserialização como guia, mesmo padrão de "erra, corrige"
+já validado no teste real.
+
+**Recomendação operacional**: `DraftPipeline` cria um `PipelineSpec`
+persistido, que pode ter `schedule` (roda sozinho depois) e apontar pra
+hosts/credenciais reais — mesma classe de risco que `RunPipeline`/
+`CallWebhook` já têm; a config de aprovação (`ApprovalMode`) é decisão
+de quem monta o agente, não travada no código, mas o operador deveria
+configurar essa ferramenta como `require_approval` por padrão. O passo
+pendente já mostra o `PipelineSpec` inteiro (JSON cru) no `args` do
+trace (`AgentsPanel.tsx`) — revisar antes de aprovar não precisa de UI
+nova nenhuma.
 
 **Loop (`agent_runner.rs`)**: monta o histórico como `Vec<ToolMessage>`,
 resolve o backend via `load_llm_backend_for_model`, chama
