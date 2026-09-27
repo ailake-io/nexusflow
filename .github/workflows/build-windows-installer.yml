@@ -336,16 +336,30 @@ jobs:
       #   Variables: SIGNPATH_ORG_ID, SIGNPATH_PROJECT_SLUG,
       #              SIGNPATH_SIGNING_POLICY_SLUG
       # See https://docs.signpath.io/trusted-build-systems/github.
+      #
+      # `secrets` isn't a valid context inside `if:` (actionlint/GitHub both
+      # reject it — only `env`/`run` expressions can read secrets) — real
+      # error found via actionlint after this exact pattern made GitHub
+      # reject the whole workflow file at parse time, 0 jobs ever created.
+      # Routed through a plain step output instead, which `if:` can read.
+      - name: Check SignPath is configured
+        id: signpath
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+        run: |
+          $configured = -not [string]::IsNullOrEmpty($env:SIGNPATH_API_TOKEN)
+          "configured=$($configured.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
       - name: Upload unsigned .msi (SignPath input)
         id: upload-unsigned-msi
-        if: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+        if: steps.signpath.outputs.configured == 'true'
         uses: actions/upload-artifact@834a144ee995460fba8ed112a2fc961b36a5ec5a # v4.4.3
         with:
           name: unsigned-msi
           path: ${{ steps.msi.outputs.path }}
 
       - name: Sign .msi via SignPath
-        if: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+        if: steps.signpath.outputs.configured == 'true'
         uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
@@ -360,7 +374,7 @@ jobs:
       # every step below (artifact upload, release attach) needs no
       # change to pick up the signed file instead of the unsigned one.
       - name: Replace .msi with the signed one
-        if: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+        if: steps.signpath.outputs.configured == 'true'
         shell: pwsh
         run: |
           $signed = Get-ChildItem -Path signed-msi -Filter *.msi | Select-Object -First 1
