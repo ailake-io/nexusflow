@@ -1312,3 +1312,74 @@ OSS / 16 enterprise), nenhum breaking change pra quem já usa os 22 via
 `nexusflow-enterprise` hoje sem pagar (não existe cliente pagando ainda,
 confirmado). **Atingido de ponta a ponta** — auditado em 2026-09-27,
 checklist 100% fechado.
+
+---
+
+## Fase 33 — Agente monta pipelines a partir de prompt (6ª ferramenta: `draft_pipeline`)
+
+Pedido de 2026-09-27, na sequência direta da Fase 31: usuário testou o
+agente de ponta a ponta contra um Ollama local de verdade (achado real
+nesse teste — o loop de tool-calling + retry-com-erro funciona
+perfeitamente, mas um modelo pequeno, 3B, não conseguiu corrigir uma
+SQL sozinho mesmo recebendo o erro exato de volta), e pediu a mesma
+mecânica pra um caso novo: usar o agente pra **montar o `PipelineSpec`
+(o DAG do Canvas) a partir de um prompt em linguagem natural**, não só
+pra consultar dado já pipelineado.
+
+**Decisão fechada com o usuário**: ferramenta única, one-shot — o
+modelo manda o `PipelineSpec` inteiro numa chamada só (não várias
+ferramentas incrementais tipo `AddSource`/`AddSink`/...). Reaproveita
+100% do mecanismo de retry-com-erro já comprovado no teste real contra
+Ollama, sem precisar de estado de rascunho mutável durante a run nem
+mudar a assinatura de `agent_runner.rs::run_loop`/
+`agent_tools::execute_tool`. Trade-off aceito conscientemente: pior com
+modelo fraco pra gerar um JSON grande de uma vez (evidência direta do
+próprio teste, pra um payload bem menor que um `PipelineSpec`) —
+mitigado por `max_steps` configurável e pela recomendação de
+`ApprovalMode::RequireApproval` nessa ferramenta, não por reescrever a
+arquitetura pra incremental agora (registrado como possível Fase
+futura se o one-shot se provar pouco confiável na prática).
+
+**Implementado:**
+- `AgentToolKind::DraftPipeline` (`nexus-core/src/agent.rs`) — variante
+  unitária, sem config estática (única entre as 6 ferramentas). Modelo
+  manda `pipeline_id`/`sources`/`sinks`/`transform.sql` opcional/
+  `schedule` opcional como argumento dinâmico.
+- `agent_tools::draft_pipeline` (`nexus-server/src/agent_tools.rs`) —
+  desserializa o argumento direto em `nexus_core::PipelineSpec`, roda
+  **a mesma** `validate()`/`validate_security_with()` que qualquer
+  pipeline desenhado por humano passa (zero caminho mais frouxo), salva
+  via `PipelineStore::create` (autor `"agent"`). Erro de shape ou de
+  validação vira o texto de resultado da ferramenta, alimentado de
+  volta no histórico pelo `agent_runner.rs` já existente — sem mudança
+  de arquitetura no loop.
+- `agent_tools::draft_pipeline_schema()` — a única ferramenta cujo
+  `ToolDef.schema` não pode vir do `AgentToolKind::json_schema()` puro
+  (precisa da lista viva de conectores via `ConnectorRegistry::all()`,
+  I/O que `nexus-core` não tem). `agent_runner.rs` especializa esse
+  caso ao montar `Vec<ToolDef>`, toda outra ferramenta continua usando
+  o método puro.
+- Docs: `ARCHITECTURE.md §20` (subseção nova), `docs/USER_GUIDE.md
+  §13.2` (item 6 na lista de ferramentas + exemplo de `curl`).
+
+**Critério de pronto:** um agente com `draft_pipeline` responde a um
+pedido em linguagem natural criando um `PipelineSpec` válido e
+persistido (confirmado via `GET /pipelines/{id}/spec`, não só via
+resposta em texto do modelo). **Atingido a nível de código** (3 testes
+reais em `agent_tools.rs`: cria pipeline de verdade, rejeita spec
+inválido com erro que serve pra retry, rejeita shape malformado).
+
+**Teste real contra Ollama (2026-09-27, `qwen3-coder:30b`)**: mecânica
+100% correta — desserializa, valida, erro volta pro modelo, 4
+tentativas dentro do `max_steps`, desistência honesta na 5ª (nunca
+inventou sucesso). **Não completou de ponta a ponta** — causa raiz não
+é bug do NexusFlow: o modelo mandou `sources`/`sinks` como string em
+repr Python (`"[{'connector': 'sqlite', ...}]"`, aspas simples) em vez
+de array JSON de verdade, erro de shape que o modelo não conseguiu
+corrigir mesmo com a mensagem de erro do serde de volta (confunde nome
+de campo com tipo de valor). Confirma na prática o risco já registrado
+acima (one-shot é mais frágil que incremental em modelo local fraco com
+JSON aninhado) — decisão do usuário: não vale a pena um shim de
+normalização pra compensar esse modelo específico agora; validar contra
+um modelo cloud (GPT-4o/Claude/OpenRouter, que lidam com JSON aninhado
+de forma confiável) fica pro usuário fazer com chave real.

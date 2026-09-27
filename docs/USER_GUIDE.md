@@ -1104,8 +1104,9 @@ Aba **Agentes** — diferente de um pipeline (que sempre roda fonte→transform�
 3. `run_pipeline` — dispara um pipeline salvo, com opção de esperar o resultado.
 4. `call_webhook` — chamada HTTP genérica (mesma proteção contra SSRF de qualquer conector REST/webhook do produto).
 5. `generate_chart` — roda um script Python (ver §13.3) sobre um source e devolve um gráfico como imagem.
+6. `draft_pipeline` — **a única sem config estática nenhuma**: cria um pipeline novo inteiro a partir de um pedido em linguagem natural ("crie um pipeline que lê tal CSV e grava num sqlite"). O modelo manda o pipeline inteiro (fontes, destinos, transformação SQL opcional, agendamento opcional) numa chamada só; se algo estiver errado (campo inválido, conector inexistente), o erro de validação volta pro modelo tentar de novo — mesmo pipeline de validação que qualquer pipeline desenhado no Canvas passa, sem atalho. Recomendado configurar como **precisa de aprovação** — o pipeline criado pode ter agendamento e rodar sozinho depois.
 
-O **argumento de cada chamada** (a query SQL, o texto de busca, o corpo do webhook) é decidido pelo modelo em tempo real, não fica fixo na configuração do agente — só a parte estrutural (qual source, qual pipeline, qual URL) é configurada de antemão.
+O **argumento de cada chamada** (a query SQL, o texto de busca, o corpo do webhook, o pipeline inteiro no caso do `draft_pipeline`) é decidido pelo modelo em tempo real, não fica fixo na configuração do agente — só a parte estrutural (qual source, qual pipeline, qual URL) é configurada de antemão.
 
 **Cache de resposta (opcional)**: campo `cache` no agente (`{"url": "redis://...", "ttl_seconds": 3600}`) — mesma config Redis que o node `llm` já usa. Uma pergunta repetida do zero (nova execução, mesma conversa inicial) reaproveita a decisão do modelo (texto ou chamada de ferramenta) sem gastar token nem chamar a API de novo; a ferramenta, se for o caso, ainda roda de verdade — só a decisão do modelo é reaproveitada, não o efeito dela. Sem `cache` configurado, toda chamada vai pra API normalmente.
 
@@ -1116,6 +1117,15 @@ curl -s -X POST http://localhost:8080/agents/analista-vendas/run \
   -H "authorization: Bearer $TOKEN" -H "content-type: application/json" \
   -d '{"question": "Qual foi o total de vendas da região sul mês passado?"}'
 ```
+
+**Exemplo de `draft_pipeline`** — um agente com só essa ferramenta responde a um pedido criando o pipeline de verdade:
+
+```bash
+curl -s -X POST http://localhost:8080/agents/construtor-de-pipelines/run \
+  -H "authorization: Bearer $TOKEN" -H "content-type: application/json" \
+  -d '{"question": "Crie um pipeline que lê /dados/vendas.csv e grava numa tabela sqlite em /dados/saida.db"}'
+```
+O modelo decide sozinho o `NodeSpec` de cada lado (`{"connector": "csv", "config": {...}}` / `{"connector": "sqlite", "config": {...}}`) usando a lista viva de conectores — depois de aprovado (ou direto, se `auto`), o pipeline aparece normalmente na aba **Pipelines**, editável no Canvas como qualquer outro.
 
 ### 13.3 Visualização (gráfico via Python)
 
