@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod batch_buffer;
 pub mod cdc;
 pub mod checkpoint;
@@ -16,6 +17,7 @@ pub mod sql;
 pub mod traits;
 pub mod transform;
 
+pub use agent::{AgentSpec, AgentToolConfig, AgentToolKind, ApprovalMode};
 pub use cdc::{project_column, split_by_opcode, CdcSplit};
 pub use checkpoint::{CheckpointCursor, Opcode, OPCODE_COLUMN};
 pub use clean::{
@@ -25,10 +27,11 @@ pub use clean::{
 };
 pub use column_masking::{ColumnMasker, ColumnMaskingSpec};
 pub use dag::{
-    is_internal_ip, AlertsConfig, ChunkingSpec, DbtCommand, DbtConfig, DependencyMode,
-    EmailAlertChannel, EmbeddingModelSpec, EmbeddingSpec, EvalScoringMode, LlmCacheSpec,
-    LlmEvalCase, LlmModelConfig, LlmNodeSpec, NodeSpec, PagerDutyAlertChannel, PipelineDependency,
-    PipelineSpec, PromptRef, PythonTransformSpec, TransformSpec, WebhookAlertChannel,
+    is_internal_ip, validate_llm_security, AlertsConfig, ChunkingSpec, DbtCommand, DbtConfig,
+    DependencyMode, EmailAlertChannel, EmbeddingModelSpec, EmbeddingSpec, EvalScoringMode,
+    LlmCacheSpec, LlmEvalCase, LlmModelConfig, LlmNodeSpec, NodeSpec, PagerDutyAlertChannel,
+    PipelineDependency, PipelineSpec, PromptRef, PythonTransformSpec, TransformSpec,
+    VisualizationSpec, WebhookAlertChannel,
 };
 pub use error::{with_timeout, NexusError};
 pub use infra_registry::{

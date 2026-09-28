@@ -1,6 +1,6 @@
 # Guia de uso do NexusFlow — instalação a conector por conector
 
-Referência completa e prática: da instalação até a configuração exata de cada um dos 24 conectores originais, transformações (SQL, embeddings, dbt) e recursos de execução (preview, agendamento). **Os 22 conectores que migraram do enterprise na Fase 32 (2026-09-25 — SQL/DW, vetorial/busca, streaming, arquivo/storage, ver `LICENSING.md`) ainda não têm seção própria aqui** — funcionam (testados, `GET /connectors` já expõe o schema de config de cada um via JSON Schema), só falta escrever o texto de referência. Para o passo a passo mínimo de "primeiro pipeline", ver [`GETTING_STARTED.md`](./GETTING_STARTED.md); para arquitetura interna, [`ARCHITECTURE.md`](../ARCHITECTURE.md).
+Referência completa e prática: da instalação até a configuração exata de cada um dos 46 conectores OSS (os 24 originais + os 22 que migraram do enterprise na Fase 32, 2026-09-25 — SQL/DW, vetorial/busca, streaming, arquivo/storage, ver §4.10-4.13 e `LICENSING.md`), transformações (SQL, embeddings, dbt) e recursos de execução (preview, agendamento). Para o passo a passo mínimo de "primeiro pipeline", ver [`GETTING_STARTED.md`](./GETTING_STARTED.md); para arquitetura interna, [`ARCHITECTURE.md`](../ARCHITECTURE.md).
 
 ## Índice
 
@@ -16,6 +16,7 @@ Referência completa e prática: da instalação até a configuração exata de 
 10. [Observabilidade](#10-observabilidade)
 11. [Catálogo, orquestração, anomalia, masking e distribuição](#11-catálogo-orquestração-anomalia-masking-e-distribuição)
 12. [Blocos de transformação/limpeza sem código](#12-blocos-de-transformaçãolimpeza-sem-código)
+13. [Agente com tool-calling, chat RAG e visualização](#13-agente-com-tool-calling-chat-rag-e-visualização)
 
 ---
 
@@ -514,20 +515,44 @@ Chaves de `storage_options` por provedor:
 | `parquet` | ✅ | ✅ | data lake, `path` aceita pasta na source (local) |
 | `ailake` | ✅ | ✅ | data lake + vetorial (HNSW) |
 | `csv` | ✅ | ✅ | local ou S3/GCS/Azure, `path` aceita pasta na source (local) |
+| `bigquery` | ✅ | ✅ | ADBC, driver prebuilt (§4.10), upsert via `MERGE INTO` |
+| `snowflake` | ✅ | ✅ | ADBC, driver prebuilt (§4.10), upsert via `MERGE INTO` |
+| `mssql` | ✅ | ✅ | ADBC, também cobre Synapse (§4.10), upsert via `MERGE INTO` |
+| `redshift` | ✅ | ✅ | ADBC (reusa driver Postgres, §4.10), upsert via `MERGE INTO` |
+| `databricks` | ✅ | ✅ | ADBC, driver a cargo do operador (§4.10), upsert via `MERGE INTO` |
+| `oracle` | ✅ | ✅ | ODBC (§4.10), upsert via `MERGE INTO` |
+| `hana` | ✅ | ✅ | ODBC (§4.10), upsert via `UPSERT ... WITH PRIMARY KEY` |
+| `teradata` | ✅ | ✅ | ODBC (§4.10) |
+| `vertica` | ✅ | ✅ | ODBC (§4.10) |
+| `starburst` | ✅ | — | HTTP, protocolo Trino (§4.10) |
+| `elasticsearch` | — | ✅ | vetorial, sink apenas (§4.11) |
+| `weaviate` | — | ✅ | vetorial, sink apenas (§4.11) |
+| `vertex-vector-search` | — | ✅ | vetorial, sink apenas (§4.11) |
+| `azure-ai-search` | — | ✅ | vetorial, sink apenas (§4.11) |
+| `kinesis` | ✅ | ✅ | streaming, credencial AWS explícita (§4.12) |
+| `pulsar` | ✅ | ✅ | streaming (§4.12) |
+| `excel` | ✅ | ✅ | `.xlsx`, local ou S3/GCS/Azure (§4.13) |
+| `pdf-ocr` | ✅ | — | fora dos bundles padrão, shell-out tesseract (§4.13) |
+| `google-drive` | ✅ | ✅ | arquivo delimitado numa pasta (§4.13) |
+| `google-sheets` | ✅ | ✅ | (§4.13) |
+| `dropbox` | ✅ | ✅ | arquivo delimitado numa pasta (§4.13) |
+| `sharepoint` | ✅ | ✅ | SharePoint List, não biblioteca de arquivo (§4.13) |
 
 > `lancedb` não tem config listada acima por brevidade — segue o mesmo padrão vetorial de `pgvector`/`milvus`: `{"uri": "/dados/vectors", "table": "docs", "primary_key": "id", "embedding_column": "embedding", "dimension": 384, "timeout_seconds": 30}`, path local embarcado (sem servidor), criado automaticamente no primeiro write.
 
 ### 4.9 CDC nativo (micro-batch)
 
-Os 6 conectores abaixo operam em **micro-batch** (`max_batch_events` default 1000): cada run lê até esse limite de eventos, grava no sink e termina; o scheduler inicia o próximo batch.
+Os 8 conectores abaixo operam em **micro-batch** (`max_batch_events` default 1000, exceto onde indicado): cada run lê até esse limite de eventos, grava no sink e termina; o scheduler inicia o próximo batch.
 
-**Resume automático real** (ver `ARCHITECTURE.md §4.2`): `postgres-cdc` confirma cada LSN processado ao servidor (`update_applied_lsn`) — o próprio slot de replicação rastreia a posição, restart não reprocessa desde a criação do slot. `mysql-cdc`, `mongodb-cdc`, `deltalake-cdc`, `iceberg-cdc` e `ailake-cdc` persistem a posição final de cada micro-batch (`binlog_filename`+`binlog_position` / `resume_token` / `starting_version` / `starting_snapshot_id`) num checkpoint e o `nexus-server` reinjeta automaticamente na config do próximo run — não precisa mais digitar essas posições manualmente, os campos abaixo continuam existindo só como override manual (replay a partir de um ponto específico).
+**Resume automático real** (ver `ARCHITECTURE.md §4.2`): `postgres-cdc` confirma cada LSN processado ao servidor (`update_applied_lsn`) — o próprio slot de replicação rastreia a posição, restart não reprocessa desde a criação do slot. `mysql-cdc`, `mongodb-cdc`, `mssql-cdc`, `oracle-cdc`, `deltalake-cdc`, `iceberg-cdc` e `ailake-cdc` persistem a posição final de cada micro-batch (`binlog_filename`+`binlog_position` / `resume_token` / `start_lsn` / `start_scn` / `starting_version` / `starting_snapshot_id`) num checkpoint e o `nexus-server` reinjeta automaticamente na config do próximo run — não precisa mais digitar essas posições manualmente, os campos abaixo continuam existindo só como override manual (replay a partir de um ponto específico).
 
 | Conector | Nome no catálogo | Mecanismo | Resume por | Pré-requisitos |
 |---|---|---|---|---|
 | PostgreSQL | `postgres-cdc` | logical replication slot | automático (slot no servidor) | `CREATE PUBLICATION <publication_name> FOR TABLE <table>` |
 | MySQL | `mysql-cdc` | binlog (fake replica) | automático (checkpoint) — `binlog_filename`+`binlog_position` só pra override manual | Usuário com `REPLICATION SLAVE/CLIENT`; `binlog_row_image=FULL` recomendado |
 | MongoDB | `mongodb-cdc` | Change Streams | automático (checkpoint) — `resume_token` só pra override manual | Replica set (mesmo single-node) |
+| SQL Server | `mssql-cdc` | Change Data Capture (`sys.fn_cdc_get_all_changes_*`) | automático (checkpoint) — `start_lsn` (hex, ex. `0x0000002B000018D80003`) só pra override manual | `EXEC sys.sp_cdc_enable_table` na tabela; `capture_instance` (default `dbo_<table>`) só se não for o padrão |
+| Oracle | `oracle-cdc` | LogMiner (`V$LOGMNR_CONTENTS`) | automático (checkpoint) — `start_scn` só pra override manual | Redo log/supplemental logging habilitado; usuário com privilégio de LogMiner |
 | Delta Lake | `deltalake-cdc` | Delta change feed | automático (checkpoint) — `starting_version` só pra override manual | `delta.enableChangeDataFeed = true` na tabela |
 | Iceberg | `iceberg-cdc` | diff de snapshots | automático (checkpoint) — `starting_snapshot_id` só pra override manual | Catálogo SQLite + warehouse local; **insert-only** |
 | AI-Lake | `ailake-cdc` | diff de snapshots | automático (checkpoint) — `starting_snapshot_id` só pra override manual | Warehouse local HNSW; emite `I` para upserts também |
@@ -572,11 +597,273 @@ Configuração completa por conector:
 
 **`mongodb-cdc`**: `connection_string` (ou `hosts` + `username` + `password` + `auth_database`), `database`, `collection`, `fields: [{name, data_type: "int64"|"float64"|"boolean"|"utf8", nullable}]`, `resume_token` (opcional — mesma ressalva do MySQL acima, auto-persistido depois do primeiro run), `batch_size` (default 1000), `timeout_seconds` (default 30), `max_batch_events` (default 1000).
 
+**`mssql-cdc`**: `host`, `port` (default 1433), `database`, `username`, `password`, `table`, `capture_instance` (opcional — default `dbo_<table>`, a convenção do próprio SQL Server quando `sys.sp_cdc_enable_table` roda sem `@capture_instance` explícito e a tabela é do schema `dbo`; obrigatório informar se a tabela é de outro schema ou o capture instance tem nome customizado), `poll_interval_seconds` (default 5), `max_batch_events` (default 500), `timeout_seconds` (default 30), `start_lsn` (opcional — override manual, formato hex maiúsculo com `0x` na frente).
+
+**`oracle-cdc`**: `host`, `port` (default 1521), `service_name`, `username`, `password`, `table`, `poll_interval_seconds` (default 5), `max_batch_events` (default 1000), `timeout_seconds` (default 30), `start_scn` (opcional — override manual, um SCN do Oracle). `SEG_OWNER` do filtro LogMiner é derivado de `username` maiúsculo (schema do próprio usuário conectado) — v1 não suporta tabela em schema diferente do login.
+
 **`deltalake-cdc`**: `table_uri` (legado) ou `path` + `table_name`, `storage_options` (S3 opcional), `starting_version` (opcional), `timeout_seconds` (default 30).
 
 **`iceberg-cdc`**: `catalog_uri` (legado) ou `catalog_path`, `warehouse_location` (legado) ou `warehouse_path`, `namespace` (legado) ou `namespace_name`, `table` (legado) ou `table_name`, `storage_options` (S3 opcional), `starting_snapshot_id` (opcional), `timeout_seconds` (default 30). **Insert-only**: delete events são rejeitados no sink.
 
 **`ailake-cdc`**: `warehouse` (legado) ou `warehouse_path`, `namespace` (legado) ou `namespace_name`, `table` (legado) ou `table_name`, `primary_key`, `embedding_column`, `dimension`, `storage_options` (reservado), `starting_snapshot_id` (opcional), `timeout_seconds` (default 30).
+
+### 4.10 SQL / Data Warehouse (migraram do enterprise na Fase 32)
+
+`bigquery`/`snowflake`/`mssql` já vêm empacotados no Dockerfile público (drivers prebuilt via PyPI/`dbc install`, sem compilar nada — desde 2026-09-27, ver `ROADMAP.md` Fase 32). `oracle`/`hana`/`teradata`/`vertica` são via ODBC — driver do vendor fica a cargo do operador instalar (sem redistribuível de graça); `databricks` também depende do operador instalar o driver ADBC. Todos usam `ADBC_DRIVER_*_PATH`/DSN ODBC pra apontar pro driver.
+
+#### `bigquery` — source + sink
+```json
+{"connector": "bigquery", "config": {
+  "project_id": "meu-projeto-gcp",
+  "dataset_id": "analytics",
+  "table": "events",
+  "auth": {"method": "service_account_json", "credentials_json": "{...json da service account...}"},
+  "primary_key": "id",
+  "timeout_seconds": 60
+}}
+```
+Requer `ADBC_DRIVER_BIGQUERY_PATH` — já vem empacotado no Dockerfile público (fetch da wheel oficial do PyPI, sem compilar nada). Upsert real via `MERGE INTO`. `location` (região, ex. `US`/`EU`) opcional.
+
+#### `snowflake` — source + sink
+```json
+{"connector": "snowflake", "config": {
+  "account": "xy12345.us-east-1",
+  "warehouse": "COMPUTE_WH", "database": "ANALYTICS", "schema": "PUBLIC",
+  "table": "EVENTS",
+  "auth": {"method": "key_pair", "username": "SVC_USER", "private_key": "<base64 PKCS#8>"},
+  "primary_key": "ID",
+  "timeout_seconds": 60
+}}
+```
+Requer `ADBC_DRIVER_SNOWFLAKE_PATH` — já vem empacotado no Dockerfile público (fetch da wheel oficial do PyPI, sem compilar nada). Dois métodos de auth: `password` (`username`+`password`) ou `key_pair` (recomendado pra automação — `private_key` PKCS#8 DER base64, `private_key_password` opcional se a chave for criptografada). `role` opcional. Upsert via `MERGE INTO` (Snowflake não tem `ON CONFLICT`).
+
+#### `mssql` — source + sink (mesmo crate cobre Azure Synapse — mesmo protocolo TDS)
+```json
+{"connector": "mssql", "config": {
+  "host": "sqlserver.exemplo.com", "port": 1433,
+  "database": "analytics", "username": "user", "password": "pass",
+  "table": "events", "primary_key": "id",
+  "timeout_seconds": 30
+}}
+```
+Requer `ADBC_DRIVER_MSSQL_PATH` — já vem empacotado no Dockerfile público (`dbc install`, verificação de assinatura/checksum por padrão, sem compilar nada). Upsert via `MERGE INTO` (T-SQL real, GA também em Synapse dedicated SQL pool). Mesmo shape de config serve pro Synapse — só trocar `host` pro endpoint do workspace (`<workspace>.sql.azuresynapse.net`). CDC nativo via `mssql-cdc`, ver §4.9.
+
+#### `redshift` — source + sink
+```json
+{"connector": "redshift", "config": {
+  "host": "meu-cluster.abc123.us-east-1.redshift.amazonaws.com", "port": 5439,
+  "database": "analytics", "username": "user", "password": "pass",
+  "table": "events", "primary_key": "id",
+  "timeout_seconds": 30
+}}
+```
+Reaproveita o driver ADBC do Postgres (Redshift é wire-compatible, fork do Postgres 8.0) — sempre conecta com `sslmode=require`. Upsert via `MERGE INTO` (GA desde abril/2023, comando SQL real, não staging table simulada). v1 só suporta usuário/senha — credencial temporária via IAM (`GetClusterCredentials`) é fast-follow documentado, não implementado.
+
+#### `databricks` — source + sink
+```json
+{"connector": "databricks", "config": {
+  "host": "dbc-xxxx.cloud.databricks.com", "http_path": "/sql/1.0/warehouses/abc123",
+  "auth": {"method": "personal_access_token", "token": "dapi..."},
+  "catalog": "main", "schema": "default", "table": "events",
+  "primary_key": "id", "timeout_seconds": 60
+}}
+```
+Driver ADBC fica a cargo do operador instalar (sem redistribuível de graça). 3 métodos de auth: `personal_access_token` (mais simples), `oauth_u2m` (interativo via browser, não serve pra run agendado headless), `oauth_m2m` (`client_id`+`client_secret`, recomendado pra service account). Unity Catalog: `catalog`+`schema`. Upsert via `MERGE INTO`.
+
+#### `oracle` — source + sink
+```json
+{"connector": "oracle", "config": {
+  "host": "oracle.exemplo.com", "port": 1521,
+  "service_name": "ORCLPDB1", "username": "user", "password": "pass",
+  "table": "EVENTS", "primary_key": "ID",
+  "timeout_seconds": 30
+}}
+```
+Via ODBC + Oracle Instant Client (sem driver ADBC oficial redistribuível). `service_name`, não SID (v1 não suporta conexão estilo SID). `table` sem aspas — Oracle guarda identificador não citado em maiúsculas, a introspecção de schema busca por `UPPER(table_name)`; uma tabela criada com nome minúsculo citado não é encontrada. Upsert via `MERGE INTO`. CDC nativo via `oracle-cdc` (LogMiner), ver §4.9.
+
+#### `hana` — source + sink
+```json
+{"connector": "hana", "config": {
+  "host": "hana.exemplo.com", "port": 30115,
+  "username": "user", "password": "pass",
+  "table": "EVENTS", "primary_key": "ID",
+  "timeout_seconds": 30
+}}
+```
+Via ODBC + SAP HANA Client (`HDBODBC`) — sem driver ADBC/Rust puro pro HANA. `database` opcional (só instâncias multi-container/multitenant precisam). `table` sem aspas (mesma convenção maiúscula do Oracle). Upsert via `UPSERT ... WITH PRIMARY KEY`. Só SQL — BAPI/IDoc via RFC é bloqueio legal (SDK NetWeaver proprietário), fora de escopo.
+
+#### `teradata` — source + sink
+```json
+{"connector": "teradata", "config": {
+  "host": "teradata.exemplo.com", "port": 1025,
+  "username": "user", "password": "pass",
+  "table": "events", "primary_key": "id",
+  "timeout_seconds": 30
+}}
+```
+Via ODBC + Teradata Tools and Utilities (TTU) — sem driver ADBC/Rust puro. `database` opcional (Teradata não separa conceito de schema de database, `database` cobre os dois). `port` (default 1025) pode ser ignorado por algumas versões do driver, que resolvem o serviço via `DBCName` sozinhas — não confirmado contra instalação real nesta sessão.
+
+#### `vertica` — source + sink
+```json
+{"connector": "vertica", "config": {
+  "host": "vertica.exemplo.com", "port": 5433,
+  "database": "analytics", "username": "user", "password": "pass",
+  "table": "events", "primary_key": "id",
+  "timeout_seconds": 30
+}}
+```
+Via ODBC + driver oficial Vertica — sem driver ADBC/Rust puro. `database` obrigatório (diferente de HANA/Teradata, que têm default opcional).
+
+#### `starburst` — **source apenas** (protocolo Trino)
+```json
+{"connector": "starburst", "config": {
+  "host": "starburst.exemplo.com", "port": 443,
+  "user": "nexus", "password": "pass",
+  "catalog": "hive", "schema_name": "default", "table_name": "events",
+  "partition_column": "id", "timeout_seconds": 30
+}}
+```
+HTTP puro (`POST /v1/statement`, mesmo protocolo cliente do Trino — Starburst é fork comercial que manteve o protocolo idêntico) — sem driver JDBC/ODBC redistribuível (gated atrás do portal de cliente Starburst). `access_token` como alternativa a `password` (Bearer, tem precedência quando os dois estão setados). `catalog`/`schema_name`/`table_name` são 3 campos separados, não um dotted string — `validate_identifier` (`nexus-core`) rejeita `.`, então cada segmento é validado/citado individualmente (`"catalog"."schema"."table"`).
+
+### 4.11 Vetorial/busca — sinks adicionais (Fase 32)
+
+Os 4 abaixo se juntam aos 6 já existentes (§4.5) — mesma regra: **collection/index já precisa existir**, esses conectores só escrevem linha. Diferente dos 6 originais, ainda **não têm busca própria** via `POST /rag/query` (sink-only puro).
+
+#### `elasticsearch` — sink (Elasticsearch ou OpenSearch)
+```json
+{"connector": "elasticsearch", "config": {
+  "hosts": ["https://localhost:9200"],
+  "api_key": "...",
+  "index": "docs", "primary_key": "id",
+  "embedding_column": "embedding", "dimension": 384,
+  "timeout_seconds": 30
+}}
+```
+Índice precisa já ter o campo `dense_vector` (Elasticsearch) ou `knn_vector` (OpenSearch) mapeado com a dimensão certa. Auth por `api_key` OU `username`+`password` (funciona nos dois motores). Escrever vetor pré-computado num campo existente é tier Basic/grátis do Elastic — o que é pago é geração automática de embedding (ELSER/semantic search), não usado por este conector. OpenSearch não tem tier nenhum (Apache-2.0).
+
+#### `weaviate` — sink
+```json
+{"connector": "weaviate", "config": {
+  "host": "https://localhost:8080", "api_key": "...",
+  "class_name": "Document", "primary_key": "id",
+  "embedding_column": "embedding", "dimension": 384,
+  "timeout_seconds": 30
+}}
+```
+`primary_key` precisa ser UUID válido (Weaviate exige objeto ID como UUID — não validado pelo conector, responsabilidade de quem monta o pipeline). `batch_delete_size` (default 5000) limita quantos objetos um batch-delete apaga por vez (Weaviate tem teto próprio, ~10000 em versões recentes).
+
+#### `vertex-vector-search` — sink (Google Vertex AI)
+```json
+{"connector": "vertex-vector-search", "config": {
+  "project_id": "meu-projeto-gcp", "region": "us-central1",
+  "index_id": "1234567890",
+  "client_email": "svc@projeto.iam.gserviceaccount.com",
+  "private_key": "-----BEGIN PRIVATE KEY-----...",
+  "primary_key": "id", "embedding_column": "embedding", "dimension": 384,
+  "timeout_seconds": 30
+}}
+```
+Auth via JWT de service account (mesmo mecanismo do `ga4`, escopo `cloud-platform` em vez de `analytics.readonly`). Pré-requisito real, não simplificação v1: o índice precisa estar em modo `STREAM_UPDATE` e já implantado num `IndexEndpoint` (recurso separado, próprio passo de deploy) antes do `upsertDatapoints` funcionar.
+
+#### `azure-ai-search` — sink
+```json
+{"connector": "azure-ai-search", "config": {
+  "endpoint": "https://meu-servico.search.windows.net",
+  "api_key": "...", "index_name": "docs",
+  "primary_key": "id", "embedding_column": "embedding", "dimension": 384,
+  "timeout_seconds": 30
+}}
+```
+Auth por header `api-key` estático (admin key), sem OAuth — mais simples que o fluxo JWT do Vertex/GA4. `primary_key` precisa bater com o nome do campo-chave já declarado no schema do índice (documento é JSON puro, sem envelope `id`/`class` separado como o Weaviate tem).
+
+### 4.12 Streaming adicional (Fase 32)
+
+Mesma convenção de todo conector de fila deste repo: mensagem é payload opaco (assumido JSON), schema declarado explicitamente via `fields` — sem introspecção automática.
+
+#### `kinesis` — source + sink
+```json
+{"connector": "kinesis", "config": {
+  "stream_name": "eventos", "region": "us-east-1",
+  "access_key_id": "AKIA...", "secret_access_key": "...",
+  "fields": [{"name": "id", "type": "int64"}, {"name": "amount", "type": "float64"}],
+  "starting_position": "latest",
+  "timeout_seconds": 30
+}}
+```
+Credencial AWS explícita no config (não ambiente/IAM role — mesma convenção de todo conector cloud deste repo). `endpoint` opcional pra apontar pro LocalStack em vez do Kinesis real. `starting_position`: `trim_horizon` (desde o início do stream) ou `latest` (default). `stop_after_empty_polls` (default `0` = nunca parar) útil só em teste, pra terminar depois de N ciclos vazios. Sink: `partition_key_column` opcional — sem ele, hash do JSON da linha decide o shard.
+
+#### `pulsar` — source + sink
+```json
+{"connector": "pulsar", "config": {
+  "service_url": "pulsar://localhost:6650",
+  "topic": "eventos", "subscription_name": "nexusflow",
+  "fields": [{"name": "id", "type": "int64"}, {"name": "amount", "type": "float64"}],
+  "timeout_seconds": 30
+}}
+```
+`subscription_type`: `exclusive` (default), `shared`, `failover`, `key_shared`. `initial_position`: `earliest` (default — backfill/replay) ou `latest`. `auth_token` opcional. `idle_timeout_ms` (default 5000) — timeout normal de "sem mensagem nova ainda", não erro.
+
+### 4.13 Arquivo/storage em nuvem adicional (Fase 32)
+
+#### `excel` — source + sink (`.xlsx`, local ou S3/GCS/Azure)
+```json
+{"connector": "excel", "config": {
+  "storage": "local", "path": "/dados/vendas.xlsx",
+  "sheet_name": "Vendas", "has_header": true,
+  "primary_key": "id",
+  "timeout_seconds": 30
+}}
+```
+Mesmo toggle `storage`/`bucket`/`region`/`access_key_id`/`secret_access_key`/`endpoint` do `csv` (§4.7) pra local ou nuvem. `sheet_name` tem prioridade sobre `sheet_index` (default `0`, primeira aba). `fields` opcional — sem ele, a source infere tipo amostrando `schema_sample_rows` linhas (default 100); a lib de leitura (calamine) já sabe o tipo de cada célula, diferente do `csv` que exige schema explícito.
+
+#### `pdf-ocr` — **source apenas**, fora dos bundles padrão (nunca validado contra tesseract/PDF real)
+```json
+{"connector": "pdf-ocr", "config": {
+  "path": "/dados/documento.pdf",
+  "language": "por+eng", "dpi": 300
+}}
+```
+Shell-out `pdftoppm` (rasteriza cada página) + `tesseract` (OCR) — precisa dos binários instalados na imagem, incluindo `tesseract-ocr-<lang>` pro idioma usado. `path` aceita um arquivo único ou uma pasta (processa todo `.pdf` direto nela). `page_range` (ex. `"1-5,8,10-12"`) restringe páginas — vazio processa o documento inteiro. Palavras abaixo de `low_confidence_threshold` (0-100, default 60) contam na coluna de saída `low_confidence_word_count`.
+
+#### `google-drive` — source + sink (arquivo delimitado numa pasta do Drive)
+```json
+{"connector": "google-drive", "config": {
+  "access_token": "ya29...", "folder_id": "1a2b3c...",
+  "delimiter": ",", "has_header": true,
+  "timeout_seconds": 30
+}}
+```
+Mesmo contrato de arquivo delimitado do `csv` (4 tipos de coluna, `arrow-csv`). `access_token` é OAuth2 pré-obtido — sem refresh automático, responsabilidade de quem configura manter válido (fora de escopo v1). `folder_id` pode resolver pra vários arquivos — a source concatena todos, ordenados por nome.
+
+#### `google-sheets` — source + sink
+```json
+{"connector": "google-sheets", "config": {
+  "access_token": "ya29...", "spreadsheet_id": "1a2b3c...",
+  "range": "Sheet1!A1:Z1000", "has_header_row": true,
+  "timeout_seconds": 30
+}}
+```
+`range` em notação A1 pra source; pra sink, só o nome da aba (`"Sheet1"`) ou uma célula (`"Sheet1!A1"`) — Sheets escolhe a primeira linha vazia depois dos dados existentes. API v4 não pagina `values.get` — a resposta inteira vem de uma vez, `range` precisa caber em memória (mesma expectativa que o `csv` já tem pra leitura de arquivo inteiro).
+
+#### `dropbox` — source + sink (arquivo delimitado numa pasta)
+```json
+{"connector": "dropbox", "config": {
+  "access_token": "sl...", "folder_path": "/dados/eventos",
+  "delimiter": ",", "has_header": true,
+  "timeout_seconds": 30
+}}
+```
+Mesmo contrato de arquivo delimitado do `csv`. `folder_path` sempre absoluto (Dropbox não tem caminho relativo, raiz é o escopo do app).
+
+#### `sharepoint` — source + sink (SharePoint **List**, não biblioteca de documentos)
+```json
+{"connector": "sharepoint", "config": {
+  "access_token": "eyJ...", "site_id": "site123", "list_id": "list456",
+  "fields": ["Title", "Status", "Amount"],
+  "timeout_seconds": 30
+}}
+```
+Via Microsoft Graph (`/sites/{site_id}/lists/{list_id}/items`) — dado genuinamente tabular (List), diferente de uma biblioteca de documentos do SharePoint/OneDrive (isso é arquivo — usar `dropbox`/`google-drive` pra esse caso). `fields` são os nomes internos das colunas — vivem no sub-recurso `fields` de cada item na API do Graph, não no nível raiz do item.
 
 ---
 
@@ -794,3 +1081,62 @@ curl -s -X POST http://localhost:8080/pipelines/preview-clean-blocks \
 **Por baixo do capô**: cada bloco compila pra um fragmento SQL; a cadeia inteira vira uma única query com CTEs (`WITH step_0 AS (...), step_1 AS (...) SELECT * FROM step_N`) que roda no mesmo motor DataFusion do node `transform` — nenhum executor novo, sem impacto em checkpoint/lineage/streaming CDC. Ver `ARCHITECTURE.md §19` pro detalhe da decisão.
 
 **Uso pra vetorizar ou montar data warehouse**: `source → blocos → sink relacional` funciona direto num único pipeline. Já `source → blocos → embedding → sink vetorial` **não** funciona num único pipeline — o motor sempre roda `embedding` antes de qualquer transform (SQL ou blocos), não o contrário. Workaround: dois pipelines encadeados via `depends_on` (§11) — o primeiro agrega/limpa e grava numa tabela de staging, o segundo lê a staging, embedda e grava no banco vetorial.
+
+## 13. Agente com tool-calling, chat RAG e visualização
+
+Três recursos novos na aba lateral (fora do Canvas de DAG): **Agentes**, **RAG** e o node **Visualização** dentro do Canvas. Detalhe de arquitetura em `ARCHITECTURE.md §20`.
+
+### 13.1 Chat RAG
+
+Aba **RAG** — interface de chat sobre `POST /rag/query`, que já existia mas não tinha tela. Escolha um pipeline salvo (só aparecem os que têm um sink vetorial — LanceDB, Qdrant, Milvus, pgvector, Pinecone ou ChromaDB) e pergunte em linguagem natural; cada resposta mostra as fontes usadas (`context_keys`). Sem estado de conversa no servidor — cada pergunta é independente, igual o endpoint em si.
+
+### 13.2 Agentes
+
+Aba **Agentes** — diferente de um pipeline (que sempre roda fonte→transform→destino na mesma ordem), um agente **decide sozinho, a cada pergunta, qual ferramenta chamar e em que ordem**, olha o resultado, decide o próximo passo, até responder ou esgotar o limite de passos configurado.
+
+**Criar um agente**: nome, prompt de sistema (reaproveita o mesmo catálogo de prompts versionado do node `llm`), modelo (`Api` — qualquer endpoint OpenAI-compatible: OpenAI, Ollama, OpenRouter, Kimi/Moonshot etc. — ou `Anthropic` nativo), `max_steps` (obrigatório — guard-rail contra loop infinito, sem opção de "sem limite"), e a lista de ferramentas ligadas. Cada ferramenta tem duas opções:
+- **Automática**: o agente executa sozinho e continua o loop com o resultado.
+- **Precisa de aprovação**: o agente pausa exatamente ali, dispara um alerta (Slack/Teams/PagerDuty/Email/webhook — os mesmos 5 canais já configurados pra falha de pipeline) e espera um humano aprovar ou rejeitar via API/painel antes de continuar.
+
+**Ferramentas disponíveis**:
+1. `query_data` — roda uma consulta SQL (escolhida pelo modelo no momento da chamada) sobre um source configurado.
+2. `search_vectors` — busca semântica num pipeline salvo com sink vetorial (mesmo motor do RAG).
+3. `run_pipeline` — dispara um pipeline salvo, com opção de esperar o resultado.
+4. `call_webhook` — chamada HTTP genérica (mesma proteção contra SSRF de qualquer conector REST/webhook do produto).
+5. `generate_chart` — roda um script Python (ver §13.3) sobre um source e devolve um gráfico como imagem.
+6. `draft_pipeline` — **a única sem config estática nenhuma**: cria um pipeline novo inteiro a partir de um pedido em linguagem natural ("crie um pipeline que lê tal CSV e grava num sqlite"). O modelo manda o pipeline inteiro (fontes, destinos, transformação SQL opcional, agendamento opcional) numa chamada só; se algo estiver errado (campo inválido, conector inexistente), o erro de validação volta pro modelo tentar de novo — mesmo pipeline de validação que qualquer pipeline desenhado no Canvas passa, sem atalho. Recomendado configurar como **precisa de aprovação** — o pipeline criado pode ter agendamento e rodar sozinho depois.
+
+O **argumento de cada chamada** (a query SQL, o texto de busca, o corpo do webhook, o pipeline inteiro no caso do `draft_pipeline`) é decidido pelo modelo em tempo real, não fica fixo na configuração do agente — só a parte estrutural (qual source, qual pipeline, qual URL) é configurada de antemão.
+
+**Cache de resposta (opcional)**: campo `cache` no agente (`{"url": "redis://...", "ttl_seconds": 3600}`) — mesma config Redis que o node `llm` já usa. Uma pergunta repetida do zero (nova execução, mesma conversa inicial) reaproveita a decisão do modelo (texto ou chamada de ferramenta) sem gastar token nem chamar a API de novo; a ferramenta, se for o caso, ainda roda de verdade — só a decisão do modelo é reaproveitada, não o efeito dela. Sem `cache` configurado, toda chamada vai pra API normalmente.
+
+**Rodar e acompanhar**: `POST /agents/{id}/run` com a pergunta e, opcionalmente, um `model_override` — troca de modelo só pra essa execução, sem editar a config salva do agente (útil pra testar contra um provider diferente, ex. OpenRouter, sem mexer no agente de produção). O painel mostra a lista de execuções (status, custo, duração) e, ao abrir uma, o trace passo a passo — inclusive o passo `pending_approval`, com botões Aprovar/Rejeitar diretamente ali.
+
+```bash
+curl -s -X POST http://localhost:8080/agents/analista-vendas/run \
+  -H "authorization: Bearer $TOKEN" -H "content-type: application/json" \
+  -d '{"question": "Qual foi o total de vendas da região sul mês passado?"}'
+```
+
+**Exemplo de `draft_pipeline`** — um agente com só essa ferramenta responde a um pedido criando o pipeline de verdade:
+
+```bash
+curl -s -X POST http://localhost:8080/agents/construtor-de-pipelines/run \
+  -H "authorization: Bearer $TOKEN" -H "content-type: application/json" \
+  -d '{"question": "Crie um pipeline que lê /dados/vendas.csv e grava numa tabela sqlite em /dados/saida.db"}'
+```
+O modelo decide sozinho o `NodeSpec` de cada lado (`{"connector": "csv", "config": {...}}` / `{"connector": "sqlite", "config": {...}}`) usando a lista viva de conectores — depois de aprovado (ou direto, se `auto`), o pipeline aparece normalmente na aba **Pipelines**, editável no Canvas como qualquer outro.
+
+### 13.3 Visualização (gráfico via Python)
+
+Node **Visualização** no Canvas (paleta de Transformações), ou a ferramenta `generate_chart` do agente — os dois rodam o mesmo motor: um script Python isolado em subprocess (mesmo modelo de segurança do node `python`, §5), com uma função `visualize(df)` que recebe os dados já processados e devolve um gráfico. Bibliotecas disponíveis: **matplotlib**, **seaborn** e **plotly** — o harness detecta o tipo do retorno automaticamente (uma `Figure` com `.savefig()`, ou uma tupla `(bytes, content_type)` já pronta), sem precisar escolher a biblioteca na configuração.
+
+```python
+def visualize(df):
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots()
+    df.groupby("regiao")["valor"].sum().plot(kind="bar", ax=ax)
+    return fig
+```
+
+No Canvas, o node **exige um estágio de transformação antes dele** (SQL transform, blocos de limpeza ou Python) — um pipeline puramente linear ou CDC nunca materializa o resultado inteiro em memória de um jeito que dê pra plotar. O gráfico gerado por um run de pipeline fica disponível em `GET /pipelines/{id}/runs/{run_id}/visualization`; uma falha no script nunca derruba o run — só fica sem gráfico pra aquela execução, e o motivo vai pro log.

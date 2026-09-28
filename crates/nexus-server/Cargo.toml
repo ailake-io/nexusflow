@@ -23,6 +23,16 @@ dbt = ["tokio/process"]
 # still deserializes fine (it's just data), but a spec that sets it gets
 # a clear "not compiled in" error instead of silently doing nothing.
 python-transform = ["tokio/process", "dep:parquet"]
+# Agent tool `GenerateChart` (ROADMAP.md Fase 31) — sibling of
+# `python-transform` above, same isolation model (subprocess + temp-dir +
+# Parquet-in), independent feature because an agent's chart tool doesn't
+# require the batch pipeline's python transform stage to be compiled in,
+# or vice versa. Runtime image additionally needs matplotlib/seaborn/
+# plotly/kaleido pre-installed (see Dockerfile) — `visualize(df)` returns
+# either a matplotlib/seaborn `Figure` (duck-typed via `.savefig()`) or a
+# `(bytes, content_type)` tuple (Plotly/Bokeh/anything else), the harness
+# doesn't special-case any one library.
+python-viz = ["tokio/process", "dep:parquet"]
 # Embeddings pipeline stage: chunking + ONNX inference via nexus-ai. Off by
 # default because it pulls in ort, hf-hub, tokenizers and ONNX binaries, which
 # significantly increases build time and binary size when not needed.
@@ -349,6 +359,11 @@ git2 = { version = "0.21.0", default-features = false, features = ["vendored-lib
 similar = { version = "2.7.0", optional = true, features = ["text"] }
 
 [dev-dependencies]
+# Runs `telemetry::init()` once, unconditionally, before any test in this
+# binary executes (`#[ctor]` hooks into the binary's startup section, ahead
+# of the test harness) — see `tests::telemetry_installed_before_any_test`'s
+# doc comment for the exact bug this closes.
+ctor = "0.4.1"
 futures-util = "0.3.33"
 # `schemars` moved to real [dependencies] above (Marco L8) — connectors.rs's
 # test-only fixture connector (nexus_core::submit_enterprise_connector!)

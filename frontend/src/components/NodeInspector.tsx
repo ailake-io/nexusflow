@@ -21,6 +21,7 @@ import type {
   SelectColumnsMode,
   SortDirection,
   TransformNodeData,
+  VisualizationNodeData,
 } from '@/lib/dag'
 import { isConnectorNode, toCleanBlockSpec } from '@/lib/dag'
 import type { ConnectorDescriptor } from '@/lib/api'
@@ -38,6 +39,7 @@ import {
   Terminal,
   Upload,
   Wand2,
+  BarChart3,
 } from 'lucide-react'
 
 interface NodeInspectorProps {
@@ -55,6 +57,7 @@ interface NodeInspectorProps {
       | Partial<DbtNodeData>
       | Partial<EmbeddingNodeData>
       | Partial<PythonNodeData>
+      | Partial<VisualizationNodeData>
       | Partial<CleanBlockNodeData>,
   ) => void
 }
@@ -450,6 +453,55 @@ export function NodeInspector({ node, allNodes, connectors, onChange }: NodeInsp
               </Label>
               <Input
                 id="python-timeout"
+                type="number"
+                min={1}
+                value={data.timeoutSeconds || ''}
+                placeholder="60"
+                onChange={(e) =>
+                  onChange(node.id, { timeoutSeconds: Number(e.target.value) || 0 })
+                }
+                className="mt-1.5"
+              />
+            </div>
+          </div>
+        </div>
+      </aside>
+    )
+  }
+
+  if (data.kind === 'visualization') {
+    return (
+      <aside className="flex h-full w-full flex-col border-l bg-card">
+        <div className="border-b border-white/10 px-4 py-3">
+          <div className="flex items-center gap-2">
+            <BarChart3 className="h-4 w-4 text-violet-400" />
+            <h2 className="text-sm font-semibold text-foreground">{t('canvas.visualization')}</h2>
+          </div>
+          <p className="mt-0.5 text-[10px] text-muted-foreground">{t('canvas.visualizationDesc')}</p>
+        </div>
+        <div className="flex-1 overflow-auto p-4">
+          <div className="flex flex-col gap-4">
+            <div>
+              <Label htmlFor="visualization-script" className="text-xs font-medium">
+                {t('canvas.visualizationScript')}
+              </Label>
+              <textarea
+                id="visualization-script"
+                value={data.script}
+                onChange={(e) => onChange(node.id, { script: e.target.value })}
+                rows={16}
+                spellCheck={false}
+                placeholder={t('canvas.visualizationScriptPlaceholder')}
+                className="mt-1.5 w-full rounded-lg border border-input bg-transparent p-3 font-mono text-xs text-foreground outline-none focus:ring-2 focus:ring-ring"
+              />
+            </div>
+            <div>
+              <Label htmlFor="visualization-timeout" className="text-xs font-medium">
+                {t('canvas.pythonTimeout')}{' '}
+                <span className="text-muted-foreground">({t('common.optional')})</span>
+              </Label>
+              <Input
+                id="visualization-timeout"
                 type="number"
                 min={1}
                 value={data.timeoutSeconds || ''}

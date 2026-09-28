@@ -7,7 +7,7 @@
 # something has to set the env var before exec; a caller's own env wins if
 # already set (e.g. pointing at a newer driver build for testing).
 #
-# All four drivers ship in the Docker image (Dockerfile `adbc`/`clickhouse-adbc`
+# These 4 drivers ship in the Docker image (Dockerfile `adbc`/`clickhouse-adbc`
 # stages), the deb/rpm packages (package-deb.sh/package-rpm.sh), and the
 # AppImage (package-appimage.sh, via AppRun instead of this script) — the
 # export is harmless when the file is absent (e.g. an older package build)
@@ -16,6 +16,13 @@ export ADBC_DRIVER_POSTGRESQL_PATH="${ADBC_DRIVER_POSTGRESQL_PATH:-/usr/lib/nexu
 export ADBC_DRIVER_SQLITE_PATH="${ADBC_DRIVER_SQLITE_PATH:-/usr/lib/nexusflow/libadbc_driver_sqlite.so}"
 export ADBC_DRIVER_CLICKHOUSE_PATH="${ADBC_DRIVER_CLICKHOUSE_PATH:-/usr/lib/nexusflow/libadbc_clickhouse.so}"
 export ADBC_DRIVER_DUCKDB_PATH="${ADBC_DRIVER_DUCKDB_PATH:-/usr/lib/nexusflow/libadbc_driver_duckdb.so}"
+# bigquery/snowflake/mssql (ROADMAP.md Fase 32) ship in the Docker image
+# only for now (Dockerfile `adbc` stage) — deb/rpm/AppImage parity is a
+# separate, not-yet-done follow-up (package-*.sh still only stage the
+# original 4).
+export ADBC_DRIVER_BIGQUERY_PATH="${ADBC_DRIVER_BIGQUERY_PATH:-/usr/lib/nexusflow/libadbc_driver_bigquery.so}"
+export ADBC_DRIVER_SNOWFLAKE_PATH="${ADBC_DRIVER_SNOWFLAKE_PATH:-/usr/lib/nexusflow/libadbc_driver_snowflake.so}"
+export ADBC_DRIVER_MSSQL_PATH="${ADBC_DRIVER_MSSQL_PATH:-/usr/lib/nexusflow/libadbc_driver_mssql.so}"
 # Bundled, self-contained CPython (scripts/build-python-runtime.sh) — the
 # `python-transform`/`dbt` features shell out to a bare `python3`/`dbt` on
 # PATH (nexus-server's python_transform.rs/dbt.rs), so prepending this

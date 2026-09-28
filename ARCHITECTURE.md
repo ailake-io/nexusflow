@@ -532,3 +532,289 @@ valores corretos por linha, não só inferido da leitura do SQL gerado.
   monta um `PipelineSpec` descartável, `build_source` + as batches lidas
   viram input do `DataFusionTransform`, incluindo o mesmo scan de SSRF
   (`validate_security_with`) que o preview de conector já fazia.
+
+## 20. Agente com tool-calling (Fase 31)
+
+Diferente do node `llm` (§17, 1 chamada por linha, sem escolha) e do
+RAG (§17, fluxo fixo busca→responde): um agente é um LLM que decide
+sozinho, a cada passo, **qual ferramenta chamar e com que argumentos**,
+olha o resultado e decide o próximo passo, até responder ou esgotar
+`max_steps`. Estilo n8n AI Agent — decisão de produto e design completo
+em `ROADMAP.md` §31. Plano marco a marco original também em
+`docs/LLMOPS_IMPLEMENTATION_PLAN.md` (o agente reaproveita a
+infraestrutura de custo/cache/prompt daquele plano, não duplica).
+
+**Tool-calling em `nexus-ai` (`crates/nexus-ai/src/llm/`)**: `common.rs`
+define `ToolDef`/`ToolCall`/`ToolMessage`/`ToolTurn` — um turno de
+resposta carrega `Text(String)` ou `ToolCalls(Vec<ToolCall>)`, mais
+`tokens_prompt`/`tokens_completion` pro custo agregado (mesmo princípio
+de `pipeline_run_llm_stats_store.rs`, §17). Os dois protocolos divergem
+de verdade e cada client trata a própria forma:
+- `client.rs` (OpenAI-compatible): `ToolMessage::System` vira uma
+  mensagem `role: "system"` no array, `role: "tool"` carrega o
+  resultado de cada `tool_call_id`.
+- `anthropic_client.rs` (Messages API nativa): não existe `role:
+  "tool"` — `system` é campo top-level do request (extraído do
+  histórico via `find_map`), e o resultado de ferramenta vira um
+  content block `tool_result` dentro de uma mensagem `user`. Anthropic
+  também não aceita a mensagem `System` dentro do array de mensagens —
+  `to_anthropic_messages` filtra ela fora (`filter_map`).
+
+`pipeline.rs::load_llm_backend_for_model(model: &LlmModelConfig)`
+resolve `Api`/`Anthropic` pra fora de um `LlmModelConfig` solto (não só
+de dentro de um `LlmNodeSpec`) — necessário porque o modelo do agente
+pode vir de `AgentSpec.model` **ou** de um `model_override` por
+execução (decisão de produto: trocar de modelo pra testar, ex. contra
+OpenRouter, sem editar a config salva do agente).
+
+**`AgentSpec` (`nexus-core/src/agent.rs`)**: `{agent_id, name, prompt:
+PromptRef, model: LlmModelConfig, tools: Vec<AgentToolConfig>,
+max_steps: u32, schedule: Option<String>}` — reaproveita `PromptRef` e
+`LlmModelConfig` que o node `llm` já usa, zero tipo novo pra essas duas
+partes. `AgentToolConfig{tool: AgentToolKind, approval: ApprovalMode}`
+— aprovação humana é **por ferramenta dentro do mesmo agente**, não uma
+escolha única por agente. `AgentToolKind` deliberadamente não carrega
+argumento de chamada fixo (ex. não tem `sql: Option<String>` fixo) —
+cada variante carrega só a parte *estática* (qual source, qual
+pipeline, qual URL) e expõe `.json_schema()` com o argumento dinâmico
+que o modelo decide por chamada. Misturar as duas coisas no mesmo campo
+foi tentado e revertido cedo (ver histórico do commit `808b5c1`) —
+argumento por chamada pertence ao turno do modelo, não à config
+persistida do agente:
+
+```rust
+pub enum AgentToolKind {
+    QueryData { source: NodeSpec },
+    SearchVectors { pipeline_id: String, top_k: usize },
+    RunPipeline { pipeline_id: String, wait_for_result: bool },
+    CallWebhook { url: String, method: String },
+    GenerateChart { source: NodeSpec, script: String, timeout_seconds: Option<u64> },
+    DraftPipeline, // sem config estática — ver detalhe abaixo
+}
+```
+
+**Ferramentas (`nexus-server/src/agent_tools.rs`)** — cada uma um
+wrapper fino sobre código que já existe, sem motor de execução novo:
+`QueryData`/`GenerateChart` reaproveitam `connectors::build_source` +
+`read_preview_batches` (mesmo preview de conector/clean-block da Fase
+30) e `DataFusionTransform`; `SearchVectors` reaproveita literalmente as
+mesmas 6 funções `search_*` do RAG (§17); `RunPipeline` reaproveita
+`start_pipeline_run` (mesmo caminho de `POST /pipelines/{id}/run`);
+`CallWebhook` usa o mesmo `dns_guard::SsrfSafeResolver`/
+`validate_llm_security` que todo `rest`/`webhook`/alerta já passa
+(`validate_llm_security` foi promovida de `pub(crate)` pra `pub` em
+`nexus-core` só pra esse reuso cross-crate).
+
+`GenerateChart` é a 5ª ferramenta, fora do design original do
+`ROADMAP.md` — decisão de produto de ter visualização em dois lugares:
+ferramenta de agente **e** node `visualization` no Canvas
+(`PipelineSpec.visualization: Option<VisualizationSpec>`, mesma forma
+de `PythonTransformSpec`). Implementada como sibling de
+`python_transform.rs`: `python_viz.rs` isola em subprocess +
+`temp-dir`, harness novo (`python_viz_harness.py`) chama
+`visualize(df)` do script do usuário e faz duck-typing no retorno —
+`matplotlib.Figure`/`plotly.Figure` (`.savefig()`) ou uma tupla
+`(bytes, content_type)` já pronta, cobrindo matplotlib/seaborn/plotly
+sem acoplar numa lib só. Resultado do node fica em
+`pipeline_run_visualizations(run_id, image_bytes, content_type,
+created_at)`, servido por `GET
+/pipelines/{id}/runs/{run_id}/visualization` — o handler valida
+`content_type` contra uma allowlist (`image/png|jpeg|gif|webp`) antes
+de refletir no header HTTP; fora da allowlist cai pra
+`application/octet-stream` + `Content-Disposition: attachment` +
+`X-Content-Type-Options: nosniff` (achado de review de segurança:
+content-type controlado por script do usuário refletido direto no
+header de resposta é XSS armazenado). No `runner.rs`, o node roda como
+observador *depois* do estágio Python — nunca reescreve `output`, e uma
+falha no script só loga, nunca derruba o run.
+
+**`DraftPipeline` (2026-09-27) é a 6ª ferramenta** — cria um
+`PipelineSpec` novo a partir de um pedido em linguagem natural, a única
+sem config estática nenhuma (`AgentToolKind::DraftPipeline`, variante
+unitária): o modelo manda o `PipelineSpec` inteiro (`pipeline_id`,
+`sources`/`sinks`, `transform.sql` opcional, `schedule` opcional) como
+argumento *dinâmico* de uma vez só (decisão de produto: one-shot, não
+incremental — motivo abaixo). `agent_tools::draft_pipeline` desserializa
+esse JSON direto em `nexus_core::PipelineSpec` (os campos que o modelo
+não manda pegam o `#[serde(default)]` de cada um, igual qualquer outro
+`PipelineSpec` incompleto) e roda **exatamente** `PipelineSpec::validate()`
++ `validate_security_with(state.allow_internal_hosts)` — a mesma dupla
+que qualquer pipeline desenhado por humano passa em `POST /pipelines`,
+sem exceção nem caminho mais frouxo pro que vem do agente. Erro de
+shape ou de `validate()` vira o texto de resultado dessa ferramenta,
+que `agent_runner.rs` já alimenta de volta no histórico normalmente —
+reaproveita 100% o mesmo loop de retry-com-erro comprovado contra um
+Ollama real (2026-09-27) pro argumento SQL do `QueryData`.
+
+É a única ferramenta cujo `ToolDef.schema` não pode vir do
+`AgentToolKind::json_schema()` puro: precisa da lista viva de
+conectores (`ConnectorRegistry::all()`, I/O que `nexus-core` não tem)
+pra listar as opções válidas de `connector` como `enum` — sem isso o
+modelo chutaria nomes de conector, gastando um turno inteiro só pra
+descobrir que "postgresql" não existe (o nome real é "postgres"). Por
+isso `agent_runner.rs`, ao montar `Vec<ToolDef>`, faz um `match`
+especial: `DraftPipeline` chama `agent_tools::draft_pipeline_schema()`
+em vez do método puro; toda outra ferramenta usa `json_schema()`
+normalmente. `config_schema` de cada conector individual (o JSON Schema
+via `schemars` que `GET /connectors` já expõe) não entra no schema da
+ferramenta — ficaria grande demais pra caber no contexto de um modelo
+pequeno; o modelo tenta um `config` plausível e usa o erro de
+`validate()`/deserialização como guia, mesmo padrão de "erra, corrige"
+já validado no teste real.
+
+**Recomendação operacional**: `DraftPipeline` cria um `PipelineSpec`
+persistido, que pode ter `schedule` (roda sozinho depois) e apontar pra
+hosts/credenciais reais — mesma classe de risco que `RunPipeline`/
+`CallWebhook` já têm; a config de aprovação (`ApprovalMode`) é decisão
+de quem monta o agente, não travada no código, mas o operador deveria
+configurar essa ferramenta como `require_approval` por padrão. O passo
+pendente já mostra o `PipelineSpec` inteiro (JSON cru) no `args` do
+trace (`AgentsPanel.tsx`) — revisar antes de aprovar não precisa de UI
+nova nenhuma.
+
+**Loop (`agent_runner.rs`)**: monta o histórico como `Vec<ToolMessage>`,
+resolve o backend via `load_llm_backend_for_model`, chama
+`call_with_tools_cached` (ver cache abaixo). Em `ToolTurn::ToolCalls`, verifica `ApprovalMode` da
+ferramenta pedida — `Auto` executa via `agent_tools.rs` e injeta o
+resultado de volta no histórico, continuando o loop; `RequireApproval`
+grava o passo como `pending_approval` **sem executar nada ainda**,
+dispara `AlertNotifier::notify_agent_approval_needed` (5 canais, mesmo
+fan-out de `notify_pipeline_run`) e retorna — loop suspenso. Resumir
+(`POST /agents/runs/{run_id}/steps/{step_id}/approve`) reconstrói o
+histórico a partir dos `agent_steps` já persistidos
+(`rebuild_history_prefix`), executa a ferramenta aprovada e continua do
+ponto exato — mesmo espírito de retomar do cursor exato que o CDC já
+faz (§5), aplicado a um loop de agente em vez de um WAL/binlog.
+`model_override`, quando usado, é persistido junto do run
+(`agent_runs.model_override_json`) pra retomar com o mesmo modelo. Loop
+pára em `max_steps` (guard-rail contra loop infinito) ou em resposta
+final de texto.
+
+**Cache de resposta (2026-09-27)**: `AgentSpec.cache: Option<LlmCacheSpec>`
+reaproveita literalmente o mesmo tipo/Redis/`ttl_seconds` que o node `llm`
+já usa (§17) — `runner.rs::connect_llm_cache` só deixou de receber
+`&LlmNodeSpec` pra receber `Option<&LlmCacheSpec>` solto, pra servir os
+dois chamadores sem duplicar o wrapper sobre `RedisKvClient`. A chave,
+porém, é diferente da do node `llm`: `cache_key` (§17) hasheia só
+`model+prompt+max_tokens+temperature` porque cada chamada do node é
+isolada (1 linha, sem histórico); um turno de agente depende da
+**conversa inteira até ali** — `nexus_ai::llm::tool_turn_cache_key` hasheia
+model + cada mensagem do histórico (`ToolMessage::System`/`User`/
+`AssistantToolCalls`/`ToolResult`, cada uma com seu próprio prefixo pra
+não colidir tipos diferentes de mensagem com o mesmo texto) + o catálogo
+de ferramentas disponíveis (nome+schema) + `max_tokens`/`temperature`. Um
+hit (`call_with_tools_cached`, `nexus-ai/src/llm/pipeline.rs`) devolve o
+`LlmTurn` (`Text` ou `ToolCalls`) cacheado com tokens zerados — mesma
+convenção do node `llm` — mas só o **turno do modelo** é cacheado, nunca
+a execução: um `ToolCalls` reidratado do cache ainda passa por
+`agent_tools::execute_tool` normalmente. Na prática só acerta cache
+quando a mesma pergunta é feita de novo desde um run novo (o modelo
+raramente repete o histórico inteiro no meio de um loop já em
+andamento) — mesmo trade-off que `pipeline_run_llm_stats_store` aceita
+pro node batch.
+
+**Persistência (dual-dialeto Sqlite/Postgres, mesmo padrão de
+`pipeline_run_llm_stats_store.rs`)**: `agent_store.rs` (CRUD de
+`AgentSpec`, criptografado em repouso via `SecretCipher` — um
+`AgentToolKind::QueryData`/`CallWebhook` pode embutir config de
+conector com segredo, mesma regra do `PipelineSpec`, CLAUDE.md §5) e
+`agent_run_store.rs` — `agent_runs(id, agent_id, question,
+model_override_json, status, started_at, finished_at, total_tokens,
+total_cost)` e `agent_steps(id, run_id, step_number, kind, tool, args,
+result, approval_status, approved_by, approved_at)`. Uma única tabela
+de steps serve de trace passo-a-passo **e** de fonte de métrica
+agregada, sem duplicar dado em dois lugares.
+
+**API (`agent.rs`)**: `POST/GET/DELETE /agents` (papel `Write`/`Read`),
+`GET /agents/{id}/spec` (`Write`, spec completa — a listagem normal usa
+`AgentSummary` redigida), `POST /agents/{id}/run` (`Execute`, valida
+`model_override` via `validate_llm_security` — nunca aceita um host
+interno sem `NEXUS_ALLOW_INTERNAL_HOSTS`), `GET /agents/{id}/runs` /
+`GET /agents/{id}/runs/{run_id}` (`Read`), `POST
+/agents/runs/{run_id}/steps/{step_id}/approve` / `/reject` (`Write` —
+mesmo tier de quem edita o Canvas).
+
+**Frontend**: `AgentsPanel.tsx` (config + trigger de run + trace com
+aprovar/rejeitar inline, polling de 2s enquanto `running`/
+`waiting_approval`) e `RagChatPanel.tsx` (gap fechado no mesmo lote —
+`POST /rag/query`, §17, não tinha nenhuma tela) são abas próprias, fora
+do Canvas de DAG — ferramenta de agente não tem ordem fixa, quem decide
+a ordem é o modelo em runtime. O node `visualization`, ao contrário,
+mora no Canvas (`dag.ts`/`DagCanvas.tsx`/`dag-nodes.tsx`/
+`NodeInspector.tsx`) porque `PipelineSpec.visualization` é parte de um
+DAG normal — branch off do upstream sem virar o novo upstream (é
+observador read-only, nunca se coloca entre um estágio e os sinks).
+
+**Bug real encontrado e corrigido durante esta fase, sem relação direta
+com o agente**: `metrics_reflect_real_batches_written_by_the_engine`
+(teste de `nexus_core::pipeline::metrics`) era flaky só em suíte
+completa, nunca isolado. Causa: os contadores OTel são
+`LazyLock<Counter>` que se ligam **permanentemente** ao meter provider
+global no primeiro acesso — se qualquer teste anterior rodasse um
+pipeline antes de `telemetry::init()` instalar o provider real, os
+contadores ficavam mudos (no-op) pro resto do processo de teste. Fix:
+`#[ctor::ctor]` em `nexus-server/src/lib.rs` (dentro do módulo de
+testes) garante que `telemetry::init()` roda antes de qualquer teste,
+não só antes do primeiro que "por acaso" precisa dele.
+
+## 21. Aba Infra — gerador de Terraform por módulos curados (enterprise)
+
+Construído 2026-09-10/13, sem seção própria em nenhuma doc até esta
+auditoria (2026-09-27) — só existia espalhado em comentário de código
+(`infra.rs`/`infra_registry.rs`) e uma linha em `LICENSING.md`. **Não é**
+o Canvas de recurso-AWS-por-recurso com `terraform plan` real que
+`ROADMAP.md` Fase 25 planejou — aquele plano nunca foi construído; o que
+existe é um desenho diferente, decidido em paralelo
+(`docs/ENTERPRISE_LICENSING.md`, 2026-09-10): arrastar **módulos
+Terraform curados e prontos** (não recursos individuais) num canvas,
+conectar as dependências entre eles, e baixar os `.tf` gerados — sem
+`plan`/`apply`, só codegen. Ver `ROADMAP.md` Fase 25 pro registro de por
+que o plano original não é isso.
+
+**Mecanismo de plugin — reaproveita literalmente o padrão de conector**
+(`ARCHITECTURE.md §3`): o catálogo de módulos e o `generate()` real
+vivem só no crate privado `nexus-infra-terraform`
+(`nexus-connectors-enterprise` repo) — `nexus-server` nunca depende dele
+direto. Dois tipos `inventory` novos em `nexus_core::infra_registry`,
+paralelos a `ConnectorDescriptor`/`SourceBuilder`:
+- `InfraModuleDescriptor` — um por módulo curado (`id`, `name`,
+  `category`, `provider`, `config_schema` via `schemars::schema_for!`
+  — mesmo truque de fn-pointer que `ConnectorDescriptor` já usa, então
+  o frontend reaproveita o `SchemaForm.tsx` genérico sem nenhum form
+  bespoke por módulo), registrado via `submit_infra_module!`.
+- `InfraGenerator` — exatamente 0 ou 1 entrada, expõe a função real
+  `generate(&InfraGraph) -> Result<GeneratedFiles, NexusError>`,
+  registrado via `submit_infra_generator!`.
+
+`InfraGraph` é grafo genérico nó+aresta (`InfraNode{id, module, config}`
++ `InfraEdge{from, to, output, input}`, mais um campo `provider` livre
+pra settings tipo região) — não o par fixo source/sink de
+`PipelineSpec`, porque dependência entre módulos de infra não tem forma
+fixa. Uma aresta declara que o `input` de um módulo referencia o
+`output` de outro, virando `module.<from>.<output>` na HCL gerada em vez
+de valor literal.
+
+**Dois portões de license, mesmo padrão de todo conector enterprise real**
+(`connectors.rs`): 1) `check_connector_license("infra-terraform-generator",
+...)` — a license instalada cobre o slug?; 2) `InfraGenerator::get()` —
+o binário sequer tem o crate `nexus-infra-terraform` linkado? Os dois
+handlers (`GET /infra/modules` papel `Read`, `POST /infra/generate`
+papel `Execute`) tratam "sem license" e "binário sem o crate" do mesmo
+jeito pro cliente (lista vazia / erro "feature not available") — a
+distinção entre os dois só importa pra quem decide o que exibir no
+futuro, não muda o resultado hoje.
+
+**Gate de license é da aba inteira, não por módulo** (diferente da Store
+de conectores, que é por-conector) — decisão de 2026-09-10: um produto
+só, uma compra, libera tudo. Frontend (`InfraCanvas.tsx`) reaproveita o
+mesmo formulário de checkout que `Store.tsx` já validou de ponta a ponta
+(Excel) em vez de inventar um segundo fluxo de compra.
+
+**Nunca roda `terraform` de verdade** — só gera texto HCL em memória
+(`GeneratedFiles.files: BTreeMap<String, String>`, ordenado, servido pro
+frontend baixar); não existe nenhum caminho de código pra `init`/
+`plan`/`apply`. Isso é mais conservador que o que a Fase 25 original
+cogitava (que incluía `terraform plan` real contra credencial AWS
+read-only) — trade-off aceito na decisão de 2026-09-10: menos
+capacidade, zero superfície nova de execução de processo externo/
+credencial cloud no servidor.

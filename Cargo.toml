@@ -25,6 +25,9 @@ dbt = ["nexus-server/dbt"]
 # Forwards to nexus-server's own "python-transform" feature — same
 # rationale as `dbt` above.
 python-transform = ["nexus-server/python-transform"]
+# Forwards to nexus-server's own "python-viz" feature (ROADMAP.md Fase 31)
+# — same rationale as `python-transform` above, independent opt-in.
+python-viz = ["nexus-server/python-viz"]
 # Forwards to nexus-server's "embed-ui" feature (Marco 11, CLAUDE.md §7) —
 # single-binary deploy: `npm run build` in frontend/ then
 # `cargo build --release -p nexusflow --features embed-ui`.
@@ -33,6 +36,14 @@ embed-ui = ["nexus-server/embed-ui"]
 embeddings = ["nexus-server/embeddings"]
 # Embedding pipeline stage backed by an external HTTP API.
 embeddings-api = ["nexus-server/embeddings-api"]
+# LLMOps: node `llm`, RAG (`POST /rag/query`), and the agent (Fase 31) —
+# forwards to nexus-server's own "llm" feature, same rationale as every
+# other single-feature forward above. Already reachable transitively via
+# `connectors-all` (nexus-server's own bundle includes it), but had no
+# standalone forward here — every other nexus-server feature does, this
+# one was just missed, real gap for anyone wanting `cargo build -p
+# nexusflow --features llm,...` without pulling in all 46 connectors too.
+llm = ["nexus-server/llm"]
 # Git-backed version history for Canvas pipelines/prompts (see
 # nexus-server/Cargo.toml's own doc comment on this feature).
 version-history = ["nexus-server/version-history"]

@@ -65,7 +65,7 @@ export function useRunProgress(): UseRunProgressResult {
       setError(t('execution.errors.connectionTimeout'))
       setStatus('failed')
     }, WS_INACTIVITY_TIMEOUT_MS)
-  }, [])
+  }, [t])
 
   const clearInactivityTimer = useCallback(() => {
     if (inactivityTimerRef.current) {

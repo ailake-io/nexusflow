@@ -40,6 +40,15 @@ impl ApiError {
         }
     }
 
+    /// `pub(crate)` so a non-HTTP caller (`agent_tools.rs`, which reuses
+    /// `read_preview_batches`/`batches_to_preview_json` outside any Axum
+    /// handler) can fold this into its own error type instead of the
+    /// `IntoResponse` body — the status code doesn't mean anything outside
+    /// an HTTP response, only the message does.
+    pub(crate) fn message(&self) -> &str {
+        &self.message
+    }
+
     pub fn conflict(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::CONFLICT,

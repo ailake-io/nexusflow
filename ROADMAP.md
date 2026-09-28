@@ -91,7 +91,7 @@ Consolidado dos itens que ficaram faltando/incompletos ao longo das fases abaixo
 
 ## Fase 11 — Distribuição multiplataforma ✅ (Windows/macOS validados em CI real, não numa máquina física de usuário)
 - [x] Single binary com frontend embutido (`rust-embed`, feature `embed-ui`)
-- [x] Empacotamento: AppImage/deb/rpm (Linux, todos testados, e desde a rodada de release CI abaixo buildados automaticamente em CI) — `.msi` (Windows) roda em CI (`build-windows-installer.yml`, dispara sozinho após cada release desde 2026-09-08, ver item 5 das Pendências ativas) e já foi instalado numa máquina Windows real (2026-09-06); Homebrew/dmg (macOS) roda em CI real desde 2026-09-06 (`build-macos-installer.yml`, `macos-latest`, 63m54s, `connectors-all` + todo conector enterprise) e dispara sozinho após cada release; nenhum dos dois teve um humano de fato instalando numa máquina física própria ainda. winget (Windows) continua sem spec/CI nenhum.
+- [x] Empacotamento: AppImage/deb/rpm (Linux, todos testados, e desde a rodada de release CI abaixo buildados automaticamente em CI) — `.msi` (Windows) roda em CI (`build-windows-installer.yml`, dispara sozinho após cada release desde 2026-09-08, ver item 5 das Pendências ativas) e já foi instalado numa máquina Windows real (2026-09-06); Homebrew/dmg (macOS) roda em CI real desde 2026-09-06 (`build-macos-installer.yml`, `macos-latest`, 63m54s, `connectors-all` + todo conector enterprise) e dispara sozinho após cada release; nenhum dos dois teve um humano de fato instalando numa máquina física própria ainda. winget (Windows): manifesto submetido 2026-09-18, [PR #436825](https://github.com/microsoft/winget-pkgs/pull/436825) travado (CLA da Microsoft não assinada + erro de validação pós-instalação, auditado 2026-09-27 — ver item 5 das Pendências ativas). Mitigação adicionada mesmo sem causa confirmada: `build-windows-installer.yml` ganhou assinatura Authenticode via SignPath (free pra OSS), gated no secret `SIGNPATH_API_TOKEN` — sem conta configurada em signpath.io ainda, job continua produzindo `.msi` sem assinar até isso ser feito.
 - [x] Imagem Docker com perfil `cuda` selecionável via `--build-arg RUNTIME_IMAGE` (base image + `--gpus all` prontos; aceleração real pendente da Fase 5's `cuda` feature), publicada no **Docker Hub** (`thiagolange/nexusflow`) a cada push pra `main` — GHCR foi descontinuado em 2026-09-08 (ver item 8 das Pendências ativas). Build amd64 com `FEATURES=embed-ui,connectors-all`.
 - [x] Script de instalação `curl | sh` (`scripts/install.sh`) + `.github/workflows/release.yml`
 
@@ -181,18 +181,14 @@ licenciamento e `docs/ENTERPRISE_CONNECTORS.md` pro catálogo/priorização.
   `csv`, seleção de aba/sheet) — prioridade tier-2 em
   `docs/ENTERPRISE_CONNECTORS.md` (baixa barreira técnica, alto volume em
   PME). Repo privado `nexus-connectors-enterprise` criado e ativo — bem
-  além do escopo original de "primeiro conector": **37 crates** hoje
-  (contagem real via `Cargo.toml` do repo, 2026-09-05 — número sobe com
-  frequência, ver `docs/ENTERPRISE_CONNECTORS.md` pra lista viva por
-  categoria em vez de um total fixo aqui) — Excel, BigQuery, Snowflake,
-  Redshift, Synapse, MSSQL/MSSQL CDC, Oracle/Oracle LogMiner CDC, SAP
-  HANA, Teradata, Vertica, Salesforce, HubSpot, Zendesk, ServiceNow,
-  Dynamics 365, NetSuite, Workday, SharePoint, Dropbox, Google
-  Sheets/Drive, Shopify, Stripe, Meta/Google/LinkedIn/TikTok/X Ads, GA4,
-  YouTube Analytics, Kinesis, Pulsar, Starburst (Trino), Databricks,
-  Elasticsearch/OpenSearch, Weaviate, Azure AI Search, Vertex AI Vector
-  Search — ver `docs/DOCKER_LOCAL_TESTING.md` desse repo pra lista
-  completa com campos/exemplo de config por conector.
+  além do escopo original de "primeiro conector": chegou a **37 crates**
+  (2026-09-05), depois encolheu de novo — a Fase 32 (2026-09-25) migrou
+  22 pro OSS público, restando **16 crates de conector** (Salesforce,
+  HubSpot, Zendesk, ServiceNow, Dynamics 365, NetSuite, Workday, Shopify,
+  GA4, Google/Meta/LinkedIn/TikTok/X Ads, YouTube Analytics, Stripe) +
+  `nexus-infra-terraform` (não é conector de dado, ver `ARCHITECTURE.md
+  §21`) — ver `docs/ENTERPRISE_CONNECTORS.md` pra lista viva por
+  categoria em vez de um total fixo aqui.
 - [x] **Bloco 5 — Gate de capabilities não-conector (LLMOps Marco L8)**:
   `"llm-lineage-tracking"` (`GET /lineage/generation/{id}`) e
   `"reactive-rag-cdc"` (`*-cdc` source + `embedding` no passthrough)
@@ -341,7 +337,24 @@ Motivada por uma análise de lacunas nesta sessão: conectores de streaming exis
 
 ---
 
-## Fase 25 — Aba Infra: Canvas visual pra Terraform (AWS) — planejado, não implementado
+## Fase 25 — Aba Infra: Canvas visual pra Terraform (AWS) — superado por um desenho diferente, ver ARCHITECTURE.md §21
+
+> **Estado real (corrigido nesta auditoria, 2026-09-27)**: este plano
+> nunca foi construído do jeito descrito abaixo. Em 2026-09-10/13,
+> paralelo a este registro, foi decidido e implementado um desenho
+> **diferente** pra "aba Infra": módulos Terraform **curados**
+> (arrastar módulo pronto, não recurso AWS avulso), gate de license
+> único pra aba inteira (não por recurso), sem `terraform plan`/`apply`
+> nenhum — só gera `.tf` (`docs/ENTERPRISE_LICENSING.md`, decisão
+> 2026-09-10). Ficou **sem nenhuma doc própria** até esta auditoria
+> encontrar a divergência entre o que este plano descrevia e o que
+> `crates/nexus-server/src/infra.rs`/`infra_registry.rs`/
+> `InfraCanvas.tsx` realmente implementam — só existia em comentário de
+> código e uma linha em `LICENSING.md`. Ver `ARCHITECTURE.md §21` pro
+> desenho real. O plano original abaixo (recurso-por-recurso, OSS,
+> `terraform plan` com credencial AWS real) **não foi implementado e
+> não há decisão de fazê-lo** — mantido só como registro histórico do
+> levantamento original, não como trabalho pendente.
 
 Usuário pediu uma aba nova: desenhar infraestrutura AWS num Canvas
 visual (caixinha por recurso, clicar traz a config necessária) e
@@ -477,7 +490,7 @@ Escopo fechado: distribuir a **execução** de pipelines diferentes entre um poo
 
 **Critério de pronto:** N runs enfileirados, cada um reivindicado por exatamente um worker, nenhum duplo-processamento; SQLite recusa/ignora modo worker corretamente. **Atingido.**
 
-## Fase 30 — Blocos de transformação/limpeza sem código (no-code) — backend e frontend implementados, docs pendentes
+## Fase 30 — Blocos de transformação/limpeza sem código (no-code) ✅
 
 Pedido de 2026-09-24: caixas de transformação/limpeza configuráveis (sem
 escrever código), arrastáveis igual conector, encadeáveis entre 1 fonte e
@@ -800,7 +813,29 @@ editáveis; SQL gerado testado unitariamente pros 12 blocos.
 
 ---
 
-## Fase 31 — Agente de IA com tool-calling (estilo n8n AI Agent) — planejado, não implementado
+## Fase 31 — Agente de IA com tool-calling (estilo n8n AI Agent) — implementado
+
+> **Estado real (2026-09-26)**: implementado ponta a ponta em
+> `feature/agent-tool-calling-spike` — `nexus-ai` (tool-calling nos 2
+> backends), `AgentSpec`/loop/pausa-retomada, 5 ferramentas (a 4ª virou
+> `GenerateChart`, ver abaixo), stores + endpoints, alertas de
+> aprovação, e frontend (`AgentsPanel.tsx`/`RagChatPanel.tsx` + node de
+> Visualização no Canvas). Diferença do design original: `AgentToolKind`
+> não carrega argumento fixo por ferramenta (`sql`/`body_template` etc.)
+> — cada ferramenta expõe um `json_schema()` dinâmico e o próprio modelo
+> escolhe o argumento por chamada, não a config salva do agente. Também
+> saiu do escopo original: RAG chat ganhou tela própria no mesmo lote
+> (gap que não tinha nada no frontend), e uma 5ª ferramenta
+> `GenerateChart` (Python/matplotlib-seaborn-plotly, mesmo isolamento de
+> subprocess do `python` transform) que também existe como node
+> `visualization` no `PipelineSpec`/Canvas. **Não verificado ainda**:
+> teste de ponta a ponta contra um provider OpenRouter real (chave do
+> usuário) — planejado pro usuário rodar por conta própria.
+>
+> **Não fica pago** (mesma decisão da Fase 32 de virar tudo infra-de-dado
+> OSS): agente inteiro é OSS. O resto da seção abaixo é o design
+> original, mantido como contexto — ver checklist no fim pro que mudou
+> de fato.
 
 Pedido de 2026-09-25: "criar um agente usando os dados processados do
 NexusFlow e fazer esse agente fazer diversas coisas tipo como é no n8n
@@ -992,27 +1027,44 @@ lista de desejos:
 
 ### Checklist
 
-- [ ] `nexus-ai`: `tools` no request + parsing de `tool_calls`/`tool_use`
+- [x] `nexus-ai`: `tools` no request + parsing de `tool_calls`/`tool_use`
       pros 2 backends, histórico multi-turno — testado contra mock HTTP
       (wiremock) simulando 1 tool-call + 1 resposta final.
-- [ ] `AgentSpec` + `AgentToolKind`/`ApprovalMode` (`nexus-core`)
-- [ ] `agent_runner.rs`: loop completo, `max_steps`, pausa/retomada em
+- [x] `AgentSpec` + `AgentToolKind`/`ApprovalMode` (`nexus-core`) — args
+      por ferramenta viraram dinâmicos (`json_schema()`), não fixos na
+      config salva (mudança de design vs. rascunho original).
+- [x] `agent_runner.rs`: loop completo, `max_steps`, pausa/retomada em
       `RequireApproval` — teste de integração com ferramenta mock
       (sem chamar LLM real) validando pausa exata e retomada do ponto
       certo.
-- [ ] 4 ferramentas v1 (`QueryData`, `SearchVectors`, `RunPipeline`,
-      `CallWebhook`) — cada uma testada isoladamente contra o que já
-      reaproveita (CSV real, vetor real, pipeline real, mock HTTP).
-- [ ] `agent_runs`/`agent_steps` stores (dual-dialeto) + endpoints CRUD/
+- [x] 5 ferramentas v1 (`QueryData`, `SearchVectors`, `RunPipeline`,
+      `CallWebhook`, `GenerateChart` — a 5ª não estava no design
+      original) — cada uma testada isoladamente contra o que já
+      reaproveita (CSV/sqlite-ADBC real, vetor real, pipeline real, mock
+      HTTP, subprocess Python real).
+- [x] `agent_runs`/`agent_steps` stores (dual-dialeto) + endpoints CRUD/
       run/approve/reject.
-- [ ] `AlertNotifier::notify_agent_approval_needed` (5 canais).
-- [ ] Reaproveitar eval (`LlmEvalCase`) e custo/tokens
-      (`pipeline_run_llm_stats_store`-like) pro agente.
-- [ ] Frontend: aba Agentes, config de ferramentas com toggle de
+- [x] `AlertNotifier::notify_agent_approval_needed` (5 canais).
+- [ ] Reaproveitar eval (`LlmEvalCase`) pro agente — **fora do escopo
+      deste lote**, não pedido ainda.
+- [x] Frontend: `AgentsPanel.tsx` (config de ferramentas com toggle de
       aprovação, painel de execução com trace + aprovar/rejeitar
-      inline.
-- [ ] Docs: `USER_GUIDE.md` (seção nova), `ARCHITECTURE.md` (loop de
-      tool-calling, decisão de schema das 2 tabelas novas).
+      inline), `RagChatPanel.tsx` (gap que não tinha tela nenhuma), node
+      `visualization` no Canvas (`DagCanvas.tsx`/`dag-nodes.tsx`/
+      `NodeInspector.tsx`).
+- [x] Docs: `USER_GUIDE.md` (seção nova), `ARCHITECTURE.md` (loop de
+      tool-calling, schema das tabelas novas).
+- [ ] Teste real contra OpenRouter (chave do usuário) — usuário roda por
+      conta própria, não fabricado/simulado aqui.
+- [x] Cache de resposta do LLM pro agente (2026-09-27) — `AgentSpec.cache:
+      Option<LlmCacheSpec>`, reaproveita literalmente o mesmo
+      `LlmCacheSpec`/Redis/`connect_llm_cache` do node `llm` (§17), só
+      generalizado pra aceitar `Option<&LlmCacheSpec>` solto em vez de só
+      `&LlmNodeSpec`. Chave do cache (`tool_turn_cache_key`, nova) é o
+      hash de modelo+histórico inteiro+ferramentas+params, não só o
+      prompt — um hit substitui o turno (texto **ou** tool call) sem
+      gastar token, mas a ferramenta ainda é executada de verdade pelo
+      loop (só o turno do modelo é cacheado, nunca a execução).
 
 **Estimativa (chute):** tool-calling em `nexus-ai` (2 backends) ~1,5d;
 `AgentSpec`+loop+persistência+aprovação ~3d; 4 ferramentas ~2d;
@@ -1069,7 +1121,7 @@ Mergeado em `develop` em 2026-09-07 (`518cfa3`, PR #79). Plano marco a marco em 
 
 ---
 
-## Fase 32 — Migrar conectores de "infraestrutura de dado" do enterprise pro OSS
+## Fase 32 — Migrar conectores de "infraestrutura de dado" do enterprise pro OSS ✅
 
 Pedido de 2026-09-25: mudança de modelo — todo conector que é
 infraestrutura de dado (banco SQL/DW, vetorial/busca, streaming,
@@ -1082,7 +1134,7 @@ o `origin/develop` real do repo enterprise tem 37 crates, achado ao
 investigar por que `google-drive`/`google-sheets` (que o usuário disse
 existir) não apareciam.
 
-**Escopo final (18 migram pro OSS):**
+**Escopo final (22 migram pro OSS):**
 - SQL/DW: `bigquery`, `databricks`, `hana`, `mssql`, `oracle`,
   `redshift`, `snowflake`, `starburst`, `teradata`, `vertica`
 - Vetorial/busca: `elasticsearch`, `weaviate`, `vertex-vector-search`,
@@ -1091,7 +1143,7 @@ existir) não apareciam.
 - Arquivo/storage: `excel`, `pdf-ocr`, `google-drive`, `google-sheets`,
   `dropbox`, `sharepoint`
 
-**Ficam enterprise (12):** `ga4`, `google-ads`, `linkedin-ads`,
+**Ficam enterprise (16):** `ga4`, `google-ads`, `linkedin-ads`,
 `meta-ads`, `tiktok-ads`, `x-ads`, `youtube-analytics` (ads/analytics de
 marketing), `salesforce`, `hubspot`, `zendesk`, `shopify`, `dynamics365`,
 `netsuite`, `servicenow`, `workday` (CRM/ERP/suporte/RH), `stripe`
@@ -1133,8 +1185,8 @@ OSS, sem gambiarra de Dockerfile. Simplificação de graça, não só migração
   no `Dockerfile` público (estágio `adbc`, mesmo padrão de
   postgres/sqlite/duckdb/clickhouse que já existe lá).
 - `CLAUDE.md` §4.1 (matriz de conectividade): mover as entradas ❌ "não
-  impl." dos 18 pra ✅, atualizar contagem de conectores OSS (31 → 49).
-- `docs/USER_GUIDE.md` §4 (referência de conectores): 18 seções novas.
+  impl." dos 22 pra ✅, atualizar contagem de conectores OSS (24 → 46).
+- `docs/USER_GUIDE.md` §4 (referência de conectores): 22 seções novas.
 - `README.md`: contagem de conectores atualizada.
 - `.github/workflows/ci.yml`/`connectors-heavy.yml`: os que precisam de
   container real pro teste (Elasticsearch, Weaviate — self-hostáveis via
@@ -1142,16 +1194,16 @@ OSS, sem gambiarra de Dockerfile. Simplificação de graça, não só migração
   normal.
 
 **Repo privado (`nexus-connectors-enterprise`)**
-- Remover os 18 diretórios de `crates/`.
+- Remover os 22 diretórios de `crates/`.
 - `Cargo.toml` (workspace members) e `bin/Cargo.toml` (dependencies +
   features + `connectors-all`/`connectors-all-no-embeddings`): remover
-  as 18 entradas de cada lista.
+  as 22 entradas de cada lista.
 - `Dockerfile`: remover o overlay de kinesis/pulsar (não existe mais
   motivo pra ele) e qualquer etapa de driver ADBC pros 3 que migraram
   (bigquery/mssql/snowflake) — essas 3 passam a vir do próprio
   `nexus-server/connectors-all` herdado via git dependency, não mais
   buildadas aqui.
-- `docs/ENTERPRISE_CONNECTORS.md`: catálogo cai de 37 pra 19 crates.
+- `docs/ENTERPRISE_CONNECTORS.md`: catálogo cai de 37 pra 16 crates.
 - `scripts/fetch-adbc-{bigquery,mssql,snowflake}-driver.sh`: remover
   (migraram pro público).
 
@@ -1159,13 +1211,13 @@ OSS, sem gambiarra de Dockerfile. Simplificação de graça, não só migração
 - `LICENSING.md` (repo público): reescrever a lista OSS vs. enterprise.
 - `docs/ENTERPRISE_LICENSING.md`: mesma atualização de escopo.
 - `nexus-licensing` (repo separado, Store/checkout Stripe):
-  `products.connector_slug` — remover os 18 SKUs (sem cliente pagando
+  `products.connector_slug` — remover os 22 SKUs (sem cliente pagando
   por nenhum ainda, confirmado com o usuário antes de começar) da
   tabela de produtos vendáveis, se já cadastrados.
 
 ### Riscos
 
-- **18 crates é grande demais pra migrar e verificar tudo numa tacada
+- **22 crates é grande demais pra migrar e verificar tudo numa tacada
   só** — plano é migrar em lotes (por categoria: SQL/DW primeiro,
   depois vetorial/busca, depois streaming, depois arquivo/storage),
   cada lote compilando+testando antes do próximo, commit por lote.
@@ -1183,31 +1235,151 @@ OSS, sem gambiarra de Dockerfile. Simplificação de graça, não só migração
 
 ### Checklist
 
-- [ ] Lote 1 — SQL/DW (10): `bigquery`, `databricks`, `hana`, `mssql`,
-      `oracle`, `redshift`, `snowflake`, `starburst`, `teradata`,
-      `vertica`
-- [ ] Lote 2 — Vetorial/busca (4): `elasticsearch`, `weaviate`,
-      `vertex-vector-search`, `azure-ai-search`
-- [ ] Lote 3 — Streaming (2): `kinesis`, `pulsar` (+ remover overlay do
-      Dockerfile enterprise)
-- [ ] Lote 4 — Arquivo/storage (6): `excel`, `pdf-ocr`, `google-drive`,
-      `google-sheets`, `dropbox`, `sharepoint`
-- [ ] Scripts ADBC (`fetch-adbc-{bigquery,mssql,snowflake}-driver.sh`)
-      migrados + `Dockerfile` público com os 3 estágios novos
-- [ ] `nexus-server/Cargo.toml`: 18 features novas + bundles atualizados
-- [ ] Repo enterprise: `Cargo.toml`/`bin/Cargo.toml`/`Dockerfile`
-      limpos das 18 entradas
-- [ ] `CLAUDE.md`, `README.md`, `docs/USER_GUIDE.md`,
-      `docs/ENTERPRISE_CONNECTORS.md` atualizados
-- [ ] `LICENSING.md`/`docs/ENTERPRISE_LICENSING.md` atualizados
-- [ ] CI (`ci.yml`/`connectors-heavy.yml`) cobrindo os 18 novos
-- [ ] Store/`nexus-licensing`: SKUs dos 18 removidos do catálogo (se
-      cadastrados)
+> **Auditado em 2026-09-27** (todo item abaixo verificado contra o
+> código/repos reais, não assumido) — migração 100% completa, os 2
+> itens que sobraram na primeira auditoria foram fechados no mesmo dia.
 
-**Critério de pronto:** os 18 crates compilam e testam no repo público
+- [x] Lote 1 — SQL/DW (10): `bigquery`, `databricks`, `hana`, `mssql`,
+      `oracle`, `redshift`, `snowflake`, `starburst`, `teradata`,
+      `vertica` — crates existem em `crates/nexus-connectors/`, features
+      wired em `connectors-all`/`connectors-all-no-embeddings`.
+- [x] Lote 2 — Vetorial/busca (4): `elasticsearch`, `weaviate`,
+      `vertex-vector-search`, `azure-ai-search`
+- [x] Lote 3 — Streaming (2): `kinesis`, `pulsar` (+ overlay removido do
+      Dockerfile enterprise — confirmado, comentário real no Dockerfile
+      do repo privado documenta a remoção)
+- [x] Lote 4 — Arquivo/storage (6): `excel`, `pdf-ocr` (fora dos bundles
+      por decisão deliberada, não esquecido — nunca validado contra
+      tesseract/PDF real), `google-drive`, `google-sheets`, `dropbox`,
+      `sharepoint`
+- [x] Scripts ADBC (`fetch-adbc-{bigquery,mssql,snowflake}-driver.sh`)
+      migrados + `Dockerfile` público com os 3 estágios novos —
+      migrados pro estágio `adbc` existente (só ganhou `python3`/
+      `python3-pip`, sem estágio novo — mais barato que 3 estágios
+      separados). Bug real achado rodando o build de verdade: o script
+      de mssql assumia um path de manifest do `dbc` que não bate nesse
+      ambiente (`dbc` 1.6.2 como root escreve em `$HOME/.config/adbc/`,
+      XDG default, não `.local/etc/`) — trocado por busca dinâmica.
+      Verificado com `docker build` real: os 3 `.so` saem com conteúdo
+      real (42-74MB cada), build completo (`embed-ui`) termina limpo,
+      runtime final tem os 3 no lugar certo. CLAUDE.md's "driver
+      prebuilt, sem build from source" continua descrevendo certo o
+      *mecanismo* (baixa binário pronto, não compila C++/Go) — só não
+      documentava que o Dockerfile nunca empacotava esse binário.
+      **Fora deste commit**: paridade em `.deb`/`.rpm`/AppImage (só o
+      Dockerfile foi pedido/verificado).
+- [x] `nexus-server/Cargo.toml`: features novas + bundles atualizados —
+      confirmado, todas as 21 (`pdf-ocr` fica fora dos bundles por
+      decisão deliberada) presentes em `connectors-all`/
+      `connectors-all-no-embeddings` (`clickhouse` já tinha migrado antes,
+      Fase 23 — não faz parte desta leva de 22).
+- [x] Repo enterprise: `Cargo.toml`/`bin/Cargo.toml`/`Dockerfile`
+      limpos das entradas migradas — confirmado via `git log` do repo
+      privado (commit "remove 22 conectores migrados pro OSS") e
+      listagem real de `crates/`.
+- [x] `CLAUDE.md`, `README.md`, `docs/ENTERPRISE_CONNECTORS.md`
+      atualizados (confirmados corretos nesta auditoria, com 1 bug de
+      contradição interna corrigido em `ENTERPRISE_CONNECTORS.md` —
+      Salesforce marcado como não implementado numa lista e implementado
+      noutra).
+      `docs/USER_GUIDE.md §4.10-4.13` — escritas 2026-09-27, uma seção
+      por conector com exemplo de config real (campos exatos dos structs
+      Rust) + tabela-resumo (§4.8) e CDC nativo (§4.9, `mssql-cdc`/
+      `oracle-cdc`) atualizados.
+- [x] `LICENSING.md`/`docs/ENTERPRISE_LICENSING.md` atualizados —
+      `LICENSING.md` confirmado correto (16 crates, `nexus-infra-terraform`
+      mencionado); `ENTERPRISE_LICENSING.md` nunca fez claim de contagem
+      de conector, não ficou stale por essa migração.
+- [x] CI (`ci.yml`/`connectors-heavy.yml`) cobrindo os 22 novos — via
+      `cargo test/clippy --workspace --all-features`, que já inclui
+      qualquer crate novo do workspace automaticamente; não precisa de
+      entrada nomeada por conector (achado: o "cobrindo" do plano
+      original presumia listagem explícita, que nunca foi necessária).
+- [x] Store/`nexus-licensing`: SKUs dos 22 removidos do catálogo —
+      **auditado o repo local (2026-09-27): item inaplicável.** Não
+      existe seed/insert de `connector_slug` em nenhuma migration/fixture
+      desse repo pra nenhum conector, de nenhuma fase — o catálogo
+      `products` só é populado via API admin contra um banco ao vivo, e
+      `nexus-licensing` ainda nem foi deployado em produção
+      (`docs/PLUGIN_STORE_PLAN.md`). Não há nada pra remover porque nunca
+      houve SKU cadastrado pra remover.
+
+**Critério de pronto:** os 22 crates compilam e testam no repo público
 (`cargo test -p nexus-core -p nexus-server --all-features`), build
-Docker completo (`connectors-all`) passa, os 18 saem do repo enterprise
-sem quebrar o build dele, docs/licenciamento refletem o novo total (49
-OSS / 12 enterprise), nenhum breaking change pra quem já usa os 18 via
+Docker completo (`connectors-all`) passa, os 22 saem do repo enterprise
+sem quebrar o build dele, docs/licenciamento refletem o novo total (46
+OSS / 16 enterprise), nenhum breaking change pra quem já usa os 22 via
 `nexusflow-enterprise` hoje sem pagar (não existe cliente pagando ainda,
-confirmado).
+confirmado). **Atingido de ponta a ponta** — auditado em 2026-09-27,
+checklist 100% fechado.
+
+---
+
+## Fase 33 — Agente monta pipelines a partir de prompt (6ª ferramenta: `draft_pipeline`)
+
+Pedido de 2026-09-27, na sequência direta da Fase 31: usuário testou o
+agente de ponta a ponta contra um Ollama local de verdade (achado real
+nesse teste — o loop de tool-calling + retry-com-erro funciona
+perfeitamente, mas um modelo pequeno, 3B, não conseguiu corrigir uma
+SQL sozinho mesmo recebendo o erro exato de volta), e pediu a mesma
+mecânica pra um caso novo: usar o agente pra **montar o `PipelineSpec`
+(o DAG do Canvas) a partir de um prompt em linguagem natural**, não só
+pra consultar dado já pipelineado.
+
+**Decisão fechada com o usuário**: ferramenta única, one-shot — o
+modelo manda o `PipelineSpec` inteiro numa chamada só (não várias
+ferramentas incrementais tipo `AddSource`/`AddSink`/...). Reaproveita
+100% do mecanismo de retry-com-erro já comprovado no teste real contra
+Ollama, sem precisar de estado de rascunho mutável durante a run nem
+mudar a assinatura de `agent_runner.rs::run_loop`/
+`agent_tools::execute_tool`. Trade-off aceito conscientemente: pior com
+modelo fraco pra gerar um JSON grande de uma vez (evidência direta do
+próprio teste, pra um payload bem menor que um `PipelineSpec`) —
+mitigado por `max_steps` configurável e pela recomendação de
+`ApprovalMode::RequireApproval` nessa ferramenta, não por reescrever a
+arquitetura pra incremental agora (registrado como possível Fase
+futura se o one-shot se provar pouco confiável na prática).
+
+**Implementado:**
+- `AgentToolKind::DraftPipeline` (`nexus-core/src/agent.rs`) — variante
+  unitária, sem config estática (única entre as 6 ferramentas). Modelo
+  manda `pipeline_id`/`sources`/`sinks`/`transform.sql` opcional/
+  `schedule` opcional como argumento dinâmico.
+- `agent_tools::draft_pipeline` (`nexus-server/src/agent_tools.rs`) —
+  desserializa o argumento direto em `nexus_core::PipelineSpec`, roda
+  **a mesma** `validate()`/`validate_security_with()` que qualquer
+  pipeline desenhado por humano passa (zero caminho mais frouxo), salva
+  via `PipelineStore::create` (autor `"agent"`). Erro de shape ou de
+  validação vira o texto de resultado da ferramenta, alimentado de
+  volta no histórico pelo `agent_runner.rs` já existente — sem mudança
+  de arquitetura no loop.
+- `agent_tools::draft_pipeline_schema()` — a única ferramenta cujo
+  `ToolDef.schema` não pode vir do `AgentToolKind::json_schema()` puro
+  (precisa da lista viva de conectores via `ConnectorRegistry::all()`,
+  I/O que `nexus-core` não tem). `agent_runner.rs` especializa esse
+  caso ao montar `Vec<ToolDef>`, toda outra ferramenta continua usando
+  o método puro.
+- Docs: `ARCHITECTURE.md §20` (subseção nova), `docs/USER_GUIDE.md
+  §13.2` (item 6 na lista de ferramentas + exemplo de `curl`).
+
+**Critério de pronto:** um agente com `draft_pipeline` responde a um
+pedido em linguagem natural criando um `PipelineSpec` válido e
+persistido (confirmado via `GET /pipelines/{id}/spec`, não só via
+resposta em texto do modelo). **Atingido a nível de código** (3 testes
+reais em `agent_tools.rs`: cria pipeline de verdade, rejeita spec
+inválido com erro que serve pra retry, rejeita shape malformado).
+
+**Teste real contra Ollama (2026-09-27, `qwen3-coder:30b`)**: mecânica
+100% correta — desserializa, valida, erro volta pro modelo, 4
+tentativas dentro do `max_steps`, desistência honesta na 5ª (nunca
+inventou sucesso). **Não completou de ponta a ponta** — causa raiz não
+é bug do NexusFlow: o modelo mandou `sources`/`sinks` como string em
+repr Python (`"[{'connector': 'sqlite', ...}]"`, aspas simples) em vez
+de array JSON de verdade, erro de shape que o modelo não conseguiu
+corrigir mesmo com a mensagem de erro do serde de volta (confunde nome
+de campo com tipo de valor). Confirma na prática o risco já registrado
+acima (one-shot é mais frágil que incremental em modelo local fraco com
+JSON aninhado) — decisão do usuário: não vale a pena um shim de
+normalização pra compensar esse modelo específico agora; validar contra
+um modelo cloud (GPT-4o/Claude/OpenRouter, que lidam com JSON aninhado
+de forma confiável) fica pro usuário fazer com chave real.

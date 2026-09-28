@@ -15,7 +15,3 @@ import { NodeCard } from '@/components/node-card'
 export function ModuleNodeView({ data, selected }: NodeProps<InfraNode>) {
   return <NodeCard accent="primary" icon={Box} title={data.module} selected={selected} />
 }
-
-export const infraNodeTypes = {
-  module: ModuleNodeView,
-}

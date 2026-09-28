@@ -1048,6 +1048,216 @@ export function deleteUser(token: string, username: string): Promise<void> {
   return request<void>(`/users/${encodeURIComponent(username)}`, { method: 'DELETE' }, token)
 }
 
+// ---------------------------------------------------------------------------
+// RAG chat (POST /rag/query) — ROADMAP.md Fase 31/LLMOps Marco L5.
+// ---------------------------------------------------------------------------
+
+/** Connector names `rag_query_handler` (nexus-server::rag.rs) knows how to
+ * search — a pipeline needs one of these as a sink (plus an `embedding`
+ * config) to be usable here. No summary field exposes "has embedding"
+ * directly, so this is a client-side heuristic over `PipelineSummary.sinks`;
+ * a pipeline that matches but lacks embedding still surfaces a clear 400
+ * from the server itself. */
+export const RAG_CAPABLE_SINK_CONNECTORS = [
+  'lancedb',
+  'qdrant',
+  'milvus',
+  'pgvector',
+  'pinecone',
+  'chromadb',
+]
+
+export interface RagQueryResponse {
+  generation_id: number
+  answer: string
+  context_keys: string[]
+}
+
+export function ragQuery(
+  token: string,
+  pipelineId: string,
+  question: string,
+  topK?: number,
+): Promise<RagQueryResponse> {
+  return request<RagQueryResponse>(
+    '/rag/query',
+    {
+      method: 'POST',
+      body: JSON.stringify({ pipeline_id: pipelineId, question, top_k: topK }),
+    },
+    token,
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Agents (ROADMAP.md Fase 31) — matches nexus_core::agent + agent.rs.
+// ---------------------------------------------------------------------------
+
+export type ApprovalMode = 'auto' | 'require_approval'
+
+export type LlmModelConfig =
+  | {
+      backend: 'api'
+      base_url: string
+      model: string
+      api_key_env?: string | null
+      cost_per_1k_prompt_tokens?: number | null
+      cost_per_1k_completion_tokens?: number | null
+    }
+  | {
+      backend: 'anthropic'
+      base_url: string
+      model: string
+      api_key_env: string
+      cost_per_1k_prompt_tokens?: number | null
+      cost_per_1k_completion_tokens?: number | null
+    }
+
+export type AgentToolKind =
+  | { kind: 'query_data'; source: NodeSpec }
+  | { kind: 'search_vectors'; pipeline_id: string; top_k: number }
+  | { kind: 'run_pipeline'; pipeline_id: string; wait_for_result: boolean }
+  | { kind: 'call_webhook'; url: string; method: string }
+  | { kind: 'generate_chart'; source: NodeSpec; script: string; timeout_seconds?: number | null }
+
+export interface AgentToolConfig {
+  tool: AgentToolKind
+  approval: ApprovalMode
+}
+
+export interface AgentSpec {
+  agent_id: string
+  name: string
+  prompt: { name: string; version?: number | null }
+  model: LlmModelConfig
+  tools: AgentToolConfig[]
+  max_steps: number
+  schedule?: string | null
+}
+
+export interface AgentToolSummary {
+  kind: string
+  approval: ApprovalMode
+  source: NodeSummary | null
+}
+
+export interface AgentSummary {
+  agent_id: string
+  name: string
+  model: LlmModelConfig
+  tools: AgentToolSummary[]
+  max_steps: number
+  schedule: string | null
+  created_at: string
+  updated_at: string
+}
+
+export function listAgents(token: string): Promise<AgentSummary[]> {
+  return request<AgentSummary[]>('/agents', {}, token)
+}
+
+export function getAgentSpec(token: string, id: string): Promise<AgentSpec> {
+  return request<AgentSpec>(`/agents/${encodeURIComponent(id)}/spec`, {}, token)
+}
+
+export function createAgent(token: string, spec: AgentSpec): Promise<AgentSpec> {
+  return request<AgentSpec>('/agents', { method: 'POST', body: JSON.stringify(spec) }, token)
+}
+
+export function updateAgent(token: string, spec: AgentSpec): Promise<AgentSpec> {
+  return request<AgentSpec>(
+    `/agents/${encodeURIComponent(spec.agent_id)}`,
+    { method: 'PUT', body: JSON.stringify(spec) },
+    token,
+  )
+}
+
+export function deleteAgent(token: string, id: string): Promise<void> {
+  return request<void>(`/agents/${encodeURIComponent(id)}`, { method: 'DELETE' }, token)
+}
+
+export interface RunAccepted {
+  run_id: number
+}
+
+export function runAgent(
+  token: string,
+  id: string,
+  question: string,
+  modelOverride?: LlmModelConfig,
+): Promise<RunAccepted> {
+  return request<RunAccepted>(
+    `/agents/${encodeURIComponent(id)}/run`,
+    { method: 'POST', body: JSON.stringify({ question, model_override: modelOverride }) },
+    token,
+  )
+}
+
+export type AgentRunStatus =
+  | 'running'
+  | 'waiting_approval'
+  | 'completed'
+  | 'failed'
+  | 'max_steps_reached'
+
+export interface AgentRun {
+  id: number
+  agent_id: string
+  question: string
+  status: AgentRunStatus
+  started_at: string
+  finished_at: string | null
+  total_tokens: number
+  total_cost: number
+}
+
+export function listAgentRuns(token: string, id: string): Promise<AgentRun[]> {
+  return request<AgentRun[]>(`/agents/${encodeURIComponent(id)}/runs`, {}, token)
+}
+
+export type AgentStepApprovalStatus = 'not_applicable' | 'pending' | 'approved' | 'rejected'
+
+export interface AgentStep {
+  id: number
+  run_id: number
+  step_number: number
+  kind: string
+  tool: string | null
+  args: string | null
+  result: string | null
+  approval_status: AgentStepApprovalStatus
+  approved_by: string | null
+  approved_at: string | null
+}
+
+export interface AgentRunDetail extends AgentRun {
+  steps: AgentStep[]
+}
+
+export function getAgentRun(token: string, id: string, runId: number): Promise<AgentRunDetail> {
+  return request<AgentRunDetail>(`/agents/${encodeURIComponent(id)}/runs/${runId}`, {}, token)
+}
+
+export function approveAgentStep(
+  token: string,
+  runId: number,
+  stepId: number,
+): Promise<void> {
+  return request<void>(
+    `/agents/runs/${runId}/steps/${stepId}/approve`,
+    { method: 'POST', body: JSON.stringify({}) },
+    token,
+  )
+}
+
+export function rejectAgentStep(token: string, runId: number, stepId: number): Promise<void> {
+  return request<void>(
+    `/agents/runs/${runId}/steps/${stepId}/reject`,
+    { method: 'POST', body: JSON.stringify({}) },
+    token,
+  )
+}
+
 /** Decodes the `role` claim from a JWT's payload without verifying the
  * signature — the server is the actual enforcement point on every request
  * this is only used to decide whether to show the Admin nav item at all.

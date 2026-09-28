@@ -1,3 +1,56 @@
+// Same predicate as `mod rag` below — `agent.rs`'s handlers call into
+// `agent_runner.rs`, which is gated the same way.
+#[cfg(all(
+    feature = "llm",
+    any(feature = "embeddings", feature = "embeddings-api"),
+    any(
+        feature = "lancedb",
+        feature = "qdrant",
+        feature = "milvus",
+        feature = "pgvector",
+        feature = "pinecone",
+        feature = "chromadb"
+    )
+))]
+mod agent;
+// Unconditional, same reasoning as `mod llm_generation_store` below — pure
+// persistence, no heavy dependencies, only actually driven by the
+// narrower-gated `agent_tools`/`agent_runner` modules just below. Kept
+// always-compiled so `AppState` can hold `AgentStore`/`AgentRunStore`
+// fields without a second, feature-gated construction path in
+// `build_state`/`test_state`.
+mod agent_run_store;
+mod agent_store;
+// Same predicate as `mod rag` below — the agent's `SearchVectors` tool
+// (`agent_tools.rs`) reuses `rag.rs`'s own `search_*` functions directly,
+// so the whole agent module family needs the vector-search backends to
+// exist, not just `llm`.
+#[cfg(all(
+    feature = "llm",
+    any(feature = "embeddings", feature = "embeddings-api"),
+    any(
+        feature = "lancedb",
+        feature = "qdrant",
+        feature = "milvus",
+        feature = "pgvector",
+        feature = "pinecone",
+        feature = "chromadb"
+    )
+))]
+mod agent_runner;
+#[cfg(all(
+    feature = "llm",
+    any(feature = "embeddings", feature = "embeddings-api"),
+    any(
+        feature = "lancedb",
+        feature = "qdrant",
+        feature = "milvus",
+        feature = "pgvector",
+        feature = "pinecone",
+        feature = "chromadb"
+    )
+))]
+mod agent_tools;
 mod alerts;
 mod anomaly_detector;
 mod auth;
@@ -30,12 +83,14 @@ mod llm_generation_store;
 pub mod migrate;
 mod pipeline_dependencies;
 mod pipeline_run_llm_stats_store;
+mod pipeline_run_visualization_store;
 mod pipeline_run_volume_store;
 mod pipeline_schema_store;
 mod pipeline_store;
 mod progress;
 mod prompt_template_store;
 mod python_transform;
+mod python_viz;
 mod quality_check_store;
 #[cfg(all(
     feature = "llm",
@@ -69,7 +124,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{DefaultBodyLimit, Extension, FromRef, Path, Query, State};
 use axum::http::StatusCode;
 use axum::middleware;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use checkpoint_store::CheckpointStore;
@@ -142,6 +197,7 @@ struct AppState {
     data_catalog: data_catalog::CatalogStore,
     pipeline_dependency_state: pipeline_dependencies::DependencyStateStore,
     pipeline_run_volume: pipeline_run_volume_store::PipelineRunVolumeStore,
+    pipeline_visualizations: pipeline_run_visualization_store::PipelineRunVisualizationStore,
     /// `NEXUS_QUEUE_MODE` (Fase 29) — `Some` means this replica enqueues
     /// pipeline runs instead of dispatching them inline, and (if the
     /// backend is Postgres) also competes to claim queued runs via
@@ -172,6 +228,14 @@ struct AppState {
     // as `dbt_test_results`/`quality_checks` above.
     #[allow(dead_code)]
     llm_generations: llm_generation_store::LlmGenerationStore,
+    // Only used by `agent.rs`'s CRUD handlers (ROADMAP.md Fase 31,
+    // narrower-gated than this file, same reasoning as `llm_generations`
+    // above) — `agent_runs` below is used a level deeper too, by
+    // `agent_runner.rs`.
+    #[allow(dead_code)]
+    agents: agent_store::AgentStore,
+    #[allow(dead_code)]
+    agent_runs: agent_run_store::AgentRunStore,
     progress: ProgressHub,
     alerts: AlertNotifier,
     login_rate_limiter: std::sync::Arc<rate_limit::LoginRateLimiter>,
@@ -368,6 +432,10 @@ fn router(state: AppState) -> Router {
             "/pipelines/{id}/runs/{run_id}/logs",
             get(list_run_logs_handler),
         )
+        .route(
+            "/pipelines/{id}/runs/{run_id}/visualization",
+            get(get_run_visualization_handler),
+        )
         // Observability data, not an action — same tier as /connectors and
         // /pipelines above (see resource_stats.rs).
         .route("/system/resource-stats", get(resource_stats_handler))
@@ -518,6 +586,22 @@ fn router(state: AppState) -> Router {
     ))]
     let rag_state = state.clone();
 
+    // Same cfg gate and cloning reason as `rag_state` above — `agent::routes`
+    // (ROADMAP.md Fase 31) needs its own `AppState`.
+    #[cfg(all(
+        feature = "llm",
+        any(feature = "embeddings", feature = "embeddings-api"),
+        any(
+            feature = "lancedb",
+            feature = "qdrant",
+            feature = "milvus",
+            feature = "pgvector",
+            feature = "pinecone",
+            feature = "chromadb"
+        )
+    ))]
+    let agent_state = state.clone();
+
     // Cloned unconditionally (unlike `rag_state` above) — `infra::routes`
     // is never feature-gated, see that module's doc comment for why (the
     // enterprise crate it delegates to is an inventory-collected plugin,
@@ -560,6 +644,20 @@ fn router(state: AppState) -> Router {
         )
     ))]
     let app = app.merge(rag::routes(rag_state));
+
+    #[cfg(all(
+        feature = "llm",
+        any(feature = "embeddings", feature = "embeddings-api"),
+        any(
+            feature = "lancedb",
+            feature = "qdrant",
+            feature = "milvus",
+            feature = "pgvector",
+            feature = "pinecone",
+            feature = "chromadb"
+        )
+    ))]
+    let app = app.merge(agent::routes(agent_state));
 
     let app = app.merge(infra::routes(infra_state));
 
@@ -959,6 +1057,7 @@ async fn execute_pipeline_run(
         &state.prompt_templates,
         &state.llm_eval_results,
         state.masking_salt.as_deref(),
+        &state.pipeline_visualizations,
     )
     .await;
     state.progress.finish(run_id).await;
@@ -1392,7 +1491,10 @@ async fn read_preview_rows(
 /// evenly — the last batch pulled is sliced back down instead of just
 /// capping the batch count, so the row count in the response always
 /// matches `limit` exactly (when the source has that many rows to give).
-async fn read_preview_batches(
+// `pub(crate)` so `agent_tools.rs`'s `QueryData`/`GenerateChart` tools can
+// reuse the exact same bounded-read logic the Canvas preview endpoints use,
+// instead of a second copy.
+pub(crate) async fn read_preview_batches(
     mut source: Box<dyn nexus_core::Source>,
     limit: usize,
 ) -> Result<Vec<arrow_array::RecordBatch>, ApiError> {
@@ -1438,7 +1540,7 @@ async fn read_preview_batches(
     Ok(collected)
 }
 
-fn batches_to_preview_json(
+pub(crate) fn batches_to_preview_json(
     batches: &[arrow_array::RecordBatch],
 ) -> Result<Vec<serde_json::Value>, ApiError> {
     if batches.is_empty() {
@@ -1499,6 +1601,7 @@ async fn preview_clean_blocks_handler(
         embedding: None,
         llm: None,
         python: None,
+        visualization: None,
         channel_capacity: 100,
         partitions: 1,
         dbt: None,
@@ -1594,6 +1697,7 @@ async fn preview_adhoc_handler(
         embedding: None,
         llm: None,
         python: None,
+        visualization: None,
         clean_blocks: Vec::new(),
         channel_capacity: 100,
         partitions: 1,
@@ -2404,6 +2508,59 @@ async fn list_run_logs_handler(
             .list(run_id)
             .await
             .map_err(ApiError::internal)?,
+    ))
+}
+
+/// Content types this endpoint will ever echo back as-is — genuine raster
+/// image formats only. `python_viz_harness.py` duck-types a script's return
+/// value and never validates the `content_type` half of a `(bytes,
+/// content_type)` tuple, so a pipeline's own `visualization.script`
+/// (Write-tier, but not necessarily the same person as whoever later opens
+/// this URL) could otherwise hand back `text/html`/`image/svg+xml` —
+/// content a browser executes as a document/script, not renders as a
+/// picture, over this server's own origin. Anything off this list is
+/// served as an inert download instead (see the handler below), never
+/// inline.
+const SAFE_VISUALIZATION_CONTENT_TYPES: [&str; 4] =
+    ["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+/// `PipelineSpec.visualization`'s rendered chart (ROADMAP.md Fase 31) — raw
+/// image bytes, `Content-Type` gated by `SAFE_VISUALIZATION_CONTENT_TYPES`
+/// above (see that constant's doc comment for why: this must never let a
+/// pipeline's chart script serve `text/html`/`image/svg+xml` and have a
+/// browser execute it as this origin's own document). 404 covers both "run
+/// never set `visualization`" and "rendering failed" — `runner.rs` logs the
+/// real reason either way rather than failing the run over a chart.
+async fn get_run_visualization_handler(
+    State(state): State<AppState>,
+    Path((_id, run_id)): Path<(String, i64)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let stored = state
+        .pipeline_visualizations
+        .get(run_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::not_found(format!("run {run_id} has no visualization")))?;
+
+    let (content_type, disposition) =
+        if SAFE_VISUALIZATION_CONTENT_TYPES.contains(&stored.content_type.as_str()) {
+            (stored.content_type.as_str(), "inline")
+        } else {
+            ("application/octet-stream", "attachment")
+        };
+    Ok((
+        [
+            (axum::http::header::CONTENT_TYPE, content_type.to_string()),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                disposition.to_string(),
+            ),
+            (
+                axum::http::header::HeaderName::from_static("x-content-type-options"),
+                "nosniff".to_string(),
+            ),
+        ],
+        stored.image_bytes,
     ))
 }
 
@@ -3270,6 +3427,11 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
     let pipeline_run_volume =
         pipeline_run_volume_store::PipelineRunVolumeStore::connect(&config.pipelines_database_url)
             .await?;
+    let pipeline_visualizations =
+        pipeline_run_visualization_store::PipelineRunVisualizationStore::connect(
+            &config.pipelines_database_url,
+        )
+        .await?;
     let work_queue = if config.queue_mode {
         Some(work_queue::WorkQueueStore::connect(&config.pipelines_database_url).await?)
     } else {
@@ -3287,6 +3449,9 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         llm_generation_store::LlmGenerationStore::connect(&config.pipelines_database_url).await?;
     let llm_eval_results =
         llm_eval_result_store::LlmEvalResultStore::connect(&config.pipelines_database_url).await?;
+    let agents = agent_store::AgentStore::connect(&config.pipelines_database_url).await?;
+    let agent_runs =
+        agent_run_store::AgentRunStore::connect(&config.pipelines_database_url).await?;
     if let Some((username, password)) = &config.bootstrap_admin {
         auth_store.seed_admin_if_empty(username, password).await?;
     }
@@ -3321,12 +3486,15 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         data_catalog,
         pipeline_dependency_state,
         pipeline_run_volume,
+        pipeline_visualizations,
         work_queue,
         quality_checks,
         llm_stats,
         prompt_templates,
         llm_generations,
         llm_eval_results,
+        agents,
+        agent_runs,
         progress: ProgressHub::default(),
         alerts: AlertNotifier::new(
             AlertConfig {
@@ -3634,13 +3802,31 @@ async fn shutdown_signal() {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use axum::body::Body;
     use axum::extract::ConnectInfo;
     use axum::http::{Request, StatusCode};
     use axum::response::IntoResponse;
     use tower::ServiceExt;
+
+    /// Runs before any test in this binary (`#[ctor]` hooks into the
+    /// binary's startup section, ahead of the test harness picking a test
+    /// order/thread count) — closes a real bug, not just flakiness:
+    /// `nexus_core::pipeline::metrics`'s counters are `LazyLock`s that bind
+    /// to whatever `opentelemetry::global` meter provider is active on
+    /// their *first* access, and OTel's global metrics proxy (unlike its
+    /// trace proxy) never retroactively rebinds an instrument created
+    /// against the no-op provider once a real one is installed later.
+    /// Without this, whichever test happens to run a `PipelineEngine`
+    /// partition first (order is nondeterministic under parallel test
+    /// threads) permanently freezes these counters as no-ops for the rest
+    /// of the binary — any later test asserting on `/metrics` content
+    /// fails or passes depending on execution order, not on its own logic.
+    #[ctor::ctor]
+    fn telemetry_installed_before_any_test() {
+        let _ = telemetry::init();
+    }
 
     /// Fresh, isolated bare repo per call — `test_state()`/`rate_limited_state()`
     /// each get their own so parallel `#[tokio::test]`s never share one.
@@ -3652,7 +3838,11 @@ mod tests {
         git_history_store::GitHistoryStore::open(dir.join("history.git")).unwrap()
     }
 
-    async fn test_state() -> AppState {
+    /// `pub(crate)`: reused by `agent_tools.rs`'s own tests
+    /// (`crate::tests::test_state`) — building a full `AppState` by hand a
+    /// second time there would just be this same ~25-field literal copied,
+    /// so this stays the single source of it instead.
+    pub(crate) async fn test_state() -> AppState {
         let auth_store = AuthStore::connect("sqlite::memory:").await.unwrap();
         auth_store
             .seed_admin_if_empty("admin", "test-password")
@@ -3694,6 +3884,12 @@ mod tests {
             )
             .await
             .unwrap(),
+            pipeline_visualizations:
+                pipeline_run_visualization_store::PipelineRunVisualizationStore::connect(
+                    "sqlite::memory:",
+                )
+                .await
+                .unwrap(),
             work_queue: None,
             quality_checks: quality_check_store::QualityCheckStore::connect("sqlite::memory:")
                 .await
@@ -3712,6 +3908,12 @@ mod tests {
                 .await
                 .unwrap(),
             llm_eval_results: llm_eval_result_store::LlmEvalResultStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
+            agents: agent_store::AgentStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
+            agent_runs: agent_run_store::AgentRunStore::connect("sqlite::memory:")
                 .await
                 .unwrap(),
             progress: ProgressHub::default(),
@@ -4163,6 +4365,89 @@ mod tests {
     /// live WebSocket open for — this hits the endpoint only *after*
     /// `wait_for_terminal_run` confirms the supervisor already finished, so
     /// there's no live subscriber involved at all.
+    #[tokio::test]
+    async fn run_visualization_endpoint_serves_stored_bytes_and_404s_when_absent() {
+        let state = test_state().await;
+        let read_token = bearer(&state, Role::Read);
+        state
+            .pipeline_visualizations
+            .store(7, b"chart-bytes", "image/png")
+            .await
+            .unwrap();
+        let app = router(state);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/pipelines/p1/runs/7/visualization")
+                    .header("authorization", &read_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get("content-type").unwrap(), "image/png");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&bytes[..], b"chart-bytes");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/pipelines/p1/runs/999/visualization")
+                    .header("authorization", &read_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn run_visualization_endpoint_never_serves_html_as_a_content_type() {
+        // A chart script could hand back anything as its content_type half
+        // (`python_viz_harness.py` doesn't validate it) — `text/html` here
+        // would be a stored XSS if served as-is: a browser executing
+        // arbitrary script under this server's own origin. Must always
+        // come back as a safe, non-executable download instead.
+        let state = test_state().await;
+        let read_token = bearer(&state, Role::Read);
+        state
+            .pipeline_visualizations
+            .store(8, b"<script>alert(1)</script>", "text/html")
+            .await
+            .unwrap();
+        let app = router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/pipelines/p1/runs/8/visualization")
+                    .header("authorization", &read_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "application/octet-stream"
+        );
+        assert_eq!(
+            response.headers().get("content-disposition").unwrap(),
+            "attachment"
+        );
+        assert_eq!(
+            response.headers().get("x-content-type-options").unwrap(),
+            "nosniff"
+        );
+    }
+
     #[tokio::test]
     async fn run_logs_endpoint_replays_start_and_failure_lines_after_the_run_finished() {
         let state = test_state().await;
@@ -5935,6 +6220,12 @@ mod tests {
             )
             .await
             .unwrap(),
+            pipeline_visualizations:
+                pipeline_run_visualization_store::PipelineRunVisualizationStore::connect(
+                    "sqlite::memory:",
+                )
+                .await
+                .unwrap(),
             work_queue: None,
             quality_checks: quality_check_store::QualityCheckStore::connect("sqlite::memory:")
                 .await
@@ -5953,6 +6244,12 @@ mod tests {
                 .await
                 .unwrap(),
             llm_eval_results: llm_eval_result_store::LlmEvalResultStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
+            agents: agent_store::AgentStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
+            agent_runs: agent_run_store::AgentRunStore::connect("sqlite::memory:")
                 .await
                 .unwrap(),
             progress: ProgressHub::default(),
