@@ -141,6 +141,34 @@ pub enum AgentToolKind {
     /// `agent_tools::draft_pipeline_schema(state)` instead when building
     /// the tool-calling request.
     DraftPipeline,
+    /// Read-only lookup of a saved pipeline's config summary and most
+    /// recent run status ("meu pipeline de ontem ainda tá rodando?") — no
+    /// static config, `pipeline_id` is a dynamic argument the model
+    /// supplies per call (it may not know a specific id ahead of time,
+    /// unlike `RunPipeline`/`SearchVectors` which are scoped to one
+    /// pipeline at agent-configuration time). Wraps
+    /// `PipelineStore::get_summary`, the exact same connector-names-only,
+    /// no-secrets view `GET /pipelines/{id}` already returns over the API
+    /// — no new exposure surface.
+    GetPipelineStatus,
+    /// Updates an existing saved pipeline's spec — the natural complement
+    /// to `DraftPipeline` (which only ever creates). Same one-shot,
+    /// no-static-config shape: the model supplies the full replacement
+    /// spec as a dynamic argument, `agent_tools.rs::edit_pipeline`
+    /// deserializes it, runs it through the same `validate()`/
+    /// `validate_security_with()` gate, and calls `PipelineStore::update`
+    /// (which itself 404s if `pipeline_id` doesn't already exist — no
+    /// separate existence check needed here). A materially bigger risk
+    /// than `DraftPipeline`: this can silently rewrite a pipeline already
+    /// running in production (wrong sink, dropped schedule, ...), so an
+    /// operator should default this to `ApprovalMode::RequireApproval`
+    /// even more firmly than `DraftPipeline` — a config choice, not
+    /// enforced by the type.
+    ///
+    /// `json_schema()` reuses the exact same static fallback as
+    /// `DraftPipeline` (same spec shape); `agent_runner.rs` special-cases
+    /// both variants to the same live `agent_tools::draft_pipeline_schema(state)`.
+    EditPipeline,
 }
 
 fn default_top_k() -> usize {
@@ -165,6 +193,8 @@ impl AgentToolKind {
             AgentToolKind::CallWebhook { .. } => "call_webhook",
             AgentToolKind::GenerateChart { .. } => "generate_chart",
             AgentToolKind::DraftPipeline => "draft_pipeline",
+            AgentToolKind::GetPipelineStatus => "get_pipeline_status",
+            AgentToolKind::EditPipeline => "edit_pipeline",
         }
     }
 
@@ -194,6 +224,15 @@ impl AgentToolKind {
                  transform, sinks, optional schedule). The pipeline is saved but never run \
                  automatically — a human (or the run_pipeline tool, in a later step) has to \
                  trigger it."
+            }
+            AgentToolKind::GetPipelineStatus => {
+                "Look up a saved pipeline's configuration summary and most recent run status \
+                 (e.g. still running, succeeded, failed, or never run) by its pipeline_id."
+            }
+            AgentToolKind::EditPipeline => {
+                "Update an existing saved pipeline's configuration (sources, transform, sinks, \
+                 schedule) from a structured spec. The pipeline_id must already exist — use \
+                 draft_pipeline instead to create a brand-new one."
             }
         }
     }
@@ -239,11 +278,23 @@ impl AgentToolKind {
                     }
                 }
             }),
+            AgentToolKind::GetPipelineStatus => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "pipeline_id": {
+                        "type": "string",
+                        "description": "The id of the saved pipeline to check."
+                    }
+                },
+                "required": ["pipeline_id"]
+            }),
             // Static fallback only — `agent_runner.rs` calls
             // `agent_tools::draft_pipeline_schema(state)` instead whenever it
             // can (needs the live connector list, I/O this crate doesn't
             // have). Kept close in shape so the two never drift far apart.
-            AgentToolKind::DraftPipeline => serde_json::json!({
+            // `EditPipeline` shares this exact fallback (same spec shape,
+            // `agent_runner.rs` special-cases both to the same live schema).
+            AgentToolKind::DraftPipeline | AgentToolKind::EditPipeline => serde_json::json!({
                 "type": "object",
                 "properties": {
                     "pipeline_id": {
@@ -362,7 +413,10 @@ impl AgentSpec {
                         )));
                     }
                 }
-                AgentToolKind::QueryData { .. } | AgentToolKind::DraftPipeline => {}
+                AgentToolKind::QueryData { .. }
+                | AgentToolKind::DraftPipeline
+                | AgentToolKind::GetPipelineStatus
+                | AgentToolKind::EditPipeline => {}
             }
         }
         Ok(())
@@ -589,6 +643,11 @@ mod tests {
             "generate_chart"
         );
         assert_eq!(AgentToolKind::DraftPipeline.name(), "draft_pipeline");
+        assert_eq!(
+            AgentToolKind::GetPipelineStatus.name(),
+            "get_pipeline_status"
+        );
+        assert_eq!(AgentToolKind::EditPipeline.name(), "edit_pipeline");
     }
 
     #[test]
@@ -609,5 +668,31 @@ mod tests {
         assert!(schema["properties"]["sinks"].is_object());
         assert!(schema["properties"]["transform"].is_object());
         assert_eq!(schema["required"][0], "pipeline_id");
+    }
+
+    #[test]
+    fn get_pipeline_status_has_no_static_config_and_requires_pipeline_id_arg() {
+        let mut spec = base_spec();
+        spec.tools.push(AgentToolConfig {
+            tool: AgentToolKind::GetPipelineStatus,
+            approval: ApprovalMode::Auto,
+        });
+        assert!(spec.validate().is_ok());
+        let schema = AgentToolKind::GetPipelineStatus.json_schema();
+        assert_eq!(schema["required"][0], "pipeline_id");
+    }
+
+    #[test]
+    fn edit_pipeline_has_no_static_config_and_shares_draft_pipeline_schema() {
+        let mut spec = base_spec();
+        spec.tools.push(AgentToolConfig {
+            tool: AgentToolKind::EditPipeline,
+            approval: ApprovalMode::RequireApproval,
+        });
+        assert!(spec.validate().is_ok());
+        assert_eq!(
+            AgentToolKind::EditPipeline.json_schema(),
+            AgentToolKind::DraftPipeline.json_schema()
+        );
     }
 }
