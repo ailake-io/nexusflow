@@ -1460,3 +1460,29 @@ a mesma lacuna, não introduziu uma nova. Fix: `agent_tools::
 apply_pipeline_save_gates`/`log_pipeline_audit`, chamados pelas duas
 ferramentas — ver `ARCHITECTURE.md §20` pro detalhe. Reconfirmado:
 `fmt`/`clippy -D warnings` limpos, 36/36 testes de agente verdes.
+
+**Fix de resiliência do scheduler (mesmo dia, achado durante teste real
+de `edit_pipeline`)**: `scheduler.rs::tick()` chama
+`PipelineStore::list_summaries()` pra achar todo pipeline com
+`schedule` vencido — essa função decriptava **todos** os pipelines
+numa `.collect()` que aborta no primeiro erro. Um único pipeline
+ilegível (chave de criptografia rotacionada sem migrar linhas antigas,
+corrupção de disco, restore de backup com chave diferente) derrubava o
+tick **inteiro**, silenciosamente — nenhum pipeline agendado rodava,
+não só o corrompido, só um `WARN` no log a cada tick, sem alerta em
+canal nenhum. Reproduzido de verdade durante o teste manual desta
+sessão (banco reaproveitado de sessões anteriores com chaves
+diferentes). Fix: `list_summaries` agora pula a linha corrompida
+(loga `pipeline_id` + erro) e continua com o resto — `get_summary`/
+`get_spec`/`run` continuam falhando normalmente pra esse pipeline
+específico, só a listagem em lote (usada pelo scheduler e por `GET
+/pipelines`) não é mais afetada. `list_all_specs` (usada por lineage e
+checagem de `depends_on`) foi deixada como está de propósito — omitir
+silenciosamente um pipeline de um grafo de dependências poderia
+mascarar um ciclo real, falhar alto ali é mais seguro que pular.
+1 teste novo em `pipeline_store.rs` (corrompe uma linha de propósito,
+confirma que as outras continuam listando e que a corrompida ainda
+falha se pedida direto). `fmt`/`clippy -D warnings` limpos, suíte
+completa de `nexus-server` verde (362 testes; a falha isolada de
+`dbt_etl_pipeline` é só a feature `dbt` faltando no comando de teste,
+não regressão).

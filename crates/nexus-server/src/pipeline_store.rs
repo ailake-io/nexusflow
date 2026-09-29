@@ -18,11 +18,15 @@ pub enum PipelineStoreError {
     Sqlx(#[from] sqlx::Error),
 }
 
-/// (spec_ciphertext, created_at, updated_at, created_by, updated_by,
+/// (id, spec_ciphertext, created_at, updated_at, created_by, updated_by,
 /// last_run status, last_run started_at) — the row shape shared by
 /// `get_summary`'s and `list_summaries`' LEFT JOIN against the most
-/// recent `pipeline_runs` row per pipeline.
+/// recent `pipeline_runs` row per pipeline. `id` is only actually needed by
+/// `list_summaries` (to name which pipeline failed to decrypt without
+/// aborting the rest — see its own doc comment); `get_summary` already
+/// knows it from its own `id: &str` parameter and just ignores this field.
 type SummaryRow = (
+    String,
     String,
     String,
     String,
@@ -427,8 +431,8 @@ impl PipelineStore {
         cipher: &SecretCipher,
     ) -> Result<PipelineSummary, PipelineStoreError> {
         let sql = self.q(
-            "SELECT p.spec_ciphertext, p.created_at, p.updated_at, p.created_by, p.updated_by, \
-                 r.status, r.started_at \
+            "SELECT p.id, p.spec_ciphertext, p.created_at, p.updated_at, p.created_by, \
+                 p.updated_by, r.status, r.started_at \
              FROM pipelines p LEFT JOIN pipeline_runs r ON r.id = ( \
                  SELECT id FROM pipeline_runs WHERE pipeline_id = p.id \
                  ORDER BY id DESC LIMIT 1 \
@@ -449,6 +453,7 @@ impl PipelineStore {
             }
         };
         let (
+            _id,
             ciphertext,
             created_at,
             updated_at,
@@ -531,8 +536,8 @@ impl PipelineStore {
         offset: i64,
     ) -> Result<Vec<PipelineSummary>, PipelineStoreError> {
         let sql = self.q(
-            "SELECT p.spec_ciphertext, p.created_at, p.updated_at, p.created_by, p.updated_by, \
-                 r.status, r.started_at \
+            "SELECT p.id, p.spec_ciphertext, p.created_at, p.updated_at, p.created_by, \
+                 p.updated_by, r.status, r.started_at \
              FROM pipelines p LEFT JOIN pipeline_runs r ON r.id = ( \
                  SELECT id FROM pipeline_runs WHERE pipeline_id = p.id \
                  ORDER BY id DESC LIMIT 1 \
@@ -554,30 +559,53 @@ impl PipelineStore {
                     .await?
             }
         };
-        rows.into_iter()
-            .map(
-                |(
-                    ciphertext,
-                    created_at,
-                    updated_at,
-                    created_by,
-                    updated_by,
-                    last_run_status,
-                    last_run_at,
-                )| {
-                    let spec = decode_spec(&ciphertext, cipher)?;
-                    Ok(summarize(
-                        spec,
-                        created_at,
-                        updated_at,
-                        created_by,
-                        updated_by,
-                        last_run_status,
-                        last_run_at,
-                    ))
-                },
-            )
-            .collect()
+        // A pipeline this server can no longer decrypt (encryption key
+        // rotated without re-encrypting old rows, on-disk corruption, a
+        // restore from a backup taken under a different key) must not take
+        // every *other* pipeline down with it. This used to `.collect()`
+        // into a `Result`, so one bad row made the whole call fail —
+        // `scheduler.rs::tick` calls this to find every schedule due to
+        // run, so a single undecryptable pipeline silently stopped every
+        // pipeline in the system from ever running again (`?` on the call,
+        // swallowed into a `tracing::warn!` every tick, easy to miss).
+        // Skip and log instead: the corrupt pipeline still surfaces an
+        // error on its own `get_summary`/`get_spec`/`run`, it just no
+        // longer poisons everyone else's schedule or the `GET /pipelines`
+        // listing.
+        let mut summaries = Vec::with_capacity(rows.len());
+        for (
+            id,
+            ciphertext,
+            created_at,
+            updated_at,
+            created_by,
+            updated_by,
+            last_run_status,
+            last_run_at,
+        ) in rows
+        {
+            let spec = match decode_spec(&ciphertext, cipher) {
+                Ok(spec) => spec,
+                Err(e) => {
+                    tracing::warn!(
+                        pipeline_id = %id,
+                        error = %e,
+                        "skipping pipeline that could not be decrypted"
+                    );
+                    continue;
+                }
+            };
+            summaries.push(summarize(
+                spec,
+                created_at,
+                updated_at,
+                created_by,
+                updated_by,
+                last_run_status,
+                last_run_at,
+            ));
+        }
+        Ok(summaries)
     }
 
     /// Called right before a pipeline starts executing — returns the new
@@ -1042,6 +1070,46 @@ mod tests {
         let list = store.list_summaries(&cipher, 100, 0).await.unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].pipeline_id, "p1");
+    }
+
+    #[tokio::test]
+    async fn list_summaries_skips_a_pipeline_it_cannot_decrypt() {
+        let store = PipelineStore::connect("sqlite::memory:").await.unwrap();
+        let cipher = cipher();
+        store
+            .create(&sample_spec("good"), &cipher, "alice")
+            .await
+            .unwrap();
+        store
+            .create(&sample_spec("corrupt"), &cipher, "alice")
+            .await
+            .unwrap();
+
+        // Simulate the failure `scheduler.rs::tick` hit in practice: an
+        // encryption-key rotation (or on-disk corruption) leaves one row's
+        // ciphertext undecryptable under the cipher this store now uses.
+        let MetadataPool::Sqlite(pool) = store.pool() else {
+            panic!("expected an in-memory sqlite pool");
+        };
+        sqlx::query(
+            "UPDATE pipelines SET spec_ciphertext = 'not-valid-ciphertext' WHERE id = 'corrupt'",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+        // Must not fail the whole call — only the corrupt row is missing,
+        // every other pipeline still lists normally (this is the actual
+        // fix: it used to `?` out of the whole function on the first
+        // undecryptable row).
+        let summaries = store.list_summaries(&cipher, 100, 0).await.unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].pipeline_id, "good");
+
+        // The corrupt pipeline itself still surfaces an error when asked
+        // for directly — this skips it in bulk listings, it doesn't hide
+        // the problem entirely.
+        assert!(store.get_summary("corrupt", &cipher).await.is_err());
     }
 
     #[tokio::test]
