@@ -64,6 +64,8 @@ pub async fn execute_tool(
             timeout_seconds,
         } => generate_chart(state, source, script, *timeout_seconds, args).await,
         AgentToolKind::DraftPipeline => draft_pipeline(state, args).await,
+        AgentToolKind::GetPipelineStatus => get_pipeline_status(state, args).await,
+        AgentToolKind::EditPipeline => edit_pipeline(state, args).await,
     }
 }
 
@@ -161,6 +163,63 @@ async fn draft_pipeline(state: &AppState, args: &Value) -> Result<ToolOutput, Ag
 
     Ok(ToolOutput::Text(format!(
         "created pipeline {:?} with {} source(s) and {} sink(s){}",
+        spec.pipeline_id,
+        spec.sources.len(),
+        spec.sinks.len(),
+        if spec.schedule.is_some() {
+            " (scheduled)"
+        } else {
+            " (on-demand only, not scheduled)"
+        }
+    )))
+}
+
+async fn get_pipeline_status(state: &AppState, args: &Value) -> Result<ToolOutput, AgentToolError> {
+    let pipeline_id = args
+        .get("pipeline_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            AgentToolError("get_pipeline_status: missing required \"pipeline_id\" argument".into())
+        })?;
+
+    let summary = state
+        .pipelines
+        .get_summary(pipeline_id, &state.secrets)
+        .await
+        .map_err(AgentToolError::from_display)?;
+
+    Ok(ToolOutput::Text(
+        serde_json::to_string(&summary)
+            .unwrap_or_else(|_| "(failed to serialize pipeline status)".to_string()),
+    ))
+}
+
+async fn edit_pipeline(state: &AppState, args: &Value) -> Result<ToolOutput, AgentToolError> {
+    let mut spec: nexus_core::PipelineSpec = serde_json::from_value(args.clone())
+        .map_err(|e| AgentToolError(format!("edit_pipeline: invalid pipeline spec: {e}")))?;
+    // Same reasoning as `draft_pipeline`: this tool only ever produces a
+    // pipeline meant to be run for real, never the Canvas's "save
+    // incomplete work" draft flag.
+    spec.draft = false;
+
+    spec.validate()
+        .map_err(|e| AgentToolError(format!("edit_pipeline: {e}")))?;
+    spec.validate_security_with(state.allow_internal_hosts)
+        .map_err(|e| AgentToolError(format!("edit_pipeline: {e}")))?;
+
+    // `PipelineStore::update` itself 404s (`PipelineStoreError::NotFound`)
+    // if `pipeline_id` doesn't already exist — no separate existence check
+    // needed, and that error message ("pipeline {id:?} not found") is
+    // already a clear, retryable signal back to the model (e.g. it should
+    // have called `draft_pipeline` instead).
+    state
+        .pipelines
+        .update(&spec.pipeline_id, &spec, &state.secrets, "agent")
+        .await
+        .map_err(|e| AgentToolError(format!("edit_pipeline: failed to save: {e}")))?;
+
+    Ok(ToolOutput::Text(format!(
+        "updated pipeline {:?} with {} source(s) and {} sink(s){}",
         spec.pipeline_id,
         spec.sources.len(),
         spec.sinks.len(),
@@ -758,6 +817,194 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("invalid pipeline spec"));
+    }
+
+    #[tokio::test]
+    async fn get_pipeline_status_returns_summary_for_existing_pipeline() {
+        let state = crate::tests::test_state().await;
+        let (_src_dir, source_node) = sqlite_fixture("items").await;
+        let sink_dir = tempfile::tempdir().unwrap();
+        let sink_path = sink_dir.path().join("sink.db");
+        let spec = nexus_core::PipelineSpec {
+            pipeline_id: "status-check-pipeline".to_string(),
+            sources: vec![source_node],
+            sinks: vec![NodeSpec {
+                name: None,
+                connector: "sqlite".to_string(),
+                config: serde_json::json!({
+                    "file_path": sink_path.display().to_string(),
+                    "table": "items_copy",
+                    "primary_key": "id"
+                }),
+            }],
+            transform: None,
+            embedding: None,
+            llm: None,
+            python: None,
+            visualization: None,
+            channel_capacity: 100,
+            partitions: 1,
+            dbt: None,
+            post_dbt_sinks: Vec::new(),
+            schedule: None,
+            depends_on: Vec::new(),
+            dependency_mode: nexus_core::DependencyMode::Any,
+            alerts: None,
+            quality_checks: Vec::new(),
+            anomaly_alerts: false,
+            masking: Vec::new(),
+            draft: false,
+            clean_blocks: Vec::new(),
+        };
+        state
+            .pipelines
+            .create(&spec, &state.secrets, "test")
+            .await
+            .unwrap();
+
+        let output = execute_tool(
+            &state,
+            &AgentToolKind::GetPipelineStatus,
+            &serde_json::json!({"pipeline_id": "status-check-pipeline"}),
+        )
+        .await
+        .unwrap();
+        let ToolOutput::Text(text) = output else {
+            panic!("expected Text output");
+        };
+        assert!(text.contains("status-check-pipeline"));
+        assert!(text.contains("\"last_run_status\":null"));
+    }
+
+    #[tokio::test]
+    async fn get_pipeline_status_missing_arg_is_an_error() {
+        let state = crate::tests::test_state().await;
+        let err = execute_tool(
+            &state,
+            &AgentToolKind::GetPipelineStatus,
+            &serde_json::json!({}),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("pipeline_id"));
+    }
+
+    #[tokio::test]
+    async fn get_pipeline_status_unknown_pipeline_is_an_error() {
+        let state = crate::tests::test_state().await;
+        let err = execute_tool(
+            &state,
+            &AgentToolKind::GetPipelineStatus,
+            &serde_json::json!({"pipeline_id": "does-not-exist"}),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn edit_pipeline_updates_an_existing_pipeline() {
+        let state = crate::tests::test_state().await;
+        let (_src_dir, source_node) = sqlite_fixture("items").await;
+        let source_config = source_node.config.clone();
+        let sink_dir = tempfile::tempdir().unwrap();
+        let sink_path = sink_dir.path().join("sink.db");
+        let spec = nexus_core::PipelineSpec {
+            pipeline_id: "editable-pipeline".to_string(),
+            sources: vec![source_node],
+            sinks: vec![NodeSpec {
+                name: None,
+                connector: "sqlite".to_string(),
+                config: serde_json::json!({
+                    "file_path": sink_path.display().to_string(),
+                    "table": "items_copy",
+                    "primary_key": "id"
+                }),
+            }],
+            transform: None,
+            embedding: None,
+            llm: None,
+            python: None,
+            visualization: None,
+            channel_capacity: 100,
+            partitions: 1,
+            dbt: None,
+            post_dbt_sinks: Vec::new(),
+            schedule: None,
+            depends_on: Vec::new(),
+            dependency_mode: nexus_core::DependencyMode::Any,
+            alerts: None,
+            quality_checks: Vec::new(),
+            anomaly_alerts: false,
+            masking: Vec::new(),
+            draft: false,
+            clean_blocks: Vec::new(),
+        };
+        state
+            .pipelines
+            .create(&spec, &state.secrets, "test")
+            .await
+            .unwrap();
+
+        let args = serde_json::json!({
+            "pipeline_id": "editable-pipeline",
+            "sources": [{"connector": "sqlite", "config": source_config}],
+            "sinks": [{"connector": "sqlite", "config": {
+                "file_path": sink_path.display().to_string(),
+                "table": "items_copy",
+                "primary_key": "id"
+            }}],
+            "schedule": "0 0 * * *"
+        });
+
+        let output = execute_tool(&state, &AgentToolKind::EditPipeline, &args)
+            .await
+            .unwrap();
+        let ToolOutput::Text(text) = output else {
+            panic!("expected Text output");
+        };
+        assert!(text.contains("editable-pipeline"));
+        assert!(text.contains("scheduled"));
+
+        let saved = state
+            .pipelines
+            .get_spec("editable-pipeline", &state.secrets)
+            .await
+            .unwrap();
+        assert_eq!(saved.schedule.as_deref(), Some("0 0 * * *"));
+    }
+
+    #[tokio::test]
+    async fn edit_pipeline_rejects_unknown_pipeline_id() {
+        let state = crate::tests::test_state().await;
+        let args = serde_json::json!({
+            "pipeline_id": "does-not-exist",
+            "sources": [{"connector": "csv", "config": {"path": "/tmp/a.csv"}}],
+            "sinks": [{"connector": "csv", "config": {"path": "/tmp/out.csv"}}]
+        });
+
+        let err = execute_tool(&state, &AgentToolKind::EditPipeline, &args)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not found"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn edit_pipeline_rejects_invalid_spec_with_a_retryable_error() {
+        let state = crate::tests::test_state().await;
+        let args = serde_json::json!({
+            "pipeline_id": "editable-pipeline",
+            "sources": [
+                {"connector": "csv", "config": {"path": "/tmp/a.csv"}},
+                {"connector": "csv", "config": {"path": "/tmp/b.csv"}}
+            ],
+            "sinks": [{"connector": "csv", "config": {"path": "/tmp/out.csv"}}]
+        });
+
+        let err = execute_tool(&state, &AgentToolKind::EditPipeline, &args)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("transform"), "got: {err}");
     }
 
     #[tokio::test]

@@ -590,6 +590,8 @@ pub enum AgentToolKind {
     CallWebhook { url: String, method: String },
     GenerateChart { source: NodeSpec, script: String, timeout_seconds: Option<u64> },
     DraftPipeline, // sem config estática — ver detalhe abaixo
+    GetPipelineStatus, // idem — ver detalhe abaixo
+    EditPipeline, // idem — ver detalhe abaixo
 }
 ```
 
@@ -671,6 +673,40 @@ configurar essa ferramenta como `require_approval` por padrão. O passo
 pendente já mostra o `PipelineSpec` inteiro (JSON cru) no `args` do
 trace (`AgentsPanel.tsx`) — revisar antes de aprovar não precisa de UI
 nova nenhuma.
+
+**`GetPipelineStatus`/`EditPipeline` (2026-09-29) são a 7ª e 8ª
+ferramenta** — pedido do usuário depois de perceber que um agente
+podia criar (`DraftPipeline`) e rodar (`RunPipeline`) um pipeline, mas
+não tinha como checar se um já existente terminou/falhou, nem
+atualizar um sem recriar do zero. Nenhuma das duas tem config estática
+(mesma forma de `DraftPipeline`):
+
+- `GetPipelineStatus` é **read-only**: o modelo manda `pipeline_id`
+  como argumento dinâmico (não sabe de antemão qual checar, diferente
+  de `RunPipeline`/`SearchVectors` que já vêm escopadas a um pipeline
+  na configuração do agente), e `agent_tools::get_pipeline_status`
+  simplesmente chama `PipelineStore::get_summary` — o mesmo resumo
+  sem-secrets que `GET /pipelines/{id}` já devolve pela API, zero
+  exposição nova. `NotFound` vira o texto de erro da ferramenta, mesmo
+  loop de retry-com-erro de sempre.
+- `EditPipeline` é o complemento natural do `DraftPipeline` (que só
+  cria): mesmo shape de argumento dinâmico (`PipelineSpec` inteiro,
+  incluindo `pipeline_id`), mesmo `json_schema()` de fallback (os dois
+  reaproveitam o mesmo schema estático em `nexus-core` e a mesma
+  chamada a `agent_tools::draft_pipeline_schema(state)` em
+  `agent_runner.rs`, listada abaixo). A diferença é só a chamada final:
+  `PipelineStore::update(&spec.pipeline_id, ...)` em vez de `create` —
+  `update` já retorna `NotFound` se o `pipeline_id` não existir, sem
+  precisar de checagem de existência própria; esse erro já orienta o
+  modelo a usar `draft_pipeline` em vez disso. Risco maior que
+  `DraftPipeline`: pode reescrever silenciosamente um pipeline já
+  rodando em produção (sink errado, agendamento removido, etc.) — a
+  recomendação de `require_approval` vale ainda mais forte aqui que
+  para as outras ferramentas com efeito colateral.
+
+Em `agent_runner.rs`, o `match` que especializa o schema (mencionado
+acima pro `DraftPipeline`) cobre as duas variantes ao mesmo tempo:
+`DraftPipeline | EditPipeline => agent_tools::draft_pipeline_schema(state)`.
 
 **Loop (`agent_runner.rs`)**: monta o histórico como `Vec<ToolMessage>`,
 resolve o backend via `load_llm_backend_for_model`, chama

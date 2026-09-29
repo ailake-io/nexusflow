@@ -1054,8 +1054,13 @@ lista de desejos:
       `NodeInspector.tsx`).
 - [x] Docs: `USER_GUIDE.md` (seção nova), `ARCHITECTURE.md` (loop de
       tool-calling, schema das tabelas novas).
-- [ ] Teste real contra OpenRouter (chave do usuário) — usuário roda por
-      conta própria, não fabricado/simulado aqui.
+- [x] Teste real contra OpenRouter (2026-09-28, `deepseek/deepseek-v4.1-flash`,
+      chave do usuário) — `query_data` resolveu corretamente uma pergunta
+      GROUP BY que um `qwen2.5:3b` local tinha alucinado nomes de coluna
+      antes (3 passos, 0 retry); `draft_pipeline` criou pipeline válido e
+      persistido de ponta a ponta. Confirma que o gap de qualidade
+      observado com modelo local era do modelo, não do mecanismo de
+      tool-calling/retry.
 - [x] Cache de resposta do LLM pro agente (2026-09-27) — `AgentSpec.cache:
       Option<LlmCacheSpec>`, reaproveita literalmente o mesmo
       `LlmCacheSpec`/Redis/`connect_llm_cache` do node `llm` (§17), só
@@ -1383,3 +1388,60 @@ JSON aninhado) — decisão do usuário: não vale a pena um shim de
 normalização pra compensar esse modelo específico agora; validar contra
 um modelo cloud (GPT-4o/Claude/OpenRouter, que lidam com JSON aninhado
 de forma confiável) fica pro usuário fazer com chave real.
+
+## Fase 34 — Ferramentas de status e edição de pipeline (7ª/8ª ferramenta: `get_pipeline_status`, `edit_pipeline`)
+
+Pedido de 2026-09-29, na sequência da validação real da Fase 33 contra
+OpenRouter (`draft_pipeline` e `query_data` confirmados funcionando de
+ponta a ponta). Pergunta exploratória do usuário ("veja se seria bom
+ter mais alguma tool pra os agentes") levou à identificação de um gap
+real: o agente podia **criar** (`draft_pipeline`) e **rodar**
+(`run_pipeline`) um pipeline, mas não tinha como checar se um já
+existente terminou/falhou, nem atualizar um sem recriar do zero.
+Usuário confirmou as duas propostas (`get`/`edit`); uma terceira
+proposta (ferramenta de acesso livre à internet) foi descartada por
+enquanto — risco de prompt injection via conteúdo de página web não
+confiável entrando no loop de raciocínio do agente é categoria
+diferente/maior que `call_webhook` (URL fixa, configurada pelo
+operador), registrado aqui como possível fase futura se o usuário
+quiser retomar.
+
+**Implementado:**
+- `AgentToolKind::GetPipelineStatus` (`nexus-core/src/agent.rs`) —
+  variante unitária, sem config estática. Modelo manda `pipeline_id`
+  como argumento dinâmico (não escopado a um pipeline fixo na
+  configuração do agente, diferente de `RunPipeline`/`SearchVectors`).
+  `agent_tools::get_pipeline_status` chama `PipelineStore::get_summary`
+  — mesmo resumo sem-secrets que `GET /pipelines/{id}` já expõe, zero
+  exposição nova. `NotFound` vira o texto de erro da ferramenta.
+- `AgentToolKind::EditPipeline` — mesma forma do `DraftPipeline`
+  (variante unitária, argumento dinâmico é o `PipelineSpec` inteiro,
+  reaproveita o mesmo `json_schema()` de fallback e a mesma
+  especialização em `agent_runner.rs` via
+  `agent_tools::draft_pipeline_schema(state)`). `agent_tools::edit_pipeline`
+  roda a mesma `validate()`/`validate_security_with()` de sempre e
+  chama `PipelineStore::update(&spec.pipeline_id, ...)` em vez de
+  `create` — `update` já retorna `NotFound` se o pipeline não existir,
+  sem checagem de existência própria.
+- Docs: `ARCHITECTURE.md §20` (subseção nova), `docs/USER_GUIDE.md
+  §13.2` (itens 7/8 na lista de ferramentas).
+- Testes: 6 novos em `agent_tools.rs` (`get_pipeline_status`: retorna
+  resumo real, argumento ausente é erro, pipeline desconhecido é erro;
+  `edit_pipeline`: atualiza pipeline existente de verdade — confirmado
+  lendo de volta via `get_spec`, rejeita `pipeline_id` desconhecido,
+  rejeita spec inválido com erro retryable) + 2 em `agent.rs`
+  (`nexus-core`: schema/validate sem config estática, schema idêntico
+  ao `draft_pipeline`).
+
+**Recomendação operacional**: `EditPipeline` é risco maior que
+`DraftPipeline` — pode reescrever silenciosamente um pipeline já
+rodando em produção (sink errado, agendamento removido). Recomendado
+`ApprovalMode::RequireApproval` ainda mais fortemente que para
+`DraftPipeline`.
+
+**Critério de pronto:** `cargo fmt`/`clippy -D warnings` limpos,
+`cargo test -p nexus-core -p nexus-server --features
+llm,embeddings-api,chromadb,csv,python-viz` — 100% verde (36 testes de
+agente, incluindo os 8 novos). **Atingido a nível de código** — teste
+real contra um LLM (Ollama ou OpenRouter) fica pro usuário rodar
+quando quiser, mesmo padrão das ferramentas anteriores.

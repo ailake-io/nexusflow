@@ -284,12 +284,15 @@ async fn run_loop(
         .map(|tc| ToolDef {
             name: tc.tool.name().to_string(),
             description: tc.tool.description().to_string(),
-            // `draft_pipeline` is the one tool whose schema needs I/O (the
-            // live connector catalog) that `AgentToolKind::json_schema()`
-            // can't do from `nexus-core` — special-cased here instead of
-            // in that pure method. Every other tool still uses it as-is.
+            // `draft_pipeline`/`edit_pipeline` are the two tools whose
+            // schema needs I/O (the live connector catalog) that
+            // `AgentToolKind::json_schema()` can't do from `nexus-core` —
+            // special-cased here instead of in that pure method (both
+            // share the same spec shape). Every other tool still uses it
+            // as-is.
             schema: match &tc.tool {
-                nexus_core::AgentToolKind::DraftPipeline => {
+                nexus_core::AgentToolKind::DraftPipeline
+                | nexus_core::AgentToolKind::EditPipeline => {
                     crate::agent_tools::draft_pipeline_schema()
                 }
                 other => other.json_schema(),
