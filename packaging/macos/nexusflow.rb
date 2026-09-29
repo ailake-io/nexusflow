@@ -9,6 +9,13 @@
 # release.yml's `SHA256SUMS` — that file is generated before the
 # build-macos-installer.yml clobber and is stale for this asset).
 #
+# Bumped to v0.3.1 (2026-09-29, docs/version audit) — found stuck at v0.1.7
+# (3 minor releases behind) with no CI step keeping it in sync; still a
+# manual update (see the `brew bump-formula-pr` note below). `sha256`
+# verified against both a direct download and the release's own
+# `SHA256SUMS` — they matched this time (no separate enterprise-bundled
+# overwrite pending for this asset as of this update).
+#
 # Install without a tap (works today, once the checksum above is real):
 #   brew install --formula https://raw.githubusercontent.com/ailake-io/nexusflow/main/packaging/macos/nexusflow.rb
 #
@@ -31,8 +38,8 @@
 class Nexusflow < Formula
   desc "Universal Rust data & vector framework — ETL/ELT/streaming + AI Lakehouse Builder"
   homepage "https://github.com/ailake-io/nexusflow"
-  url "https://github.com/ailake-io/nexusflow/releases/download/v0.1.7/nexusflow-macos-arm64.tar.gz"
-  sha256 "acbc28dfcd240012bec46317d40e21f13f7a19d0a0c9b4152be9af43ea3352c7"
+  url "https://github.com/ailake-io/nexusflow/releases/download/v0.3.1/nexusflow-macos-arm64.tar.gz"
+  sha256 "1e65128939b1204b6a4fb22583e5365b4bc53887e222e6295146a9bf9c1a2c44"
   license "Apache-2.0"
 
   depends_on macos: :ventura
