@@ -28,6 +28,8 @@ Vivem em **repositório/crate privado separado** (`nexus-connectors-enterprise`)
 
 Distribuição: **binário próprio**, compilado a partir do repo privado (`nexus-connectors-enterprise/bin`), que depende de `nexus-core`/`nexus-server` como git dependency pinada por rev — não é uma feature flag ligada no binário OSS nem um plugin carregado dinamicamente em runtime. O binário enterprise sempre lista todo o catálogo (OSS + enterprise) no `GET /connectors`; o que trava por conector é a **license key** validada em runtime (JWT assinado, checagem de expiração/seat count via `check_connector_license`) — sem license cobrindo, o conector aparece mas não salva/roda (ver `docs/ENTERPRISE_LICENSING.md`).
 
+**Exceção — 3 capabilities pagas que NÃO são conector**: `llm-lineage-tracking` (`GET /lineage/generation/{id}`), `reactive-rag-cdc` (combinação CDC source + `embedding` sem node `transform`) e `git-history-github-sync` (mirror do versionamento git local pro GitHub). Diferente de todo o resto deste documento, o código dessas 3 **já roda sempre no binário público OSS** — gateado só por `check_connector_license` na mesma license key, sem repo/binário separado (ver `CLAUDE.md §4.5`, `ARCHITECTURE.md §17`).
+
 ## 3. Regra prática pro assistente (Claude)
 
 - Ao gerar conector novo, perguntar (ou inferir do contexto) se é candidato OSS ou enterprise **antes** de commitar no repo público.
