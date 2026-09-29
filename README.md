@@ -20,6 +20,7 @@ Detalhes completos de stack, arquitetura e regras de código: ver [`CLAUDE.md`](
 - **Transformação sem escrever código** — blocos de limpeza/transformação configuráveis (filtrar, renomear, converter tipo, preencher nulos, agregar, etc.), encadeáveis no Canvas com preview por bloco; alternativa a escrever SQL/Python direto (ver [`docs/USER_GUIDE.md` §12](./docs/USER_GUIDE.md#12-blocos-de-transformaçãolimpeza-sem-código)).
 - **AI Lakehouse**: chunking (fixed-size/recursive/semantic) + embeddings (ONNX local ou API OpenAI-compatible) + carga em 6 bancos vetoriais (LanceDB, Qdrant, Milvus, pgvector, Pinecone, ChromaDB).
 - **LLMOps**: node `llm` em lote (OpenAI-compatible ou Anthropic nativo), RAG ad-hoc (`POST /rag/query`) sobre os mesmos bancos vetoriais, avaliação sistemática por golden dataset, versionamento git embutido de pipelines/prompts.
+- **Agente com tool-calling** (estilo n8n AI Agent) — decide sozinho qual das 8 ferramentas chamar e em que ordem (consultar dados, buscar vetorial, rodar/checar status/editar pipeline, webhook, gráfico), com aprovação humana opcional por ferramenta antes de qualquer ação com efeito colateral.
 - **dbt opcional** — ELT clássico ou ETL real (lê de volta o resultado transformado e grava num destino final, tudo num único run).
 - **Plataforma de dados**: catálogo pesquisável com flag de PII, orquestração cross-pipeline (`depends_on`), detecção de anomalia por volume (z-score), mascaramento de PII por tokenização determinística, distribuição de carga entre workers via fila Postgres.
 - **RBAC** (Read/Execute/Write/Admin), segredos criptografados (AES-256-GCM), alertas em 5 canais (Slack, Teams, PagerDuty, Email, webhook), observabilidade estruturada (`tracing` + OTel + Prometheus).
@@ -138,7 +139,6 @@ Mais opções (curl|sh, .deb/AppImage, build from source, habilitar conectores e
 |---|---|
 | [`docs/GETTING_STARTED.md`](./docs/GETTING_STARTED.md) | Instalação, configuração e primeiro pipeline — comece por aqui |
 | [`docs/USER_GUIDE.md`](./docs/USER_GUIDE.md) | Referência completa: config de cada conector, transform, embeddings, agendamento |
-| [`docs/PROJECT_REVIEW.md`](./docs/PROJECT_REVIEW.md) | Backlog técnico unificado: bugs, melhorias e divergências documentação × código |
 | [`CLAUDE.md`](./CLAUDE.md) | Visão geral, stack, estrutura de diretórios, regras de código pro assistente AI |
 | [`ARCHITECTURE.md`](./ARCHITECTURE.md) | Arquitetura técnica detalhada: roteador de conectores, streaming/backpressure, checkpointing, pipeline de embeddings |
 | [`ROADMAP.md`](./ROADMAP.md) | Fases de desenvolvimento, milestones, critérios de conclusão do MVP |

@@ -9,6 +9,8 @@ Documento único de backlog técnico. Consolida:
 
 > **Escopo da auditoria:** branch `develop`, estado atual do working tree. Os achados foram verificados no código-fonte; referências (`path:linha`) se referem ao ponto atual do histórico.
 
+> 📦 **Arquivado (2026-09-29, auditoria de docs)** — última atualização 2026-09-09, 20 dias e 4 fases antes deste arquivamento (Fase 31 Agente, Fase 32 migração de 22 conectores, Fase 33 `draft_pipeline`, Fase 34 `get_pipeline_status`/`edit_pipeline`). Não é mais tocado; `ROADMAP.md` (seção "Pendências ativas", fase a fase) é o backlog vivo. Conteúdo abaixo fica só como registro histórico daquela auditoria.
+
 ---
 
 ## 1. Resumo Executivo
