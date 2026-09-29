@@ -1445,3 +1445,18 @@ llm,embeddings-api,chromadb,csv,python-viz` — 100% verde (36 testes de
 agente, incluindo os 8 novos). **Atingido a nível de código** — teste
 real contra um LLM (Ollama ou OpenRouter) fica pro usuário rodar
 quando quiser, mesmo padrão das ferramentas anteriores.
+
+**Correção de segurança (mesmo dia, achado por revisão automática do
+commit)**: `DraftPipeline`/`EditPipeline` só rodavam
+`validate()`/`validate_security_with()` antes de salvar — faltavam as
+4 checagens que `create_pipeline_handler`/`update_pipeline_handler`
+já fazem: gate de licença (`connectors::validate_pipeline_configs` —
+um agente podia salvar pipeline com conector enterprise sem licença,
+bypass real), checagem de `depends_on`, checagem de
+`NEXUS_MASKING_SALT`, e log de auditoria
+(`log_security_event`/`commit_pipeline_history`). O bug já existia
+desde a Fase 33 (só no `DraftPipeline`) — `EditPipeline` novo repetiu
+a mesma lacuna, não introduziu uma nova. Fix: `agent_tools::
+apply_pipeline_save_gates`/`log_pipeline_audit`, chamados pelas duas
+ferramentas — ver `ARCHITECTURE.md §20` pro detalhe. Reconfirmado:
+`fmt`/`clippy -D warnings` limpos, 36/36 testes de agente verdes.

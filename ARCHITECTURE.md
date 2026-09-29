@@ -708,6 +708,24 @@ Em `agent_runner.rs`, o `match` que especializa o schema (mencionado
 acima pro `DraftPipeline`) cobre as duas variantes ao mesmo tempo:
 `DraftPipeline | EditPipeline => agent_tools::draft_pipeline_schema(state)`.
 
+**Correção de paridade (mesma data)**: revisão de segurança do commit
+encontrou que `DraftPipeline`/`EditPipeline` rodavam só
+`validate()`/`validate_security_with()` antes de salvar — faltavam as
+4 checagens que `create_pipeline_handler`/`update_pipeline_handler`
+(`lib.rs`) já fazem depois dessas duas: (1) `connectors::validate_pipeline_configs`
+(gate de licença — um agente podia salvar pipeline usando conector
+enterprise sem licença, bypass real, não só cosmético), (2)
+`pipeline_dependencies::check_dependencies` (ciclo/existência de
+`depends_on`), (3) checagem de `NEXUS_MASKING_SALT` quando `masking`
+não está vazio, e (4) o log de auditoria (`log_security_event` +,
+com `version-history`, `commit_pipeline_history`) — a mesma lacuna que
+motivou esse log em primeiro lugar (CLAUDE.md, incidente 2026-09-15).
+O bug já existia desde a Fase 33 (`DraftPipeline` sozinho) e foi só
+repetido, não introduzido, pelo `EditPipeline` novo. Fix: helper único
+`agent_tools::apply_pipeline_save_gates` (as 3 checagens estruturais) +
+`log_pipeline_audit` (auditoria), chamados pelas duas ferramentas —
+nenhuma regra nova, só paridade real com o caminho REST.
+
 **Loop (`agent_runner.rs`)**: monta o histórico como `Vec<ToolMessage>`,
 resolve o backend via `load_llm_backend_for_model`, chama
 `call_with_tools_cached` (ver cache abaixo). Em `ToolTurn::ToolCalls`, verifica `ApprovalMode` da

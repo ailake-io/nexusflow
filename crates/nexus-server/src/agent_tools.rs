@@ -130,13 +130,89 @@ pub fn draft_pipeline_schema() -> Value {
     })
 }
 
+/// Identity recorded as the author/actor for every pipeline an agent tool
+/// creates or edits — `PipelineStore::create`/`update`'s audit column, the
+/// security-event log, and (when enabled) the git-history commit all use
+/// this same string, so "who changed this pipeline" investigations can
+/// tell an agent-driven change apart from a human one at a glance.
+const AGENT_AUDIT_ACTOR: &str = "agent";
+
+/// Runs every *non-structural* gate `create_pipeline_handler`/
+/// `update_pipeline_handler` (`lib.rs`) apply beyond `PipelineSpec::validate`/
+/// `validate_security_with` — license-gated connectors, `depends_on`
+/// cycle/existence checks, and the masking-salt precondition. `draft_pipeline`/
+/// `edit_pipeline` must run the *exact same* set the REST API does, or an
+/// agent could save a pipeline (e.g. one using an unlicensed enterprise
+/// connector) that a human hitting `POST`/`PUT /pipelines` would have had
+/// rejected — a real gate, not just a cosmetic parity nit.
+async fn apply_pipeline_save_gates(
+    state: &AppState,
+    spec: &nexus_core::PipelineSpec,
+) -> Result<(), AgentToolError> {
+    let active_license = state.license_store.active().await.unwrap_or(None);
+    crate::connectors::validate_pipeline_configs(spec, active_license.as_ref())
+        .map_err(AgentToolError::from_display)?;
+    if !spec.depends_on.is_empty() {
+        let all_specs = state
+            .pipelines
+            .list_all_specs(&state.secrets)
+            .await
+            .map_err(AgentToolError::from_display)?;
+        crate::pipeline_dependencies::check_dependencies(&all_specs, spec)
+            .map_err(AgentToolError)?;
+    }
+    if !spec.masking.is_empty() && state.masking_salt.is_none() {
+        return Err(AgentToolError(
+            "pipeline sets masking but NEXUS_MASKING_SALT is not configured on this server"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Same best-effort audit trail `create_pipeline_handler`/
+/// `update_pipeline_handler` write after a successful save — a failure here
+/// must never fail the tool call itself (the pipeline is already saved),
+/// same posture as those handlers', just logged and swallowed. `action` is
+/// the same event-name convention those handlers use ("pipeline_create"/
+/// "pipeline_update") and doubles as the git-history commit message.
+async fn log_pipeline_audit(state: &AppState, spec: &nexus_core::PipelineSpec, action: &str) {
+    if let Err(e) = state
+        .auth_store
+        .log_security_event(
+            Some(AGENT_AUDIT_ACTOR),
+            action,
+            Some(&spec.pipeline_id),
+            true,
+            None,
+        )
+        .await
+    {
+        tracing::warn!(
+            error = %e,
+            pipeline_id = %spec.pipeline_id,
+            action,
+            "failed to write agent pipeline audit log"
+        );
+    }
+    #[cfg(feature = "version-history")]
+    crate::commit_pipeline_history(
+        state,
+        spec,
+        AGENT_AUDIT_ACTOR,
+        &format!("agent {action} {}", spec.pipeline_id),
+    )
+    .await;
+}
+
 /// Builds a brand-new saved pipeline from the model's structured argument.
 /// Deliberately reuses the exact same validation a human-drawn pipeline
-/// goes through (`PipelineSpec::validate`/`validate_security_with`) —
-/// there's no separate, looser path for an agent-authored spec. A
-/// deserialization or validation failure becomes this tool's result text,
-/// which `agent_runner.rs` feeds back into the conversation so the model
-/// can retry with a corrected spec on its next turn.
+/// goes through (`PipelineSpec::validate`/`validate_security_with` plus
+/// `apply_pipeline_save_gates`, above) — there's no separate, looser path
+/// for an agent-authored spec. A deserialization or validation failure
+/// becomes this tool's result text, which `agent_runner.rs` feeds back into
+/// the conversation so the model can retry with a corrected spec on its
+/// next turn.
 async fn draft_pipeline(state: &AppState, args: &Value) -> Result<ToolOutput, AgentToolError> {
     let mut spec: nexus_core::PipelineSpec = serde_json::from_value(args.clone())
         .map_err(|e| AgentToolError(format!("draft_pipeline: invalid pipeline spec: {e}")))?;
@@ -154,12 +230,16 @@ async fn draft_pipeline(state: &AppState, args: &Value) -> Result<ToolOutput, Ag
         .map_err(|e| AgentToolError(format!("draft_pipeline: {e}")))?;
     spec.validate_security_with(state.allow_internal_hosts)
         .map_err(|e| AgentToolError(format!("draft_pipeline: {e}")))?;
+    apply_pipeline_save_gates(state, &spec)
+        .await
+        .map_err(|e| AgentToolError(format!("draft_pipeline: {e}")))?;
 
     state
         .pipelines
-        .create(&spec, &state.secrets, "agent")
+        .create(&spec, &state.secrets, AGENT_AUDIT_ACTOR)
         .await
         .map_err(|e| AgentToolError(format!("draft_pipeline: failed to save: {e}")))?;
+    log_pipeline_audit(state, &spec, "pipeline_create").await;
 
     Ok(ToolOutput::Text(format!(
         "created pipeline {:?} with {} source(s) and {} sink(s){}",
@@ -206,6 +286,9 @@ async fn edit_pipeline(state: &AppState, args: &Value) -> Result<ToolOutput, Age
         .map_err(|e| AgentToolError(format!("edit_pipeline: {e}")))?;
     spec.validate_security_with(state.allow_internal_hosts)
         .map_err(|e| AgentToolError(format!("edit_pipeline: {e}")))?;
+    apply_pipeline_save_gates(state, &spec)
+        .await
+        .map_err(|e| AgentToolError(format!("edit_pipeline: {e}")))?;
 
     // `PipelineStore::update` itself 404s (`PipelineStoreError::NotFound`)
     // if `pipeline_id` doesn't already exist — no separate existence check
@@ -214,9 +297,10 @@ async fn edit_pipeline(state: &AppState, args: &Value) -> Result<ToolOutput, Age
     // have called `draft_pipeline` instead).
     state
         .pipelines
-        .update(&spec.pipeline_id, &spec, &state.secrets, "agent")
+        .update(&spec.pipeline_id, &spec, &state.secrets, AGENT_AUDIT_ACTOR)
         .await
         .map_err(|e| AgentToolError(format!("edit_pipeline: failed to save: {e}")))?;
+    log_pipeline_audit(state, &spec, "pipeline_update").await;
 
     Ok(ToolOutput::Text(format!(
         "updated pipeline {:?} with {} source(s) and {} sink(s){}",
