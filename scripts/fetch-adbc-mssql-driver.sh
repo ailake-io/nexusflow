@@ -92,6 +92,11 @@ fi
 # capture the quoted driver path with `sed -E`, which works on both macOS and
 # Linux.
 OS_KEY="$(uname -s | tr '[:upper:]' '[:lower:]')"
+# ADBC manifests use the portable platform tuple name `macos`, while
+# `uname -s` reports `Darwin` on macOS.
+if [ "$OS_KEY" = "darwin" ]; then
+    OS_KEY="macos"
+fi
 DRIVER_PATH="$(sed -nE "s|^${OS_KEY}_[^[:space:]]+[[:space:]]*=[[:space:]]*'([^']+)'.*|\1|p" "$MANIFEST" | head -n1)"
 if [ -z "$DRIVER_PATH" ] || [ ! -f "$DRIVER_PATH" ]; then
     echo "error: mssql.toml at $MANIFEST didn't yield a valid driver path for OS key '${OS_KEY}_*' ($DRIVER_PATH) — dbc may name macOS entries differently than expected, inspect $MANIFEST directly" >&2
