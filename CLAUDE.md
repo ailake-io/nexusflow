@@ -85,11 +85,12 @@ nexusflow/
 - DuckDB ADBC ✅ (upsert real, `ON CONFLICT`)                       - Kafka ✅ (genérico, sem CDC, source+sink)
 - ClickHouse ADBC ✅ (sink append-only, sem upsert)                 - ODBC ✅
 - BigQuery ✅ (driver prebuilt via wheel do PyPI, empacotado no        - CSV ✅
-  Dockerfile público desde 2026-09-27, sem build from source)
-- Snowflake ✅ (driver prebuilt via wheel do PyPI, empacotado no       - Webhook ✅ (sink)
-  Dockerfile público desde 2026-09-27, sem build from source)
+  Dockerfile público e, desde 2026-09-30, também em .deb/.rpm/
+  AppImage/tarball/Homebrew macOS, sem build from source)
+- Snowflake ✅ (driver prebuilt via wheel do PyPI, mesmo empacotamento - Webhook ✅ (sink)
+  do BigQuery acima desde 2026-09-30, sem build from source)
 - MSSQL ✅ (+ `mssql-cdc` nativo; driver ADBC via `dbc install`,       - MQTT ✅ (telemetria IoT/sensor, source apenas)
-  empacotado no Dockerfile público desde 2026-09-27)
+  mesmo empacotamento do BigQuery/Snowflake acima desde 2026-09-30)
 - Redshift ✅ (reusa o driver ADBC do Postgres — wire protocol       - Redis Streams ✅ (source+sink, sem consumer group)
   igual)                                                            - NATS ✅ (core, sem JetStream, source+sink)
 - Databricks ✅ (driver ADBC fica a cargo do operador instalar —    - RabbitMQ ✅ (AMQP 0-9-1, auto-ack, source+sink)

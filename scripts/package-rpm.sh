@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Builds an nexusflow-<version>-1.*.x86_64.rpm via rpmbuild. Same
-# prerequisites as package-deb.sh. Needs `rpmbuild` on PATH — on
-# Debian/Ubuntu that's `apt install rpm`; Fedora/RHEL/openSUSE ship it by
-# default.
+# prerequisites as package-deb.sh (BigQuery/Snowflake/MSSQL drivers added
+# 2026-09-30, same audit — see that script's header for the exact build
+# commands). Needs `rpmbuild` on PATH — on Debian/Ubuntu that's `apt
+# install rpm`; Fedora/RHEL/openSUSE ship it by default.
 #
 # Usage: ./scripts/package-rpm.sh [OUT_DIR]
 
@@ -16,7 +17,9 @@ BIN="$REPO_ROOT/target/release/nexusflow"
 ADBC_DIR="$REPO_ROOT/target/adbc"
 PYTHON_RUNTIME_DIR="$REPO_ROOT/target/python-runtime/python"
 for f in "$BIN" "$ADBC_DIR/libadbc_driver_postgresql.so" "$ADBC_DIR/libadbc_driver_sqlite.so" \
-         "$ADBC_DIR/libadbc_driver_duckdb.so" "$ADBC_DIR/libadbc_clickhouse.so"; do
+         "$ADBC_DIR/libadbc_driver_duckdb.so" "$ADBC_DIR/libadbc_clickhouse.so" \
+         "$ADBC_DIR/libadbc_driver_bigquery.so" "$ADBC_DIR/libadbc_driver_snowflake.so" \
+         "$ADBC_DIR/libadbc_driver_mssql.so"; do
   [ -f "$f" ] || { echo "missing $f — build it first (see this script's header)" >&2; exit 1; }
 done
 [ -x "$PYTHON_RUNTIME_DIR/bin/python3" ] || {
@@ -60,6 +63,9 @@ install -m 755 $ADBC_DIR/libadbc_driver_postgresql.so %{buildroot}/usr/lib/nexus
 install -m 755 $ADBC_DIR/libadbc_driver_sqlite.so %{buildroot}/usr/lib/nexusflow/
 install -m 755 $ADBC_DIR/libadbc_driver_duckdb.so %{buildroot}/usr/lib/nexusflow/
 install -m 755 $ADBC_DIR/libadbc_clickhouse.so %{buildroot}/usr/lib/nexusflow/
+install -m 755 $ADBC_DIR/libadbc_driver_bigquery.so %{buildroot}/usr/lib/nexusflow/
+install -m 755 $ADBC_DIR/libadbc_driver_snowflake.so %{buildroot}/usr/lib/nexusflow/
+install -m 755 $ADBC_DIR/libadbc_driver_mssql.so %{buildroot}/usr/lib/nexusflow/
 cp -a $PYTHON_RUNTIME_DIR %{buildroot}/usr/lib/nexusflow/python
 install -m 755 $REPO_ROOT/packaging/linux/nexusflow-wrapper.sh %{buildroot}/usr/bin/nexusflow
 install -m 644 $REPO_ROOT/packaging/linux/nexusflow.desktop %{buildroot}/usr/share/applications/
@@ -92,6 +98,9 @@ fi
 %attr(755, root, root) /usr/lib/nexusflow/libadbc_driver_sqlite.so
 %attr(755, root, root) /usr/lib/nexusflow/libadbc_driver_duckdb.so
 %attr(755, root, root) /usr/lib/nexusflow/libadbc_clickhouse.so
+%attr(755, root, root) /usr/lib/nexusflow/libadbc_driver_bigquery.so
+%attr(755, root, root) /usr/lib/nexusflow/libadbc_driver_snowflake.so
+%attr(755, root, root) /usr/lib/nexusflow/libadbc_driver_mssql.so
 /usr/lib/nexusflow/python
 %attr(755, root, root) /usr/bin/nexusflow
 %attr(644, root, root) /usr/share/applications/nexusflow.desktop

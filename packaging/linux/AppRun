@@ -7,6 +7,11 @@ export ADBC_DRIVER_POSTGRESQL_PATH="${ADBC_DRIVER_POSTGRESQL_PATH:-$HERE/usr/lib
 export ADBC_DRIVER_SQLITE_PATH="${ADBC_DRIVER_SQLITE_PATH:-$HERE/usr/lib/libadbc_driver_sqlite.so}"
 export ADBC_DRIVER_CLICKHOUSE_PATH="${ADBC_DRIVER_CLICKHOUSE_PATH:-$HERE/usr/lib/libadbc_clickhouse.so}"
 export ADBC_DRIVER_DUCKDB_PATH="${ADBC_DRIVER_DUCKDB_PATH:-$HERE/usr/lib/libadbc_driver_duckdb.so}"
+# bigquery/snowflake/mssql — parity with nexusflow-wrapper.sh (deb/rpm)
+# closed 2026-09-30 (install-driver-coverage audit).
+export ADBC_DRIVER_BIGQUERY_PATH="${ADBC_DRIVER_BIGQUERY_PATH:-$HERE/usr/lib/libadbc_driver_bigquery.so}"
+export ADBC_DRIVER_SNOWFLAKE_PATH="${ADBC_DRIVER_SNOWFLAKE_PATH:-$HERE/usr/lib/libadbc_driver_snowflake.so}"
+export ADBC_DRIVER_MSSQL_PATH="${ADBC_DRIVER_MSSQL_PATH:-$HERE/usr/lib/libadbc_driver_mssql.so}"
 # Bundled, self-contained CPython (scripts/build-python-runtime.sh) — the
 # `python-transform`/`dbt` features shell out to a bare `python3`/`dbt` on
 # PATH (nexus-server's python_transform.rs/dbt.rs), so prepending this

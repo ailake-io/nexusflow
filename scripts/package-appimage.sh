@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Builds NexusFlow-<version>-x86_64.AppImage. Same prerequisites as
-# package-deb.sh (release binary w/ embed-ui,connectors-all + all four ADBC
-# driver .so's already built) plus `appimagetool` on PATH or at
-# $APPIMAGETOOL — get it from
+# package-deb.sh (release binary w/ embed-ui,connectors-all + all seven ADBC
+# driver .so's already built — bigquery/snowflake/mssql added 2026-09-30,
+# same audit) plus `appimagetool` on PATH or at $APPIMAGETOOL — get it from
 # https://github.com/AppImage/appimagetool/releases (continuous build).
 #
 # Nothing to bundle for the `odbc` connector itself: its driver *manager*
@@ -37,7 +37,9 @@ BIN="$REPO_ROOT/target/release/nexusflow"
 ADBC_DIR="$REPO_ROOT/target/adbc"
 PYTHON_RUNTIME_DIR="$REPO_ROOT/target/python-runtime/python"
 for f in "$BIN" "$ADBC_DIR/libadbc_driver_postgresql.so" "$ADBC_DIR/libadbc_driver_sqlite.so" \
-         "$ADBC_DIR/libadbc_driver_duckdb.so" "$ADBC_DIR/libadbc_clickhouse.so"; do
+         "$ADBC_DIR/libadbc_driver_duckdb.so" "$ADBC_DIR/libadbc_clickhouse.so" \
+         "$ADBC_DIR/libadbc_driver_bigquery.so" "$ADBC_DIR/libadbc_driver_snowflake.so" \
+         "$ADBC_DIR/libadbc_driver_mssql.so"; do
   [ -f "$f" ] || { echo "missing $f — build it first (see this script's header)" >&2; exit 1; }
 done
 [ -x "$PYTHON_RUNTIME_DIR/bin/python3" ] || {
@@ -55,6 +57,9 @@ install -m 755 "$ADBC_DIR/libadbc_driver_postgresql.so" "$APPDIR/usr/lib/"
 install -m 755 "$ADBC_DIR/libadbc_driver_sqlite.so" "$APPDIR/usr/lib/"
 install -m 755 "$ADBC_DIR/libadbc_driver_duckdb.so" "$APPDIR/usr/lib/"
 install -m 755 "$ADBC_DIR/libadbc_clickhouse.so" "$APPDIR/usr/lib/"
+install -m 755 "$ADBC_DIR/libadbc_driver_bigquery.so" "$APPDIR/usr/lib/"
+install -m 755 "$ADBC_DIR/libadbc_driver_snowflake.so" "$APPDIR/usr/lib/"
+install -m 755 "$ADBC_DIR/libadbc_driver_mssql.so" "$APPDIR/usr/lib/"
 # Self-contained CPython + pandas/pyarrow/dbt-core/dbt-postgres (see
 # scripts/build-python-runtime.sh) — `cp -a` preserves the symlinks a
 # python-build-standalone tree relies on (e.g. bin/python3 -> python3.12).

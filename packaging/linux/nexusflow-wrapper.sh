@@ -16,10 +16,10 @@ export ADBC_DRIVER_POSTGRESQL_PATH="${ADBC_DRIVER_POSTGRESQL_PATH:-/usr/lib/nexu
 export ADBC_DRIVER_SQLITE_PATH="${ADBC_DRIVER_SQLITE_PATH:-/usr/lib/nexusflow/libadbc_driver_sqlite.so}"
 export ADBC_DRIVER_CLICKHOUSE_PATH="${ADBC_DRIVER_CLICKHOUSE_PATH:-/usr/lib/nexusflow/libadbc_clickhouse.so}"
 export ADBC_DRIVER_DUCKDB_PATH="${ADBC_DRIVER_DUCKDB_PATH:-/usr/lib/nexusflow/libadbc_driver_duckdb.so}"
-# bigquery/snowflake/mssql (ROADMAP.md Fase 32) ship in the Docker image
-# only for now (Dockerfile `adbc` stage) — deb/rpm/AppImage parity is a
-# separate, not-yet-done follow-up (package-*.sh still only stage the
-# original 4).
+# bigquery/snowflake/mssql — deb/rpm parity closed 2026-09-30
+# (install-driver-coverage audit): package-deb.sh/package-rpm.sh now stage
+# these 3 alongside the original 4. AppImage parity is separate (see
+# packaging/linux/AppRun instead of this script).
 export ADBC_DRIVER_BIGQUERY_PATH="${ADBC_DRIVER_BIGQUERY_PATH:-/usr/lib/nexusflow/libadbc_driver_bigquery.so}"
 export ADBC_DRIVER_SNOWFLAKE_PATH="${ADBC_DRIVER_SNOWFLAKE_PATH:-/usr/lib/nexusflow/libadbc_driver_snowflake.so}"
 export ADBC_DRIVER_MSSQL_PATH="${ADBC_DRIVER_MSSQL_PATH:-/usr/lib/nexusflow/libadbc_driver_mssql.so}"
