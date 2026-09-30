@@ -314,6 +314,18 @@ jobs:
       # hardcoding a Linux-only `.so` extension).
       - run: ./scripts/build-adbc-duckdb-driver.sh target/adbc
       - run: ./scripts/build-adbc-clickhouse-driver.sh target/adbc
+      # BigQuery/Snowflake/MSSQL added 2026-09-30 (install-driver-coverage
+      # audit) — these 3 were previously only bundled in the Docker Hub
+      # image (root Dockerfile's `adbc`/`clickhouse-adbc` stages), so
+      # .deb/.rpm/AppImage/tarball/Homebrew installs had no fast-path for
+      # them at all despite `nexus-connector-bigquery`/`-snowflake`/`-mssql`
+      # being compiled in via `connectors-all` either way. All 3 fetch
+      # scripts became platform-aware the same day (macOS wheel/manifest
+      # support) — unconditional on both matrix legs here, same reasoning
+      # as duckdb/clickhouse above.
+      - run: ./scripts/fetch-adbc-bigquery-driver.sh target/adbc
+      - run: ./scripts/fetch-adbc-snowflake-driver.sh target/adbc
+      - run: ./scripts/fetch-adbc-mssql-driver.sh target/adbc
 
       # Every distributed artifact (this tarball, the .deb/.rpm/AppImage
       # below, docker-hub-publish.yml's image, and build-windows-installer.yml's
@@ -422,7 +434,9 @@ jobs:
           # file doesn't exist at all (shouldn't happen now that both
           # scripts run unconditionally earlier in this job, but a stray
           # `*` failing to expand shouldn't break packaging either way).
-          for f in target/adbc/libadbc_driver_duckdb.* target/adbc/libadbc_clickhouse.*; do
+          for f in target/adbc/libadbc_driver_duckdb.* target/adbc/libadbc_clickhouse.* \
+                   target/adbc/libadbc_driver_bigquery.* target/adbc/libadbc_driver_snowflake.* \
+                   target/adbc/libadbc_driver_mssql.*; do
             [ -f "$f" ] && cp "$f" "$stage/"
           done
           tar -czf "nexusflow-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" -C "$stage" .

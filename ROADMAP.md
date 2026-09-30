@@ -1486,3 +1486,59 @@ falha se pedida direto). `fmt`/`clippy -D warnings` limpos, suíte
 completa de `nexus-server` verde (362 testes; a falha isolada de
 `dbt_etl_pipeline` é só a feature `dbt` faltando no comando de teste,
 não regressão).
+
+## Cobertura de drivers ADBC em todo instalador (BigQuery/Snowflake/MSSQL, 2026-09-30)
+
+Pergunta do usuário sobre se os instaladores já cobrem todos os drivers
+necessários revelou um gap real: BigQuery/Snowflake/MSSQL (conectores já
+compilados via `connectors-all` em todo instalador) só tinham o driver
+ADBC fast-path bundled na imagem Docker — `.deb`/`.rpm`/AppImage/tarball
+macOS/Homebrew não tinham, apesar de `nexusflow-wrapper.sh` (deb/rpm) já
+ter as 3 env vars pré-cabeadas com um comentário dizendo "parity é
+follow-up ainda não feito".
+
+**Achado durante a implementação**: os 3 scripts `fetch-adbc-{bigquery,
+snowflake,mssql}-driver.sh` eram **hardcoded pra Linux**
+(`--platform manylinux2014_x86_64` nos dois primeiros; parsing do
+manifest do `dbc` hardcoded em `linux_amd64` no terceiro) — a suposição
+inicial de "fix fácil, só chamar os scripts que já existem" só valia
+pro Linux. Verificado que PyPI publica wheel `macosx_11_0_arm64` real
+pros dois primeiros (`file` confirma Mach-O arm64 de verdade dentro,
+só mantém a extensão `.so` mesmo no wheel de macOS — sem problema, os
+3 conectores localizam o driver só via env var, nunca checam extensão).
+`dbc`'s CLI segue convenção Go GOOS_GOARCH (`linux_amd64`); mssql vira
+parsing genérico por OS (`darwin_*` em vez de hardcode de arch) — não
+verificado contra um manifest Darwin real (sandbox sem macOS), mas
+auto-valida no próximo run real do `build-macos-installer.yml`.
+
+**2 bugs reais achados testando os scripts** (não introduzidos por
+mim, já existiam): lookbehind de largura variável (`(?<=...\w+...)`) no
+regex do mssql não é suportado por `grep -P` ("lookbehind assertion is
+not fixed length") — trocado por `\K`; e `find "$HOME" | head -n1` sob
+`pipefail` morre se `find` topar com qualquer diretório sem permissão
+de leitura embaixo de `$HOME`, mesmo já tendo achado o arquivo certo —
+`|| true` no fim do pipe.
+
+**Implementado:**
+- `scripts/fetch-adbc-{bigquery,snowflake,mssql}-driver.sh` — platform-aware
+- `.github/workflows/release.yml` — 3 fetches novos no job `build` (Linux
+  + macOS), tarball macOS passa a incluir os 3
+- `scripts/package-{deb,rpm,appimage}.sh` — checagem de existência +
+  instalação dos 3 novos `.so`
+- `packaging/linux/AppRun` — 3 env vars novas (paridade com
+  `nexusflow-wrapper.sh`, que já tinha)
+- `packaging/macos/nexusflow.rb` (local + tap externo
+  `ailake-io/homebrew-nexusflow`) — `caveats` documenta as 3 novas env
+  vars (`Dir["libadbc_*"]` já pega os arquivos novos sem mudança de
+  código)
+- Testado localmente: os 3 fetch scripts rodam de ponta a ponta no
+  Linux; `.deb`/`.rpm` empacotados com binário/drivers fake e
+  conferidos via `dpkg-deb --contents`/`rpm -qlp` — os 3 arquivos novos
+  aparecem dentro do pacote de verdade. AppImage só checado por sintaxe
+  (`bash -n`) — sem `appimagetool` disponível neste sandbox.
+
+**Critério de pronto**: próximo release real vai publicar `.deb`/`.rpm`/
+AppImage/tarball macOS com os 7 drivers ADBC embutidos, não só os 4 de
+antes — Windows continua sem nenhum (item separado, build MSVC/cmake
+do zero pro driver Postgres/SQLite que nem existe ainda, registrado
+como pendência maior, não coberto por este fix).

@@ -13,6 +13,14 @@
 # (3 minor releases behind) with no CI step keeping it in sync; still a
 # manual update (see the `brew bump-formula-pr` note below). `sha256`
 # verified against both a direct download and the release's own
+#
+# BigQuery/Snowflake/MSSQL caveats added below 2026-09-30 (install-driver-
+# coverage audit) — ahead of the actual v0.3.1 tarball, which predates the
+# fetch-adbc-{bigquery,snowflake,mssql}-driver.sh macOS support and
+# release.yml wiring that bundles them. Harmless in the meantime (the
+# connector only loads the driver when a pipeline actually uses it, same
+# as nexusflow-wrapper.sh's own reasoning for deb/rpm); becomes accurate
+# for real starting with whatever version ships after this change.
 # `SHA256SUMS` — they matched this time (no separate enterprise-bundled
 # overwrite pending for this asset as of this update).
 #
@@ -59,11 +67,14 @@ class Nexusflow < Formula
         export NEXUS_JWT_SECRET="$(openssl rand -hex 32)"
         export NEXUS_ENCRYPTION_KEY="$(openssl rand -hex 32)"
 
-      And the four ADBC driver paths, installed alongside this formula's lib/:
+      And the ADBC driver paths, installed alongside this formula's lib/:
         export ADBC_DRIVER_POSTGRESQL_PATH="#{lib}/libadbc_driver_postgresql.dylib"
         export ADBC_DRIVER_SQLITE_PATH="#{lib}/libadbc_driver_sqlite.dylib"
         export ADBC_DRIVER_DUCKDB_PATH="#{lib}/libadbc_driver_duckdb.dylib"
         export ADBC_DRIVER_CLICKHOUSE_PATH="#{lib}/libadbc_clickhouse.dylib"
+        export ADBC_DRIVER_BIGQUERY_PATH="#{lib}/libadbc_driver_bigquery.so"
+        export ADBC_DRIVER_SNOWFLAKE_PATH="#{lib}/libadbc_driver_snowflake.so"
+        export ADBC_DRIVER_MSSQL_PATH="#{lib}/libadbc_driver_mssql.so"
 
       See https://github.com/ailake-io/nexusflow/blob/main/docs/GETTING_STARTED.md
       for the full list of environment variables and how to run your first
