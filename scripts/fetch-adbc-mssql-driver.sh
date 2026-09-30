@@ -63,7 +63,16 @@ dbc install "mssql=${MSSQL_ADBC_VERSION}"
 # `pipefail` that non-zero killed the entire script right here under
 # `set -e`, despite MANIFEST getting the correct value. `|| true` doesn't
 # hide a real miss: an empty `$MANIFEST` is still caught below.
-MANIFEST="$(find "$HOME" -maxdepth 6 -iname 'mssql.toml' -path '*adbc*drivers*' 2>/dev/null | head -n1 || true)"
+#
+# `-ipath`, not `-path` (found for real on a `macos-latest` run,
+# 2026-09-30): that Darwin `dbc` wrote its manifest under
+# `~/Library/Application Support/ADBC/Drivers/mssql.toml` — capitalized
+# `ADBC`/`Drivers`, unlike Linux's lowercase `adbc/drivers`. `-iname`
+# already covered the filename case-insensitively; `-path` alone is
+# still case-sensitive and silently matched nothing, so this errored out
+# with "could not locate mssql.toml" despite `dbc` succeeding right
+# above it in the same log.
+MANIFEST="$(find "$HOME" -maxdepth 6 -iname 'mssql.toml' -ipath '*adbc*drivers*' 2>/dev/null | head -n1 || true)"
 
 if [ -z "$MANIFEST" ]; then
     echo "error: could not locate mssql.toml manifest under \$HOME after 'dbc install mssql' — check dbc's own output above for the install path" >&2
@@ -77,16 +86,13 @@ fi
 # `darwin_<arch>` key instead — not verified against a real Darwin
 # manifest yet (this sandbox has no macOS), so rather than hardcode a
 # guessed arch suffix (arm64 vs aarch64), match any `<os>_<anything> = '...'`
-# line under the current OS name. `\K` (not a lookbehind) on purpose —
-# tried `(?<=${OS_KEY}_\w+ = ')` first and it failed for real on this
-# exact Linux manifest with "lookbehind assertion is not fixed length"
-# (PCRE lookbehind must be fixed-width; `\w+` isn't), silently killing the
-# whole script under `set -e` before the error-message check below could
-# even run. `\K` has no such restriction. Self-validates the arch-suffix
-# question for real the next time build-macos-installer.yml runs on a
-# real `macos-latest`.
+# line under the current OS name. Use portable ERE syntax here: the macOS
+# runner's system `grep` is BSD grep and does not support GNU/PCRE's `-P`
+# option (or `\K`). Match any architecture suffix for the current OS and
+# capture the quoted driver path with `sed -E`, which works on both macOS and
+# Linux.
 OS_KEY="$(uname -s | tr '[:upper:]' '[:lower:]')"
-DRIVER_PATH=$(grep -oP "^${OS_KEY}_\w+ = '\K[^']+" "$MANIFEST" | head -n1)
+DRIVER_PATH="$(sed -nE "s|^${OS_KEY}_[^[:space:]]+[[:space:]]*=[[:space:]]*'([^']+)'.*|\1|p" "$MANIFEST" | head -n1)"
 if [ -z "$DRIVER_PATH" ] || [ ! -f "$DRIVER_PATH" ]; then
     echo "error: mssql.toml at $MANIFEST didn't yield a valid driver path for OS key '${OS_KEY}_*' ($DRIVER_PATH) — dbc may name macOS entries differently than expected, inspect $MANIFEST directly" >&2
     exit 1
