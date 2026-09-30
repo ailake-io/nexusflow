@@ -63,7 +63,16 @@ dbc install "mssql=${MSSQL_ADBC_VERSION}"
 # `pipefail` that non-zero killed the entire script right here under
 # `set -e`, despite MANIFEST getting the correct value. `|| true` doesn't
 # hide a real miss: an empty `$MANIFEST` is still caught below.
-MANIFEST="$(find "$HOME" -maxdepth 6 -iname 'mssql.toml' -path '*adbc*drivers*' 2>/dev/null | head -n1 || true)"
+#
+# `-ipath`, not `-path` (found for real on a `macos-latest` run,
+# 2026-09-30): that Darwin `dbc` wrote its manifest under
+# `~/Library/Application Support/ADBC/Drivers/mssql.toml` — capitalized
+# `ADBC`/`Drivers`, unlike Linux's lowercase `adbc/drivers`. `-iname`
+# already covered the filename case-insensitively; `-path` alone is
+# still case-sensitive and silently matched nothing, so this errored out
+# with "could not locate mssql.toml" despite `dbc` succeeding right
+# above it in the same log.
+MANIFEST="$(find "$HOME" -maxdepth 6 -iname 'mssql.toml' -ipath '*adbc*drivers*' 2>/dev/null | head -n1 || true)"
 
 if [ -z "$MANIFEST" ]; then
     echo "error: could not locate mssql.toml manifest under \$HOME after 'dbc install mssql' — check dbc's own output above for the install path" >&2
