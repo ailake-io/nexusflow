@@ -16,17 +16,31 @@
 #                           time (found in a security review, 2026-09-27:
 #                           same reproducibility gap `DUCKDB_VERSION` already
 #                           closes for the duckdb fetch).
+#
+# macOS support added 2026-09-30 (install-driver-coverage audit): PyPI does
+# publish a `macosx_11_0_arm64` wheel for this package too — confirmed by
+# downloading it directly and checking the extracted .so with `file`
+# (real Mach-O arm64 dylib, just kept the `.so` extension like the Linux
+# one; `nexus-connector-bigquery` locates it purely via the
+# `ADBC_DRIVER_BIGQUERY_PATH` env var, so the extension never matters).
+# `manylinux2014_x86_64` stays the Linux target — matches the x86_64-only
+# scope of every other Linux package script in this repo.
 set -euo pipefail
 
 OUT_DIR="${1:-./target/adbc}"
 BIGQUERY_ADBC_VERSION="${BIGQUERY_ADBC_VERSION:-1.11.0}"
 mkdir -p "$OUT_DIR"
 
+case "$(uname -s)" in
+  Darwin) PLATFORM_TAG="macosx_11_0_arm64" ;;
+  *) PLATFORM_TAG="manylinux2014_x86_64" ;;
+esac
+
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 pip download "adbc-driver-bigquery==${BIGQUERY_ADBC_VERSION}" --no-deps \
-  --platform manylinux2014_x86_64 --only-binary=:all: \
+  --platform "$PLATFORM_TAG" --only-binary=:all: \
   -d "$WORK_DIR" >/dev/null
 
 WHEEL="$(find "$WORK_DIR" -maxdepth 1 -name '*.whl' | head -n1)"

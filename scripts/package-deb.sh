@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds nexusflow_<version>_amd64.deb — single-binary deploy (Marco 11,
-# CLAUDE.md §7) plus the four ADBC driver .so's it dlopens at runtime (no
+# CLAUDE.md §7) plus the seven ADBC driver .so's it dlopens at runtime (no
 # crates.io distribution of those exists — see
 # nexus-connector-postgres/src/driver.rs, ARCHITECTURE.md §3). This script
 # only stages and packages already-built artifacts, it doesn't build Rust,
@@ -8,7 +8,14 @@
 #   npm --prefix frontend ci && npm --prefix frontend run build
 #   cargo build --release -p nexusflow --features embed-ui,connectors-all
 #   ./scripts/build-adbc-postgresql-driver.sh && ./scripts/build-adbc-sqlite-driver.sh \
-#     && ./scripts/build-adbc-duckdb-driver.sh && ./scripts/build-adbc-clickhouse-driver.sh
+#     && ./scripts/build-adbc-duckdb-driver.sh && ./scripts/build-adbc-clickhouse-driver.sh \
+#     && ./scripts/fetch-adbc-bigquery-driver.sh && ./scripts/fetch-adbc-snowflake-driver.sh \
+#     && ./scripts/fetch-adbc-mssql-driver.sh
+#
+# BigQuery/Snowflake/MSSQL added 2026-09-30 (install-driver-coverage audit)
+# — previously only bundled in the Docker Hub image, this package had the
+# connectors compiled in via connectors-all but no fast-path driver for
+# any of the three.
 #
 # Usage: ./scripts/package-deb.sh [OUT_DIR]
 
@@ -25,7 +32,9 @@ BIN="$REPO_ROOT/target/release/nexusflow"
 ADBC_DIR="$REPO_ROOT/target/adbc"
 PYTHON_RUNTIME_DIR="$REPO_ROOT/target/python-runtime/python"
 for f in "$BIN" "$ADBC_DIR/libadbc_driver_postgresql.so" "$ADBC_DIR/libadbc_driver_sqlite.so" \
-         "$ADBC_DIR/libadbc_driver_duckdb.so" "$ADBC_DIR/libadbc_clickhouse.so"; do
+         "$ADBC_DIR/libadbc_driver_duckdb.so" "$ADBC_DIR/libadbc_clickhouse.so" \
+         "$ADBC_DIR/libadbc_driver_bigquery.so" "$ADBC_DIR/libadbc_driver_snowflake.so" \
+         "$ADBC_DIR/libadbc_driver_mssql.so"; do
   [ -f "$f" ] || { echo "missing $f — build it first (see this script's header)" >&2; exit 1; }
 done
 [ -x "$PYTHON_RUNTIME_DIR/bin/python3" ] || {
@@ -43,6 +52,9 @@ install -m 755 "$ADBC_DIR/libadbc_driver_postgresql.so" "$STAGE/usr/lib/nexusflo
 install -m 755 "$ADBC_DIR/libadbc_driver_sqlite.so" "$STAGE/usr/lib/nexusflow/"
 install -m 755 "$ADBC_DIR/libadbc_driver_duckdb.so" "$STAGE/usr/lib/nexusflow/"
 install -m 755 "$ADBC_DIR/libadbc_clickhouse.so" "$STAGE/usr/lib/nexusflow/"
+install -m 755 "$ADBC_DIR/libadbc_driver_bigquery.so" "$STAGE/usr/lib/nexusflow/"
+install -m 755 "$ADBC_DIR/libadbc_driver_snowflake.so" "$STAGE/usr/lib/nexusflow/"
+install -m 755 "$ADBC_DIR/libadbc_driver_mssql.so" "$STAGE/usr/lib/nexusflow/"
 # Self-contained CPython + pandas/pyarrow/dbt-core/dbt-postgres (see
 # scripts/build-python-runtime.sh) — makes the `python-transform`/`dbt`
 # features work with zero manual install on the target machine.

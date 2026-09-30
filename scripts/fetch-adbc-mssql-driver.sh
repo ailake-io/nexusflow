@@ -56,16 +56,39 @@ dbc install "mssql=${MSSQL_ADBC_VERSION}"
 # candidate this script tried) — a `find` under `$HOME` is what actually
 # locates it regardless of which layout this dbc version/environment
 # picks.
-MANIFEST="$(find "$HOME" -maxdepth 6 -iname 'mssql.toml' -path '*adbc*drivers*' 2>/dev/null | head -n1)"
+# `|| true` on the whole pipeline (found as a real bug while testing the
+# macOS change below, 2026-09-30): `find` under `$HOME` routinely exits
+# non-zero on its own (permission-denied on some unrelated subdirectory),
+# even though it still printed the one match `head` picks up — with
+# `pipefail` that non-zero killed the entire script right here under
+# `set -e`, despite MANIFEST getting the correct value. `|| true` doesn't
+# hide a real miss: an empty `$MANIFEST` is still caught below.
+MANIFEST="$(find "$HOME" -maxdepth 6 -iname 'mssql.toml' -path '*adbc*drivers*' 2>/dev/null | head -n1 || true)"
 
 if [ -z "$MANIFEST" ]; then
     echo "error: could not locate mssql.toml manifest under \$HOME after 'dbc install mssql' — check dbc's own output above for the install path" >&2
     exit 1
 fi
 
-DRIVER_PATH=$(grep -oP "(?<=linux_amd64 = ')[^']+" "$MANIFEST")
+# macOS support added 2026-09-30 (install-driver-coverage audit) — every
+# manifest entry this script has seen so far (Linux) uses Go's GOOS_GOARCH
+# convention (`linux_amd64`). `dbc install` itself detects the host
+# platform, so on a real macOS runner the manifest should carry a
+# `darwin_<arch>` key instead — not verified against a real Darwin
+# manifest yet (this sandbox has no macOS), so rather than hardcode a
+# guessed arch suffix (arm64 vs aarch64), match any `<os>_<anything> = '...'`
+# line under the current OS name. `\K` (not a lookbehind) on purpose —
+# tried `(?<=${OS_KEY}_\w+ = ')` first and it failed for real on this
+# exact Linux manifest with "lookbehind assertion is not fixed length"
+# (PCRE lookbehind must be fixed-width; `\w+` isn't), silently killing the
+# whole script under `set -e` before the error-message check below could
+# even run. `\K` has no such restriction. Self-validates the arch-suffix
+# question for real the next time build-macos-installer.yml runs on a
+# real `macos-latest`.
+OS_KEY="$(uname -s | tr '[:upper:]' '[:lower:]')"
+DRIVER_PATH=$(grep -oP "^${OS_KEY}_\w+ = '\K[^']+" "$MANIFEST" | head -n1)
 if [ -z "$DRIVER_PATH" ] || [ ! -f "$DRIVER_PATH" ]; then
-    echo "error: mssql.toml at $MANIFEST didn't yield a valid driver path ($DRIVER_PATH)" >&2
+    echo "error: mssql.toml at $MANIFEST didn't yield a valid driver path for OS key '${OS_KEY}_*' ($DRIVER_PATH) — dbc may name macOS entries differently than expected, inspect $MANIFEST directly" >&2
     exit 1
 fi
 
