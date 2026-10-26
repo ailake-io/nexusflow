@@ -52,11 +52,13 @@ novo, mas releituras/segundas opiniões são bem-vindas:
   "Débitos conhecidos".
 - **`RUSTSEC-2025-0009`/`RUSTSEC-2024-0336`** (`ring`/`rustls`, via
   `milvus-sdk-rust`'s `tonic` 0.8.3) — sem release mais nova do SDK.
-- **`GHSA-2f9f-gq7v-9h6m`** (Apache Thrift, via `nexus-connector-ailake`
-  → `ailake-catalog`/`ailake-parquet` → `parquet` 52.2.0 interno) — sem
-  release mais nova desses crates upstream; exploração exigiria um
-  arquivo Parquet malicioso alcançável por um source/sink `ailake`, já
-  atrás do mesmo tier de confiança (`Write`) que outros conectores locais.
+
+O alerta **`GHSA-2f9f-gq7v-9h6m` / `CVE-2026-43868`** (Apache Thrift) foi
+corrigido com um backport local em `vendor/thrift`: tanto o Parquet 52.2
+quanto o 58.4 ainda exigem `thrift ^0.17`, enquanto a correção upstream só
+está publicada a partir de 0.23. O backport mantém a API 0.17 e rejeita
+varints Compact acima dos limites do protocolo antes de convertê-los em
+tamanhos de alocação; há testes unitários para os limites de 32 e 64 bits.
 
 Detalhe técnico completo de cada um: `ROADMAP.md`, seção "Débitos
 conhecidos".
