@@ -36,4 +36,4 @@ url = "2.5.4"
 # divergent counts. Actual meter provider/exporter wiring lives in
 # nexus-server (this crate has no I/O — CLAUDE.md §8.3), calls here are
 # no-ops until that's installed.
-opentelemetry = { version = "0.32.0", default-features = false, features = ["metrics"] }
+opentelemetry = { version = "0.33.1", default-features = false, features = ["metrics"] }

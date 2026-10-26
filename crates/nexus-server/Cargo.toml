@@ -310,7 +310,7 @@ uuid = { version = "1.11.0", features = ["v4"] }
 # HTTP client (alerts.rs) even though it's a different reqwest major (OTLP
 # 0.32 pins reqwest 0.13) — not worth fighting the ecosystem's version churn
 # to unify two otherwise-unrelated HTTP stacks.
-opentelemetry = { version = "0.32.0", default-features = false, features = ["trace"] }
+opentelemetry = { version = "0.33.1", default-features = false, features = ["trace"] }
 opentelemetry_sdk = { version = "0.32.1", default-features = false, features = [
     "trace",
     "rt-tokio",
