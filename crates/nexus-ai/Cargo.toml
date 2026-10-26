@@ -100,7 +100,7 @@ reqwest = { version = "0.12.28", optional = true, default-features = false, feat
 serde = { version = "1.0.229", optional = true, features = ["derive"] }
 serde_json = { version = "1.0.151", optional = true }
 thiserror = { version = "2.0.19", optional = true }
-tokenizers = { version = "0.21.4", optional = true, default-features = false, features = [
+tokenizers = { version = "0.23.2", optional = true, default-features = false, features = [
     "onig",
 ] }
 tokio = { version = "1.53.1", features = ["rt"], optional = true }
