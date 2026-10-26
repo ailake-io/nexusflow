@@ -32,7 +32,7 @@ pub fn to_ailake_batch(batch: &NewBatch) -> Result<AilakeBatch, NexusError> {
             .map_err(|e| NexusError::Schema(format!("arrow ipc write (new) failed: {e}")))?;
     }
     let mut reader = AilakeStreamReader::try_new(Cursor::new(buf), None)
-            .map_err(|e| NexusError::Schema(format!("arrow ipc read (ailake) failed: {e}")))?;
+        .map_err(|e| NexusError::Schema(format!("arrow ipc read (ailake) failed: {e}")))?;
     let batch = reader
         .next()
         .ok_or_else(|| NexusError::Schema("arrow ipc bridge: empty stream".to_string()))?
@@ -54,7 +54,7 @@ pub fn to_nexus_batch(batch: &AilakeBatch) -> Result<NewBatch, NexusError> {
             .map_err(|e| NexusError::Schema(format!("arrow ipc write (ailake) failed: {e}")))?;
     }
     let mut reader = NewStreamReader::try_new(Cursor::new(buf), None)
-            .map_err(|e| NexusError::Schema(format!("arrow ipc read (nexus) failed: {e}")))?;
+        .map_err(|e| NexusError::Schema(format!("arrow ipc read (nexus) failed: {e}")))?;
     let batch = reader
         .next()
         .ok_or_else(|| NexusError::Schema("arrow ipc bridge: empty stream".to_string()))?
