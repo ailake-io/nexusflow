@@ -80,7 +80,10 @@ hf-hub = { version = "0.4.3", optional = true, default-features = false, feature
 # ndarray's `std` feature for the copy `ort`'s own `ndarray` feature pulls in
 # transitively (ort needs `NdFloat`, which is gated behind `std`).
 ndarray = { version = "0.17", optional = true, features = ["std"] }
-ort = { version = "2.0.0-rc.10", optional = true, default-features = false, features = [
+# The enterprise release regenerates its lockfile from scratch; keep the
+# release candidate whose Session::builder() API this crate uses. A loose
+# prerelease requirement resolved rc.15 there and broke the Linux build.
+ort = { version = "=2.0.0-rc.13", optional = true, default-features = false, features = [
     "std",
     "ndarray",
     "download-binaries",
