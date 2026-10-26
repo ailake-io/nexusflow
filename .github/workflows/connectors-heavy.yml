@@ -78,7 +78,7 @@ jobs:
       # test job, cached the same way for the same reason (hosted runner
       # cache doesn't otherwise survive between runs).
       - name: Cache Hugging Face model cache
-        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/nexusflow/models
           key: hf-models-milvus-${{ hashFiles('crates/nexus-connectors/nexus-connector-milvus/tests/milvus_integration.rs') }}
