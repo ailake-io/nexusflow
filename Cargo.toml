@@ -82,3 +82,10 @@ ailake-cdc = ["nexus-server/ailake-cdc"]
 anyhow = "1.0.104"
 nexus-server = { path = "crates/nexus-server" }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
+
+# Parquet currently requires thrift ^0.17. The upstream security fix is
+# released only in thrift 0.23+, which Cargo cannot resolve against that
+# requirement; keep the 0.17 API and backport Apache's compact-protocol
+# varint bounds check locally until Parquet publishes a compatible update.
+[patch.crates-io]
+thrift = { path = "vendor/thrift" }

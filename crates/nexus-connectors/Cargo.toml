@@ -64,3 +64,9 @@ debug = "line-tables-only"
 
 [profile.test]
 debug = "line-tables-only"
+
+# Keep the nested connector workspace on the same security-patched thrift
+# implementation as the root workspace. The upstream Parquet requirement is
+# still ^0.17, so a direct 0.23 lockfile update is not compatible.
+[patch.crates-io]
+thrift = { path = "../../vendor/thrift" }
