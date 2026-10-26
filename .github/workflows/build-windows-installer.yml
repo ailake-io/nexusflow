@@ -353,7 +353,7 @@ jobs:
       - name: Upload unsigned .msi (SignPath input)
         id: upload-unsigned-msi
         if: steps.signpath.outputs.configured == 'true'
-        uses: actions/upload-artifact@834a144ee995460fba8ed112a2fc961b36a5ec5a # v4.4.3
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4.4.3
         with:
           name: unsigned-msi
           path: ${{ steps.msi.outputs.path }}
@@ -392,7 +392,7 @@ jobs:
       # recalculate for 6-12h even after deleting old artifacts, and this
       # step failing outright once already blocked an otherwise-successful
       # build from finishing.
-      - uses: actions/upload-artifact@834a144ee995460fba8ed112a2fc961b36a5ec5a # v4.4.3
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4.4.3
         if: steps.resolve-version.outputs.tag == ''
         with:
           name: nexusflow-windows-installer
