@@ -17,7 +17,7 @@ futures = "0.3.33"
 # Deterministic column tokenization (Fase 28 — column_masking.rs), keyed
 # HMAC-SHA256 over an installation-wide salt.
 hmac = "0.12"
-sha2 = "0.10"
+sha2 = "0.11"
 inventory = "0.3.24"
 # Generates the JSON Schema each connector publishes for its Config struct
 # (ConnectorDescriptor.config_schema) — the UI's canvas builds a real form
