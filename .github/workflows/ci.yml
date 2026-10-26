@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [develop, main]
+    branches: [main]
   pull_request:
     branches: [develop, main]
   workflow_dispatch:
@@ -130,6 +130,27 @@ jobs:
       #     small leaf deps of the ailake/tantivy and indicatif chains with
       #     no drop-in replacement pinned yet.
       #
+      # Newly published advisories traced on 2026-10-26. These are all
+      # transitive pins with no compatible fixed release available today;
+      # keep the exact traces here so a future upstream release can remove
+      # each ignore instead of silently carrying it forward:
+      #   RUSTSEC-2026-0387 (crypto-bigint 0.5.5, via elliptic-curve 0.13.x
+      #     used by jsonwebtoken/openidconnect) — the fix is crypto-bigint
+      #     0.7.x and requires a newer elliptic-curve major.
+      #   RUSTSEC-2026-0349 / -0346 (rustls 0.20/0.21, and
+      #     RUSTSEC-2026-0382 (rustls-webpki 0.101/0.102)) — legacy TLS
+      #     trees from connector SDK pins; the compatible fix requires a
+      #     newer SDK/TLS major, not a lockfile-only update.
+      #   RUSTSEC-2026-0367 / -0368 / -0369 (zip 8.6.0, via calamine and
+      #     rust_xlsxwriter in nexus-connector-excel) — both currently
+      #     compatible Excel crates still require zip 8.x; the fix is zip 9.
+      #   RUSTSEC-2026-0391 (zstd 0.13.3, via AI-Lake/iceberg) and
+      #     RUSTSEC-2026-0403 (zstd-safe 7.2.1, via DataFusion's
+      #     async-compression) — fixed releases require newer upstream
+      #     major versions of those pinned dependency trees.
+      #   RUSTSEC-2026-0410 (zstd-sys 2.0.12, through the same
+      #     zstd-safe chain) — fixed release requires zstd-safe 8.x.
+      #
       # NOT in the --ignore list below, deliberately: GHSA-2f9f-gq7v-9h6m
       # (Apache Thrift, via `thrift` 0.17.0 <- `ailake-catalog`/
       # `ailake-parquet` 0.1.12's own internal `parquet` 52.2.0 pin — see
@@ -138,9 +159,9 @@ jobs:
       # there's nothing to pass here — it's tracked/dismissed on the
       # Dependabot dashboard instead, same reasoning as everything above.
       - name: Audit root workspace
-        run: cargo audit --no-yanked --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195 --ignore RUSTSEC-2025-0009 --ignore RUSTSEC-2024-0336 --ignore RUSTSEC-2026-0258 --ignore RUSTSEC-2026-0099 --ignore RUSTSEC-2026-0098 --ignore RUSTSEC-2026-0049 --ignore RUSTSEC-2026-0104 --ignore RUSTSEC-2025-0134 --ignore RUSTSEC-2025-0010 --ignore RUSTSEC-2023-0086 --ignore RUSTSEC-2026-0002 --ignore RUSTSEC-2026-0253 --ignore RUSTSEC-2025-0141 --ignore RUSTSEC-2024-0384 --ignore RUSTSEC-2025-0119 --ignore RUSTSEC-2024-0436 --ignore RUSTSEC-2026-0173
+        run: cargo audit --no-yanked --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195 --ignore RUSTSEC-2025-0009 --ignore RUSTSEC-2024-0336 --ignore RUSTSEC-2026-0258 --ignore RUSTSEC-2026-0099 --ignore RUSTSEC-2026-0098 --ignore RUSTSEC-2026-0049 --ignore RUSTSEC-2026-0104 --ignore RUSTSEC-2025-0134 --ignore RUSTSEC-2025-0010 --ignore RUSTSEC-2023-0086 --ignore RUSTSEC-2026-0002 --ignore RUSTSEC-2026-0253 --ignore RUSTSEC-2025-0141 --ignore RUSTSEC-2024-0384 --ignore RUSTSEC-2025-0119 --ignore RUSTSEC-2024-0436 --ignore RUSTSEC-2026-0173 --ignore RUSTSEC-2026-0387 --ignore RUSTSEC-2026-0349 --ignore RUSTSEC-2026-0346 --ignore RUSTSEC-2026-0382 --ignore RUSTSEC-2026-0367 --ignore RUSTSEC-2026-0368 --ignore RUSTSEC-2026-0369 --ignore RUSTSEC-2026-0391 --ignore RUSTSEC-2026-0403 --ignore RUSTSEC-2026-0410
       - name: Audit crates/nexus-connectors workspace
-        run: cargo audit --no-yanked --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195 --ignore RUSTSEC-2025-0009 --ignore RUSTSEC-2024-0336 --ignore RUSTSEC-2026-0258 --ignore RUSTSEC-2026-0099 --ignore RUSTSEC-2026-0098 --ignore RUSTSEC-2026-0049 --ignore RUSTSEC-2026-0104 --ignore RUSTSEC-2025-0134 --ignore RUSTSEC-2025-0010 --ignore RUSTSEC-2023-0086 --ignore RUSTSEC-2026-0002 --ignore RUSTSEC-2026-0253 --ignore RUSTSEC-2025-0141 --ignore RUSTSEC-2024-0384 --ignore RUSTSEC-2025-0119 --ignore RUSTSEC-2024-0436 --ignore RUSTSEC-2026-0173
+        run: cargo audit --no-yanked --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195 --ignore RUSTSEC-2025-0009 --ignore RUSTSEC-2024-0336 --ignore RUSTSEC-2026-0258 --ignore RUSTSEC-2026-0099 --ignore RUSTSEC-2026-0098 --ignore RUSTSEC-2026-0049 --ignore RUSTSEC-2026-0104 --ignore RUSTSEC-2025-0134 --ignore RUSTSEC-2025-0010 --ignore RUSTSEC-2023-0086 --ignore RUSTSEC-2026-0002 --ignore RUSTSEC-2026-0253 --ignore RUSTSEC-2025-0141 --ignore RUSTSEC-2024-0384 --ignore RUSTSEC-2025-0119 --ignore RUSTSEC-2024-0436 --ignore RUSTSEC-2026-0173 --ignore RUSTSEC-2026-0387 --ignore RUSTSEC-2026-0349 --ignore RUSTSEC-2026-0346 --ignore RUSTSEC-2026-0382 --ignore RUSTSEC-2026-0367 --ignore RUSTSEC-2026-0368 --ignore RUSTSEC-2026-0369 --ignore RUSTSEC-2026-0391 --ignore RUSTSEC-2026-0403 --ignore RUSTSEC-2026-0410
         working-directory: crates/nexus-connectors
 
   fmt:
