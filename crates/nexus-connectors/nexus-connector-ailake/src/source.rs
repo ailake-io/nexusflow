@@ -1,4 +1,4 @@
-use crate::bridge::to_new_batch;
+use crate::bridge::to_nexus_batch;
 use crate::config::AilakeConnectorConfig;
 use crate::rows::{append_embedding_column, extract_pk_strings};
 use ailake_catalog::hadoop::HadoopCatalog;
@@ -97,7 +97,7 @@ pub(crate) async fn read_file_batch(
     let (old_raw_batch, vectors) = reader
         .read_parquet()
         .map_err(|e| NexusError::Connector(format!("ailake read_parquet failed: {e}")))?;
-    let raw_batch = to_new_batch(&old_raw_batch)?;
+    let raw_batch = to_nexus_batch(&old_raw_batch)?;
     append_embedding_column(&raw_batch, &vectors, dimension, embedding_column)
 }
 
