@@ -124,7 +124,7 @@ jobs:
   # `github.sha` that might be stale or (per the "non-fast-forward"
   # failure this replaces) already behind another push.
   determine-version:
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     # Was 5 — bumped for the two `cargo update --workspace` calls below
     # (metadata-only re-resolution, no compilation, but still needs a cold
@@ -202,7 +202,7 @@ jobs:
 
   build:
     needs: determine-version
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     strategy:
       # A real run (2026-09-05) showed the cost of the default fail-fast:
       # macOS failed on a real, unrelated bug (libpq pkg-config path) and
@@ -504,7 +504,7 @@ jobs:
   # job definition (last present as of this commit's parent).
 
   smoke-test:
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     needs: [determine-version, build]
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -521,7 +521,7 @@ jobs:
           ./nexusflow-bin --version
 
   github-release:
-    if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     needs: [determine-version, build, smoke-test]
     runs-on: ubuntu-latest
     # ubuntu-latest ships `sha256sum` by default. GPG signing is
@@ -607,7 +607,7 @@ jobs:
   # unmerged on `develop` at release time is expected to already be in
   # `main` via the PR that triggered this chain in the first place.
   sync-develop:
-    if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     needs: [determine-version, github-release]
     runs-on: ubuntu-latest
     timeout-minutes: 5

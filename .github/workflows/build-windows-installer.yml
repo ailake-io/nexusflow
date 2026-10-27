@@ -44,7 +44,7 @@ env:
 jobs:
   build-windows-installer:
     name: build-windows-installer
-    if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main') || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     runs-on: windows-latest
     # 60 min wasn't enough on a real run (2026-09-05): the plain-OSS
     # `cargo build --release --features embed-ui,connectors-all` alone ran
