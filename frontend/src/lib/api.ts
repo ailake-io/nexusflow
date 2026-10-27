@@ -917,13 +917,15 @@ export interface BrowseEntry {
 /** Matches nexus-server::browse::BrowseListing, as returned by
  *  GET /system/browse-fs. */
 export interface BrowseListing {
+  root: string
   path: string
   entries: BrowseEntry[]
 }
 
 /** Lists a server-side directory's contents for the Canvas "browse path"
  *  file picker (`FileBrowserDialog`) — backs any file-based connector's
- *  `path`/`file_path` config field. `path` omitted/empty lists `/`. */
+ *  `path`/`file_path` config field. `path` omitted/empty lists the configured
+ *  file browser root. */
 export function browseFilesystem(token: string, path?: string): Promise<BrowseListing> {
   const params = new URLSearchParams()
   if (path) params.set('path', path)

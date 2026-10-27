@@ -350,6 +350,7 @@ export function SchemaForm({ schema, defs, value, onChange, idPrefix }: SchemaFo
         // becomes a dropzone for a dragged file or folder.
         const isFilePathField = FILE_PATH_FIELD_NAMES.has(key)
         const isSecretField = SECRET_FIELD_NAME_RE.test(key)
+        const isPemField = key === 'ca_certificate_pem'
         const isUploadingThisField = uploadingField === key
         return (
           <div key={key}>
@@ -362,15 +363,25 @@ export function SchemaForm({ schema, defs, value, onChange, idPrefix }: SchemaFo
               onDragOver={isFilePathField ? (e) => e.preventDefault() : undefined}
               onDrop={isFilePathField ? onFieldDrop(key) : undefined}
             >
-              <Input
-                id={fieldId}
-                type={isSecretField ? 'password' : 'text'}
-                autoComplete={isSecretField ? 'new-password' : 'off'}
-                value={(value[key] as string) ?? ''}
-                onChange={(e) => setField(key, e.target.value)}
-                className="w-full"
-                disabled={isUploadingThisField}
-              />
+              {isPemField ? (
+                <textarea
+                  id={fieldId}
+                  value={(value[key] as string) ?? ''}
+                  onChange={(e) => setField(key, e.target.value)}
+                  placeholder="-----BEGIN CERTIFICATE-----"
+                  className="min-h-36 w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-xs shadow-sm outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                />
+              ) : (
+                <Input
+                  id={fieldId}
+                  type={isSecretField ? 'password' : 'text'}
+                  autoComplete={isSecretField ? 'new-password' : 'off'}
+                  value={(value[key] as string) ?? ''}
+                  onChange={(e) => setField(key, e.target.value)}
+                  className="w-full"
+                  disabled={isUploadingThisField}
+                />
+              )}
               {isFilePathField && (
                 // Wraps onto its own line(s) instead of squeezing next to
                 // the input — a narrow (unresized) node inspector panel

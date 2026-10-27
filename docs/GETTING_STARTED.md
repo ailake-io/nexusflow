@@ -272,6 +272,8 @@ A feature Cargo `embeddings` (incluída em `connectors-all`) liga o crate `nexus
 | `NEXUS_AUTH_DB` | não | `sqlite://nexusflow-auth.db` | Usuários e papéis (RBAC). Aceita `postgres://`/`postgresql://` também. |
 | `NEXUS_PIPELINES_DB` | não | `sqlite://nexusflow-pipelines.db` | Definições de pipeline e histórico de execuções. Aceita `postgres://`/`postgresql://` também. |
 | `NEXUS_ADMIN_USERNAME` / `NEXUS_ADMIN_PASSWORD` | não | — | Se as duas estiverem setadas e a tabela de usuários estiver vazia, cria a conta Admin inicial (idempotente — não roda de novo depois). |
+| `NEXUS_UPLOAD_DIR` | não | `/data/uploads` | Diretório onde os uploads do Canvas são gravados. |
+| `NEXUS_BROWSE_ROOT` | não | valor de `NEXUS_UPLOAD_DIR` | Raiz permitida para o navegador de arquivos do Canvas. Configure para um diretório que contenha os dados locais que os conectores devem acessar. Caminhos, `..` e symlinks que saem dessa raiz são rejeitados. |
 | `NEXUS_SLACK_WEBHOOK_URL` | não | — | Sem ela, falhas de pipeline não disparam alerta no Slack. |
 | `NEXUS_OTLP_ENDPOINT` | não | — | Endpoint OTLP/HTTP pra exportar traces. Sem ela, traces ficam só como log JSON local; métricas Prometheus em `/metrics` funcionam de qualquer jeito. |
 | `NEXUS_ALLOW_INTERNAL_HOSTS` | não | `false` | Quando `true`, permite URLs de conectores apontando para `localhost`, `127.0.0.1` e IPs de LAN privados. Útil para testes locais; em produção mantenha `false` para mitigar SSRF. |
