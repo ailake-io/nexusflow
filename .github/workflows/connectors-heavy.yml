@@ -1,7 +1,6 @@
 name: connectors-heavy
 
 on:
-  workflow_dispatch:
   # Runs on every push to develop, not just ones touching
   # crates/nexus-connectors/** — changed 2026-09-08 at the user's explicit
   # request (this heavy suite must fire on every push/merge to develop,
@@ -28,7 +27,9 @@ env:
 jobs:
   connectors-heavy:
     name: connectors-heavy
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    if: >-
+      (github.event_name == 'push') ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     # Moved off a dedicated self-hosted Windows box to hosted `ubuntu-latest`
     # 2026-09-05 (repo went public same day, no more self-hosted NexusFlow
     # Actions — see ci.yml/release.yml for the same migration). Originally
@@ -49,10 +50,18 @@ jobs:
     steps:
       # workflow_run's default ref/sha context is the repo's default branch,
       # not the commit CI just validated on main — pin explicitly so this
-      # actually tests the same commit, not an unrelated one.
+      # actually tests the same commit, not an unrelated one. Push runs
+      # use the fixed develop ref; this workflow has no manual trigger that
+      # could execute code from an arbitrary branch with cache write access.
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        if: github.event_name == 'workflow_run'
         with:
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        if: github.event_name != 'workflow_run'
+        with:
+          ref: develop
 
       - name: Free disk space
         run: |
