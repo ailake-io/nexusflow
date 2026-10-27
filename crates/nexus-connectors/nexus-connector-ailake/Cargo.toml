@@ -22,16 +22,15 @@ ailake-store = "0.1.12"
 arrow-array = "58.4.0"
 arrow-ipc = "58.4.0"
 arrow-schema = "58.4.0"
-# The ailake-* crates (published independently on crates.io) pin arrow at
-# 52.2.0 internally — a different, incompatible Rust type from our
+# The latest ailake-* crates (published independently on crates.io) use
+# Arrow 60 internally — a different, incompatible Rust type from our
 # workspace's 58.4.0 `RecordBatch`. Rather than an unsafe transmute across
 # two independently-versioned FFI struct layouts, `bridge.rs` round-trips
 # batches through the Arrow IPC byte format (stable across arrow-rs
-# versions) at the sink/source boundary. These "-old" aliases are that
-# older version, imported under a different name via Cargo's `package` key.
-arrow-array-old = { package = "arrow-array", version = "52.2.0" }
-arrow-ipc-old = { package = "arrow-ipc", version = "52.2.0" }
-arrow-schema-old = { package = "arrow-schema", version = "52.2.0" }
+# versions) at the sink/source boundary. These aliases name ailake's version
+# separately via Cargo's `package` key.
+arrow-array-ailake = { package = "arrow-array", version = "60.0.0" }
+arrow-ipc-ailake = { package = "arrow-ipc", version = "60.0.0" }
 arrow-select = "58.4.0"
 async-trait = "0.1.91"
 futures = "0.3.33"

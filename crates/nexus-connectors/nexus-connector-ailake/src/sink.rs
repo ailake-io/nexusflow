@@ -1,4 +1,4 @@
-use crate::bridge::to_old_batch;
+use crate::bridge::to_ailake_batch;
 use crate::config::AilakeConnectorConfig;
 use crate::rows::{dedupe_keep_last_by_pk, drop_column, extract_embeddings, extract_pk_strings};
 use ailake_catalog::hadoop::HadoopCatalog;
@@ -111,7 +111,7 @@ impl AilakeSink {
             // already carry one under the same name (see `drop_column`'s doc).
             let tabular = drop_column(&batch, &self.embedding_column)?;
             // Bridge across the arrow-array version boundary (see bridge.rs).
-            let tabular = to_old_batch(&tabular)?;
+            let tabular = to_ailake_batch(&tabular)?;
             let mut writer = TableWriter::create_or_open(
                 self.catalog.clone(),
                 self.store.clone(),
