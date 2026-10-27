@@ -366,8 +366,8 @@ jobs:
       # `docker build` below, and Docker isn't available on GitHub's
       # hosted macOS runners. macOS gets a plain OSS build here (see the
       # next step) and its own enterprise bundling in the separate
-      # build-macos-installer.yml instead (same reasoning as
-      # build-windows-installer.yml being decoupled from this chain).
+      # build-macos-installer.yml after a successful main Release or a
+      # manual dispatch from main.
       - name: Clone nexus-connectors-enterprise (read-only deploy key)
         if: matrix.os == 'linux'
         env:
@@ -412,9 +412,9 @@ jobs:
           docker rmi nexusflow-enterprise-builder-${{ github.run_id }} >/dev/null
 
       # macOS: no enterprise bundling in this workflow, deliberately — see
-      # the new standalone build-macos-installer.yml (same pattern as
-      # build-windows-installer.yml: workflow_dispatch only, decoupled
-      # from this automatic release chain) instead of baking an untested
+      # the standalone build-macos-installer.yml (same pattern as
+      # build-windows-installer.yml: triggered after a successful main
+      # Release, with manual dispatch available from main) instead of baking an untested
       # macOS+connectors-all+enterprise build into the critical path that
       # just became reliable. Plain OSS binary here, every OSS connector
       # still linked in via connectors-all.

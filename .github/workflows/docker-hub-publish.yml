@@ -38,9 +38,9 @@ on:
     workflows: ["Release"]
     types: [completed]
     branches: [main]
-  # Manual escape hatch, e.g. to re-push an image for a version already
-  # released (a failed push, a Docker Hub outage during the automatic run,
-  # etc.) without re-running the entire Release chain. `version` must
+  # Manual escape hatch from main only, e.g. to re-push an image for a
+  # version already released (a failed push, a Docker Hub outage during
+  # the automatic run, etc.) without re-running the entire Release chain. `version` must
   # already exist as a GitHub Release — this workflow does not create one.
   workflow_dispatch:
     inputs:
