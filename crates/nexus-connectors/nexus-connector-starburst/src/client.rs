@@ -54,11 +54,18 @@ impl StarburstClient {
     pub fn new(cfg: &StarburstConnectorConfig) -> Result<Self, NexusError> {
         let mut http_builder = reqwest::Client::builder();
         if let Some(ca_pem) = cfg.ca_certificate_pem.as_deref() {
-            let ca_certificate =
-                reqwest::Certificate::from_pem(ca_pem.as_bytes()).map_err(|e| {
+            let ca_certificates = reqwest::Certificate::from_pem_bundle(ca_pem.as_bytes())
+                .map_err(|e| {
                     NexusError::Connector(format!("starburst: parsing CA certificate: {e}"))
                 })?;
-            http_builder = http_builder.add_root_certificate(ca_certificate);
+            if ca_certificates.is_empty() {
+                return Err(NexusError::Connector(
+                    "starburst: parsing CA certificate: no certificates found in PEM".to_string(),
+                ));
+            }
+            for ca_certificate in ca_certificates {
+                http_builder = http_builder.add_root_certificate(ca_certificate);
+            }
         }
         let http = http_builder
             .build()
@@ -171,11 +178,10 @@ mod tests {
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    fn cfg_for(server: &MockServer) -> StarburstConnectorConfig {
-        let addr = server.address();
+    fn basic_cfg() -> StarburstConnectorConfig {
         StarburstConnectorConfig {
-            host: addr.ip().to_string(),
-            port: addr.port(),
+            host: "localhost".to_string(),
+            port: 443,
             user: "nexus".to_string(),
             password: None,
             access_token: None,
@@ -189,15 +195,22 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn rejects_invalid_custom_ca_certificate() {
-        let server = MockServer::start().await;
-        let mut cfg = cfg_for(&server);
+    fn cfg_for(server: &MockServer) -> StarburstConnectorConfig {
+        let addr = server.address();
+        let mut cfg = basic_cfg();
+        cfg.host = addr.ip().to_string();
+        cfg.port = addr.port();
+        cfg
+    }
+
+    #[test]
+    fn rejects_invalid_custom_ca_certificate() {
+        let mut cfg = basic_cfg();
         cfg.ca_certificate_pem = Some("not a PEM certificate".to_string());
 
         match StarburstClient::new(&cfg) {
             Err(NexusError::Connector(message)) => {
-                assert!(message.contains("parsing CA certificate"));
+                assert!(message.contains("no certificates found in PEM"));
             }
             Err(other) => panic!("expected a connector error, got {other}"),
             Ok(_) => panic!("invalid CA certificate must be rejected"),
