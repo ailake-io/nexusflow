@@ -1,11 +1,8 @@
 name: build-macos-installer
 
-# macOS tarball build. Chained after the CI -> connectors-heavy -> Release
-# sequence on main (2026-09-08, at the user's explicit request) via
-# `workflow_run` below, same pattern build-windows-installer.yml uses —
-# still not a `needs:` inside release.yml itself (no cross-file `needs:`
-# exists), so a failed/cancelled Release run does not still kick this off
-# (see the job-level `if:`). This build (macOS + connectors-all + every
+# macOS tarball build. Runs after a successful Release on `main`, and can
+# also be dispatched manually when an installer is needed. This build
+# (macOS + connectors-all + every
 # enterprise connector) has been proven against a real run since
 # 2026-09-06; release.yml's own macOS leg still ships a plain-OSS tarball
 # on every release, this workflow adds the enterprise-bundled one on top.
@@ -24,10 +21,8 @@ on:
           artifact, without publishing it anywhere.
         required: false
         type: string
-  # Automatic path: runs after Release finishes on main, same commit
-  # Release just tagged — always attaches the tarball to that release (the
-  # "leave blank" artifact-only path above only applies to the manual
-  # dispatch case, see "Resolve version" step below).
+  # A Release originating from main triggers this installer after all
+  # release jobs have completed. Develop pushes/releases do not trigger it.
   workflow_run:
     workflows: ["Release"]
     types: [completed]
@@ -42,7 +37,7 @@ env:
 jobs:
   build-macos-installer:
     name: build-macos-installer
-    if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     runs-on: macos-latest
     # Same two-full-cargo-builds-back-to-back shape as
     # build-windows-installer.yml (plain OSS, then the enterprise binary
@@ -55,15 +50,9 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
-      # Manual dispatch keeps its existing behavior exactly (empty `version`
-      # input means "just build, upload as an artifact, don't touch any
-      # release" — see the two `if:`s below). The automatic path
-      # (workflow_run after Release) has no input to take, so it derives
-      # the tag itself from Cargo.toml, same logic
-      # build-windows-installer.yml and docker-hub-publish.yml already use
-      # for the same reason — and always attaches to that release, since
-      # in that path the release is known to already exist (Release just
-      # published it).
+      # Manual dispatch with an empty version only uploads an artifact. A
+      # supplied tag attaches the tarball to that release. The automatic
+      # path derives the version from the commit Release just published.
       - name: Resolve version
         id: resolve-version
         run: |
