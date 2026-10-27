@@ -1,7 +1,8 @@
 name: build-macos-installer
 
-# macOS tarball build. Run manually from Actions when a macOS installer is
-# needed. This build (macOS + connectors-all + every
+# macOS tarball build. Runs after a successful Release on `main`, and can
+# also be dispatched manually when an installer is needed. This build
+# (macOS + connectors-all + every
 # enterprise connector) has been proven against a real run since
 # 2026-09-06; release.yml's own macOS leg still ships a plain-OSS tarball
 # on every release, this workflow adds the enterprise-bundled one on top.
@@ -20,6 +21,12 @@ on:
           artifact, without publishing it anywhere.
         required: false
         type: string
+  # A Release originating from main triggers this installer after all
+  # release jobs have completed. Develop pushes/releases do not trigger it.
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+    branches: [main]
 
 permissions:
   contents: write
@@ -30,6 +37,7 @@ env:
 jobs:
   build-macos-installer:
     name: build-macos-installer
+    if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main') || github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     # Same two-full-cargo-builds-back-to-back shape as
     # build-windows-installer.yml (plain OSS, then the enterprise binary
@@ -39,15 +47,22 @@ jobs:
     timeout-minutes: 240
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
-      # Empty `version` means "just build, upload as a workflow artifact,
-      # don't touch any release". A supplied tag attaches the tarball to
-      # that existing GitHub Release.
+      # Manual dispatch with an empty version only uploads an artifact. A
+      # supplied tag attaches the tarball to that release. The automatic
+      # path derives the version from the commit Release just published.
       - name: Resolve version
         id: resolve-version
         run: |
           set -euo pipefail
-          tag="${{ inputs.version }}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.version }}"
+          else
+            version="$(grep -A3 '^\[workspace.package\]' Cargo.toml | grep '^version' | head -1 | cut -d '"' -f2)"
+            tag="v$version"
+          fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - uses: dtolnay/rust-toolchain@stable

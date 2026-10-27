@@ -1,7 +1,7 @@
 name: build-windows-installer
 
-# .msi build. Run manually from Actions when a Windows installer is needed.
-# Moved off the dedicated
+# .msi build. Runs after a successful Release on `main`, and can also be
+# dispatched manually when a Windows installer is needed. Moved off the dedicated
 # self-hosted Windows box to hosted `windows-latest` 2026-09-05 (repo went
 # public same day, no more self-hosted NexusFlow Actions) — the
 # vcpkg/OpenSSL setup that used to be a manual one-time step on that host
@@ -22,6 +22,12 @@ on:
           artifact, without publishing it anywhere.
         required: false
         type: string
+  # A Release originating from main triggers this installer after all
+  # release jobs have completed. Develop pushes/releases do not trigger it.
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+    branches: [main]
 
 permissions:
   contents: write
@@ -38,6 +44,7 @@ env:
 jobs:
   build-windows-installer:
     name: build-windows-installer
+    if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main') || github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
     # 60 min wasn't enough on a real run (2026-09-05): the plain-OSS
     # `cargo build --release --features embed-ui,connectors-all` alone ran
@@ -53,15 +60,27 @@ jobs:
         shell: pwsh
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
-      # Empty `version` means "just build, upload as a workflow artifact,
-      # don't touch any release". A supplied tag attaches the MSI to that
-      # existing GitHub Release.
+      # Manual dispatch with an empty version only uploads an artifact. A
+      # supplied tag attaches the MSI to that release. The automatic path
+      # derives the version from the commit that Release just published.
       - name: Resolve version
         id: resolve-version
         shell: pwsh
         run: |
-          $tag = "${{ inputs.version }}"
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $tag = "${{ inputs.version }}"
+          } else {
+            $content = Get-Content Cargo.toml -Raw
+            if ($content -match '\[workspace\.package\][^\[]*?version\s*=\s*"([^"]+)"') {
+              $tag = "v$($Matches[1])"
+            } else {
+              Write-Error "could not find version under [workspace.package] in Cargo.toml"
+              exit 1
+            }
+          }
           echo "tag=$tag" >> $env:GITHUB_OUTPUT
 
       # Same install-if-missing PowerShell block connectors-heavy.yml uses on
