@@ -33,6 +33,7 @@ interface FileBrowserDialogProps {
 export function FileBrowserDialog({ open, onOpenChange, initialPath, onSelect }: FileBrowserDialogProps) {
   const { t } = useI18n()
   const { token } = useAuth()
+  const [rootPath, setRootPath] = useState('')
   const [path, setPath] = useState('/')
   const [entries, setEntries] = useState<BrowseEntry[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -44,7 +45,10 @@ export function FileBrowserDialog({ open, onOpenChange, initialPath, onSelect }:
 
   useEffect(() => {
     if (!open) return
-    const start = initialPath && initialPath.startsWith('/') ? initialPath : '/'
+    const start = initialPath && (initialPath.startsWith('/') || /^[A-Za-z]:[\\/]/.test(initialPath))
+      ? initialPath
+      : ''
+    setRootPath('')
     setPath(start)
     setCreatingFolder(false)
     setNewFolderName('')
@@ -59,22 +63,27 @@ export function FileBrowserDialog({ open, onOpenChange, initialPath, onSelect }:
 
     const load = async () => {
       try {
-        return await browseFilesystem(token, path)
-      } catch (e) {
-        // `path` may still be pointing at a *file* — e.g. reopening the
-        // dialog on a field whose current value is the file picked last
-        // time. The server correctly rejects listing a non-directory;
-        // fall back to its parent once instead of surfacing that as an
-        // error the user has to click past.
-        const parent = path.replace(/\/[^/]*\/?$/, '') || '/'
-        if (parent === path) throw e
-        return await browseFilesystem(token, parent)
+        return await browseFilesystem(token, path || undefined)
+      } catch {
+        // A saved path can point to a file or fall outside the configured
+        // browse root. Try its parent only when that parent stays in-root;
+        // otherwise reopen at the server-provided root.
+        const parent = rootPath ? parentWithinRoot(path, rootPath) : null
+        if (parent) {
+          try {
+            return await browseFilesystem(token, parent)
+          } catch {
+            return await browseFilesystem(token)
+          }
+        }
+        return await browseFilesystem(token)
       }
     }
 
     load()
       .then((listing) => {
         if (cancelled) return
+        setRootPath(listing.root)
         setPath(listing.path)
         setEntries(listing.entries)
       })
@@ -92,8 +101,13 @@ export function FileBrowserDialog({ open, onOpenChange, initialPath, onSelect }:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, token, path])
 
-  const segments = path.split('/').filter(Boolean)
-  const goTo = (index: number) => setPath('/' + segments.slice(0, index + 1).join('/'))
+  const relativePath = isWithinBrowseRoot(path, rootPath) ? path.slice(rootPath.length) : ''
+  const segments = relativePath.split(/[\\/]/).filter(Boolean)
+  const rootSegments = rootPath.split(/[\\/]/).filter(Boolean)
+  const rootLabel = rootSegments[rootSegments.length - 1] || rootPath || '/'
+  const goTo = (index: number) => {
+    setPath(segments.slice(0, index + 1).reduce(joinBrowsePath, rootPath))
+  }
 
   const submitNewFolder = async () => {
     const name = newFolderName.trim()
@@ -102,7 +116,7 @@ export function FileBrowserDialog({ open, onOpenChange, initialPath, onSelect }:
     setCreateError(null)
     try {
       const listing = await createDirectory(token, path, name)
-      setPath(listing.path === '/' ? `/${name}` : `${listing.path}/${name}`)
+      setPath(joinBrowsePath(listing.path, name))
       setCreatingFolder(false)
       setNewFolderName('')
     } catch (e) {
@@ -121,8 +135,8 @@ export function FileBrowserDialog({ open, onOpenChange, initialPath, onSelect }:
 
         <div className="flex items-center justify-between gap-2">
           <div className="flex flex-1 flex-wrap items-center gap-1 rounded-md bg-muted/50 px-2 py-1.5 text-xs text-muted-foreground">
-            <button type="button" onClick={() => setPath('/')} className="hover:text-foreground hover:underline">
-              /
+            <button type="button" onClick={() => setPath(rootPath)} className="hover:text-foreground hover:underline">
+              {rootLabel}
             </button>
             {segments.map((segment, index) => (
               <span key={index} className="flex items-center gap-1">
@@ -206,9 +220,9 @@ export function FileBrowserDialog({ open, onOpenChange, initialPath, onSelect }:
                 type="button"
                 onClick={() => {
                   if (entry.is_dir) {
-                    setPath(path === '/' ? `/${entry.name}` : `${path}/${entry.name}`)
+                    setPath(joinBrowsePath(path, entry.name))
                   } else {
-                    onSelect(path === '/' ? `/${entry.name}` : `${path}/${entry.name}`)
+                    onSelect(joinBrowsePath(path, entry.name))
                     onOpenChange(false)
                   }
                 }}
@@ -231,7 +245,7 @@ export function FileBrowserDialog({ open, onOpenChange, initialPath, onSelect }:
           <Button
             type="button"
             onClick={() => {
-              onSelect(path)
+              onSelect(path || rootPath)
               onOpenChange(false)
             }}
           >
@@ -241,6 +255,26 @@ export function FileBrowserDialog({ open, onOpenChange, initialPath, onSelect }:
       </DialogContent>
     </Dialog>
   )
+}
+
+function joinBrowsePath(base: string, child: string): string {
+  const separator = base.includes('\\') ? '\\' : '/'
+  const trimmedBase = base.replace(/[\\/]+$/, '')
+  return trimmedBase ? `${trimmedBase}${separator}${child}` : `${separator}${child}`
+}
+
+function parentWithinRoot(current: string, root: string): string | null {
+  if (!isWithinBrowseRoot(current, root)) return null
+  const relative = current.slice(root.length)
+  const segments = relative.split(/[\\/]/).filter(Boolean)
+  if (segments.length === 0) return null
+  return segments.slice(0, -1).reduce(joinBrowsePath, root)
+}
+
+function isWithinBrowseRoot(path: string, root: string): boolean {
+  if (!root || !path) return false
+  const normalizedRoot = root.replace(/[\\/]+$/, '') || root[0]
+  return path === root || path.startsWith(`${normalizedRoot}/`) || path.startsWith(`${normalizedRoot}\\`)
 }
 
 function formatSize(bytes: number): string {

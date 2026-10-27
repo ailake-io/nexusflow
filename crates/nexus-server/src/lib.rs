@@ -366,9 +366,8 @@ fn router(state: AppState) -> Router {
         .route("/pipelines/{id}/spec", get(get_pipeline_spec_handler))
         // Backs the Canvas "browse path" button (frontend/SchemaForm.tsx)
         // for local-path connector fields (csv/parquet/sqlite/...). Same
-        // role as editing a node's config in the first place — see
-        // `browse_fs_handler`'s doc comment for why no extra sandbox is
-        // layered underneath this.
+        // role as editing a node's config in the first place — browsing is
+        // additionally confined to the operator-configured filesystem root.
         .route(
             "/system/browse-fs",
             get(browse_fs_handler).post(create_directory_handler),
@@ -2864,16 +2863,8 @@ struct BrowseQuery {
 }
 
 /// Lists a directory's contents for the Canvas "browse path" file picker.
-///
-/// Deliberately **no extra sandbox root** on top of whatever the server
-/// process can read: a local-path connector (`csv`/`parquet`/`sqlite`/...)
-/// already reads/writes any absolute path the process can access the moment
-/// it's typed into a node's config (`nexus_core::
-/// submit_local_path_connector!` is the existing opt-out from the SSRF path
-/// guard in `dag.rs`). This endpoint grants no new capability — it only
-/// makes that same space visually discoverable instead of requiring the
-/// caller to already know the path blind. Gated at `Write`, the same role
-/// already required to edit a Canvas node's config.
+/// The route is gated at `Write` and the filesystem access is additionally
+/// bounded by the operator-configured `NEXUS_BROWSE_ROOT`.
 async fn browse_fs_handler(
     Query(query): Query<BrowseQuery>,
 ) -> Result<Json<browse::BrowseListing>, ApiError> {
@@ -2881,11 +2872,18 @@ async fn browse_fs_handler(
         .path
         .filter(|p| !p.is_empty())
         .unwrap_or_else(|| "/".to_string());
-    tokio::task::spawn_blocking(move || browse::list_directory(std::path::Path::new(&path)))
+    let root = browse::configured_root();
+    tokio::task::spawn_blocking(move || browse::list_directory(&root, std::path::Path::new(&path)))
         .await
         .map_err(ApiError::internal)?
         .map(Json)
-        .map_err(|e| ApiError::bad_request(format!("could not list path: {e}")))
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::PermissionDenied {
+                ApiError::forbidden("path is outside the configured file browser root")
+            } else {
+                ApiError::bad_request(format!("could not list path: {e}"))
+            }
+        })
 }
 
 #[derive(Deserialize)]
@@ -2906,14 +2904,21 @@ struct CreateDirectoryRequest {
 async fn create_directory_handler(
     Json(req): Json<CreateDirectoryRequest>,
 ) -> Result<Json<browse::BrowseListing>, ApiError> {
+    let root = browse::configured_root();
     tokio::task::spawn_blocking(move || {
-        browse::create_directory(std::path::Path::new(&req.path), &req.name)?;
-        browse::list_directory(std::path::Path::new(&req.path))
+        browse::create_directory(&root, std::path::Path::new(&req.path), &req.name)?;
+        browse::list_directory(&root, std::path::Path::new(&req.path))
     })
     .await
     .map_err(ApiError::internal)?
     .map(Json)
-    .map_err(|e| ApiError::bad_request(format!("could not create folder: {e}")))
+    .map_err(|e| {
+        if e.kind() == std::io::ErrorKind::PermissionDenied {
+            ApiError::forbidden("path is outside the configured file browser root")
+        } else {
+            ApiError::bad_request(format!("could not create folder: {e}"))
+        }
+    })
 }
 
 #[derive(Deserialize)]

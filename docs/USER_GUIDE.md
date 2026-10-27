@@ -131,7 +131,7 @@ curl -s -X POST http://localhost:8080/pipelines/meu-pipeline/run -H "authorizati
 
 Todos os campos abaixo são os nomes **exatos** dos structs de config em Rust (`serde` sem `rename`, exceto onde indicado). Campos sem `default` são obrigatórios. Convenção comum: quase todo conector de rede tem `timeout_seconds` (default `30`); conectores "bridging" sem schema próprio (mongodb, kafka, rest, odbc, csv) exigem `fields: [{"name", "data_type", "nullable"}]` explícito, com `data_type` em `int64|float64|boolean|utf8`.
 
-No Canvas, todo campo `path`/`file_path` (csv, parquet, sqlite, deltalake, lancedb) tem um botão **"Procurar…"** que abre um navegador de arquivos do servidor (`GET /system/browse-fs`, papel `Write`) — evita digitar o path absoluto às cegas. Não abre capacidade nova: um conector de path local já lê/escreve qualquer arquivo que o processo do servidor acesse assim que o path é digitado no config; o botão só torna essa navegação visual.
+No Canvas, todo campo `path`/`file_path` (csv, parquet, sqlite, deltalake, lancedb) tem um botão **"Procurar…"** que abre um navegador de arquivos do servidor (`GET /system/browse-fs`, papel `Write`). O navegador fica limitado a `NEXUS_BROWSE_ROOT`; por padrão, usa `NEXUS_UPLOAD_DIR` (ou `/data/uploads`). Para navegar arquivos montados em outro diretório, configure `NEXUS_BROWSE_ROOT` para essa raiz.
 
 ### 4.1 Fast-path ADBC (nativo, binário, sem overhead de serialização)
 
@@ -719,11 +719,13 @@ Via ODBC + driver oficial Vertica — sem driver ADBC/Rust puro. `database` obri
 {"connector": "starburst", "config": {
   "host": "starburst.exemplo.com", "port": 443,
   "user": "nexus", "password": "pass",
+  "ca_certificate_pem": null,
   "catalog": "hive", "schema_name": "default", "table_name": "events",
   "partition_column": "id", "timeout_seconds": 30
 }}
 ```
 HTTP puro (`POST /v1/statement`, mesmo protocolo cliente do Trino — Starburst é fork comercial que manteve o protocolo idêntico) — sem driver JDBC/ODBC redistribuível (gated atrás do portal de cliente Starburst). `access_token` como alternativa a `password` (Bearer, tem precedência quando os dois estão setados). `catalog`/`schema_name`/`table_name` são 3 campos separados, não um dotted string — `validate_identifier` (`nexus-core`) rejeita `.`, então cada segmento é validado/citado individualmente (`"catalog"."schema"."table"`).
+Para clusters com CA privada, passe o certificado CA em PEM por `ca_certificate_pem`; a verificação TLS permanece ativa. Não há opção para desativá-la.
 
 ### 4.11 Vetorial/busca — sinks adicionais (Fase 32)
 

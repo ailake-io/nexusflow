@@ -43,10 +43,11 @@ pub struct StarburstConnectorConfig {
     /// real authentication (same rule as Trino's own docs).
     #[serde(default = "default_true")]
     pub ssl: bool,
-    /// Whether to verify the server's TLS certificate. `false` only for a
-    /// self-signed cert on a trusted internal cluster.
-    #[serde(default = "default_true")]
-    pub ssl_verify: bool,
+    /// Optional PEM-encoded CA certificate for clusters using a private CA.
+    /// Certificate validation remains enabled; this adds trust for the
+    /// configured CA instead of disabling verification.
+    #[serde(default)]
+    pub ca_certificate_pem: Option<String>,
     /// Catalog to query.
     pub catalog: String,
     /// Schema within `catalog`.
@@ -100,7 +101,7 @@ mod tests {
             password: None,
             access_token: None,
             ssl: true,
-            ssl_verify: true,
+            ca_certificate_pem: None,
             catalog: "hive".to_string(),
             schema_name: "default".to_string(),
             table_name: "events".to_string(),
