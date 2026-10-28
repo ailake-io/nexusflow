@@ -163,6 +163,18 @@ jobs:
           # re-completes that same tag's release (upsert via `--clobber`
           # below) instead of minting a new one every single merge.
           if [ -n "${DISPATCH_VERSION:-}" ]; then
+            # Real injection risk flagged by CodeQL (2026-10-28, PR #137):
+            # this raw string flows unsanitized into a `sed` replacement
+            # below and into a `git commit -m` argument — a value with
+            # sed-special characters (`&`, `\`, `/`) or embedded newlines
+            # could corrupt Cargo.toml or inject extra commit-message
+            # content. Anyone who can dispatch this workflow already needs
+            # main-level write access (job `if:` above), but validating
+            # the shape costs nothing and removes the vector outright.
+            if ! [[ "$DISPATCH_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::version input must be a plain semver like 0.1.0 (got: $DISPATCH_VERSION)"
+              exit 1
+            fi
             version="$DISPATCH_VERSION"
           else
             version="$current_version"
@@ -240,9 +252,19 @@ jobs:
           # bug this job ordering exists to fix.
           ref: ${{ needs.determine-version.outputs.sha }}
       - uses: dtolnay/rust-toolchain@stable
+      # CodeQL (2026-10-28, PR #137, actions/cache-poisoning/poisonable-step):
+      # this checkout's ref traces back to determine-version.outputs.sha,
+      # which workflow_dispatch's `version` input can influence — flagged
+      # as a cache-poisoning risk because this job can write to the
+      # default branch's shared cache scope. save-if restricts writes to
+      # the fully-automated workflow_run path (triggered only after
+      # connectors-heavy succeeds on main, no attacker-shaped input in that
+      # path); a manual workflow_dispatch run still reads the existing
+      # cache (faster rebuild) but never writes to it.
       - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
         with:
           shared-key: release-${{ matrix.os }}-${{ matrix.arch }}
+          save-if: ${{ github.event_name != 'workflow_dispatch' }}
       - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
         with:
           node-version: "22"
