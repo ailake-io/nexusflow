@@ -2,7 +2,7 @@
 
 **Universal Rust Data & Vector Framework** — movimentação, transformação, vetorização e orquestração de dados (ETL/ELT/Streaming) de altíssima performance.
 
-> 🎉 **A partir de agora, o core open source do NexusFlow está liberado** — Apache-2.0, 46 crates de conector OSS (a Fase 32, 2026-09-25, migrou 22 do enterprise pra cá — toda infraestrutura de dado é grátis agora, só sobrou pago SaaS de negócio), use e distribua livremente (ver [`LICENSING.md`](./LICENSING.md)). A **Store de conectores enterprise** (compra self-service via Stripe) está em desenvolvimento final e deve abrir em breve — enquanto isso, o catálogo enterprise já implementado pode ser consultado em [`docs/ENTERPRISE_CONNECTORS.md`](./docs/ENTERPRISE_CONNECTORS.md).
+> 🎉 **O NexusFlow é 100% open source** — Apache-2.0, 62 crates de conector (inclusive os de SaaS de negócio: Salesforce, HubSpot, Zendesk, ServiceNow, Dynamics 365, NetSuite, Workday, Shopify, Stripe, GA4, Ads, YouTube Analytics), Canvas de Infra e LLMOps completo — tudo incluso em todo binário publicado, sem edição enterprise nem license key (ver [`LICENSING.md`](./LICENSING.md)).
 
 > Status: ✅ MVP completo e além — 46 crates de conector (Postgres/SQLite/ClickHouse/DuckDB/BigQuery/Snowflake/MSSQL/Redshift fast-path; MySQL/MongoDB/Kafka/Redis/NATS/RabbitMQ/MQTT/REST/ODBC/CSV/Oracle/HANA/Teradata/Vertica/Starburst/Kinesis/Pulsar/Excel/Google Drive/Google Sheets/Dropbox/SharePoint bridging; sinks vetoriais/busca (10, incluindo Weaviate/Vertex AI/Azure AI Search/Elasticsearch); data lake formats, AI Lake e webhook — CDC nativo em Postgres/MongoDB/MySQL/MSSQL/Oracle) linkáveis via feature flag, API + UI + observabilidade + distribuição Linux + Kubernetes (`packaging/kubernetes/`, validado num minikube real) funcionando end-to-end. Além do ETL/ELT core: **catálogo de dados** pesquisável com flag de PII (`GET /catalog/datasets`), **orquestração cross-pipeline** (`depends_on` com modo `any`/`all`), **detecção de anomalia** por volume (z-score, alertando nos 5 canais já existentes), **mascaramento de PII** por tokenização determinística (`NEXUS_MASKING_SALT`), e **distribuição de carga** entre workers via fila Postgres (`NEXUS_QUEUE_MODE=true`, opt-in) — ver `ROADMAP.md` Fases 25–29. Windows já produziu e instalou um `.msi` real numa máquina real (2026-09-06) — mas o job `build-windows` do CI de release automático segue removido; macOS já buildou e rodou de ponta a ponta num runner `macos-latest` real (2026-09-06), mas ninguém instalou ainda numa máquina física própria.
 
@@ -16,7 +16,7 @@ Detalhes completos de stack, arquitetura e regras de código: ver [`CLAUDE.md`](
 
 ## Recursos principais
 
-- **46 crates de conector OSS** (fast-path ADBC pra Postgres/SQLite/DuckDB/ClickHouse/BigQuery/Snowflake/MSSQL/Redshift/Databricks, bridging genérico pro resto — SQL/DW, vetorial/busca, streaming, arquivo/storage: toda infraestrutura de dado é OSS, ver [`LICENSING.md`](./LICENSING.md)) + **8 CDCs nativos** (Postgres WAL, MongoDB Change Streams, MySQL binlog, MSSQL CT, Oracle LogMiner, Delta Lake, Iceberg, AI-Lake) — sem Debezium/Kafka no meio.
+- **62 crates de conector, todos OSS** (fast-path ADBC pra Postgres/SQLite/DuckDB/ClickHouse/BigQuery/Snowflake/MSSQL/Redshift/Databricks, bridging genérico pro resto — SQL/DW, vetorial/busca, streaming, arquivo/storage e SaaS de negócio como Salesforce/HubSpot/Stripe/GA4, ver [`LICENSING.md`](./LICENSING.md)) + **8 CDCs nativos** (Postgres WAL, MongoDB Change Streams, MySQL binlog, MSSQL CT, Oracle LogMiner, Delta Lake, Iceberg, AI-Lake) — sem Debezium/Kafka no meio.
 - **Transformação sem escrever código** — blocos de limpeza/transformação configuráveis (filtrar, renomear, converter tipo, preencher nulos, agregar, etc.), encadeáveis no Canvas com preview por bloco; alternativa a escrever SQL/Python direto (ver [`docs/USER_GUIDE.md` §12](./docs/USER_GUIDE.md#12-blocos-de-transformaçãolimpeza-sem-código)).
 - **AI Lakehouse**: chunking (fixed-size/recursive/semantic) + embeddings (ONNX local ou API OpenAI-compatible) + carga em 6 bancos vetoriais (LanceDB, Qdrant, Milvus, pgvector, Pinecone, ChromaDB).
 - **LLMOps**: node `llm` em lote (OpenAI-compatible ou Anthropic nativo), RAG ad-hoc (`POST /rag/query`) sobre os mesmos bancos vetoriais, avaliação sistemática por golden dataset, versionamento git embutido de pipelines/prompts.
@@ -143,12 +143,10 @@ Mais opções (curl|sh, .deb/AppImage, build from source, habilitar conectores e
 | [`ARCHITECTURE.md`](./ARCHITECTURE.md) | Arquitetura técnica detalhada: roteador de conectores, streaming/backpressure, checkpointing, pipeline de embeddings |
 | [`ROADMAP.md`](./ROADMAP.md) | Fases de desenvolvimento, milestones, critérios de conclusão do MVP |
 | [`CONTRIBUTING.md`](./CONTRIBUTING.md) | Como contribuir, convenções de código, processo de PR |
-| [`LICENSING.md`](./LICENSING.md) | Modelo open-core: o que é OSS vs. o que é pago |
-| [`docs/ENTERPRISE_CONNECTORS.md`](./docs/ENTERPRISE_CONNECTORS.md) | Catálogo de conectores enterprise já implementados no repo privado (16 crates desde a Fase 32) e lógica de priorização do que falta |
-| [`docs/ENTERPRISE_LICENSING.md`](./docs/ENTERPRISE_LICENSING.md) | Design do sistema de licenciamento enterprise — verificação JWT/Ed25519 e checkout Stripe/`nexus-licensing` já validados de ponta a ponta (modo teste); deploy com credenciais Stripe live é trabalho futuro |
+| [`LICENSING.md`](./LICENSING.md) | 100% open source (Apache-2.0) — tudo incluso, sem edição paga |
 | [`packaging/kubernetes/README.md`](./packaging/kubernetes/README.md) | Deploy em Kubernetes via kustomize — validado num minikube real |
-| [`LICENSE`](./LICENSE) | Apache License 2.0 (community edition) |
+| [`LICENSE`](./LICENSE) | Apache License 2.0 |
 
 ## Licença
 
-Community Edition sob **Apache-2.0**, liberada agora — use, modifique e distribua livremente. Conectores enterprise são distribuídos separadamente sob licença comercial — ver [`LICENSING.md`](./LICENSING.md). A Store de compra self-service (checkout Stripe) está em desenvolvimento final e deve abrir em breve; o checkout já foi validado de ponta a ponta em modo teste, ver [`docs/ENTERPRISE_LICENSING.md`](./docs/ENTERPRISE_LICENSING.md).
+**Apache-2.0**, 100% open source — use, modifique e distribua livremente. Todo conector e toda feature (inclusive SaaS de negócio, Canvas de Infra e LLMOps) estão neste repositório e em todo binário publicado; não existe edição enterprise nem license key. Ver [`LICENSING.md`](./LICENSING.md).

@@ -4,7 +4,7 @@
 #
 # Validated 2026-09-06: `.github/workflows/build-macos-installer.yml` ran
 # end-to-end for real and overwrote v0.1.3's `nexusflow-macos-arm64.tar.gz`
-# with an enterprise-bundled build; `sha256` below is that asset's real
+# with its own build; `sha256` below is that asset's real
 # checksum (computed directly from the downloaded tarball, not from
 # release.yml's `SHA256SUMS` — that file is generated before the
 # build-macos-installer.yml clobber and is stale for this asset).
@@ -21,8 +21,7 @@
 # connector only loads the driver when a pipeline actually uses it, same
 # as nexusflow-wrapper.sh's own reasoning for deb/rpm); becomes accurate
 # for real starting with whatever version ships after this change.
-# `SHA256SUMS` — they matched this time (no separate enterprise-bundled
-# overwrite pending for this asset as of this update).
+# `SHA256SUMS` — they matched this time.
 #
 # Install without a tap (works today, once the checksum above is real):
 #   brew install --formula https://raw.githubusercontent.com/ailake-io/nexusflow/main/packaging/macos/nexusflow.rb
@@ -37,12 +36,9 @@
 # builds on `macos-latest` (Apple Silicon). No Intel (x86_64) build exists.
 #
 # The tarball this formula installs comes from release.yml's automatic
-# `macos`/`arm64` leg by default (OSS connectors only), but running
-# .github/workflows/build-macos-installer.yml (workflow_dispatch, same
-# non-Docker Cargo [patch] trick build-windows-installer.yml uses)
-# overwrites that same release asset with an enterprise-bundled build —
-# same end state as Linux/Windows, this formula doesn't need to know
-# which one is currently published under the tag it points at.
+# `macos`/`arm64` leg, re-published (same asset name, same
+# `embed-ui,connectors-all` build — everything OSS since Fase 35) by
+# .github/workflows/build-macos-installer.yml.
 class Nexusflow < Formula
   desc "Universal Rust data & vector framework — ETL/ELT/streaming + AI Lakehouse Builder"
   homepage "https://github.com/ailake-io/nexusflow"

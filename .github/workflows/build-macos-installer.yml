@@ -1,11 +1,11 @@
 name: build-macos-installer
 
 # macOS tarball build. Runs after a successful Release on `main`, and can
-# also be dispatched manually when an installer is needed. This build
-# (macOS + connectors-all + every
-# enterprise connector) has been proven against a real run since
-# 2026-09-06; release.yml's own macOS leg still ships a plain-OSS tarball
-# on every release, this workflow adds the enterprise-bundled one on top.
+# also be dispatched manually when an installer is needed. Proven against
+# a real run since 2026-09-06; since Fase 35 (2026-10-28) every connector
+# lives in this repo's own connectors-all, so this is the same plain
+# build release.yml's own macOS leg already does — kept as its own
+# workflow for re-run/dispatch independence from the main Release chain.
 #
 # Homebrew formula (packaging/macos/nexusflow.rb) expects exactly the
 # artifact this produces: nexusflow-macos-arm64.tar.gz attached to a
@@ -39,11 +39,9 @@ jobs:
     name: build-macos-installer
     if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     runs-on: macos-latest
-    # Same two-full-cargo-builds-back-to-back shape as
-    # build-windows-installer.yml (plain OSS, then the enterprise binary
-    # on top) — that workflow needed 240min for the same pattern on
-    # Windows. Matching it here rather than guessing a smaller number
-    # again.
+    # Matches build-windows-installer.yml's timeout — left at 240 for
+    # headroom even though Fase 35 (2026-10-28) dropped the second,
+    # separate enterprise build this used to also do back-to-back.
     timeout-minutes: 240
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -93,82 +91,10 @@ jobs:
       - run: ./scripts/build-adbc-duckdb-driver.sh target/adbc
       - run: ./scripts/build-adbc-clickhouse-driver.sh target/adbc
 
-      # Real failure on the first real run (2026-09-06): this step was
-      # missing entirely, so `target/release/` never existed at repo
-      # root and the enterprise-binary step's `cp ... target/release/nexusflow`
-      # below failed ("No such file or directory"). build-windows-installer.yml
-      # builds the plain-OSS binary here for the same reason (creates
-      # target\release\, then gets overwritten by the enterprise binary) —
-      # this step restores that same two-full-builds shape, matching the
-      # 240min timeout already budgeted for it.
       - name: cargo build --release
         run: cargo build --release -p nexusflow --features embed-ui,connectors-all
 
-      # Same clone this repo's release.yml Linux leg uses, already
-      # validated on a real run (2026-09-06) after two real fixes: strip
-      # CRLF and force exactly one trailing newline on the key before
-      # writing it (see release.yml's matching step for the full story).
-      - name: Clone nexus-connectors-enterprise (read-only deploy key)
-        env:
-          DEPLOY_KEY: ${{ secrets.ENTERPRISE_REPO_DEPLOY_KEY }}
-        run: |
-          set -euo pipefail
-          mkdir -p -m 0700 ~/.ssh
-          key="$(printf '%s' "$DEPLOY_KEY" | tr -d '\r')"
-          printf '%s\n' "$key" > ~/.ssh/enterprise_deploy_key
-          chmod 600 ~/.ssh/enterprise_deploy_key
-          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
-          GIT_SSH_COMMAND="ssh -i ~/.ssh/enterprise_deploy_key -o IdentitiesOnly=yes" \
-            git clone --depth 1 ssh://git@github.com/ailake-io/nexus-connectors-enterprise.git \
-            enterprise-src
-          rm -f ~/.ssh/enterprise_deploy_key
-
-      # Same non-Docker trick build-windows-installer.yml uses (no Docker
-      # on hosted macOS runners either): redirect the enterprise repo's
-      # nexus-core/nexus-server git dependency at this job's own
-      # already-checked-out+frontend-built OSS tree via a Cargo [patch],
-      # then build nexusflow-enterprise directly. Validated on a real run
-      # (2026-09-06): macOS + connectors-all + every enterprise connector
-      # compiles cleanly (63m54s) — the only real failure on that run was
-      # the missing `cargo build --release -p nexusflow` step above
-      # (target/release/ didn't exist yet for the `cp` below to target).
-      - name: Build enterprise binary (all OSS + enterprise connectors)
-        run: |
-          set -euo pipefail
-          repo_root="$(pwd)"
-          mkdir -p enterprise-src/.cargo
-          cat > enterprise-src/.cargo/config.toml <<EOF
-          [patch."https://github.com/ailake-io/nexusflow.git"]
-          nexus-core = { path = "$repo_root/crates/nexus-core" }
-          nexus-server = { path = "$repo_root/crates/nexus-server" }
-          EOF
-          cd enterprise-src
-          rm -f Cargo.lock
-          cargo generate-lockfile
-          # buoyant_kernel 0.22.2 (Buoyant Data's distribution of delta-
-          # kernel, pulled in transitively by deltalake) declares
-          # `buoyant_kernel_derive = "1"` (imported under the name
-          # `delta_kernel_derive`) but 1.2.0 dropped `parse_column_name`
-          # that 0.22.2 still calls — a semver violation upstream. Same
-          # fix already applied to the enterprise Dockerfile (used by the
-          # Linux/Docker build) and to build-windows-installer.yml — this
-          # workflow resolves its own independent lockfile via the
-          # `cargo generate-lockfile` above, so it needs the identical pin.
-          cargo update -p buoyant_kernel_derive --precise 1.0.0
-          # The 11-crate aws-sdk-rust pin chain that lived here (2026-09-14)
-          # is gone: confirmed 2026-09-16 that a fresh `cargo
-          # generate-lockfile` (no pins beyond buoyant_kernel_derive above)
-          # resolves and compiles nexus-connector-kinesis cleanly again —
-          # the ecosystem converged back to a compatible set on its own,
-          # exactly as predicted when the block was added. If this
-          # regresses, the original 11-crate pin chain is in git history.
-          cargo build --release -p nexusflow-enterprise \
-            --features connectors-all-no-embeddings,dbt,python-transform,embed-ui,connectors-all
-          cd ..
-          cp enterprise-src/target/release/nexusflow-enterprise target/release/nexusflow
-
-      # Same shape as release.yml's "Package tarball" step, enterprise
-      # binary instead of plain OSS.
+      # Same shape as release.yml's "Package tarball" step.
       - name: Package tarball
         run: |
           stage="$(mktemp -d)"

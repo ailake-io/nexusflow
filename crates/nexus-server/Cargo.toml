@@ -70,22 +70,11 @@ embed-ui = ["dep:rust-embed"]
 # `embeddings`/`llm` above.
 version-history = ["dep:git2", "dep:similar"]
 
-# Swaps the embedded license-verification public key for a deliberately
-# public test keypair (see license.rs's doc comment) — lets a local
-# `nexus-licensing` dev instance, which signs with that same public
-# private key rather than ever holding the real one, issue licenses this
-# binary actually verifies end to end. **Never enable this for a real
-# release build**: anyone who reads this source can forge a "valid"
-# license against a binary built with it. Deliberately absent from
-# `connectors-all` below and from every real distribution build — only
-# ever passed explicitly (e.g. a local `nexusflow-enterprise:test-license`
-# image) for testing the license/purchase flow itself.
-test-license-key = []
 
 # Each connector under crates/nexus-connectors/ is its own crate, gated
 # behind its own Cargo feature (ARCHITECTURE.md §3/CLAUDE.md §3: "compile
-# time, tamanho de binário e a fronteira OSS/enterprise exigem que cada
-# conector possa ser incluído/excluído do build independentemente"). Being
+# time e tamanho de binário exigem que cada conector possa ser
+# incluído/excluído do build independentemente"). Being
 # linked in is *also* what makes a connector appear in GET /connectors —
 # nexus_core::ConnectorRegistry is populated by each crate's own
 # `submit_connector!` call at static-init time (see connectors.rs), which
@@ -103,8 +92,12 @@ connectors-all = [
     "ailake", "csv", "clickhouse", "duckdb", "redis", "nats", "rabbitmq",
     "starburst", "teradata", "vertica", "hana", "oracle", "mssql", "redshift", "bigquery", "snowflake",
     "databricks", "elasticsearch", "weaviate", "vertex-vector-search", "azure-ai-search",
-    "kinesis", "pulsar", "excel", "google-drive", "google-sheets", "dropbox", "sharepoint",
+    "kinesis", "pulsar", "excel", "google-drive", "google-sheets", "dropbox", "sharepoint", "pdf-ocr",
+    "salesforce", "hubspot", "zendesk", "servicenow", "dynamics365", "netsuite", "workday",
+    "shopify", "stripe", "ga4", "google-ads", "meta-ads", "linkedin-ads", "tiktok-ads", "x-ads",
+    "youtube-analytics", "infra-terraform",
     "embeddings", "embeddings-api", "llm", "version-history",
+    "dbt", "python-transform", "python-viz",
     "postgres-cdc", "mysql-cdc", "deltalake-cdc", "iceberg-cdc", "ailake-cdc",
 ]
 # Same as connectors-all but without the heavy ONNX/embedding dependencies.
@@ -116,8 +109,11 @@ connectors-all-no-embeddings = [
     "ailake", "csv", "clickhouse", "duckdb", "redis", "nats", "rabbitmq",
     "starburst", "teradata", "vertica", "hana", "oracle", "mssql", "redshift", "bigquery", "snowflake",
     "databricks", "elasticsearch", "weaviate", "vertex-vector-search", "azure-ai-search",
-    "kinesis", "pulsar", "excel", "google-drive", "google-sheets", "dropbox", "sharepoint",
-    "version-history",
+    "kinesis", "pulsar", "excel", "google-drive", "google-sheets", "dropbox", "sharepoint", "pdf-ocr",
+    "salesforce", "hubspot", "zendesk", "servicenow", "dynamics365", "netsuite", "workday",
+    "shopify", "stripe", "ga4", "google-ads", "meta-ads", "linkedin-ads", "tiktok-ads", "x-ads",
+    "youtube-analytics", "infra-terraform",
+    "version-history", "dbt", "python-transform", "python-viz",
     "postgres-cdc", "mysql-cdc", "deltalake-cdc", "iceberg-cdc", "ailake-cdc",
 ]
 # Native logical-replication CDC for the always-linked "postgres" connector
@@ -179,17 +175,32 @@ azure-ai-search = ["dep:nexus-connector-azure-ai-search"]
 kinesis = ["dep:nexus-connector-kinesis"]
 pulsar = ["dep:nexus-connector-pulsar"]
 excel = ["dep:nexus-connector-excel"]
-# Deliberately excluded from connectors-all/connectors-all-no-embeddings
-# below — never validated against a real scanned PDF + tesseract install
-# in a real build yet (same caution the enterprise repo already applied
-# to it before this connector migrated to OSS, Fase 32). Build
-# `--features pdf-ocr` directly to test it; add it to the bundles below
-# only after that passes.
 pdf-ocr = ["dep:nexus-connector-pdf-ocr"]
 google-drive = ["dep:nexus-connector-google-drive"]
 google-sheets = ["dep:nexus-connector-google-sheets"]
 dropbox = ["dep:nexus-connector-dropbox"]
 sharepoint = ["dep:nexus-connector-sharepoint"]
+# Business SaaS connectors (Fase 35, ex-enterprise) — the 5 ads connectors
+# (google/meta/linkedin/tiktok/x-ads) haven't been validated against a real
+# ad account yet, see docs/PENDING_REAL_ACCOUNT_VALIDATION.md.
+salesforce = ["dep:nexus-connector-salesforce"]
+hubspot = ["dep:nexus-connector-hubspot"]
+zendesk = ["dep:nexus-connector-zendesk"]
+servicenow = ["dep:nexus-connector-servicenow"]
+dynamics365 = ["dep:nexus-connector-dynamics365"]
+netsuite = ["dep:nexus-connector-netsuite"]
+workday = ["dep:nexus-connector-workday"]
+shopify = ["dep:nexus-connector-shopify"]
+stripe = ["dep:nexus-connector-stripe"]
+ga4 = ["dep:nexus-connector-ga4"]
+google-ads = ["dep:nexus-connector-google-ads"]
+meta-ads = ["dep:nexus-connector-meta-ads"]
+linkedin-ads = ["dep:nexus-connector-linkedin-ads"]
+tiktok-ads = ["dep:nexus-connector-tiktok-ads"]
+x-ads = ["dep:nexus-connector-x-ads"]
+youtube-analytics = ["dep:nexus-connector-youtube-analytics"]
+# "Infra" canvas: Terraform module catalog + codegen (infra.rs).
+infra-terraform = ["dep:nexus-infra-terraform"]
 
 [dependencies]
 aes-gcm = "0.10.3"
@@ -202,10 +213,7 @@ axum = { version = "0.8.9", features = ["ws", "multipart"] }
 # picking one, encode/decode panics at runtime ("Could not automatically
 # determine the process-level CryptoProvider"). rust_crypto is pure Rust
 # (no aws-lc-rs/C build), consistent with this workspace's other crates.
-# use_pem (pulls in `pem`/`simple_asn1`, also pure Rust) is needed for
-# `DecodingKey::from_ed_pem`/`EncodingKey::from_ed_pem` — the enterprise
-# license key's EdDSA verification (see license.rs).
-jsonwebtoken = { version = "11.0.0", default-features = false, features = ["rust_crypto", "use_pem"] }
+jsonwebtoken = { version = "11.0.0", default-features = false, features = ["rust_crypto"] }
 # argon2's password-hash re-export of rand_core doesn't itself turn on
 # rand_core's "getrandom" feature (that's what makes `OsRng` exist at all) —
 # has to be requested directly here, at the exact rand_core 0.6.x version
@@ -258,6 +266,23 @@ nexus-connector-google-drive = { path = "../nexus-connectors/nexus-connector-goo
 nexus-connector-google-sheets = { path = "../nexus-connectors/nexus-connector-google-sheets", optional = true }
 nexus-connector-dropbox = { path = "../nexus-connectors/nexus-connector-dropbox", optional = true }
 nexus-connector-sharepoint = { path = "../nexus-connectors/nexus-connector-sharepoint", optional = true }
+nexus-connector-salesforce = { path = "../nexus-connectors/nexus-connector-salesforce", optional = true }
+nexus-connector-hubspot = { path = "../nexus-connectors/nexus-connector-hubspot", optional = true }
+nexus-connector-zendesk = { path = "../nexus-connectors/nexus-connector-zendesk", optional = true }
+nexus-connector-servicenow = { path = "../nexus-connectors/nexus-connector-servicenow", optional = true }
+nexus-connector-dynamics365 = { path = "../nexus-connectors/nexus-connector-dynamics365", optional = true }
+nexus-connector-netsuite = { path = "../nexus-connectors/nexus-connector-netsuite", optional = true }
+nexus-connector-workday = { path = "../nexus-connectors/nexus-connector-workday", optional = true }
+nexus-connector-shopify = { path = "../nexus-connectors/nexus-connector-shopify", optional = true }
+nexus-connector-stripe = { path = "../nexus-connectors/nexus-connector-stripe", optional = true }
+nexus-connector-ga4 = { path = "../nexus-connectors/nexus-connector-ga4", optional = true }
+nexus-connector-google-ads = { path = "../nexus-connectors/nexus-connector-google-ads", optional = true }
+nexus-connector-meta-ads = { path = "../nexus-connectors/nexus-connector-meta-ads", optional = true }
+nexus-connector-linkedin-ads = { path = "../nexus-connectors/nexus-connector-linkedin-ads", optional = true }
+nexus-connector-tiktok-ads = { path = "../nexus-connectors/nexus-connector-tiktok-ads", optional = true }
+nexus-connector-x-ads = { path = "../nexus-connectors/nexus-connector-x-ads", optional = true }
+nexus-connector-youtube-analytics = { path = "../nexus-connectors/nexus-connector-youtube-analytics", optional = true }
+nexus-infra-terraform = { path = "../nexus-infra-terraform", optional = true }
 nexus-core = { path = "../nexus-core" }
 nexus-ai = { path = "../nexus-ai", optional = true }
 hex = "0.4.3"
@@ -279,11 +304,6 @@ lettre = { version = "0.11.19", default-features = false, features = [
     "builder",
 ] }
 reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls"] }
-# Real (not dev-only) dependency: `capability_registry.rs`'s
-# `submit_enterprise_connector!` calls (Marco L8) need `JsonSchema`
-# resolvable in ordinary lib code, not just in test fixtures — those two
-# marker configs are compiled into every binary, not `#[cfg(test)]`.
-schemars = "1.2.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 thiserror = "2.0.19"
@@ -365,10 +385,9 @@ similar = { version = "2.7.0", optional = true, features = ["text"] }
 # doc comment for the exact bug this closes.
 ctor = "0.4.1"
 futures-util = "0.3.33"
-# `schemars` moved to real [dependencies] above (Marco L8) — connectors.rs's
-# test-only fixture connector (nexus_core::submit_enterprise_connector!)
-# now resolves it from there too, same bare-name requirement its own derive
-# macro has.
+# connectors.rs's test-only fixture connector (nexus_core::submit_connector!)
+# derives `JsonSchema` by bare name.
+schemars = "1.2.2"
 sqlx = { version = "0.9.0", default-features = false, features = ["postgres", "runtime-tokio", "sqlite"] }
 tempfile = "3.27.0"
 testcontainers = "0.27.3"

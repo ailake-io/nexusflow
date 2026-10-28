@@ -5,8 +5,7 @@ use std::borrow::Cow;
 /// One RAG answer (LLMOPS_IMPLEMENTATION_PLAN.md Marco L5) — "this
 /// generation came from which row/chunk/source". Insert-only: a generation
 /// is a historical fact about one `POST /rag/query` call, never edited
-/// after the fact (same immutability principle as `prompt_template_store`/
-/// `license_store`).
+/// after the fact (same immutability principle as `prompt_template_store`).
 #[derive(Clone)]
 pub struct LlmGenerationStore {
     pool: MetadataPool,

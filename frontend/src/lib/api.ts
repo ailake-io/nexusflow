@@ -32,15 +32,6 @@ export interface ConnectorDescriptor {
   name: string
   capability: ConnectorCapability
   config_schema: ConnectorConfigSchema
-  /** `true` for every OSS connector; for an enterprise connector (see
-   * `requires_license` below), `true` only if the installed license covers
-   * it. ConnectorPalette shows a lock icon when this is `false`. */
-  licensed: boolean
-  /** Present only for an enterprise-gated connector (its own slug) —
-   * absent for OSS. The Store page uses this to tell "always free" apart
-   * from "enterprise, and here's whether you own it" (both read
-   * `licensed: true` for OSS). */
-  requires_license?: string
 }
 
 export class ApiError extends Error {
@@ -99,10 +90,8 @@ export function listConnectors(token: string): Promise<ConnectorDescriptor[]> {
 }
 
 /** Matches nexus-server::infra::InfraModuleDto, as returned by
- * GET /infra/modules — empty array in any build without the enterprise
- * `nexus-infra-terraform` crate linked in, or without a license covering
- * `infra-terraform-generator` (single gate for the whole Infra tab, unlike
- * the Store's per-connector `licensed` flag — see `docs/ENTERPRISE_LICENSING.md`). */
+ * GET /infra/modules — empty array in any build without the
+ * `infra-terraform` feature (`nexus-infra-terraform` crate). */
 export interface InfraModuleDescriptor {
   id: string
   name: string
@@ -193,27 +182,6 @@ export function previewCleanBlocks(
   )
 }
 
-/** Matches nexus-server::LicenseStatusResponse, as returned by both
- * GET /license and POST /license (Admin-only, see `docs/ENTERPRISE_LICENSING.md`). */
-export interface LicenseStatus {
-  active: boolean
-  connectors: string[]
-  seats: number
-  expires_at: number | null
-}
-
-export function getLicenseStatus(token: string): Promise<LicenseStatus> {
-  return request<LicenseStatus>('/license', {}, token)
-}
-
-export function installLicense(token: string, licenseKey: string): Promise<LicenseStatus> {
-  return request<LicenseStatus>(
-    '/license',
-    { method: 'POST', body: JSON.stringify({ license_key: licenseKey }) },
-    token,
-  )
-}
-
 /** Matches nexus-server::prompt_template_store::PromptTemplate, as
  *  returned by GET /prompts (LLMOPS_IMPLEMENTATION_PLAN.md Marco L4). */
 export interface PromptTemplate {
@@ -239,64 +207,6 @@ export function createPrompt(
     { method: 'POST', body: JSON.stringify({ name, template }) },
     token,
   )
-}
-
-/**
- * `nexus-licensing` — a separate, centrally-run service (never this
- * `nexus-server` instance itself, see `docs/ENTERPRISE_LICENSING.md`), so
- * these calls go to their own origin instead of through `request()` above.
- * Configured via `VITE_LICENSING_API_URL`; the Store page hides the buy
- * flow entirely when it's unset — the manual "cole a license key" flow
- * (`installLicense` above) always works regardless.
- */
-const LICENSING_API_URL = (import.meta.env.VITE_LICENSING_API_URL as string | undefined)?.replace(
-  /\/$/,
-  '',
-)
-
-export function isLicensingConfigured(): boolean {
-  return Boolean(LICENSING_API_URL)
-}
-
-async function licensingRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const headers = new Headers(init.headers)
-  if (init.body) headers.set('content-type', 'application/json')
-  const response = await fetch(`${LICENSING_API_URL}${path}`, { ...init, headers })
-  if (!response.ok) {
-    const body = await response.json().catch(() => null)
-    throw new ApiError(response.status, body?.error ?? response.statusText)
-  }
-  return response.json() as Promise<T>
-}
-
-/** Matches nexus-licensing::Product (its own catalog, separate from this
- * server's `/connectors` — see `docs/ENTERPRISE_LICENSING.md §3`). */
-export interface LicensingProduct {
-  id: number
-  connector_slug: string
-  name: string
-  price_cents_brl: number
-  price_cents_usd: number
-  active: boolean
-}
-
-export function listLicensingProducts(): Promise<LicensingProduct[]> {
-  return licensingRequest<LicensingProduct[]>('/products')
-}
-
-export interface CheckoutResponse {
-  checkout_url: string
-}
-
-export function createCheckout(
-  productIds: number[],
-  email: string,
-  currency: 'brl' | 'usd',
-): Promise<CheckoutResponse> {
-  return licensingRequest<CheckoutResponse>('/checkout', {
-    method: 'POST',
-    body: JSON.stringify({ product_ids: productIds, email, currency }),
-  })
 }
 
 /** Matches nexus-core::ProgressEvent, as sent over the progress WebSocket. */

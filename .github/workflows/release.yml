@@ -2,14 +2,11 @@ name: Release
 
 # Builds nexusflow-linux-x86_64.tar.gz and publishes it as a GitHub Release
 # asset — what scripts/install.sh downloads. The tarball is: the release
-# binary, built from the private nexus-connectors-enterprise repo's
-# Dockerfile (`build` job's "Build enterprise binary" step, below) so every
-# OSS *and* every enterprise connector is linked in and license-gated — not
-# just OSS's own connectors-all — so GET /connectors lists the full catalog
-# and the Store always has enterprise connectors to sell, regardless of
-# which install path (this tarball/.deb/.rpm/AppImage,
-# docker-hub-publish.yml's image, or build-windows-installer.yml's .msi)
-# someone picked. Plus the two
+# binary, built straight from this repo with every connector compiled in
+# via connectors-all (100% open source since Fase 35, 2026-10-28 — no
+# separate enterprise repo/binary anymore), regardless of which install
+# path (this tarball/.deb/.rpm/AppImage, docker-hub-publish.yml's image,
+# or build-windows-installer.yml's .msi) someone picked. Plus the two
 # ADBC driver libraries nexus-connector-postgres/-sqlite dlopen at runtime
 # (no crates.io distribution of those exists — see
 # nexus-connector-postgres/src/driver.rs, ARCHITECTURE.md §3). Also produces
@@ -221,16 +218,10 @@ jobs:
           - os: linux
             arch: x86_64
             runner: ubuntu-latest
-          # macOS added 2026-09-05, untested on real hardware. GitHub's
-          # macos-latest is Apple Silicon (arm64). Real, documented gap:
-          # ships OSS connectors only, not the enterprise-bundled binary
-          # Linux/Windows get — the enterprise binary build (below) goes
-          # through `docker build`, and Docker isn't available on GitHub's
-          # hosted macOS runners at all (unlike Linux, and unlike Windows
-          # where build-windows-installer.yml avoids Docker entirely via a
-          # `[patch]`-redirected cargo build instead). Same non-Docker
-          # `[patch]` trick could extend this to macOS later — not done
-          # here, scoped down to get a working OSS build shipped first.
+          # macOS added 2026-09-05. GitHub's macos-latest is Apple Silicon
+          # (arm64). Since Fase 35 (2026-10-28) both legs build the exact
+          # same connectors-all binary — no more enterprise-vs-OSS gap
+          # between them.
           - os: macos
             arch: arm64
             runner: macos-latest
@@ -267,12 +258,21 @@ jobs:
       # missing — installed here so the shipped binary has them). Unconditional
       # now that this always runs on a fresh ubuntu-latest VM (no host-level
       # "already installed" assumption to skip past anymore).
+      #
+      # protobuf-compiler/libprotobuf-dev/libcurl4-openssl-dev: real failure
+      # caught on the first Fase 35 release build on main (2026-10-28,
+      # "Could not find protoc") — lancedb (connectors-all) needs `protoc`.
+      # Before Fase 35 the Linux binary compiled inside the enterprise
+      # repo's Docker image, which already had these; now it compiles
+      # directly on this runner. ci.yml's own job installs them separately
+      # and never hit this, which is why it only showed up here.
       - name: Install native build deps for the ADBC drivers + connectors-all
         if: matrix.os == 'linux'
         run: |
           sudo apt-get update && sudo apt-get install -y \
             cmake pkg-config libpq-dev libsqlite3-dev libfmt-dev \
-            unixodbc-dev libsasl2-dev libssl-dev zlib1g-dev
+            unixodbc-dev libsasl2-dev libssl-dev zlib1g-dev \
+            protobuf-compiler libprotobuf-dev libcurl4-openssl-dev
 
       # macos-latest ships cmake/pkg-config already; unixodbc/libpq/fmt do
       # not (Homebrew is preinstalled, used here instead of apt). No
@@ -327,99 +327,15 @@ jobs:
       - run: ./scripts/fetch-adbc-snowflake-driver.sh target/adbc
       - run: ./scripts/fetch-adbc-mssql-driver.sh target/adbc
 
-      # Every distributed artifact (this tarball, the .deb/.rpm/AppImage
-      # below, docker-hub-publish.yml's image, and build-windows-installer.yml's
-      # .msi) now ships every enterprise connector compiled in and
-      # license-gated (LICENSING.md §2/§3, docs/ENTERPRISE_LICENSING.md),
-      # not just the OSS ones — so the Store always has something to sell
-      # regardless of which install path a user picked, instead of only the
-      # people who happened to pull the separate Docker Hub enterprise image.
-      # Source of the private nexus-connectors-enterprise repo never enters
-      # this one; only the compiled binary does, via a read-only deploy key
-      # (`ENTERPRISE_REPO_DEPLOY_KEY` secret — GitHub org policy required
-      # deploy keys to be explicitly enabled for that repo before this could
-      # be added). Validated manually first (2026-09-01,
-      # `thiagolange/nexusflow:latest` Docker Hub build+push+compose smoke
-      # test — 71 connectors in the catalog, 41 unlocked once a license was
-      # installed) before wiring it in here.
-      #
-      # Builds via the enterprise repo's own Dockerfile (`--target builder`,
-      # stopping before its final slim runtime stage) rather than
-      # re-deriving the cargo/frontend/ADBC steps a third time (this repo's
-      # `build` job, the enterprise repo's Dockerfile, and
-      # build-windows-installer.yml's native build already make two) — that
-      # Dockerfile is the proven recipe, and it clones its own pinned
-      # `nexusflow` checkout independently rather than reusing this job's,
-      # so there's no risk of it seeing an inconsistent tree.
-      #
-      # RESOLVED 2026-09-05 (was a KNOWN GAP in an earlier commit of this
-      # migration): the enterprise repo's Dockerfile used to clone
-      # `nexusflow` over SSH, needing `--ssh default` to forward an agent —
-      # confirmed failing outright on a real hosted run ("invalid empty ssh
-      # agent socket") since a fresh `ubuntu-latest` runner has no
-      # persistent agent like the old self-hosted box did. Fixed at the
-      # source: that Dockerfile now clones over plain HTTPS instead (
-      # `nexusflow` is public, no credential needed for that clone at all),
-      # so `docker build` below no longer passes `--ssh default`.
-      #
-      # Linux only in this job — the enterprise binary is built via
-      # `docker build` below, and Docker isn't available on GitHub's
-      # hosted macOS runners. macOS gets a plain OSS build here (see the
-      # next step) and its own enterprise bundling in the separate
-      # build-macos-installer.yml after a successful main Release or a
-      # manual dispatch from main.
-      - name: Clone nexus-connectors-enterprise (read-only deploy key)
-        if: matrix.os == 'linux'
-        env:
-          DEPLOY_KEY: ${{ secrets.ENTERPRISE_REPO_DEPLOY_KEY }}
-        run: |
-          set -euo pipefail
-          mkdir -p -m 0700 ~/.ssh
-          # Real failure on a first real run (2026-09-05): OpenSSH failed
-          # with "error in libcrypto". Stripping CRLF alone (tried first,
-          # still failed the same way) wasn't enough — the missing piece
-          # was forcing exactly one trailing newline too, matching what
-          # actually fixed this on Windows (`.TrimEnd("`n") + "`n"` there).
-          # `$(...)` strips all trailing newlines from the captured value;
-          # `printf '%s\n'` adds back exactly one, regardless of whether
-          # the secret's raw value had zero, one, or several.
-          key="$(printf '%s' "$DEPLOY_KEY" | tr -d '\r')"
-          printf '%s\n' "$key" > ~/.ssh/enterprise_deploy_key
-          chmod 600 ~/.ssh/enterprise_deploy_key
-          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
-          GIT_SSH_COMMAND="ssh -i ~/.ssh/enterprise_deploy_key -o IdentitiesOnly=yes" \
-            git clone --depth 1 ssh://git@github.com/ailake-io/nexus-connectors-enterprise.git \
-            enterprise-src
-          rm -f ~/.ssh/enterprise_deploy_key
-
-      - name: Build enterprise binary (all OSS + enterprise connectors)
-        if: matrix.os == 'linux'
-        run: |
-          set -euo pipefail
-          DOCKER_BUILDKIT=1 docker build --target builder \
-            --build-arg NEXUSFLOW_REV=${{ needs.determine-version.outputs.sha }} \
-            --build-arg ENTERPRISE_FEATURES=connectors-all \
-            -t nexusflow-enterprise-builder-${{ github.run_id }} \
-            enterprise-src
-          cid="$(docker create nexusflow-enterprise-builder-${{ github.run_id }})"
-          mkdir -p target/release
-          docker cp "$cid:/tmp/nexusflow-enterprise-bin" target/release/nexusflow
-          docker cp "$cid:/out/libadbc_driver_postgresql.so" target/adbc/libadbc_driver_postgresql.so
-          docker cp "$cid:/out/libadbc_driver_sqlite.so" target/adbc/libadbc_driver_sqlite.so
-          docker cp "$cid:/out/libadbc_driver_duckdb.so" target/adbc/libadbc_driver_duckdb.so
-          docker cp "$cid:/out/libadbc_clickhouse.so" target/adbc/libadbc_clickhouse.so
-          docker rm "$cid" >/dev/null
-          docker rmi nexusflow-enterprise-builder-${{ github.run_id }} >/dev/null
-
-      # macOS: no enterprise bundling in this workflow, deliberately — see
-      # the standalone build-macos-installer.yml (same pattern as
-      # build-windows-installer.yml: triggered after a successful main
-      # Release, with manual dispatch available from main) instead of baking an untested
-      # macOS+connectors-all+enterprise build into the critical path that
-      # just became reliable. Plain OSS binary here, every OSS connector
-      # still linked in via connectors-all.
-      - name: Build plain OSS binary (macOS)
-        if: matrix.os == 'macos'
+      # Fase 35 (2026-10-28): NexusFlow went 100% open source — every
+      # connector that used to live in the private nexus-connectors-enterprise
+      # repo is now in this repo's own crates/nexus-connectors/, compiled in
+      # via the same connectors-all feature every other build already uses.
+      # This removes the old clone-and-docker-build-the-private-repo step
+      # that used to run here (Linux only) and swap in its binary/drivers —
+      # building it separately now would just link every connector twice.
+      # One plain build covers both matrix legs.
+      - name: Build OSS binary
         run: cargo build --release -p nexusflow --features embed-ui,connectors-all
 
       - name: Package tarball

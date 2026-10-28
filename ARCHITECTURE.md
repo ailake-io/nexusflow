@@ -81,11 +81,11 @@ tipo divergente entre linhas.
 
 Decisão de fast-path vs. híbrido acontece em tempo de configuração do node (não em runtime dinâmico): cada conector se registra com uma `ConnectorCapability` (`AdbcNative`, `ArrowFlight`, `Bridged`). O roteador só escolhe a estratégia de leitura/escrita; o pipeline downstream trata tudo como `RecordBatch` — nenhuma lógica de negócio depende de qual caminho foi usado.
 
-**Cada conector é um crate próprio** (`nexus-connector-postgres`, `nexus-connector-mongodb`, ...) sob `crates/nexus-connectors/` (ver `CLAUDE.md §3`), não módulos dentro de um crate monolítico. Motivo: compile time, tamanho de binário e a fronteira OSS/enterprise (`LICENSING.md`) exigem que cada conector possa ser incluído/excluído do build independentemente via feature flag — um crate único com todos os SDKs (mongodb + rdkafka + odbc-api + N vector DB SDKs) inviabiliza isso.
+**Cada conector é um crate próprio** (`nexus-connector-postgres`, `nexus-connector-mongodb`, ...) sob `crates/nexus-connectors/` (ver `CLAUDE.md §3`), não módulos dentro de um crate monolítico. Motivo: compile time e tamanho de binário exigem que cada conector possa ser incluído/excluído do build independentemente via feature flag — um crate único com todos os SDKs (mongodb + rdkafka + odbc-api + N vector DB SDKs) inviabiliza isso.
 
 Registro: `nexus-core` expõe um `ConnectorRegistry` (trait object registry, via `inventory`) — cada crate de conector chama `submit_connector!(nome, capability, ConfigType)` no seu próprio `lib.rs`, passando também o tipo do seu Config struct. `nexus-server` consulta o registry pra popular o catálogo de nodes do canvas; não existe lista hardcoded de conectores em `nexus-server`. O `ConfigType` passado pro macro precisa derivar `schemars::JsonSchema` — `GET /connectors` expõe esse schema (`config_schema`, um `fn() -> serde_json::Value` computado sob demanda, já que fn pointer não é `Serialize`) e o canvas usa isso pra renderizar um formulário real por conector (`SchemaForm.tsx`) em vez de um textarea de JSON cru. Doc comments nos campos do Config struct viram `description` no schema, aparecendo como dica no formulário — não são só documentação de código, são UX real.
 
-**Conector enterprise sem match arm próprio (ROADMAP.md Fase 12, Bloco 3):** o roteador de `nexus-server` (`build_source`/`build_sink`/`validate_source_config`/`validate_sink_config` em `connectors.rs`) é, na prática, um `match node.connector.as_str()` — adicionar um conector OSS significa adicionar um match arm ali. Um conector vivendo num repo privado separado (`nexus-connectors-enterprise`, `LICENSING.md §2`) não pode adicionar um arm a um `match` que não é dele. Pra isso, `nexus-core/registry.rs` expõe um segundo par de registries via `inventory` — `SourceBuilder`/`SinkBuilder` (`submit_source_builder!`/`submit_sink_builder!`) — carregando, além do nome, um `validate: fn(&Value) -> Result<(), NexusError>` e um `build: fn(Value) -> BoxFuture<'static, Result<Box<dyn Source/Sink>, NexusError>>`. O `other` arm de cada uma das 4 funções acima consulta esse registry só depois de esgotar seus próprios match arms — todo conector OSS continua indo pelo caminho antigo, inalterado; só um nome desconhecido cai no fallback. `check_connector_license` já era genérico (chave em `ConnectorRegistry::find`, independente do roteador) e não precisou mudar.
+**Conector sem match arm próprio (ROADMAP.md Fase 12, Bloco 3):** o roteador de `nexus-server` (`build_source`/`build_sink`/`validate_source_config`/`validate_sink_config` em `connectors.rs`) é, na prática, um `match node.connector.as_str()` — adicionar um conector OSS significa adicionar um match arm ali. Nascido pra conectores que viviam num repo privado separado (não podiam adicionar um arm a um `match` que não era deles) e hoje usado por todo conector migrado nas Fases 32/35: `nexus-core/registry.rs` expõe um segundo par de registries via `inventory` — `SourceBuilder`/`SinkBuilder` (`submit_source_builder!`/`submit_sink_builder!`) — carregando, além do nome, um `validate: fn(&Value) -> Result<(), NexusError>` e um `build: fn(Value) -> BoxFuture<'static, Result<Box<dyn Source/Sink>, NexusError>>`. O `other` arm de cada uma das 4 funções acima consulta esse registry só depois de esgotar seus próprios match arms — todo conector OSS continua indo pelo caminho antigo, inalterado; só um nome desconhecido cai no fallback. Como nada no `nexus-server` referencia símbolo desses crates, cada um precisa de um `extern crate` em `nexus-server/src/plugin_connectors.rs` — senão o linker descarta o crate inteiro (e suas submissões `inventory` junto) e o conector some do catálogo.
 
 **Pegadinha de workspace do Cargo:** cada conector vive no workspace aninhado `crates/nexus-connectors` (`[workspace] members = [...]`), mas isso NÃO isola seus testes do workspace raiz. Assim que `nexus-server` ganha uma dependência de path pra um conector (via feature própria), `cargo metadata --no-deps` rodado da raiz passa a listar aquele conector como membro do workspace raiz também — uma dependência de path sem `package.workspace` explícito não fica presa ao workspace aninhado quando algo no workspace raiz depende dela. Na prática: `cargo test --workspace` na raiz roda até os testes de integração pesados/com container de CADA conector linkado (ex. os testes de CDC nativo via testcontainers de Postgres/MongoDB/MySQL), duplicando o que os jobs `connectors`/`connectors-heavy` do CI já cobrem isoladamente — e competindo pelos mesmos recursos da máquina self-hosted. Por isso o CI usa `-p nexus-core -p nexus-ai -p nexus-server` em vez de `--workspace` nos jobs `clippy`/`test` da raiz (ver `.github/workflows/ci.yml`) — os conectores continuam compilando normalmente como dependência, só os testes próprios de cada crate de conector ficam exclusivamente nos jobs `connectors`/`connectors-heavy`.
 
@@ -105,7 +105,7 @@ Modelo ingênuo de 1 canal `mpsc` entre 1 source e 1 sink não escala além do c
 - Retry/resume lê o último cursor de cada partição independentemente — permite retomar só a partição que falhou, sem reprocessar as demais.
 - **Garantia é at-least-once, não exactly-once.** Isso precisa ser dito explicitamente pro autor de cada `Sink`: retry após falha de commit pode reenviar um batch já parcialmente aplicado. Todo `Sink` deve implementar escrita idempotente (upsert por chave primária, ou dedup por `(partition_id, offset)` na tabela destino) — não é opcional, é contrato da trait `Sink`.
 - CDC: eventos carregam opcode (`I`/`U`/`D`) como coluna extra do `RecordBatch`, nunca como side-channel separado — mantém uniformidade de tipo em todo o pipeline.
-- **Resume real de CDC (`resume_state`)**: até esta fase, `offset`/`opcode` cobriam bem o caso batch (posição numérica simples), mas nenhum conector CDC realmente retomava de onde parou — cada restart reprocessava tudo (ou, no caso do Postgres, dependia de um ack que não existia; ver §7). Mecanismo genérico: `Source::position_handle() -> Option<Arc<Mutex<Option<String>>>>` (default `None`, só CDC sources sobrescrevem) devolve um handle compartilhado que o próprio `read_batches` atualiza a cada evento processado, com a posição opaca e específica do conector (string — binlog é `"arquivo:posição"`, resume token do Mongo é BSON serializado, LSN/SCN são hex/inteiro). `PipelineEngine::run_partition` (`nexus-core::pipeline`) pega esse handle **antes** de mover o source pra dentro da task de leitura (restrição real do borrow checker — `read_batches` empresta `&mut self` pelo tempo de vida inteiro do stream) e o valor final vira `PartitionStats.resume_state`, propagado até `CheckpointCursor.resume_state` no commit. `CheckpointStore::get(pipeline_id, partition_id)` (novo — antes só existia `done_partitions()`, um booleano) lê esse cursor de volta. `nexus-server::runner::run_passthrough_pipeline` injeta o `resume_state` do último checkpoint de volta na config do node antes de `build_source`, por conector (`mysql-cdc` → `binlog_filename`/`binlog_position`; `mongodb-cdc` → `resume_token`; `mssql-cdc`/`oracle-cdc`, repo enterprise, → `start_lsn`/`start_scn`) — usuário não digita posição manual na UI. Fontes CDC (`*-cdc`) pulam a checagem de "partição já concluída" que o caminho passthrough usa pra cargas batch (senão, depois do primeiro checkpoint, um source CDC nunca rodaria de novo).
+- **Resume real de CDC (`resume_state`)**: até esta fase, `offset`/`opcode` cobriam bem o caso batch (posição numérica simples), mas nenhum conector CDC realmente retomava de onde parou — cada restart reprocessava tudo (ou, no caso do Postgres, dependia de um ack que não existia; ver §7). Mecanismo genérico: `Source::position_handle() -> Option<Arc<Mutex<Option<String>>>>` (default `None`, só CDC sources sobrescrevem) devolve um handle compartilhado que o próprio `read_batches` atualiza a cada evento processado, com a posição opaca e específica do conector (string — binlog é `"arquivo:posição"`, resume token do Mongo é BSON serializado, LSN/SCN são hex/inteiro). `PipelineEngine::run_partition` (`nexus-core::pipeline`) pega esse handle **antes** de mover o source pra dentro da task de leitura (restrição real do borrow checker — `read_batches` empresta `&mut self` pelo tempo de vida inteiro do stream) e o valor final vira `PartitionStats.resume_state`, propagado até `CheckpointCursor.resume_state` no commit. `CheckpointStore::get(pipeline_id, partition_id)` (novo — antes só existia `done_partitions()`, um booleano) lê esse cursor de volta. `nexus-server::runner::run_passthrough_pipeline` injeta o `resume_state` do último checkpoint de volta na config do node antes de `build_source`, por conector (`mysql-cdc` → `binlog_filename`/`binlog_position`; `mongodb-cdc` → `resume_token`; `mssql-cdc`/`oracle-cdc` → `start_lsn`/`start_scn`) — usuário não digita posição manual na UI. Fontes CDC (`*-cdc`) pulam a checagem de "partição já concluída" que o caminho passthrough usa pra cargas batch (senão, depois do primeiro checkpoint, um source CDC nunca rodaria de novo).
 
 ## 6. Escopo de execução: single-node (decisão explícita)
 
@@ -129,7 +129,7 @@ O plano original faseava CDC em duas etapas: MVP via Debezium+Kafka, e um "CDC n
 
 Os 3 produzem `RecordBatch` com coluna `__opcode` (`I`/`U`/`D`) na mesma convenção do resto do sistema (§5) — `nexus_core::split_by_opcode` já é 100% agnóstico à origem, nenhum sink precisou mudar.
 
-**Resume automático entre runs (checkpoint-driven, não mais só cursor estático):** `Source` (trait, `nexus-core/traits.rs`) tem um método `position_handle() -> Option<Arc<Mutex<Option<String>>>>` com default `None` — um conector que quer resume real sobrescreve isso; `PipelineEngine::run_partition` lê o valor final depois que o stream do source fecha e devolve em `PartitionStats.resume_state`. `mysql-cdc`/`mongodb-cdc` implementam `position_handle` (formatando `"{binlog_filename}:{binlog_position}"` e o resume token bruto, respectivamente); `runner.rs`'s `run_passthrough_pipeline` persiste esse valor em `CheckpointCursor.resume_state` a cada run e, antes de conectar o source do próximo, lê de volta (`checkpoints.get(pipeline_id, "p0")`) e reinjeta `binlog_filename`/`binlog_position` ou `resume_token` na config do node — sem isso, cada disparo do scheduler reiniciaria a leitura do zero. `postgres-cdc` não precisa desse mecanismo (o replication slot já resolve isso server-side, ver acima). `mssql-cdc`/`oracle-cdc` (repo privado, enterprise) implementam o mesmo contrato (`start_lsn` hex / `start_scn` decimal) — `run_passthrough_pipeline` já trata os 4 genericamente, sem acoplar a nenhum deles. `deltalake-cdc`/`iceberg-cdc`/`ailake-cdc` (§16 abaixo) **não** implementam `position_handle` ainda — continuam dependendo do cursor estático na config (`starting_version`/`starting_snapshot_id`), sem persistência automática entre runs.
+**Resume automático entre runs (checkpoint-driven, não mais só cursor estático):** `Source` (trait, `nexus-core/traits.rs`) tem um método `position_handle() -> Option<Arc<Mutex<Option<String>>>>` com default `None` — um conector que quer resume real sobrescreve isso; `PipelineEngine::run_partition` lê o valor final depois que o stream do source fecha e devolve em `PartitionStats.resume_state`. `mysql-cdc`/`mongodb-cdc` implementam `position_handle` (formatando `"{binlog_filename}:{binlog_position}"` e o resume token bruto, respectivamente); `runner.rs`'s `run_passthrough_pipeline` persiste esse valor em `CheckpointCursor.resume_state` a cada run e, antes de conectar o source do próximo, lê de volta (`checkpoints.get(pipeline_id, "p0")`) e reinjeta `binlog_filename`/`binlog_position` ou `resume_token` na config do node — sem isso, cada disparo do scheduler reiniciaria a leitura do zero. `postgres-cdc` não precisa desse mecanismo (o replication slot já resolve isso server-side, ver acima). `mssql-cdc`/`oracle-cdc` implementam o mesmo contrato (`start_lsn` hex / `start_scn` decimal) — `run_passthrough_pipeline` já trata os 4 genericamente, sem acoplar a nenhum deles. `deltalake-cdc`/`iceberg-cdc`/`ailake-cdc` (§16 abaixo) **não** implementam `position_handle` ainda — continuam dependendo do cursor estático na config (`starting_version`/`starting_snapshot_id`), sem persistência automática entre runs.
 
 **Limitação conhecida: CDC + node de transform SQL ainda drena tudo antes de escrever.** O mecanismo acima só se aplica ao caminho "passthrough" (sem transform, exatamente 1 source CDC + 1 sink — `run_pipeline`'s dispatch em `runner.rs`). Se o pipeline tem um node `transform`, ele cai em `run_transform_pipeline`, que chama `PipelineEngine::drain_sources` incondicionalmente (materializa tudo em memória antes de aplicar o SQL via DataFusion — necessário pra fan-in/fan-out, §4) — pra um source CDC isso significa nenhuma linha é escrita até o stream fechar, o que nunca acontece em volume realista (WAL/binlog/change-stream não têm fim natural). Combinar `*-cdc` com um node transform não é um caminho testado/suportado hoje; o caso comum ("espelhar" CDC pra um destino, sem SQL) já funciona corretamente pelo caminho passthrough acima.
 
@@ -157,15 +157,13 @@ Chunking e embedding são etapas **puras** (sem I/O) para ficarem testáveis sem
 - RBAC checado em middleware Axum, antes do handler — não dentro de cada handler individualmente.
 - **Rate limit de login por IP real, não por header**: `login_rate_limit` (`rate_limit.rs`) identifica o chamador pelo peer TCP real (`ConnectInfo`), não por `X-Forwarded-For` — esse header é livremente falsificável numa conexão direta (sem reverse proxy na frente, o cenário padrão hoje, já que o guia de deploy público com TLS/proxy ainda não existe, ver `ROADMAP.md`), e um atacante mandando um valor diferente a cada tentativa zerava o rate limit por completo. Só passa a confiar no header via `NEXUS_TRUST_PROXY_HEADERS=true`, atestação explícita do operador de que um proxy confiável já o sanitiza.
 - **Guard de SSRF contra DNS rebinding**: `PipelineSpec::validate_security_with`'s `is_internal_host` só valida o hostname *literal* na hora de salvar/pré-visualizar — um domínio público que depois resolve pra um IP interno (`127.0.0.1`, `169.254.169.254`, RFC1918, ...) passava batido, e a requisição real ia pra onde o DNS mandasse naquele momento. `nexus-server::dns_guard::SsrfSafeResolver` reforça isso plugado via `reqwest::ClientBuilder::dns_resolver` — cada endereço resolvido é checado (`nexus_core::is_internal_ip`) no exato momento da conexão real, não só uma vez na validação. Aplicado hoje no `AlertNotifier` (Slack/Teams/webhook, que disparam sozinhos a cada run); desativado quando `NEXUS_ALLOW_INTERNAL_HOSTS=true` (mesma semântica de opt-in do check literal).
-- **Débito conhecido**: chave via env var não atende requisito enterprise de KMS (AWS/GCP/Vault) + rotação de chave. Aceitável pro MVP self-host; precisa entrar no roadmap antes do primeiro cliente enterprise (ver `LICENSING.md`).
+- **Débito conhecido**: chave via env var não atende requisito enterprise de KMS (AWS/GCP/Vault) + rotação de chave. Aceitável pro MVP self-host; precisa entrar no roadmap antes de uso corporativo sério.
 - **Débito conhecido**: RBAC atual é 4 papéis globais (`Read`/`Execute`/`Write`/`Admin`), sem escopo por recurso (pipeline específico, credencial específica). Suficiente pra single-tenant self-host; bloqueador se o produto for SaaS multi-tenant no futuro.
 - **Débito conhecido**: o guard de DNS rebinding acima só cobre `AlertNotifier` — conectores de saída arbitrária (REST, webhook sink) ainda só têm o check literal, porque estendê-lo exigiria threadar `allow_internal_hosts` até dentro de cada crate de conector (hoje só `validate_security_with` conhece essa flag). Maior valor prático já coberto primeiro (alerta dispara sozinho a cada run; preview/REST é sob demanda e já exige papel `Execute`+).
 
-## 11. Distribuição de conectores enterprise
+## 11. Distribuição: um binário, tudo OSS
 
-Ver [`LICENSING.md`](./LICENSING.md) §2. Tecnicamente: cada conector enterprise vive num crate próprio no repo privado `nexus-connectors-enterprise`, que compila seu próprio binário (`nexusflow-enterprise`) linkando esses crates + `nexus-core`/`nexus-server` como dependência git — não é um plugin carregado em runtime (dlopen) nem uma feature flag `enterprise` no binário público; são binários distintos. Registro no catálogo usa o mesmo `SourceBuilder`/`SinkBuilder` via `inventory` do §3 (`ROADMAP.md` Fase 12, Bloco 3), sem precisar de match arm em `nexus-server`.
-
-License key (JWT, `POST`/`GET /license`, `LicenseClaims::covers`, `crates/nexus-server/src/license.rs`) **não** controla o que aparece no catálogo — `GET /connectors` sempre lista todo conector `requires_license`, com um campo `licensed: bool` calculado contra a license ativa (pra quem não comprou ver que o conector existe). O gate real é em `check_connector_license`, chamado no topo de `validate_source_config`/`validate_sink_config`/`build_source`/`build_sink` (`connectors.rs`) — bloqueia salvar/rodar/preview sem license, não a listagem. No Canvas isso aparece como cadeado no `ConnectorPalette.tsx`; hoje o cadeado é só decorativo (nada impede arrastar/configurar sem license, só Salvar/Executar) — plano de trial com limite real de uso documentado em `ROADMAP.md` Fase 12, Bloco 1.
+Desde a Fase 35 (2026-10-28) não existe mais conector enterprise, repo privado, binário `nexusflow-enterprise` nem license key — ver [`LICENSING.md`](./LICENSING.md). Todo artefato publicado é `cargo build -p nexusflow --features embed-ui,connectors-all`. O histórico do modelo antigo (license JWT Ed25519, `check_connector_license`, Store/Stripe) está em `docs/archive/ENTERPRISE_LICENSING.md`.
 
 ## 12. Agendamento automático (scheduler) e gestão de pipelines
 
@@ -181,7 +179,7 @@ License key (JWT, `POST`/`GET /license`, `LicenseClaims::covers`, `crates/nexus-
 
 - **Preview**: `GET /pipelines/{id}/preview?node={resolved_name}&limit={n}` (role `Execute`, mesma exigida por `/run` — abre conexão real contra o conector) lê as primeiras `limit` linhas (default 50, teto 500) de um node source/sink persistido, reusando `connectors::build_source` — conectores sink-only (milvus/qdrant/lancedb/pgvector/pinecone/chromadb/webhook) devolvem 400 com mensagem clara via o mesmo catch-all de `build_source`, sem código extra por conector. Conversão `RecordBatch` → JSON via `arrow_json::writer::ArrayWriter`, que aguenta qualquer schema arbitrário (ex. coluna de embedding `FixedSizeList<Float32>`). Só cobre pipelines persistidos (sem preview de spec ad-hoc); backend-only por ora, sem botão no Canvas.
 - **dbt como ETL** (extensão da Fase 10/Marco 10, que era só ELT): `DbtConfig.output: Option<NodeSpec>` descreve onde ler de volta o resultado que o dbt acabou de transformar (mesmo warehouse que os `sinks` normais carregaram); `PipelineSpec.post_dbt_sinks: Vec<NodeSpec>` são os destinos finais desse resultado. Fluxo: extrai → carrega bruto em `sinks` (staging) → `dbt run/build/test` transforma no warehouse → `runner::run_post_dbt_stage` lê `dbt.output` de volta (via `build_source` + `PipelineEngine::drain_sources`) e grava em `post_dbt_sinks` (via `build_sink` + `PipelineEngine::fan_out_write`), tudo num `POST /pipelines/{id}/run` só. `post_dbt_sinks` só é válido com `dbt.output` setado (`PipelineSpec::validate`); ambos passam pelo mesmo scanner de SSRF/path-traversal dos `sources`/`sinks` normais (`validate_security_with`). Checkpoints desse estágio usam prefixo `post_dbt_` pra não colidir com os nomes resolvidos (`sink0`, `sink1`, ...) do estágio de carga bruta. Sem `dbt.output`, o comportamento é idêntico ao ELT original (dbt como passo terminal). Canvas (edição visual do node dbt com handle de saída) ainda não implementado — configuração via API/JSON só.
-- **Ambiente do subprocesso `dbt`** (`dbt.rs::run`, feature `dbt`): o binário `dbt` (`dbt-core` + `dbt-postgres`, versões pinadas no `requirements.txt`/Dockerfile de cada imagem — pública e enterprise) e o diretório `$HOME` do usuário runtime (`nexusflow`, uid 1001) já vêm prontos nas imagens Docker publicadas — sem isso, `dbt` nem está no PATH e `~/.dbt/profiles.yml` falha com EACCES num `useradd -r` sem home dir (achado real testando ao vivo, 2026-09-16). `DbtConfig.project_dir` é sempre relativo (`dag.rs::validate_dbt_project_dir` rejeita path absoluto e `..`) e resolve, em ordem: contra `NEXUS_DBT_PROJECTS_ROOT` quando essa env var está setada no processo `nexus-server` (ex. apontando pra um volume montado com os projetos dbt do operador); senão, contra o diretório de trabalho do próprio processo servidor (`/` na imagem Docker publicada). `DBT_PROFILES_DIR` não é um campo de `DbtConfig` (vazaria detalhe de deploy pro schema do pipeline) — o subprocesso herda o ambiente completo de `nexus-server` sem `env_clear()`, então setar essa env var no processo servidor (ou deixar o `$HOME` default cuidar de `~/.dbt/profiles.yml`) já é suficiente, sem mudança de código.
+- **Ambiente do subprocesso `dbt`** (`dbt.rs::run`, feature `dbt`): o binário `dbt` (`dbt-core` + `dbt-postgres`, versões pinadas no `requirements.txt`/Dockerfile da imagem publicada) e o diretório `$HOME` do usuário runtime (`nexusflow`, uid 1001) já vêm prontos nas imagens Docker publicadas — sem isso, `dbt` nem está no PATH e `~/.dbt/profiles.yml` falha com EACCES num `useradd -r` sem home dir (achado real testando ao vivo, 2026-09-16). `DbtConfig.project_dir` é sempre relativo (`dag.rs::validate_dbt_project_dir` rejeita path absoluto e `..`) e resolve, em ordem: contra `NEXUS_DBT_PROJECTS_ROOT` quando essa env var está setada no processo `nexus-server` (ex. apontando pra um volume montado com os projetos dbt do operador); senão, contra o diretório de trabalho do próprio processo servidor (`/` na imagem Docker publicada). `DBT_PROFILES_DIR` não é um campo de `DbtConfig` (vazaria detalhe de deploy pro schema do pipeline) — o subprocesso herda o ambiente completo de `nexus-server` sem `env_clear()`, então setar essa env var no processo servidor (ou deixar o `$HOME` default cuidar de `~/.dbt/profiles.yml`) já é suficiente, sem mudança de código.
 
 ## 14. Backend Postgres pros metadados, leader election e migração
 
@@ -398,38 +396,11 @@ token-similarity se a nota não parsear). Resultado em
 `llm_eval_results`, visível no `QualityPanel.tsx` como 3ª origem (dbt /
 checks nativos / eval LLM).
 
-**Empacotamento enterprise (licenciamento de capability, não de
-conector)**: diferente do §11 (conector inteiro só existe no binário
-privado), três capacidades são pagas mesmo vivendo sempre no binário
-público — `GET /lineage/generation/{id}` (slug `llm-lineage-tracking`),
-a combinação CDC+embedding do RAG reativo (slug `reactive-rag-cdc`) e o
-mirror de histórico git pro GitHub (slug `git-history-github-sync`, ver
-§18). Reaproveita o mesmo `check_connector_license`/`LicenseClaims` do
-§11, mas os três slugs são registrados via
-`submit_enterprise_connector!` dentro do próprio `nexus-server`
-(`capability_registry.rs`), não num crate enterprise — se o registro só
-existisse quando um plugin privado estivesse linkado, o binário OSS
-"liberaria por padrão" (o comportamento seguro de
-`check_connector_license` quando o slug não é encontrado, correto pra
-conector real — que tem um segundo bloqueio no match arm de conexão —,
-mas não existe pra código que já roda sempre). `ConnectorCapability::Capability`
-marca esses 3 registros como não-conector, filtrados de
-`GET /connectors` pra nunca virar node type no Canvas. `POST /rag/query`
-em si continua OSS pra qualquer vetor store — só a linhagem da geração
-é paga.
-
-**Venda via Store (2026-09-08/09)**: os 3 slugs acima viraram produtos
-compráveis na Store (`frontend/src/components/Store.tsx`), cadastrados
-como 3 itens separados (não um pacote único) no `nexus-licensing`
-(repo privado, ver `docs/ENTERPRISE_LICENSING.md`) — mesmo checkout
-Stripe já validado ponta a ponta pro conector Excel, sem nenhuma
-mudança de backend: `nexus-licensing`'s `products.connector_slug` já
-era string livre, e o JWT `connectors: [...]` já cobre qualquer slug,
-conector ou capability, do mesmo jeito. Como esses 3 nunca aparecem em
-`GET /connectors` (parágrafo acima), a lista de itens vendáveis fica
-hardcoded em `LLMOPS_CAPABILITIES` dentro do próprio `Store.tsx`,
-cruzada com `license.connectors` (não com o campo `licensed`, que só
-existe pras entradas vindas de `GET /connectors`).
+**Empacotamento**: tudo OSS. Até a Fase 35, `GET /lineage/generation/{id}`,
+a combinação CDC+embedding do RAG reativo e o mirror git→GitHub (§18) eram
+gateados por license key (slugs `llm-lineage-tracking`/`reactive-rag-cdc`/
+`git-history-github-sync`, `capability_registry.rs`, vendidos na Store) —
+removido, os três rodam sempre.
 
 ## 18. Versionamento de pipelines/prompts em git embutido, mirror pro GitHub
 
@@ -444,26 +415,16 @@ sem GitHub necessário — funciona 100% OSS, offline).
 **Mirror opcional pro GitHub**: `PUT /settings/git-remote` configura
 (ou troca) uma URL+token; a partir daí, cada commit local também tenta
 um push best-effort em background (`maybe_push_git_history_to_remote`)
-— nunca bloqueia nem falha o save que disparou. Esse push é a única
-parte paga: roda só se a license ativa cobrir `git-history-github-sync`
-(mesmo `check_connector_license` do §17); sem cobertura, a função
-simplesmente retorna sem tentar nada — sem erro HTTP, sem log de
-warning (só o log de falha de push de verdade tem `tracing::warn!`).
-`PUT`/`DELETE /settings/git-remote` em si não checam license nenhuma —
-dá pra configurar o remote sem cobertura, ele só fica sem efeito até
-uma license cobrir o slug.
+— nunca bloqueia nem falha o save que disparou.
 
 **Bugs reais achados em 2026-09-08/09** (ninguém tinha ligado
 `version-history` num binário publicado antes disso — a feature
 existia desde `518cfa3` mas nunca foi de fato compilada em nada que
 saísse pra fora):
-- `nexus-connectors-enterprise`'s `bin/Cargo.toml` nunca expunha
-  `llm`/`version-history` como feature própria, e `version-history`
-  nem entrava no `connectors-all` deste repo (`nexus-server/Cargo.toml`)
-  — ou seja, a capability era vendável mas fisicamente impossível de
-  compilar em qualquer binário já publicado. Corrigido nos dois repos
-  (`connectors-all`/`connectors-all-no-embeddings` de `nexus-server` e
-  o passthrough de features em `bin/Cargo.toml`).
+- `version-history` nem entrava no `connectors-all` deste repo
+  (`nexus-server/Cargo.toml`) — a feature era impossível de compilar em
+  qualquer binário já publicado. Corrigido em
+  `connectors-all`/`connectors-all-no-embeddings`.
 - Default de `NEXUS_GIT_HISTORY_PATH` era um caminho relativo
   (`"nexusflow-version-history.git"`, resolvido contra o CWD do
   processo) — na imagem publicada isso é `/`, dono root, sem permissão
@@ -713,8 +674,7 @@ encontrou que `DraftPipeline`/`EditPipeline` rodavam só
 `validate()`/`validate_security_with()` antes de salvar — faltavam as
 4 checagens que `create_pipeline_handler`/`update_pipeline_handler`
 (`lib.rs`) já fazem depois dessas duas: (1) `connectors::validate_pipeline_configs`
-(gate de licença — um agente podia salvar pipeline usando conector
-enterprise sem licença, bypass real, não só cosmético), (2)
+(validação de config por conector), (2)
 `pipeline_dependencies::check_dependencies` (ciclo/existência de
 `depends_on`), (3) checagem de `NEXUS_MASKING_SALT` quando `masking`
 não está vazio, e (4) o log de auditoria (`log_security_event` +,
@@ -811,15 +771,15 @@ contadores ficavam mudos (no-op) pro resto do processo de teste. Fix:
 testes) garante que `telemetry::init()` roda antes de qualquer teste,
 não só antes do primeiro que "por acaso" precisa dele.
 
-## 21. Aba Infra — gerador de Terraform por módulos curados (enterprise)
+## 21. Aba Infra — gerador de Terraform por módulos curados
 
 Construído 2026-09-10/13, sem seção própria em nenhuma doc até esta
 auditoria (2026-09-27) — só existia espalhado em comentário de código
-(`infra.rs`/`infra_registry.rs`) e uma linha em `LICENSING.md`. **Não é**
+(`infra.rs`/`infra_registry.rs`). **Não é**
 o Canvas de recurso-AWS-por-recurso com `terraform plan` real que
 `ROADMAP.md` Fase 25 planejou — aquele plano nunca foi construído; o que
 existe é um desenho diferente, decidido em paralelo
-(`docs/ENTERPRISE_LICENSING.md`, 2026-09-10): arrastar **módulos
+(2026-09-10): arrastar **módulos
 Terraform curados e prontos** (não recursos individuais) num canvas,
 conectar as dependências entre eles, e baixar os `.tf` gerados — sem
 `plan`/`apply`, só codegen. Ver `ROADMAP.md` Fase 25 pro registro de por
@@ -827,9 +787,9 @@ que o plano original não é isso.
 
 **Mecanismo de plugin — reaproveita literalmente o padrão de conector**
 (`ARCHITECTURE.md §3`): o catálogo de módulos e o `generate()` real
-vivem só no crate privado `nexus-infra-terraform`
-(`nexus-connectors-enterprise` repo) — `nexus-server` nunca depende dele
-direto. Dois tipos `inventory` novos em `nexus_core::infra_registry`,
+vivem no crate `nexus-infra-terraform` (`crates/nexus-infra-terraform`,
+OSS desde a Fase 35, feature `infra-terraform` em `connectors-all`) —
+`nexus-server` só o linka via `plugin_connectors.rs`. Dois tipos `inventory` novos em `nexus_core::infra_registry`,
 paralelos a `ConnectorDescriptor`/`SourceBuilder`:
 - `InfraModuleDescriptor` — um por módulo curado (`id`, `name`,
   `category`, `provider`, `config_schema` via `schemars::schema_for!`
@@ -848,21 +808,12 @@ fixa. Uma aresta declara que o `input` de um módulo referencia o
 `output` de outro, virando `module.<from>.<output>` na HCL gerada em vez
 de valor literal.
 
-**Dois portões de license, mesmo padrão de todo conector enterprise real**
-(`connectors.rs`): 1) `check_connector_license("infra-terraform-generator",
-...)` — a license instalada cobre o slug?; 2) `InfraGenerator::get()` —
-o binário sequer tem o crate `nexus-infra-terraform` linkado? Os dois
-handlers (`GET /infra/modules` papel `Read`, `POST /infra/generate`
-papel `Execute`) tratam "sem license" e "binário sem o crate" do mesmo
-jeito pro cliente (lista vazia / erro "feature not available") — a
-distinção entre os dois só importa pra quem decide o que exibir no
-futuro, não muda o resultado hoje.
-
-**Gate de license é da aba inteira, não por módulo** (diferente da Store
-de conectores, que é por-conector) — decisão de 2026-09-10: um produto
-só, uma compra, libera tudo. Frontend (`InfraCanvas.tsx`) reaproveita o
-mesmo formulário de checkout que `Store.tsx` já validou de ponta a ponta
-(Excel) em vez de inventar um segundo fluxo de compra.
+**Disponibilidade**: os dois handlers (`GET /infra/modules` papel `Read`,
+`POST /infra/generate` papel `Execute`) só checam se o binário tem o
+crate linkado (`InfraGenerator::get()`) — sem ele, lista vazia / erro
+"feature not available", e o `InfraCanvas.tsx` mostra um painel
+"indisponível neste build". (Até a Fase 35 havia também um gate de
+license da aba inteira, slug `infra-terraform-generator` — removido.)
 
 **Nunca roda `terraform` de verdade** — só gera texto HCL em memória
 (`GeneratedFiles.files: BTreeMap<String, String>`, ordenado, servido pro

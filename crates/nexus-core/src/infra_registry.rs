@@ -1,24 +1,19 @@
 //! Plugin extension point for the "Infra" canvas (Terraform code
 //! generation) — same `inventory`-based distributed-registration shape as
-//! `registry.rs`'s `ConnectorDescriptor`/`SourceBuilder`, for the exact same
-//! reason: the module catalog and the actual codegen live in a private
-//! enterprise crate (`nexus-infra-terraform`, `nexus-connectors-enterprise`
-//! repo) that `nexus-server` never depends on directly (`LICENSING.md §3`).
+//! `registry.rs`'s `ConnectorDescriptor`/`SourceBuilder`: the module catalog
+//! and the actual codegen live in `nexus-infra-terraform`, which registers
+//! into these types when linked in (`nexus-server`'s `infra-terraform`
+//! feature, part of `connectors-all`).
 //!
 //! Two inventory types:
 //! - [`InfraModuleDescriptor`] — one entry per curated Terraform module
 //!   (e.g. "aws-vpc", "aws-sagemaker-endpoint"). `nexus-server`'s
 //!   `GET /infra/modules` just lists whatever's registered — empty in any
-//!   binary that doesn't link the enterprise crate in.
+//!   binary built without `nexus-infra-terraform`.
 //! - [`InfraGenerator`] — exactly one entry (or zero) exposing the actual
 //!   `generate` function. `nexus-server`'s `POST /infra/generate` calls
 //!   through this; with nothing registered it returns "feature not
-//!   available" regardless of license — the license check
-//!   (`check_connector_license("infra-terraform-generator", ...)`, gated on
-//!   a slug the enterprise crate registers via `submit_enterprise_connector!`
-//!   same as `capability_registry.rs`'s LLMOps slugs) is the *first* gate,
-//!   this registry lookup is the second, same two-gate shape every real
-//!   enterprise connector already has (`connectors.rs`'s own doc comment).
+//!   available".
 
 use crate::error::NexusError;
 use serde::{Deserialize, Serialize};
@@ -27,7 +22,7 @@ use std::collections::BTreeMap;
 /// One module instance placed on the Infra canvas — mirrors `dag::NodeSpec`'s
 /// shape (name/connector/config) but for an infra module instead of a data
 /// connector. Shared between `nexus-server` (deserializes the request body)
-/// and the enterprise crate's `generate()` (walks this to emit HCL), so both
+/// and `nexus-infra-terraform`'s `generate()` (walks this to emit HCL), so both
 /// sides always agree on the wire format without hand-syncing two structs.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct InfraNode {
@@ -58,14 +53,14 @@ pub struct InfraGraph {
     /// `{"aws": {"region": "us-east-1"}}`. Free-form JSON (not a fixed
     /// struct) so a future GCP/Azure provider block doesn't need a
     /// nexus-core release to add its own shape. `None`/absent keys fall
-    /// back to the enterprise crate's own sensible defaults.
+    /// back to `nexus-infra-terraform`'s own sensible defaults.
     #[serde(default)]
     pub provider: serde_json::Value,
 }
 
 /// `BTreeMap`, not `HashMap` — deterministic file ordering in the JSON
 /// response (nicer for the frontend's tabbed viewer, and for golden-file
-/// tests in the enterprise crate).
+/// tests in `nexus-infra-terraform`).
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct GeneratedFiles {
     pub files: BTreeMap<String, String>,
@@ -80,7 +75,7 @@ pub struct InfraModuleDescriptor {
     pub id: &'static str,
     pub name: &'static str,
     /// Free-form grouping for the palette UI ("network", "iam", "data",
-    /// "ai", "cicd", ...) — not an enum here so the enterprise crate can add
+    /// "ai", "cicd", ...) — not an enum here so `nexus-infra-terraform` can add
     /// categories without a nexus-core release.
     pub category: &'static str,
     /// "aws" today — kept as a field (not hardcoded anywhere) so a future

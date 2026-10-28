@@ -5,34 +5,15 @@
 ))]
 
 //! Reactive RAG (`postgres-cdc -> embedding -> lancedb`, no `transform`
-//! node) is enterprise-gated as of LLMOPS_IMPLEMENTATION_PLAN.md Marco L8
-//! (`"reactive-rag-cdc"` slug, `capability_registry.rs`) — this test now
-//! proves an OSS binary with no license installed can't actually run this
-//! combination, end to end through the real HTTP API, not just that
-//! `check_connector_license` itself works (already covered directly by
-//! `capability_registry.rs`'s unit tests) or that the gate is wired into
-//! `run_passthrough_pipeline` (covered by `runner.rs`'s own
-//! `reactive_rag_cdc_combination_is_denied_without_a_covering_license`,
-//! which uses a bogus URI for speed).
+//! node), end to end through the real HTTP API. Used to be license-gated
+//! (`"reactive-rag-cdc"` slug, LLMOPS_IMPLEMENTATION_PLAN.md Marco L8);
+//! everything is OSS since Fase 35, and this test pins that: the run must
+//! never fail on a license/capability check.
 //!
-//! No real postgres container here on purpose: the license check in
-//! `run_passthrough_pipeline` runs before any connector actually connects
-//! (proven by the two tests above), so a real database would only add
-//! ~1-2s of container startup for zero additional verification — the
-//! `postgres-cdc` config below just needs to deserialize into
-//! `PostgresCdcConfig`, never needs to be reachable.
-//!
-//! The positive case ("with a license covering `reactive-rag-cdc`, this
-//! combination actually works") is **not** testable from this file, or
-//! anywhere in the public `nexusflow` repo: `license::test_support`'s
-//! signing key only exists under `#[cfg(test)]` inside `nexus-server`'s
-//! own crate compilation — an external `tests/*.rs` file links against
-//! the library built *without* `cfg(test)`, so it sees the real
-//! (unsigned-here) production public key and no `test_support` module at
-//! all. That positive test belongs wherever a real or test signing key
-//! actually lives (`nexus-licensing`), not this OSS repo — same reasoning
-//! `license.rs`'s own module doc gives for never committing the real
-//! private key here.
+//! No real postgres container here on purpose: the `postgres-cdc` config
+//! below points at an unreachable URI, so the run is expected to fail —
+//! but on the connection attempt, i.e. *after* the point where the old
+//! gate used to reject it before any connector was built.
 
 use axum::body::Body;
 use axum::extract::ConnectInfo;
@@ -159,14 +140,13 @@ fn test_server_config(checkpoint_database_url: String) -> ServerConfig {
 }
 
 #[tokio::test]
-async fn reactive_rag_cdc_is_denied_without_a_covering_license() {
+async fn reactive_rag_cdc_is_not_license_gated() {
     let spec = json!({
         "pipeline_id": "cdc-embed-lancedb",
         "sources": [{
             "connector": "postgres-cdc",
             "config": {
-                // Never dialed — the license check runs before any
-                // connector actually connects (see module doc comment).
+                // Unreachable on purpose (see module doc comment).
                 "uri": "postgres://nobody:nobody@127.0.0.1:1/nowhere",
                 "table": "docs",
                 "publication_name": "pub_docs",
@@ -183,10 +163,12 @@ async fn reactive_rag_cdc_is_denied_without_a_covering_license() {
             "dimension": 384,
             "model": {
                 "backend": "onnx",
-                "repo": "sentence-transformers/all-MiniLM-L6-v2",
+                // Never loaded for real — the run fails before or at
+                // model load, either way not on a license gate.
+                "repo": "unused",
                 "revision": "main",
-                "filename": "onnx/model.onnx",
-                "tokenizer_filename": "tokenizer.json",
+                "filename": "unused",
+                "tokenizer_filename": "unused",
                 "max_length": 128
             },
             "chunking": {
@@ -220,22 +202,17 @@ async fn reactive_rag_cdc_is_denied_without_a_covering_license() {
 
     let token = login(app.clone(), "admin", "test-password").await;
     let (status, body) = post_run(app.clone(), "cdc-embed-lancedb", &spec, &token).await;
-    assert_eq!(
-        status,
-        StatusCode::ACCEPTED,
-        "run is still accepted synchronously — the license gate fires inside the \
-         background run task, not at POST time: {body:?}"
-    );
+    assert_eq!(status, StatusCode::ACCEPTED, "{body:?}");
 
     let run_id = body["run_id"].as_i64().expect("202 body carries run_id");
     let record = wait_for_run(&app, "cdc-embed-lancedb", run_id, &token).await;
     assert_eq!(
         record["status"], "failed",
-        "no license covers reactive-rag-cdc — the run must not succeed: {record:?}"
+        "the source URI is unreachable — the run can't succeed: {record:?}"
     );
     let error = record["error"].as_str().unwrap_or_default();
     assert!(
-        error.contains("reactive-rag-cdc"),
-        "run's error should name the missing capability, got: {error:?}"
+        !error.contains("reactive-rag-cdc") && !error.contains("license"),
+        "the run must fail on the connection, never on a license gate, got: {error:?}"
     );
 }

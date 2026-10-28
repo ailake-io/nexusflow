@@ -4,8 +4,8 @@ use std::borrow::Cow;
 
 /// Persists the single, optional GitHub remote pipeline/prompt history
 /// mirrors to ("caso o usuário queira" — see the git-versioning follow-up
-/// plan's Part 4). One row only, same "single active config" pattern as
-/// `LicenseStore` (`id INTEGER PRIMARY KEY CHECK (id = 1)`) — v1 scope has
+/// plan's Part 4). One row only, single-active-config pattern
+/// (`id INTEGER PRIMARY KEY CHECK (id = 1)`) — v1 scope has
 /// no per-tenant/multi-remote support, same single-tenant assumption the
 /// rest of RBAC already makes. The personal access token is encrypted at
 /// rest via the same `SecretCipher` connector secrets use (CLAUDE.md §5);
@@ -64,7 +64,7 @@ impl GitRemoteConfigStore {
     }
 
     /// Replaces the single configured remote (or sets it for the first
-    /// time). Like `LicenseStore::install`, an upsert on the fixed `id=1`
+    /// time). An upsert on the fixed `id=1`
     /// row — there is only ever one.
     pub async fn set(
         &self,

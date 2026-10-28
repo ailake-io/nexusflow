@@ -14,7 +14,7 @@ import {
   type OnSelectionChangeFunc,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { Download, Loader2, AlertCircle, ShoppingCart, Lock, Play } from 'lucide-react'
+import { Download, Loader2, AlertCircle, Play } from 'lucide-react'
 import { useI18n } from '@/lib/i18n'
 import { useTheme } from '@/lib/theme'
 import { useAuth } from '@/lib/auth-context'
@@ -24,18 +24,8 @@ import { infraNodeTypes } from '@/components/infra-node-types'
 import { SchemaForm } from '@/components/SchemaForm'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import {
-  generateInfra,
-  isLicensingConfigured,
-  listLicensingProducts,
-  createCheckout,
-  type GeneratedFiles,
-  type InfraModuleDescriptor,
-  type LicensingProduct,
-} from '@/lib/api'
+import { generateInfra, type GeneratedFiles, type InfraModuleDescriptor } from '@/lib/api'
 import { toInfraGraph, type InfraEdgeData, type InfraNode as InfraNodeType } from '@/lib/infra'
-
-const INFRA_LICENSE_SLUG = 'infra-terraform-generator'
 
 function newNodeId(): string {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) return `module-${crypto.randomUUID()}`
@@ -51,85 +41,17 @@ function parseConfig(raw: string): Record<string, unknown> {
   }
 }
 
-/**
- * Whole-tab paywall — unlike the Store's per-connector locked cards, the
- * Infra tab is a single enterprise gate (`docs/ENTERPRISE_LICENSING.md`
- * decision, 2026-09-10): one product, one purchase, everything unlocks.
- * Reuses the exact billing-form shape `Store.tsx` already validated
- * end-to-end (Excel) rather than inventing a second checkout UI.
- */
-function InfraPaywall() {
+/** Shown when this build has no Terraform module catalog linked in
+ * (`GET /infra/modules` returns `[]` without the `infra-terraform`
+ * feature). */
+function InfraUnavailable() {
   const { t } = useI18n()
-  const [product, setProduct] = useState<LicensingProduct | null>(null)
-  const [email, setEmail] = useState('')
-  const [currency, setCurrency] = useState<'brl' | 'usd'>('brl')
-  const [buying, setBuying] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const licensingConfigured = isLicensingConfigured()
-
-  useState(() => {
-    if (!licensingConfigured) return
-    listLicensingProducts()
-      .then((products) => setProduct(products.find((p) => p.connector_slug === INFRA_LICENSE_SLUG && p.active) ?? null))
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
-  })
-
-  const handleBuy = async () => {
-    if (!product || !email.trim()) return
-    setBuying(true)
-    setError(null)
-    try {
-      const { checkout_url } = await createCheckout([product.id], email.trim(), currency)
-      window.location.href = checkout_url
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-      setBuying(false)
-    }
-  }
-
   return (
     <div className="flex h-full items-center justify-center p-6">
       <div className="max-w-md rounded-xl border border-white/10 bg-card p-6 text-center">
-        <Lock className="mx-auto h-8 w-8 text-amber-400" />
-        <h2 className="mt-3 text-lg font-semibold text-foreground">{t('infra.paywallTitle')}</h2>
-        <p className="mt-1.5 text-xs text-muted-foreground">{t('infra.paywallDesc')}</p>
-        {licensingConfigured && product ? (
-          <div className="mt-4 space-y-2">
-            <Input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder={t('store.billingEmailPlaceholder')}
-              className="text-xs"
-            />
-            <div className="flex overflow-hidden rounded-md border border-white/10">
-              {(['brl', 'usd'] as const).map((c) => (
-                <button
-                  key={c}
-                  type="button"
-                  onClick={() => setCurrency(c)}
-                  className={`flex-1 px-2.5 py-1.5 text-xs font-medium uppercase transition-colors ${
-                    currency === c ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-white/5'
-                  }`}
-                >
-                  {c}
-                </button>
-              ))}
-            </div>
-            <Button className="w-full" disabled={buying || !email.trim()} onClick={handleBuy}>
-              {buying ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShoppingCart className="h-3.5 w-3.5" />}
-              {t('store.buy', {
-                price:
-                  currency === 'brl'
-                    ? `R$ ${(product.price_cents_brl / 100).toFixed(2)}`
-                    : `US$ ${(product.price_cents_usd / 100).toFixed(2)}`,
-              })}
-            </Button>
-            {error && <p className="text-xs text-red-400">{error}</p>}
-          </div>
-        ) : (
-          <p className="mt-4 text-xs text-muted-foreground">{t('infra.paywallContactStore')}</p>
-        )}
+        <AlertCircle className="mx-auto h-8 w-8 text-muted-foreground" />
+        <h2 className="mt-3 text-lg font-semibold text-foreground">{t('infra.unavailableTitle')}</h2>
+        <p className="mt-1.5 text-xs text-muted-foreground">{t('infra.unavailableDesc')}</p>
       </div>
     </div>
   )
@@ -338,7 +260,7 @@ function CanvasInner() {
   const selectedEdge = edges.find((e) => e.id === selectedEdgeId) ?? null
 
   if (!loading && modules.length === 0) {
-    return <InfraPaywall />
+    return <InfraUnavailable />
   }
 
   return (

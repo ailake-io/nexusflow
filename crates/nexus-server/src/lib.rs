@@ -56,7 +56,6 @@ mod anomaly_detector;
 mod auth;
 mod auth_store;
 mod browse;
-mod capability_registry;
 mod checkpoint_store;
 mod connectors;
 mod crypto;
@@ -75,8 +74,6 @@ mod git_history_store;
 mod git_remote_config_store;
 mod hardware_stats;
 mod infra;
-mod license;
-mod license_store;
 mod lineage;
 mod llm_eval_result_store;
 mod llm_generation_store;
@@ -87,6 +84,7 @@ mod pipeline_run_visualization_store;
 mod pipeline_run_volume_store;
 mod pipeline_schema_store;
 mod pipeline_store;
+mod plugin_connectors;
 mod progress;
 mod prompt_template_store;
 mod python_transform;
@@ -131,7 +129,6 @@ use checkpoint_store::CheckpointStore;
 use crypto::SecretCipher;
 use error::ApiError;
 use futures_util::StreamExt;
-use license_store::{LicenseStore, LicenseStoreError};
 use nexus_core::{ConnectorRegistry, NodeSpec, PipelineSpec, ProgressSender, Transform};
 use pipeline_store::{
     DeleteRunOutcome, PipelineStore, PipelineStoreError, PipelineSummary, RunRecord,
@@ -190,7 +187,6 @@ struct AppState {
     masking_salt: Option<Vec<u8>>,
     pipelines: PipelineStore,
     run_logs: RunLogStore,
-    license_store: LicenseStore,
     resource_stats: resource_stats::ResourceStatsStore,
     dbt_lineage: dbt_lineage_store::DbtLineageStore,
     pipeline_schemas: pipeline_schema_store::PipelineSchemaStore,
@@ -270,15 +266,6 @@ impl From<PipelineStoreError> for ApiError {
             }
             PipelineStoreError::Corrupt(msg) => ApiError::internal(msg),
             PipelineStoreError::Sqlx(e) => ApiError::internal(e),
-        }
-    }
-}
-
-impl From<LicenseStoreError> for ApiError {
-    fn from(err: LicenseStoreError) -> Self {
-        match err {
-            LicenseStoreError::License(e) => ApiError::bad_request(e.to_string()),
-            LicenseStoreError::Sqlx(e) => ApiError::internal(e),
         }
     }
 }
@@ -516,23 +503,14 @@ fn router(state: AppState) -> Router {
             get(get_user_handler).delete(delete_user_handler),
         )
         .route("/users/{username}/role", put(update_user_role_handler))
-        // Installing/inspecting the enterprise license is an access-control
-        // action, same trust bar as user management — see
-        // `docs/ENTERPRISE_LICENSING.md`.
-        .route(
-            "/license",
-            post(install_license_handler).get(license_status_handler),
-        )
         // Read side of `AuthStore::log_security_event` — was write-only
         // until this route existed, meaning the only way to see who did
         // what (or that a pipeline run kept failing) was to connect to the
         // database directly. Admin-only: this table is itself security-
         // sensitive (usernames, IPs, action history).
         .route("/audit-log", get(list_audit_log_handler));
-    // Configuring the optional GitHub push mirror is the same trust bar
-    // as installing the license itself — both gate an enterprise
-    // capability and, here, also hand the server a credential with write
-    // access to an external repo. Split out of the chain (see
+    // Configuring the optional GitHub push mirror is Admin-only — it hands
+    // the server a credential with write access to an external repo. Split out of the chain (see
     // `write_protected`'s rollback route earlier for why) so it still
     // picks up the `.layer()`s below.
     #[cfg(feature = "version-history")]
@@ -603,8 +581,9 @@ fn router(state: AppState) -> Router {
 
     // Cloned unconditionally (unlike `rag_state` above) — `infra::routes`
     // is never feature-gated, see that module's doc comment for why (the
-    // enterprise crate it delegates to is an inventory-collected plugin,
-    // not a Cargo feature this crate depends on).
+    // `nexus-infra-terraform` crate it delegates to is an
+    // inventory-collected plugin; without it the routes report the
+    // feature as unavailable).
     let infra_state = state.clone();
 
     let app = Router::new()
@@ -705,42 +684,15 @@ struct ConnectorCatalogEntry {
     name: &'static str,
     capability: nexus_core::ConnectorCapability,
     config_schema: serde_json::Value,
-    /// `true` for every OSS connector; for an enterprise connector
-    /// (`requires_license: Some(_)` — none exist in this repo yet, see
-    /// `docs/ENTERPRISE_LICENSING.md`), `true` only if the installed
-    /// license's `connectors` list covers its slug. The canvas uses this to
-    /// show a locked/"upgrade" state instead of hiding the node outright.
-    licensed: bool,
-    /// `Some(slug)` for an enterprise-gated connector (mirrors
-    /// `ConnectorDescriptor::requires_license`), `None` for OSS. The Store
-    /// page (frontend) uses this to tell "always free" apart from
-    /// "enterprise, and here's whether you own it" — `licensed` alone can't
-    /// distinguish those two cases (both read `true` for OSS).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    requires_license: Option<&'static str>,
 }
 
-async fn list_connectors_handler(
-    State(state): State<AppState>,
-) -> Json<Vec<ConnectorCatalogEntry>> {
-    let active_license = state.license_store.active().await.ok().flatten();
+async fn list_connectors_handler() -> Json<Vec<ConnectorCatalogEntry>> {
     Json(
         ConnectorRegistry::all()
-            // `Capability`-kind descriptors (Marco L8) are license-check
-            // targets, not real connectors — never expose them as a node
-            // type the Canvas could try to add to a DAG.
-            .filter(|d| d.capability != nexus_core::ConnectorCapability::Capability)
             .map(|d| ConnectorCatalogEntry {
                 name: d.name,
                 capability: d.capability,
                 config_schema: (d.config_schema)(),
-                licensed: match d.requires_license {
-                    None => true,
-                    Some(slug) => active_license
-                        .as_ref()
-                        .is_some_and(|claims| claims.covers(slug)),
-                },
-                requires_license: d.requires_license,
             })
             .collect(),
     )
@@ -1035,19 +987,11 @@ async fn execute_pipeline_run(
         ))
         .await;
 
-    // Fetched once per run, not per connector — an expired/uninstalled
-    // license just means `active_license` is `None`, which
-    // `connectors::check_connector_license` treats the same as "not
-    // covered" for any enterprise-gated connector (ROADMAP.md Fase 12,
-    // Bloco 1).
-    let active_license = state.license_store.active().await.unwrap_or(None);
-
     let result = runner::run_pipeline(
         &spec,
         &state.checkpoints,
         Some(progress_tx.clone()),
         Some(&logger),
-        active_license.as_ref(),
         &state.pipeline_schemas,
         &state.alerts,
         run_id,
@@ -1150,7 +1094,6 @@ async fn execute_pipeline_run(
                             &state.checkpoints,
                             Some(progress_tx.clone()),
                             Some(&logger),
-                            active_license.as_ref(),
                         )
                         .await
                         {
@@ -1339,8 +1282,7 @@ async fn create_pipeline_handler(
     if !spec.draft {
         spec.validate_security_with(state.allow_internal_hosts)
             .map_err(|e| ApiError::bad_request(e.to_string()))?;
-        let active_license = state.license_store.active().await.unwrap_or(None);
-        connectors::validate_pipeline_configs(&spec, active_license.as_ref())
+        connectors::validate_pipeline_configs(&spec)
             .map_err(|e| ApiError::bad_request(e.to_string()))?;
         if !spec.depends_on.is_empty() {
             let all_specs = state.pipelines.list_all_specs(&state.secrets).await?;
@@ -1457,8 +1399,7 @@ async fn preview_node_handler(
         ))
     })?;
 
-    let active_license = state.license_store.active().await.unwrap_or(None);
-    let (_, source) = crate::connectors::build_source(node, 0, active_license.as_ref())
+    let (_, source) = crate::connectors::build_source(node, 0)
         .await
         .map_err(|e| ApiError::bad_request(crate::error::sanitize_error(&e.to_string())))?;
 
@@ -1624,11 +1565,9 @@ async fn preview_clean_blocks_handler(
         .unwrap_or(DEFAULT_PREVIEW_LIMIT)
         .min(MAX_PREVIEW_LIMIT);
 
-    let active_license = state.license_store.active().await.unwrap_or(None);
-    let (table_name, source) =
-        crate::connectors::build_source(&req.source, 0, active_license.as_ref())
-            .await
-            .map_err(|e| ApiError::bad_request(crate::error::sanitize_error(&e.to_string())))?;
+    let (table_name, source) = crate::connectors::build_source(&req.source, 0)
+        .await
+        .map_err(|e| ApiError::bad_request(crate::error::sanitize_error(&e.to_string())))?;
     let schema = source.schema();
     let batches = read_preview_batches(source, limit).await?;
     if batches.is_empty() {
@@ -1715,8 +1654,7 @@ async fn preview_adhoc_handler(
         .validate_security_with(state.allow_internal_hosts)
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
 
-    let active_license = state.license_store.active().await.unwrap_or(None);
-    let (_, source) = crate::connectors::build_source(&req.node, 0, active_license.as_ref())
+    let (_, source) = crate::connectors::build_source(&req.node, 0)
         .await
         .map_err(|e| ApiError::bad_request(crate::error::sanitize_error(&e.to_string())))?;
 
@@ -1758,8 +1696,7 @@ async fn update_pipeline_handler(
     if !spec.draft {
         spec.validate_security_with(state.allow_internal_hosts)
             .map_err(|e| ApiError::bad_request(e.to_string()))?;
-        let active_license = state.license_store.active().await.unwrap_or(None);
-        connectors::validate_pipeline_configs(&spec, active_license.as_ref())
+        connectors::validate_pipeline_configs(&spec)
             .map_err(|e| ApiError::bad_request(e.to_string()))?;
         if !spec.depends_on.is_empty() {
             let all_specs = state.pipelines.list_all_specs(&state.secrets).await?;
@@ -1828,26 +1765,17 @@ async fn commit_pipeline_history(
     }
 }
 
-/// If a GitHub remote is configured (`PUT /settings/git-remote`) *and* the
-/// active license covers `git-history-github-sync`, mirrors `main` to it
-/// in the background — Part 4 of the git-versioning follow-up plan,
-/// "caso o usuário queira". Both the license check and the push itself
-/// are best-effort and fire-and-forget: neither ever holds up or fails
-/// the pipeline/prompt save that triggered it, same posture as
-/// `alerts.rs`'s notifications and `commit_pipeline_history` above. Not
-/// gated by license at all when no remote is configured — this is a
-/// no-op, not a check that needs to run either way.
+/// If a GitHub remote is configured (`PUT /settings/git-remote`), mirrors
+/// `main` to it in the background — Part 4 of the git-versioning follow-up
+/// plan, "caso o usuário queira". The push is best-effort and
+/// fire-and-forget: it never holds up or fails the pipeline/prompt save
+/// that triggered it, same posture as `alerts.rs`'s notifications and
+/// `commit_pipeline_history` above. A no-op when no remote is configured.
 #[cfg(feature = "version-history")]
 async fn maybe_push_git_history_to_remote(state: &AppState) {
     let Ok(Some(remote)) = state.git_remote.get(&state.secrets).await else {
         return;
     };
-    let active_license = state.license_store.active().await.unwrap_or(None);
-    if connectors::check_connector_license("git-history-github-sync", active_license.as_ref())
-        .is_err()
-    {
-        return;
-    }
     let git_history = state.git_history.clone();
     tokio::spawn(async move {
         if let Err(e) = git_history
@@ -1875,11 +1803,8 @@ struct SetGitRemoteRequest {
 }
 
 /// `PUT /settings/git-remote` — configures (or replaces) the optional
-/// GitHub mirror for `git_history`. Does not itself check the
-/// `git-history-github-sync` license (that check happens per-push, in
-/// `maybe_push_git_history_to_remote`) — an unlicensed remote can be
-/// configured ahead of time, it just won't be pushed to until a covering
-/// license is installed.
+/// GitHub mirror for `git_history` — pushed to on every save by
+/// `maybe_push_git_history_to_remote`.
 #[cfg(feature = "version-history")]
 async fn set_git_remote_handler(
     State(state): State<AppState>,
@@ -3009,68 +2934,6 @@ async fn create_user_handler(
 }
 
 #[derive(Deserialize)]
-struct InstallLicenseRequest {
-    license_key: String,
-}
-
-#[derive(Serialize)]
-struct LicenseStatusResponse {
-    active: bool,
-    connectors: Vec<String>,
-    seats: u32,
-    expires_at: Option<i64>,
-}
-
-impl LicenseStatusResponse {
-    fn inactive() -> Self {
-        Self {
-            active: false,
-            connectors: Vec::new(),
-            seats: 0,
-            expires_at: None,
-        }
-    }
-}
-
-/// Installs (or replaces) the enterprise license key — see
-/// `docs/ENTERPRISE_LICENSING.md`. No enterprise connector actually reads
-/// this yet (none exist in this repo); this is the verification + storage
-/// half of the gate, ready for a future connector registration path to
-/// consult via `LicenseStore::is_connector_licensed`.
-async fn install_license_handler(
-    State(state): State<AppState>,
-    Json(body): Json<InstallLicenseRequest>,
-) -> Result<Json<LicenseStatusResponse>, ApiError> {
-    let claims = state.license_store.install(&body.license_key).await?;
-    Ok(Json(LicenseStatusResponse {
-        active: true,
-        connectors: claims.connectors,
-        seats: claims.seats,
-        expires_at: Some(claims.exp),
-    }))
-}
-
-async fn license_status_handler(
-    State(state): State<AppState>,
-) -> Result<Json<LicenseStatusResponse>, ApiError> {
-    let status = match state
-        .license_store
-        .active()
-        .await
-        .map_err(ApiError::internal)?
-    {
-        Some(claims) => LicenseStatusResponse {
-            active: true,
-            connectors: claims.connectors,
-            seats: claims.seats,
-            expires_at: Some(claims.exp),
-        },
-        None => LicenseStatusResponse::inactive(),
-    };
-    Ok(Json(status))
-}
-
-#[derive(Deserialize)]
 struct CreatePromptRequest {
     name: String,
     template: String,
@@ -3408,12 +3271,8 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
     // Same database as `pipeline_runs` (which these logs narrate) — not a
     // 5th env var to operate.
     let run_logs = RunLogStore::connect(&config.pipelines_database_url).await?;
-    // Same database as auth (access-control data), not a 4th env var to
-    // operate — a license is a single-row table, not worth its own
-    // connection pool/URL to configure.
-    let license_store = LicenseStore::connect(&config.auth_database_url).await?;
     // Same database as checkpoints, not a 5th env var — same reasoning as
-    // `run_logs`/`license_store` above, one small table doesn't need its
+    // `run_logs` above, one small table doesn't need its
     // own connection pool/URL.
     let resource_stats =
         resource_stats::ResourceStatsStore::connect(&config.checkpoint_database_url).await?;
@@ -3483,7 +3342,6 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         masking_salt,
         pipelines,
         run_logs,
-        license_store,
         resource_stats,
         dbt_lineage,
         dbt_test_results,
@@ -3674,8 +3532,7 @@ pub async fn run() -> anyhow::Result<()> {
     // resolved against the process's CWD) — inside the published image that's
     // "/" (no WORKDIR set in the runtime stage), owned by root, not writable
     // by the non-root `nexusflow` user (uid 1001). Nothing had ever turned
-    // `version-history` on in a built image before the LLMOps Store
-    // integration (see docs/ENTERPRISE_LICENSING.md), so this went
+    // `version-history` on in a built image before 2026-09-08, so this went
     // undetected: the server crashed on boot ("Permission denied") the
     // first time the feature was actually exercised end-to-end.
     //
@@ -3861,7 +3718,6 @@ pub(crate) mod tests {
             masking_salt: Some(b"test-masking-salt".to_vec()),
             pipelines: PipelineStore::connect("sqlite::memory:").await.unwrap(),
             run_logs: RunLogStore::connect("sqlite::memory:").await.unwrap(),
-            license_store: LicenseStore::connect("sqlite::memory:").await.unwrap(),
             resource_stats: resource_stats::ResourceStatsStore::connect("sqlite::memory:")
                 .await
                 .unwrap(),
@@ -4568,7 +4424,7 @@ pub(crate) mod tests {
         assert_eq!(results[0]["status"], "fail");
     }
 
-    // --- Marco L8: llm-lineage-tracking / reactive-rag-cdc enterprise gate ---
+    // --- Marco L8: generation lineage (`GET /lineage/generation/{id}`) ---
 
     #[cfg(all(
         feature = "llm",
@@ -4583,71 +4439,8 @@ pub(crate) mod tests {
         )
     ))]
     #[tokio::test]
-    async fn generation_lineage_is_forbidden_without_a_covering_license() {
+    async fn generation_lineage_is_visible() {
         let state = test_state().await;
-        let read_token = bearer(&state, Role::Read);
-        // Seeded directly — this test is about the license gate in front
-        // of the handler, not about producing a real generation via RAG
-        // (already covered by `reactive_rag_cdc_pipeline.rs`/
-        // `lancedb_search_integration.rs`).
-        let id = state
-            .llm_generations
-            .record(llm_generation_store::NewGeneration {
-                pipeline_id: "p1",
-                question: "what is nexusflow?",
-                answer: "a data movement framework",
-                prompt_name: "rag-prompt",
-                prompt_version: 1,
-                model: "gpt-test",
-                tokens_prompt: 10,
-                tokens_completion: 5,
-                resource_id: None,
-                context_keys: &[],
-            })
-            .await
-            .unwrap();
-        let app = router(state);
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/lineage/generation/{id}"))
-                    .header("authorization", &read_token)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            response.status(),
-            StatusCode::FORBIDDEN,
-            "no license installed — the generation exists (id is real), so a non-403 \
-             status here would mean the license check isn't actually gating this handler"
-        );
-    }
-
-    #[cfg(all(
-        feature = "llm",
-        any(feature = "embeddings", feature = "embeddings-api"),
-        any(
-            feature = "lancedb",
-            feature = "qdrant",
-            feature = "milvus",
-            feature = "pgvector",
-            feature = "pinecone",
-            feature = "chromadb"
-        )
-    ))]
-    #[tokio::test]
-    async fn generation_lineage_is_visible_with_a_covering_license() {
-        use crate::license::test_support::{claims, sign};
-
-        let state = test_state().await;
-        state
-            .license_store
-            .install(&sign(&claims(vec!["llm-lineage-tracking"])))
-            .await
-            .unwrap();
         let read_token = bearer(&state, Role::Read);
         let id = state
             .llm_generations
@@ -4681,39 +4474,6 @@ pub(crate) mod tests {
 
         let body = body_json(response).await;
         assert_eq!(body["question"], "what is nexusflow?");
-    }
-
-    #[tokio::test]
-    async fn connectors_catalog_never_exposes_capability_only_slugs() {
-        // `llm-lineage-tracking`/`reactive-rag-cdc` (Marco L8,
-        // `capability_registry.rs`) are license-check targets, not real
-        // connectors — they must never show up as a node type the Canvas
-        // could try to add to a DAG.
-        let state = test_state().await;
-        let read_token = bearer(&state, Role::Read);
-        let app = router(state);
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/connectors")
-                    .header("authorization", &read_token)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let entries = body_json(response).await;
-        let names: Vec<&str> = entries
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|e| e["name"].as_str().unwrap())
-            .collect();
-        assert!(!names.contains(&"llm-lineage-tracking"));
-        assert!(!names.contains(&"reactive-rag-cdc"));
     }
 
     #[tokio::test]
@@ -6197,7 +5957,6 @@ pub(crate) mod tests {
             masking_salt: Some(b"test-masking-salt".to_vec()),
             pipelines: PipelineStore::connect("sqlite::memory:").await.unwrap(),
             run_logs: RunLogStore::connect("sqlite::memory:").await.unwrap(),
-            license_store: LicenseStore::connect("sqlite::memory:").await.unwrap(),
             resource_stats: resource_stats::ResourceStatsStore::connect("sqlite::memory:")
                 .await
                 .unwrap(),

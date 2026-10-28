@@ -92,8 +92,8 @@ pub struct RunRecord {
     /// `None` when the run had no `llm` node, or that build lacks the
     /// "llm" feature. Always `None` from `list_runs` itself (this store
     /// has no dependency on `pipeline_run_llm_stats_store` — a separate
-    /// table/store, same reasoning `license_store` and `pipeline_store`
-    /// stay independent); `list_runs_handler` fills it in afterwards. Same
+    /// table/store, same reasoning every other store stays
+    /// independent); `list_runs_handler` fills it in afterwards. Same
     /// serialization convention as `dbt_summary` above (always present,
     /// `null` rather than omitted when absent).
     pub llm_stats: Option<serde_json::Value>,
