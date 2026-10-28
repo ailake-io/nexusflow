@@ -258,12 +258,21 @@ jobs:
       # missing — installed here so the shipped binary has them). Unconditional
       # now that this always runs on a fresh ubuntu-latest VM (no host-level
       # "already installed" assumption to skip past anymore).
+      #
+      # protobuf-compiler/libprotobuf-dev/libcurl4-openssl-dev: real failure
+      # caught on the first Fase 35 release build on main (2026-10-28,
+      # "Could not find protoc") — lancedb (connectors-all) needs `protoc`.
+      # Before Fase 35 the Linux binary compiled inside the enterprise
+      # repo's Docker image, which already had these; now it compiles
+      # directly on this runner. ci.yml's own job installs them separately
+      # and never hit this, which is why it only showed up here.
       - name: Install native build deps for the ADBC drivers + connectors-all
         if: matrix.os == 'linux'
         run: |
           sudo apt-get update && sudo apt-get install -y \
             cmake pkg-config libpq-dev libsqlite3-dev libfmt-dev \
-            unixodbc-dev libsasl2-dev libssl-dev zlib1g-dev
+            unixodbc-dev libsasl2-dev libssl-dev zlib1g-dev \
+            protobuf-compiler libprotobuf-dev libcurl4-openssl-dev
 
       # macos-latest ships cmake/pkg-config already; unixodbc/libpq/fmt do
       # not (Homebrew is preinstalled, used here instead of apt). No
