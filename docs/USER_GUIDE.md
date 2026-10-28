@@ -1,6 +1,6 @@
 # Guia de uso do NexusFlow — instalação a conector por conector
 
-Referência completa e prática: da instalação até a configuração exata de cada um dos 46 conectores OSS (os 24 originais + os 22 que migraram do enterprise na Fase 32, 2026-09-25 — SQL/DW, vetorial/busca, streaming, arquivo/storage, ver §4.10-4.13 e `LICENSING.md`), transformações (SQL, embeddings, dbt) e recursos de execução (preview, agendamento). Para o passo a passo mínimo de "primeiro pipeline", ver [`GETTING_STARTED.md`](./GETTING_STARTED.md); para arquitetura interna, [`ARCHITECTURE.md`](../ARCHITECTURE.md).
+Referência completa e prática: da instalação até a configuração exata de cada um dos conectores (os 24 originais + os 22 que migraram do enterprise na Fase 32, 2026-09-25 — SQL/DW, vetorial/busca, streaming, arquivo/storage, ver §4.10-4.13; os 16 de SaaS de negócio da Fase 35 estão em [`CONNECTOR_FIELD_REFERENCE.md`](./CONNECTOR_FIELD_REFERENCE.md) — ver `LICENSING.md`), transformações (SQL, embeddings, dbt) e recursos de execução (preview, agendamento). Para o passo a passo mínimo de "primeiro pipeline", ver [`GETTING_STARTED.md`](./GETTING_STARTED.md); para arquitetura interna, [`ARCHITECTURE.md`](../ARCHITECTURE.md).
 
 ## Índice
 
@@ -945,7 +945,7 @@ Baixa o modelo do Hugging Face Hub em runtime (cache local). CUDA/Metal ainda n�
 
 ## 7. dbt — ELT e ETL real
 
-Precisa do build com feature `dbt` e do CLI `dbt` no `PATH` do processo. A imagem Docker publicada (e a imagem enterprise) já vêm com `dbt-core` + `dbt-postgres` instalados e `$HOME` gravável — se você compilou o binário sozinho fora de um container, instale `dbt` você mesmo (`pip install dbt-core dbt-<adapter>`).
+Precisa do build com feature `dbt` e do CLI `dbt` no `PATH` do processo. A imagem Docker publicada já vem com `dbt-core` + `dbt-postgres` instalados e `$HOME` gravável — se você compilou o binário sozinho fora de um container, instale `dbt` você mesmo (`pip install dbt-core dbt-<adapter>`).
 
 - **`DBT_PROFILES_DIR`**: dbt lê essa variável nativamente (nada específico do NexusFlow) — aponte pra onde está seu `profiles.yml`, ou deixe `dbt` usar o default `~/.dbt/profiles.yml`.
 - **`NEXUS_DBT_PROJECTS_ROOT`** (opcional): `dbt.project_dir` abaixo é sempre relativo (nunca pode começar com `/` nem conter `..`, por segurança) — sem essa variável, resolve contra o diretório de trabalho do próprio processo `nexus-server` (que pode não ser o que você espera). Setando essa env var, `project_dir` resolve contra ela — aponte pra um volume montado com seus projetos dbt.

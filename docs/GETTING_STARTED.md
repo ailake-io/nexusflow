@@ -98,13 +98,10 @@ em `microsoft/winget-pkgs`) — **travado**, não só "aguardando review"
 `build-windows` original dentro do `release.yml` (matrix automático a
 cada push/PR) segue removido dessa chain por decisão, não por bloqueio
 técnico. macOS: `release.yml`'s `build` job ganhou leg
-`macos-latest`/arm64 no mesmo dia, gerando um binário OSS-only (esse job
-específico usa Docker pro enterprise, indisponível em runner macOS
-hospedado). O binário enterprise de verdade sai de
-`build-macos-installer.yml` (workflow separado, `[patch]` de Cargo em
-vez de Docker, mesmo truque do Windows) — **rodou de verdade num
-`macos-latest` real em 2026-09-06** (63m54s, `connectors-all` + todo
-conector enterprise, achou e corrigiu bugs reais de dependência nativa)
+`macos-latest`/arm64 no mesmo dia. O asset do Homebrew sai de
+`build-macos-installer.yml` (workflow separado) — **rodou de verdade num
+`macos-latest` real em 2026-09-06** (63m54s, `connectors-all`, achou e
+corrigiu bugs reais de dependência nativa)
 e dispara sozinho após cada release desde 2026-09-08; tap dedicado
 `ailake-io/homebrew-nexusflow` (`brew install
 ailake-io/nexusflow/nexusflow`) já criado e atualizado pra v0.1.7,
@@ -187,7 +184,7 @@ Baixa o binário + drivers ADBC pra `~/.local/share/nexusflow` e cria `~/.local/
 
 Mesma coisa: todos os conectores já vêm linkados; o `.deb` declara `unixodbc`/`libsasl2-2` como `Depends`, AppImage/rpm exigem essas libs já presentes no sistema alvo.
 
-Windows: `.msi` real via `cargo-wix` (`.github/workflows/build-windows-installer.yml`, `windows-latest` hospedado, dispara sozinho após cada release) — **já instalado e validado numa máquina Windows real** (2026-09-06); manifesto `winget` (`Ailake.NexusFlow`) submetido em 2026-09-18, [PR #436825](https://github.com/microsoft/winget-pkgs/pull/436825) travado (CLA não assinada + erro de validação pós-instalação, não só "aguardando review"). macOS: `build-macos-installer.yml` **rodou de ponta a ponta num runner `macos-latest` real** (2026-09-06, `connectors-all` + enterprise), tap Homebrew dedicado `ailake-io/homebrew-nexusflow` já criado e atualizado pra v0.1.7 (`brew install ailake-io/nexusflow/nexusflow`) — `packaging/macos/nexusflow.rb` (sem tap, ver `packaging/macos/README.md`) segue mantido em paralelo. Falta só alguém instalando numa máquina macOS física de verdade.
+Windows: `.msi` real via `cargo-wix` (`.github/workflows/build-windows-installer.yml`, `windows-latest` hospedado, dispara sozinho após cada release) — **já instalado e validado numa máquina Windows real** (2026-09-06); manifesto `winget` (`Ailake.NexusFlow`) submetido em 2026-09-18, [PR #436825](https://github.com/microsoft/winget-pkgs/pull/436825) travado (CLA não assinada + erro de validação pós-instalação, não só "aguardando review"). macOS: `build-macos-installer.yml` **rodou de ponta a ponta num runner `macos-latest` real** (2026-09-06, `connectors-all`), tap Homebrew dedicado `ailake-io/homebrew-nexusflow` já criado e atualizado pra v0.1.7 (`brew install ailake-io/nexusflow/nexusflow`) — `packaging/macos/nexusflow.rb` (sem tap, ver `packaging/macos/README.md`) segue mantido em paralelo. Falta só alguém instalando numa máquina macOS física de verdade.
 
 ### Build a partir do source
 
