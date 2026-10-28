@@ -26,12 +26,6 @@ pub struct ConnectorDescriptor {
     pub capability: ConnectorCapability,
     #[serde(skip)]
     pub config_schema: fn() -> serde_json::Value,
-    /// `None` for every OSS connector. `Some(slug)` marks a connector as
-    /// enterprise-gated — a paid feature per `LICENSING.md §2` /
-    /// `docs/ENTERPRISE_LICENSING.md`, unlocked only by an installed license
-    /// whose `connectors` list contains `slug`. Set via
-    /// `submit_enterprise_connector!` instead of `submit_connector!`.
-    pub requires_license: Option<&'static str>,
 }
 
 inventory::collect!(ConnectorDescriptor);
@@ -48,40 +42,16 @@ macro_rules! submit_connector {
                     $crate::registry::serde_json::to_value(&schema)
                         .expect("JSON schema always serializes")
                 },
-                requires_license: None,
             }
         }
     };
 }
 
-/// Same as `submit_connector!`, but marks the connector as enterprise-gated
-/// under its own name (see `ConnectorDescriptor::requires_license`). No
-/// crate calls this yet — enterprise connectors live in a private repo that
-/// doesn't exist in this workspace (`LICENSING.md §2`); this macro is the
-/// registration primitive that repo will use.
-#[macro_export]
-macro_rules! submit_enterprise_connector {
-    ($name:expr, $capability:expr, $config:ty) => {
-        $crate::registry::inventory::submit! {
-            $crate::registry::ConnectorDescriptor {
-                name: $name,
-                capability: $capability,
-                config_schema: || {
-                    let schema = $crate::registry::schemars::schema_for!($config);
-                    $crate::registry::serde_json::to_value(&schema)
-                        .expect("JSON schema always serializes")
-                },
-                requires_license: Some($name),
-            }
-        }
-    };
-}
-
-/// Plugin extension point for connectors that live outside this workspace
-/// (`docs/ENTERPRISE_CONNECTORS.md`, `ROADMAP.md` Fase 12 Bloco 3) — an
-/// enterprise crate in a private repo can't add a match arm to
-/// `nexus-server`'s `build_source`/`build_sink` (it doesn't own that code),
-/// so it registers a builder here instead, via `submit_source_builder!`.
+/// Plugin extension point (`ROADMAP.md` Fase 12 Bloco 3) — a connector
+/// crate that doesn't have its own match arm in `nexus-server`'s
+/// `build_source`/`build_sink` (originally the out-of-tree ones, now every
+/// connector migrated in Fase 32/35) registers a builder here instead, via
+/// `submit_source_builder!`.
 /// `nexus-server` falls back to this registry only when its own hardcoded
 /// match on `node.connector` doesn't recognize the name (see
 /// `connectors.rs`'s doc comment on `build_source`) — every OSS connector
@@ -153,15 +123,10 @@ macro_rules! submit_sink_builder {
 /// plain local path, not a URL a remote caller could redirect, so `dag.rs`'s
 /// absolute-path SSRF-style guard should let it through. Separate from
 /// `ConnectorDescriptor` (rather than a field added there) specifically so
-/// opting in never requires touching every existing `submit_connector!`/
-/// `submit_enterprise_connector!` call site — a connector just adds one more
-/// registration line.
-///
-/// An enterprise connector living in a private repo opts in the same way an
-/// OSS one does: call `nexus_core::submit_local_path_connector!("its-name")`
-/// from its own crate. The public repo's `is_local_path_connector` (dag.rs)
-/// never needs to know that connector's name — `LICENSING.md §3`'s "no
-/// enterprise connector name in the public repo" rule stays intact.
+/// opting in never requires touching every existing `submit_connector!`
+/// call site — a connector just adds one more registration line:
+/// `nexus_core::submit_local_path_connector!("its-name")` from its own
+/// crate, so `is_local_path_connector` (dag.rs) never hardcodes a list.
 pub struct LocalPathConnector {
     pub name: &'static str,
 }
@@ -231,27 +196,8 @@ mod tests {
         assert!(ConnectorRegistry::find("does-not-exist").is_none());
     }
 
-    submit_enterprise_connector!(
-        "test-enterprise-connector",
-        ConnectorCapability::Bridged,
-        TestConnectorConfig
-    );
-
-    #[test]
-    fn enterprise_connector_is_tagged_with_its_own_slug() {
-        let found = ConnectorRegistry::find("test-enterprise-connector").expect("registered");
-        assert_eq!(found.requires_license, Some("test-enterprise-connector"));
-    }
-
-    #[test]
-    fn oss_connector_requires_no_license() {
-        let found = ConnectorRegistry::find("test-connector").expect("registered");
-        assert_eq!(found.requires_license, None);
-    }
-
     // --- SourceBuilder / SinkBuilder plugin extension point ---
-    // Stands in for a connector defined in an out-of-tree private crate
-    // (`nexus-connectors-enterprise`) that can't add a match arm to
+    // Stands in for a connector crate that has no match arm in
     // nexus-server's build_source/build_sink — see the doc comment above
     // `SourceBuilder`.
 

@@ -49,7 +49,7 @@ pub async fn execute_tool(
     args: &Value,
 ) -> Result<ToolOutput, AgentToolError> {
     match tool {
-        AgentToolKind::QueryData { source } => query_data(state, source, args).await,
+        AgentToolKind::QueryData { source } => query_data(source, args).await,
         AgentToolKind::SearchVectors { pipeline_id, top_k } => {
             search_vectors(state, pipeline_id, *top_k, args).await
         }
@@ -62,7 +62,7 @@ pub async fn execute_tool(
             source,
             script,
             timeout_seconds,
-        } => generate_chart(state, source, script, *timeout_seconds, args).await,
+        } => generate_chart(source, script, *timeout_seconds, args).await,
         AgentToolKind::DraftPipeline => draft_pipeline(state, args).await,
         AgentToolKind::GetPipelineStatus => get_pipeline_status(state, args).await,
         AgentToolKind::EditPipeline => edit_pipeline(state, args).await,
@@ -77,10 +77,7 @@ pub async fn execute_tool(
 /// `AgentToolKind::DraftPipeline`'s own static fallback, just with a real
 /// `enum` of connector names instead of a bare string.
 pub fn draft_pipeline_schema() -> Value {
-    let connector_names: Vec<&'static str> = ConnectorRegistry::all()
-        .filter(|d| d.capability != nexus_core::ConnectorCapability::Capability)
-        .map(|d| d.name)
-        .collect();
+    let connector_names: Vec<&'static str> = ConnectorRegistry::all().map(|d| d.name).collect();
     let node_schema = serde_json::json!({
         "type": "object",
         "properties": {
@@ -139,19 +136,16 @@ const AGENT_AUDIT_ACTOR: &str = "agent";
 
 /// Runs every *non-structural* gate `create_pipeline_handler`/
 /// `update_pipeline_handler` (`lib.rs`) apply beyond `PipelineSpec::validate`/
-/// `validate_security_with` — license-gated connectors, `depends_on`
+/// `validate_security_with` — per-connector config validation, `depends_on`
 /// cycle/existence checks, and the masking-salt precondition. `draft_pipeline`/
 /// `edit_pipeline` must run the *exact same* set the REST API does, or an
-/// agent could save a pipeline (e.g. one using an unlicensed enterprise
-/// connector) that a human hitting `POST`/`PUT /pipelines` would have had
-/// rejected — a real gate, not just a cosmetic parity nit.
+/// agent could save a pipeline that a human hitting `POST`/`PUT /pipelines`
+/// would have had rejected — a real gate, not just a cosmetic parity nit.
 async fn apply_pipeline_save_gates(
     state: &AppState,
     spec: &nexus_core::PipelineSpec,
 ) -> Result<(), AgentToolError> {
-    let active_license = state.license_store.active().await.unwrap_or(None);
-    crate::connectors::validate_pipeline_configs(spec, active_license.as_ref())
-        .map_err(AgentToolError::from_display)?;
+    crate::connectors::validate_pipeline_configs(spec).map_err(AgentToolError::from_display)?;
     if !spec.depends_on.is_empty() {
         let all_specs = state
             .pipelines
@@ -322,12 +316,10 @@ fn optional_sql_arg(args: &Value) -> Option<&str> {
 }
 
 async fn query_data(
-    state: &AppState,
     source: &nexus_core::NodeSpec,
     args: &Value,
 ) -> Result<ToolOutput, AgentToolError> {
-    let active_license = state.license_store.active().await.unwrap_or(None);
-    let (table_name, src) = crate::connectors::build_source(source, 0, active_license.as_ref())
+    let (table_name, src) = crate::connectors::build_source(source, 0)
         .await
         .map_err(AgentToolError::from_display)?;
     let schema = src.schema();
@@ -568,14 +560,12 @@ async fn call_webhook(
 }
 
 async fn generate_chart(
-    state: &AppState,
     source: &nexus_core::NodeSpec,
     script: &str,
     timeout_seconds: Option<u64>,
     args: &Value,
 ) -> Result<ToolOutput, AgentToolError> {
-    let active_license = state.license_store.active().await.unwrap_or(None);
-    let (table_name, src) = crate::connectors::build_source(source, 0, active_license.as_ref())
+    let (table_name, src) = crate::connectors::build_source(source, 0)
         .await
         .map_err(AgentToolError::from_display)?;
     let schema = src.schema();

@@ -47,6 +47,22 @@ members = [
     "nexus-connector-google-sheets",
     "nexus-connector-dropbox",
     "nexus-connector-sharepoint",
+    "nexus-connector-salesforce",
+    "nexus-connector-hubspot",
+    "nexus-connector-zendesk",
+    "nexus-connector-servicenow",
+    "nexus-connector-dynamics365",
+    "nexus-connector-netsuite",
+    "nexus-connector-workday",
+    "nexus-connector-shopify",
+    "nexus-connector-stripe",
+    "nexus-connector-ga4",
+    "nexus-connector-google-ads",
+    "nexus-connector-meta-ads",
+    "nexus-connector-linkedin-ads",
+    "nexus-connector-tiktok-ads",
+    "nexus-connector-x-ads",
+    "nexus-connector-youtube-analytics",
 ]
 
 [workspace.package]

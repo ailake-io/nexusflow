@@ -4,8 +4,6 @@ use nexus_connector_postgres::{PostgresConnectorConfig, PostgresSink, PostgresSo
 use nexus_connector_sqlite::{SqliteConnectorConfig, SqliteSink, SqliteSource};
 use nexus_core::{ConnectorRegistry, NodeSpec, PipelineSpec, Sink, Source};
 
-use crate::license::LicenseClaims;
-
 #[cfg(feature = "ailake-cdc")]
 use nexus_connector_ailake::{AilakeCdcConfig, AilakeCdcSource};
 #[cfg(feature = "ailake")]
@@ -77,54 +75,11 @@ use nexus_connector_rest::{RestConnectorConfig, RestSource, WebhookSink, Webhook
 /// they're AI Lakehouse destinations or read-only bridging sources by
 /// design (see each crate's own src/lib.rs doc comment), not an oversight
 /// here.
-/// The single enforcement point for enterprise-connector licensing
-/// (ROADMAP.md Fase 12, Bloco 1; `docs/ENTERPRISE_LICENSING.md §5`) —
-/// also reused as-is (`pub(crate)`) for the two non-connector capability
-/// slugs registered by `capability_registry.rs`
-/// (LLMOPS_IMPLEMENTATION_PLAN.md Marco L8: `"llm-lineage-tracking"`,
-/// `"reactive-rag-cdc"`), which are always present in `ConnectorRegistry`
-/// (registered from this crate itself, not a plugin) so the "not found"
-/// branch below never applies to them.
-/// `ConnectorRegistry::find` looks up whatever crate registered this
-/// connector name via `submit_connector!`/`submit_enterprise_connector!`
-/// (`nexus-core/registry.rs`) — an OSS connector always has
-/// `requires_license: None` and passes here unconditionally; only a
-/// connector registered with `submit_enterprise_connector!` is gated. An
-/// unknown connector name is left for the caller's own match arm to reject
-/// with its usual "unsupported connector" error, not this function — that
-/// second gate is what makes "not found → allow" safe for real connectors,
-/// but it does not exist for the two capability slugs above (see
-/// `capability_registry.rs`'s doc comment for why they're registered here
-/// instead of a private crate).
-pub(crate) fn check_connector_license(
-    connector: &str,
-    active_license: Option<&LicenseClaims>,
-) -> anyhow::Result<()> {
-    let Some(descriptor) = ConnectorRegistry::find(connector) else {
-        return Ok(());
-    };
-    let Some(slug) = descriptor.requires_license else {
-        return Ok(());
-    };
-    let covered = active_license.is_some_and(|claims| claims.covers(slug));
-    if !covered {
-        anyhow::bail!(
-            "connector {slug:?} requires an active enterprise license that covers it — \
-             see docs/ENTERPRISE_LICENSING.md"
-        );
-    }
-    Ok(())
-}
-
 /// Validates that a source node's config can be deserialized into the
 /// connector's strongly-typed config struct. This catches typos, missing
 /// required fields, and wrong types at pipeline create/update time, before
 /// the invalid config is persisted.
-pub fn validate_source_config(
-    node: &NodeSpec,
-    active_license: Option<&LicenseClaims>,
-) -> anyhow::Result<()> {
-    check_connector_license(&node.connector, active_license)?;
+pub fn validate_source_config(node: &NodeSpec) -> anyhow::Result<()> {
     match node.connector.as_str() {
         "postgres" => {
             let _: PostgresConnectorConfig = serde_json::from_value(node.config.clone())?;
@@ -234,9 +189,7 @@ pub fn validate_source_config(
 pub async fn build_source(
     node: &NodeSpec,
     index: usize,
-    active_license: Option<&LicenseClaims>,
 ) -> anyhow::Result<(String, Box<dyn Source>)> {
-    check_connector_license(&node.connector, active_license)?;
     let name = node.resolved_name(index, "source")?;
     let source: Box<dyn Source> = match node.connector.as_str() {
         "postgres" => {
@@ -367,11 +320,7 @@ pub async fn build_source(
 
 /// Validates that a sink node's config can be deserialized into the
 /// connector's strongly-typed config struct. See `validate_source_config`.
-pub fn validate_sink_config(
-    node: &NodeSpec,
-    active_license: Option<&LicenseClaims>,
-) -> anyhow::Result<()> {
-    check_connector_license(&node.connector, active_license)?;
+pub fn validate_sink_config(node: &NodeSpec) -> anyhow::Result<()> {
     match node.connector.as_str() {
         "postgres" => {
             let _: PostgresConnectorConfig = serde_json::from_value(node.config.clone())?;
@@ -477,26 +426,23 @@ pub fn validate_sink_config(
 /// Validates that every source/sink config in the spec deserializes into the
 /// connector's typed config struct. This catches structural config errors at
 /// pipeline create/update time, before persistence.
-pub fn validate_pipeline_configs(
-    spec: &PipelineSpec,
-    active_license: Option<&LicenseClaims>,
-) -> anyhow::Result<()> {
+pub fn validate_pipeline_configs(spec: &PipelineSpec) -> anyhow::Result<()> {
     for (i, node) in spec.sources.iter().enumerate() {
-        validate_source_config(node, active_license)
+        validate_source_config(node)
             .map_err(|e| anyhow::anyhow!("source[{i}] ({}): {e}", node.connector))?;
     }
     for (i, node) in spec.sinks.iter().enumerate() {
-        validate_sink_config(node, active_license)
+        validate_sink_config(node)
             .map_err(|e| anyhow::anyhow!("sink[{i}] ({}): {e}", node.connector))?;
     }
     if let Some(dbt) = &spec.dbt {
         if let Some(output) = &dbt.output {
-            validate_source_config(output, active_license)
+            validate_source_config(output)
                 .map_err(|e| anyhow::anyhow!("dbt.output ({}): {e}", output.connector))?;
         }
     }
     for (i, node) in spec.post_dbt_sinks.iter().enumerate() {
-        validate_sink_config(node, active_license)
+        validate_sink_config(node)
             .map_err(|e| anyhow::anyhow!("post_dbt_sinks[{i}] ({}): {e}", node.connector))?;
     }
     Ok(())
@@ -506,9 +452,7 @@ pub async fn build_sink(
     node: &NodeSpec,
     index: usize,
     schema: &arrow_schema::SchemaRef,
-    active_license: Option<&LicenseClaims>,
 ) -> anyhow::Result<(String, Box<dyn Sink>)> {
-    check_connector_license(&node.connector, active_license)?;
     let name = node.resolved_name(index, "sink")?;
     // Most connectors below only ever needed the column *names* — kept as
     // `columns` so their call sites don't change. postgres/sqlite now take
@@ -656,85 +600,11 @@ pub async fn build_sink(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::license::test_support::{claims, sign};
     use nexus_core::ConnectorCapability;
 
-    // `inventory` collects per compiled binary — this test binary needs
-    // its own `submit_enterprise_connector!` fixture; it can't see
-    // nexus-core's own test-only registration (a separate compilation
-    // unit). Real enterprise connectors register the same way, from a
-    // private crate that doesn't exist in this workspace yet.
-    #[derive(schemars::JsonSchema)]
-    struct TestPaidConfig {
-        #[allow(dead_code)]
-        uri: String,
-    }
-    nexus_core::submit_enterprise_connector!(
-        "test-paid-connector",
-        ConnectorCapability::Bridged,
-        TestPaidConfig
-    );
-
-    #[test]
-    fn oss_connector_never_needs_a_license() {
-        assert!(check_connector_license("postgres", None).is_ok());
-    }
-
-    #[test]
-    fn unknown_connector_name_is_left_for_the_caller_to_reject() {
-        // The match arm in validate_source_config/build_source/etc. gives
-        // "unsupported connector" — this function shouldn't get in front
-        // of that with a different error for a name it doesn't recognize.
-        assert!(check_connector_license("totally-made-up", None).is_ok());
-    }
-
-    #[test]
-    fn enterprise_connector_with_no_license_installed_is_rejected() {
-        let err = check_connector_license("test-paid-connector", None).unwrap_err();
-        assert!(err.to_string().contains("test-paid-connector"));
-    }
-
-    #[test]
-    fn enterprise_connector_with_a_license_that_does_not_cover_it_is_rejected() {
-        let license = claims(vec!["some-other-connector"]);
-        let err = check_connector_license("test-paid-connector", Some(&license)).unwrap_err();
-        assert!(err.to_string().contains("test-paid-connector"));
-    }
-
-    #[test]
-    fn enterprise_connector_with_a_covering_license_is_accepted() {
-        let license = claims(vec!["test-paid-connector"]);
-        assert!(check_connector_license("test-paid-connector", Some(&license)).is_ok());
-    }
-
-    #[test]
-    fn validate_source_config_enforces_the_license_before_deserializing() {
-        // "postgres" config here is deliberately garbage — if the license
-        // check didn't run first, this would fail with a deserialize
-        // error instead of a license error, which is the wrong signal to
-        // surface to the caller.
-        let node = NodeSpec {
-            name: None,
-            connector: "test-paid-connector".to_string(),
-            config: serde_json::json!({}),
-        };
-        let err = validate_source_config(&node, None).unwrap_err();
-        assert!(err.to_string().contains("test-paid-connector"));
-    }
-
-    #[test]
-    fn sign_and_claims_helpers_are_reachable_from_this_module() {
-        // Smoke test that the pub(crate) test_support wiring actually
-        // works from outside license.rs/license_store.rs, since it's the
-        // helper every enforcement test above (and any future ones) needs.
-        let jwt = sign(&claims(vec!["x"]));
-        assert!(!jwt.is_empty());
-    }
-
     // --- Plugin builder fallback (ROADMAP.md Fase 12 Bloco 3 prerequisite) ---
-    // Stands in for a real enterprise connector (e.g. Excel) living in the
-    // private `nexus-connectors-enterprise` repo, which can't add a match
-    // arm to build_source/build_sink above — it registers a
+    // Stands in for a connector crate (e.g. Excel) that has no match arm
+    // in build_source/build_sink above — it registers a
     // SourceBuilder/SinkBuilder instead (nexus-core/registry.rs).
 
     use async_trait::async_trait;
@@ -791,7 +661,7 @@ mod tests {
             .map_err(|e| nexus_core::NexusError::Serialization(e.to_string()))
     }
 
-    nexus_core::submit_enterprise_connector!(
+    nexus_core::submit_connector!(
         "test-plugin-connector",
         ConnectorCapability::Bridged,
         TestPluginConnectorConfig
@@ -834,25 +704,8 @@ mod tests {
             connector: "test-plugin-connector".to_string(),
             config: serde_json::json!({"value": "x"}),
         };
-        let license = claims(vec!["test-plugin-connector"]);
-        let (_, source) = build_source(&node, 0, Some(&license))
-            .await
-            .expect("builds via plugin");
+        let (_, source) = build_source(&node, 0).await.expect("builds via plugin");
         assert_eq!(source.schema().fields().len(), 0);
-    }
-
-    #[tokio::test]
-    async fn build_source_rejects_a_plugin_connector_without_a_covering_license() {
-        let node = NodeSpec {
-            name: None,
-            connector: "test-plugin-connector".to_string(),
-            config: serde_json::json!({"value": "x"}),
-        };
-        // Not `.unwrap_err()`: that requires the `Ok` side (`Box<dyn
-        // Source>`) to implement `Debug`, which trait objects don't get
-        // for free. `.err()` discards the `Ok` side without needing it.
-        let err = build_source(&node, 0, None).await.err().unwrap();
-        assert!(err.to_string().contains("test-plugin-connector"));
     }
 
     #[tokio::test]
@@ -865,9 +718,8 @@ mod tests {
             connector: "test-plugin-connector".to_string(),
             config: serde_json::json!({"value": "x"}),
         };
-        let license = claims(vec!["test-plugin-connector"]);
         let schema = Arc::new(Schema::empty());
-        build_sink(&node, 0, &schema, Some(&license))
+        build_sink(&node, 0, &schema)
             .await
             .expect("builds via plugin");
     }
@@ -879,7 +731,7 @@ mod tests {
             connector: "totally-made-up".to_string(),
             config: serde_json::json!({}),
         };
-        let err = validate_source_config(&node, None).unwrap_err();
+        let err = validate_source_config(&node).unwrap_err();
         assert!(err.to_string().contains("unsupported source connector"));
     }
 }

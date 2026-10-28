@@ -1542,3 +1542,58 @@ AppImage/tarball macOS com os 7 drivers ADBC embutidos, não só os 4 de
 antes — Windows continua sem nenhum (item separado, build MSVC/cmake
 do zero pro driver Postgres/SQLite que nem existe ainda, registrado
 como pendência maior, não coberto por este fix).
+
+## Fase 35 — NexusFlow 100% open source (fim do open-core) ✅
+
+Pedido de 2026-10-28: "quero deixar o nexusflow todo ele opensource …
+tudo incluso no oss quando instalar, todas as features". Encerra o
+modelo open-core (`LICENSING.md` §2 histórico) — mesma mecânica da
+Fase 32, agora pro resto do catálogo, mais a remoção do mecanismo de
+licença inteiro.
+
+- [x] **16 conectores de SaaS de negócio** migrados do repo privado
+  (`nexus-connectors-enterprise`, branch `develop`) pra
+  `crates/nexus-connectors/`: Salesforce, HubSpot, Zendesk, ServiceNow,
+  Dynamics 365, NetSuite, Workday, Shopify, Stripe, GA4, Google Ads,
+  Meta Ads, LinkedIn Ads, TikTok Ads, X Ads, YouTube Analytics.
+  `submit_enterprise_connector!` → `submit_connector!`, dependência
+  git/ssh pinada → `path`, `license = "UNLICENSED"` → Apache-2.0 do
+  workspace. Todos em `connectors-all`/`connectors-all-no-embeddings` —
+  inclusive os 5 de Ads, por decisão explícita, mesmo sem validação
+  contra conta real (`docs/PENDING_REAL_ACCOUNT_VALIDATION.md`).
+- [x] **`nexus-infra-terraform`** (Canvas de Infra) migrado pra
+  `crates/nexus-infra-terraform`, feature `infra-terraform` (em
+  `connectors-all`). Slug `infra-terraform-generator` removido.
+- [x] **Mecanismo de licença removido**: `license.rs`,
+  `license_store.rs`, `capability_registry.rs`, `POST/GET /license`,
+  `check_connector_license`, `ConnectorDescriptor::requires_license`,
+  `ConnectorCapability::Capability`, macro
+  `submit_enterprise_connector!`, feature `test-license-key`. As 3
+  capabilities de LLMOps (`GET /lineage/generation/{id}`, RAG reativo
+  CDC+embedding, mirror git→GitHub) passam a rodar sempre. Tabela
+  `license` de instalações existentes fica órfã (inofensiva), não é
+  dropada.
+- [x] **Frontend**: aba Store, cadeado do `ConnectorPalette`, paywall do
+  Canvas de Infra, `VITE_LICENSING_API_URL` (e o `%…%` do CSP em
+  `index.html`) removidos.
+- [x] **`connectors-all` inclui toda feature leve**: `dbt`,
+  `python-transform` e `python-viz` entraram no bundle (antes só o
+  binário enterprise do Windows/macOS os ligava) — todo artefato
+  publicado sai com tudo.
+- [x] **Bug real achado no caminho**: nenhum conector que só se registra
+  via `inventory` (os 22 da Fase 32 inclusive — Excel, BigQuery,
+  Snowflake, MSSQL, …) era referenciado por símbolo no `nexus-server`,
+  então o linker descartava o crate e ele sumia de `GET /connectors` no
+  binário OSS (o binário enterprise escondia isso com `extern crate` no
+  próprio `bin/main.rs`). Novo `nexus-server/src/plugin_connectors.rs`
+  força o link de todos (38 conectores + infra-terraform); teste
+  comprovou que sem a linha o conector some do registry.
+- [x] **CI/CD**: passos "Clone nexus-connectors-enterprise"/"Build
+  enterprise binary" removidos de `release.yml`,
+  `docker-hub-publish.yml` (agora builda o `Dockerfile` da raiz),
+  `build-windows-installer.yml` e `build-macos-installer.yml` — um build
+  só, `--features embed-ui,connectors-all`, em todo artefato.
+- [ ] **Pendências do lado do mantenedor** (fora do repo): apagar o
+  secret `ENTERPRISE_REPO_DEPLOY_KEY`; arquivar/apagar
+  `ailake-io/nexus-connectors-enterprise` e `ailake-io/nexus-licensing`;
+  desativar produtos/checkout na Stripe.

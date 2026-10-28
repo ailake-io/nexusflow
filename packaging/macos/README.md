@@ -1,10 +1,9 @@
 # NexusFlow no macOS
 
 Adicionado 2026-09-05 (`release.yml`'s `build` job, matrix leg `macos`/`arm64`,
-`runs-on: macos-latest`). **Validado num run real em 2026-09-06**: tanto o
-build OSS puro (`release.yml`) quanto o enterprise-bundled
-(`build-macos-installer.yml`) compilaram e publicaram um tarball real na
-release v0.1.3.
+`runs-on: macos-latest`). **Validado num run real em 2026-09-06**: tanto
+`release.yml` quanto `build-macos-installer.yml` compilaram e publicaram
+um tarball real na release v0.1.3.
 
 ## O que tem aqui
 
@@ -14,30 +13,15 @@ release v0.1.3.
   `build-macos-installer.yml` e fica desatualizado pra esse asset
   específico).
 
-## Dois caminhos de build — igual ao Windows
+## Dois workflows, mesmo binário
 
-`release.yml`'s leg `macos`/`arm64` (automático, a cada release) builda
-só o binário **OSS puro** (`connectors-all`, sem enterprise) — é o que
-entra na chain automática pra não arriscar o release principal com um
-build ainda não validado (mesmo racional do Windows já ter um workflow
-separado do zero).
-
-`.github/workflows/build-macos-installer.yml` builda o binário
-**enterprise-bundled** completo — mesmo truque do Windows (clonar
-`nexus-connectors-enterprise` + `[patch]` de Cargo apontando pro
-checkout OSS já baixado, sem precisar de Docker, que não existe em
-runner macOS hospedado). Desde 2026-09-08 dispara sozinho (`workflow_run`
-em `Release`, branch `main`) além do `workflow_dispatch` manual — em
-qualquer um dos dois casos, sobrescreve o `nexusflow-macos-arm64.tar.gz`
-que o release automático já publicou (mesmo nome de arquivo,
-`--clobber`) — resultado final: o asset publicado na release é sempre o
-enterprise-bundled, igual ao que Linux/Windows já entregam.
-
-Bug real encontrado e corrigido no primeiro run: faltava o step `cargo
-build --release -p nexusflow` (builda o OSS puro) antes do step que
-builda o binário enterprise — sem ele, `target/release/` nunca existia
-na raiz do repo pro `cp` final copiar o binário enterprise por cima.
-Corrigido espelhando `build-windows-installer.yml`, que já fazia isso.
+`release.yml`'s leg `macos`/`arm64` (automático, a cada release) e
+`.github/workflows/build-macos-installer.yml` (dispara sozinho via
+`workflow_run` em `Release`, branch `main`, além do `workflow_dispatch`
+manual) buildam o mesmo binário — `--features embed-ui,connectors-all`,
+todo conector e toda feature, tudo OSS desde a Fase 35. O segundo
+sobrescreve o `nexusflow-macos-arm64.tar.gz` publicado pelo primeiro
+(mesmo nome de arquivo, `--clobber`) — é o asset que a formula usa.
 
 ## Arquitetura suportada
 

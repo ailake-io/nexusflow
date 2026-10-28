@@ -1,8 +1,8 @@
 # Referência de campos — Conectores OSS
 
-Gerado a partir do schema real (`GET /connectors`) de uma imagem `nexusflow-enterprise:full` rodando localmente (2026-09-01) — nomes de campo, obrigatoriedade e descrição vêm direto do `config_schema` de cada conector (doc comment Rust real), não inventados. Coluna "Exemplo" é um valor plausível pra preencher o formulário, não necessariamente o default real de cada conector (que pode divergir quando o schema não expõe o `default` explicitamente).
+Gerado a partir do schema real (`GET /connectors`) de um binário com `connectors-all` rodando localmente (2026-09-01) — nomes de campo, obrigatoriedade e descrição vêm direto do `config_schema` de cada conector (doc comment Rust real), não inventados. Coluna "Exemplo" é um valor plausível pra preencher o formulário, não necessariamente o default real de cada conector (que pode divergir quando o schema não expõe o `default` explicitamente).
 
-Descrições ficam em inglês de propósito — são o doc comment original do Rust, traduzir risca introduzir imprecisão técnica. Cobre os 24 conectores OSS originais (snapshot de 2026-09-01, antes da Fase 32). **Os 22 conectores que migraram do enterprise em 2026-09-25** (SQL/DW, vetorial/busca, streaming, arquivo/storage — ver `LICENSING.md`) ainda não têm entrada aqui; o schema real de cada um já está disponível via `GET /connectors` (JSON Schema, mesmo mecanismo que gerou este arquivo), só falta regenerar esta referência contra um binário com `connectors-all` atualizado. Os 16 conectores enterprise restantes (license-gated) estão no repo privado `nexus-connectors-enterprise`, em `docs/CONNECTOR_FIELD_REFERENCE.md`.
+Descrições ficam em inglês de propósito — são o doc comment original do Rust, traduzir risca introduzir imprecisão técnica. Cobre os 24 conectores OSS originais (snapshot de 2026-09-01, antes da Fase 32). **Os 22 conectores que migraram do enterprise em 2026-09-25** (SQL/DW, vetorial/busca, streaming, arquivo/storage — ver `LICENSING.md`) ainda não têm entrada aqui; o schema real de cada um já está disponível via `GET /connectors` (JSON Schema, mesmo mecanismo que gerou este arquivo), só falta regenerar esta referência contra um binário com `connectors-all` atualizado. Os 16 conectores de SaaS de negócio (Fase 35, ex-enterprise) estão no fim deste arquivo.
 
 ## `ailake`
 
@@ -573,3 +573,298 @@ Capability: `bridged`
 | `retries` | não | integer | `3` | Number of retries on transient failures (5xx, timeouts, connect errors). |
 | `retry_backoff_seconds` | não | integer | `1` | Base delay between retries in seconds (exponential backoff). |
 | `requests_per_second` | não | integer | `0` | Maximum requests per second — only meaningful with `body_mode: "per_row"`, where a large batch means many requests (0 = unlimited). |
+
+---
+
+# SaaS de negócio (Fase 35, ex-enterprise)
+
+Migrados do antigo repo privado em 2026-10-28 — mesma metodologia (schema real de `GET /connectors`). Os 5 de Ads ainda não foram validados contra conta real (ver `docs/PENDING_REAL_ACCOUNT_VALIDATION.md`).
+
+## `dynamics365`
+
+Capability: `bridged`
+
+| Campo | Obrigatório | Tipo | Exemplo | Descrição |
+|---|---|---|---|---|
+| `base_url` | **sim** | string | `https://api.example.com` |  |
+| `access_token` | **sim** | string | `SEU_ACCESS_TOKEN` |  |
+| `entity_set` | **sim** | string | `accounts` | Entity set (plural, lowercase) name, e.g. `accounts`, `contacts`, `opportunities` — real Dataverse Web API URL segment (`/api/data/v9.2/{entity_set}`). |
+| `id_field` | não | string | `null` | Primary key column name for this entity, e.g. `accountid` for `accounts` — Dataverse's primary key is always `{entity}id` by convention, but not derivable purely from `entity_set`'s plural form (e.g. `opportunities` → `opportunityid`, not `opportunitiid`), so it's explicit here. Required for the sink (identifies the record to `PATCH` via `{entity_set}({id})`); ignored by the source. |
+| `fields` | **sim** | array<string> | `"[ ... ]"` | Columns to fetch (`$select`) — Dataverse returns every column by default without it, which is expensive on wide entities. |
+| `page_size` | não | integer | `100` | Page size (`$top`) — Dataverse's own max page size varies by entity/tenant config, kept modest by default. |
+| `timeout_seconds` | não | integer | `30` |  |
+| `retries` | não | integer | `3` | Number of retries on transient failures (5xx, timeouts, connect errors). |
+| `retry_backoff_seconds` | não | integer | `1` | Base delay between retries in seconds (exponential backoff). |
+
+## `ga4`
+
+Capability: `bridged`
+
+| Campo | Obrigatório | Tipo | Exemplo | Descrição |
+|---|---|---|---|---|
+| `property_id` | **sim** | string | `valor-exemplo` | GA4 property ID (numeric, no `properties/` prefix). |
+| `client_email` | **sim** | string | `valor-exemplo` | Service account email — the JWT `iss` claim. |
+| `private_key` | **sim** | string | `valor-exemplo` | PEM-encoded RSA private key from the service account JSON key file. Signs the JWT (RS256). |
+| `token_uri` | não | string | `https://oauth2.googleapis.com/token` | Google's token endpoint. Field, not hardcoded, so a test double can override it — same reasoning `nexus-connector-salesforce`'s `login_url` documents. |
+| `data_api_base_url` | não | string | `https://analyticsdata.googleapis.com` | Base URL for the Data API — field, not hardcoded, so tests can point it at a mock server the same way `token_uri` does. |
+| `dimensions` | **sim** | array<string> | `"[ ... ]"` | Dimension names to request (e.g. `date`, `country`). |
+| `metrics` | **sim** | array<string> | `"[ ... ]"` | Metric names to request (e.g. `activeUsers`, `sessions`). |
+| `start_date` | **sim** | string | `valor-exemplo` | Report date range start — GA4 accepts both literal dates (`2026-01-01`) and relative strings (`7daysAgo`, `today`). |
+| `end_date` | **sim** | string | `valor-exemplo` |  |
+| `page_size` | não | integer | `100000` | Rows requested per `runReport` call — GA4 paginates via `offset`/`limit`, not a cursor. Defaults to `100000`, comfortably under the API's own per-request row ceiling. |
+| `timeout_seconds` | não | integer | `30` | Timeout in seconds for each HTTP call. |
+| `retries` | não | integer | `3` | Number of retries on transient failures (5xx, timeouts, connect errors). |
+| `retry_backoff_seconds` | não | integer | `1` | Base delay between retries in seconds (exponential backoff). |
+
+## `google-ads`
+
+Capability: `bridged`
+
+| Campo | Obrigatório | Tipo | Exemplo | Descrição |
+|---|---|---|---|---|
+| `developer_token` | **sim** | string | `SEU_DEV_TOKEN` |  |
+| `login_customer_id` | **sim** | string | `valor-exemplo` | Manager (MCC) account ID — the `login-customer-id` header. |
+| `customer_id` | **sim** | string | `valor-exemplo` | Target customer (ad account) ID being queried. |
+| `client_id` | **sim** | string | `SEU_CLIENT_ID` |  |
+| `client_secret` | **sim** | string | `SEU_CLIENT_SECRET` |  |
+| `refresh_token` | **sim** | string | `SEU_REFRESH_TOKEN` |  |
+| `gaql_query` | **sim** | string | `valor-exemplo` | Raw GAQL query — no describe/catalog exists for this API to build a default from, so the user writes it directly (same spirit as `nexus-connector-salesforce`'s optional `soql`, but mandatory here). |
+| `fields` | **sim** | array<string> | `"[ ... ]"` | Dotted field paths matching the GAQL `SELECT` clause (e.g. `campaign.name`, `metrics.clicks`) — used both to build the Arrow schema and to flatten each nested JSON result row into columns, since `searchStream` returns deeply nested objects shaped by whatever resource/field paths were selected. |
+| `api_version` | não | string | `v25` | API version path segment. Google deprecates versions on a rolling cadence — this needs bumping periodically, not a permanent default. |
+| `token_uri` | não | string | `https://oauth2.googleapis.com/token` |  |
+| `ads_api_base_url` | não | string | `https://googleads.googleapis.com` | Base URL for the Ads API — field, not hardcoded, so tests can point it at a mock server. |
+| `timeout_seconds` | não | integer | `30` |  |
+
+## `hubspot`
+
+Capability: `bridged`
+
+| Campo | Obrigatório | Tipo | Exemplo | Descrição |
+|---|---|---|---|---|
+| `access_token` | **sim** | string | `SEU_ACCESS_TOKEN` |  |
+| `object_type` | **sim** | string | `contacts` | CRM object type, e.g. `contacts`, `companies`, `deals`, `tickets`, or a custom object's internal name. |
+| `properties` | **sim** | array<string> | `"[ ... ]"` | Properties to fetch/write — HubSpot only returns a small default set unless explicitly requested via `?properties=`. |
+| `id_property` | não | string | `null` | Property used as the upsert key for the sink (HubSpot's Batch Upsert API's `idProperty`) — e.g. `email` for contacts. Required for the sink, ignored by the source. Without a real unique property to upsert on, every write would just create duplicates. |
+| `page_size` | não | integer | `100` | Page size for list requests — HubSpot allows up to 100. |
+| `base_url` | não | string | `https://api.hubapi.com` | API base URL — field, not hardcoded, so tests can point it at a mock server. |
+| `timeout_seconds` | não | integer | `30` |  |
+| `retries` | não | integer | `3` | Number of retries on transient failures (5xx, timeouts, connect errors). |
+| `retry_backoff_seconds` | não | integer | `1` | Base delay between retries in seconds (exponential backoff). |
+
+## `linkedin-ads`
+
+Capability: `bridged`
+
+| Campo | Obrigatório | Tipo | Exemplo | Descrição |
+|---|---|---|---|---|
+| `access_token` | **sim** | string | `SEU_ACCESS_TOKEN` | Externally obtained OAuth2 access token. Expires in 60 days with no automatic renewal unless `refresh_token` (MDP-only) is also set. |
+| `refresh_token` | não | string | `SEU_REFRESH_TOKEN` | MDP-partner-only: enables automatic renewal via the standard OAuth2 refresh-token exchange. |
+| `client_id` | não | string | `SEU_CLIENT_ID` |  |
+| `client_secret` | não | string | `SEU_CLIENT_SECRET` |  |
+| `account_urns` | **sim** | array<string> | `"[ ... ]"` | Sponsored ad account URN(s), e.g. `urn:li:sponsoredAccount:123456`. |
+| `pivot` | **sim** | string | `valor-exemplo` | Analytics pivot — grouping dimension (e.g. `CAMPAIGN`, `CREATIVE`, `MEMBER_COMPANY`). Confirmed real query param. |
+| `fields` | **sim** | array<string> | `"[ ... ]"` | Fields to request (e.g. `impressions`, `clicks`, `costInLocalCurrency`). |
+| `start_date` | **sim** | array<string> | `"[ ... ]"` | Report date range — `(year, month, day)`. |
+| `end_date` | **sim** | array<string> | `"[ ... ]"` |  |
+| `finder` | não | string | `analytics` | `q=analytics` (1 pivot) or `q=statistics` (up to 3 pivots) — confirmed real finder methods. Defaults to `analytics`. |
+| `linkedin_version` | não | string | `202605` | LinkedIn REST API version header (`LinkedIn-Version`), e.g. `202605` — versioned REST APIs need this on every call. |
+| `token_uri` | não | string | `https://www.linkedin.com/oauth/v2/accessToken` |  |
+| `api_base_url` | não | string | `https://api.linkedin.com` | Base URL for the REST API — field, not hardcoded, so tests can point it at a mock server. |
+| `timeout_seconds` | não | integer | `30` |  |
+
+## `meta-ads`
+
+Capability: `bridged`
+
+| Campo | Obrigatório | Tipo | Exemplo | Descrição |
+|---|---|---|---|---|
+| `ad_account_id` | **sim** | string | `valor-exemplo` | Ad account ID, without the `act_` prefix — this connector adds it when building the URL. |
+| `access_token` | **sim** | string | `SEU_ACCESS_TOKEN` |  |
+| `fields` | **sim** | array<string> | `"[ ... ]"` | Insights fields to request (e.g. `impressions`, `clicks`, `spend`). |
+| `level` | **sim** | enum(ad/adset/campaign/account) | `ad` |  |
+| `breakdowns` | não | array<string> | `[]` | Optional breakdown dimensions (e.g. `age`, `gender`, `placement`). |
+| `date_preset` | não | string | `null` | Relative date preset (e.g. `last_7d`) — takes precedence over `since`/`until` when set. |
+| `since` | não | string | `null` |  |
+| `until` | não | string | `null` |  |
+| `api_version` | não | string | `v23.0` | Graph API version path segment. Meta retires each version roughly 2 years after release — needs periodic bumping. |
+| `graph_api_base_url` | não | string | `https://graph.facebook.com` | Base URL for the Graph API — field, not hardcoded, so tests can point it at a mock server. |
+| `poll_interval_seconds` | não | integer | `5` |  |
+| `timeout_seconds` | não | integer | `3600` | Timeout for the whole connect+job+poll+download flow. Defaults high — Meta's own async insights jobs can queue behind other work and time out at 60 minutes on Meta's side, same "job can genuinely take a while" reasoning `nexus-connector-salesforce` documents for its own Bulk API jobs. |
+
+## `netsuite`
+
+Capability: `bridged`
+
+| Campo | Obrigatório | Tipo | Exemplo | Descrição |
+|---|---|---|---|---|
+| `account_url` | **sim** | string | `https://SEU_ACCOUNT.suitetalk.api.netsuite.com` |  |
+| `access_token` | **sim** | string | `SEU_ACCESS_TOKEN` |  |
+| `record_type` | não | string | `null` | Record type for the sink (create/update), e.g. `customer`, `salesorder`, `invoice` — the REST Record API's URL segment. Ignored by the source (SuiteQL's `query` already names the table). |
+| `query` | não | string | `null` | Raw SuiteQL query, e.g. `"SELECT id, entityid, email FROM customer"` — source only, ignored by the sink. SuiteQL is a real subset of SQL NetSuite documents; this connector doesn't build or validate the query itself (unlike the ODBC connectors in this repo, which own their SQL) — the caller writes it. |
+| `page_size` | não | integer | `100` | Page size (SuiteQL's implicit page size via `Prefer: transient` + this connector's own limit/offset pagination added to the query — see `source.rs` for how). |
+| `timeout_seconds` | não | integer | `30` |  |
+| `retries` | não | integer | `3` | Number of retries on transient failures (5xx, timeouts, connect errors). |
+| `retry_backoff_seconds` | não | integer | `1` | Base delay between retries in seconds (exponential backoff). |
+
+## `salesforce`
+
+Capability: `bridged`
+
+| Campo | Obrigatório | Tipo | Exemplo | Descrição |
+|---|---|---|---|---|
+| `login_url` | não | string | `https://login.salesforce.com` | OAuth token endpoint host. `https://login.salesforce.com` for production/Developer Edition orgs, `https://test.salesforce.com` for sandboxes, or an org's My Domain URL. |
+| `client_id` | **sim** | string | `SEU_CLIENT_ID` | Connected App Consumer Key — the JWT `iss` claim. |
+| `username` | **sim** | string | `nexusflow` | Integration user's username — the JWT `sub` claim. |
+| `private_key` | **sim** | string | `valor-exemplo` | PEM-encoded RSA private key matching the certificate uploaded to the Connected App. Signs the JWT (RS256). |
+| `api_version` | não | string | `v62.0` | REST API version, e.g. `v62.0`. Orgs can pin a different one. |
+| `sobject` | **sim** | string | `valor-exemplo` | sObject API name to read from / write to, e.g. `Account`. |
+| `soql` | não | string | `null` | Custom SOQL for the source. When unset, the source builds `SELECT <fields> FROM <sobject>` from the sObject's own `describe()` field list — SOQL has no `SELECT *`. |
+| `external_id_field` | não | string | `null` | Field used to upsert on write — required for the sink (Bulk API 2.0 upsert jobs need `externalIdFieldName`; v1 doesn't support a plain insert-only sink). Ignored by the source. |
+| `timeout_seconds` | não | integer | `300` | Timeout in seconds for the whole connect+job+poll+download flow. Defaults to `300` — much higher than the ADBC connectors in this workspace, since Bulk API jobs are real asynchronous jobs that can take minutes, not a synchronous query. |
+| `poll_interval_seconds` | não | integer | `5` | Delay between job-status polls, in seconds. |
+
+## `servicenow`
+
+Capability: `bridged`
+
+| Campo | Obrigatório | Tipo | Exemplo | Descrição |
+|---|---|---|---|---|
+| `base_url` | **sim** | string | `https://api.example.com` |  |
+| `username` | **sim** | string | `nexusflow` |  |
+| `password` | **sim** | string | `s3nhaForte123` |  |
+| `table` | **sim** | string | `events` | Table name, e.g. `incident`, `problem`, `change_request`, or a custom table's internal name. |
+| `fields` | **sim** | array<string> | `"[ ... ]"` | Columns to fetch/write — the Table API returns every column by default unless `sysparm_fields` narrows it, same rationale `nexus-connector-hubspot`'s `properties` gives. |
+| `page_size` | não | integer | `100` | Page size for list requests (`sysparm_limit`) — ServiceNow's real Table API default cap is 10,000, but a smaller page keeps each response manageable. |
+| `timeout_seconds` | não | integer | `30` |  |
+| `retries` | não | integer | `3` | Number of retries on transient failures (5xx, timeouts, connect errors). |
+| `retry_backoff_seconds` | não | integer | `1` | Base delay between retries in seconds (exponential backoff). |
+
+## `shopify`
+
+Capability: `bridged`
+
+| Campo | Obrigatório | Tipo | Exemplo | Descrição |
+|---|---|---|---|---|
+| `shop_domain` | **sim** | string | `valor-exemplo` | Shop domain, e.g. `my-shop.myshopify.com`. |
+| `access_token` | **sim** | string | `SEU_ACCESS_TOKEN` | Admin API access token from a custom app (`X-Shopify-Access- Token` header) — no OAuth2 dance needed for this server-to-server case. |
+| `api_version` | não | string | `2026-01` | API version, date-stamped (e.g. `2026-01`) — Shopify versions by release date, not a semantic number. |
+| `api_base_url` | não | string | `null` | Overrides the base URL derived from `shop_domain` (`https://{shop_domain}`) — unset in real use, set by tests to point at a mock server. |
+| `graphql_query` | não | string | `null` | Source: the GraphQL query body wrapped in `bulkOperationRunQuery`. Required for the source, ignored by the sink. |
+| `fields` | não | array<string> | `[]` | Source: JSONL keys to project as columns from the bulk query's result — same "explicit `fields`, no fragile introspection" simplification `nexus-connector-stripe`'s config already documents. |
+| `sink_mutation` | não | string | `null` | Sink: the full GraphQL mutation definition string, with an `$input` variable (e.g. `mutation call($input: ProductInput!) { productCreate(input: $input) { product { id } userErrors { field message } } }`) — `bulkOperationRunMutation` takes the real mutation text, not just a name, so this can't be auto-generated from a bare mutation name without per-mutation input-type knowledge this connector... |
+| `poll_interval_seconds` | não | integer | `5` |  |
+| `timeout_seconds` | não | integer | `3600` | Timeout for the whole job+poll+download flow. Defaults high — Shopify bulk operations can run up to 24h on Shopify's side for genuinely large jobs, same "job can take a while" reasoning `nexus-connector-meta-ads` documents for its own async jobs. |
+| `retries` | não | integer | `3` | Number of retries on transient failures (5xx, timeouts, connect errors). |
+| `retry_backoff_seconds` | não | integer | `1` | Base delay between retries in seconds (exponential backoff). |
+
+## `stripe`
+
+Capability: `bridged`
+
+| Campo | Obrigatório | Tipo | Exemplo | Descrição |
+|---|---|---|---|---|
+| `secret_key` | **sim** | string | `SEU_SECRET_KEY` |  |
+| `resource` | **sim** | enum(charges/invoices/customers/subscriptions) | `tickets` |  |
+| `fields` | **sim** | array<string> | `"[ ... ]"` | Top-level JSON keys to project as columns (e.g. `id`, `amount`, `customer`, `status`, `created`). Nested objects/arrays are rendered as their JSON text form rather than flattened — simpler than the dotted-path flattening `nexus-connector-google-ads` needs, since Stripe's fields of interest are typically already top-level. |
+| `created_gte` | não | integer | `null` | Incremental read filter — `created[gte]` (Unix epoch seconds), confirmed real query param on Stripe's list endpoints. Omit for a full backfill. |
+| `created_lt` | não | integer | `null` | Optional upper bound for the incremental window — `created[lt]`. When both `created_gte` and `created_lt` are provided, the connector may fetch non-overlapping time windows in parallel (up to `max_concurrent_requests`). |
+| `stripe_version` | não | string | `2025-11-17` | `Stripe-Version` header — required on direct (non-SDK) API calls. Pinned to a real, dated version rather than "latest" so response shape doesn't shift under this connector without notice. |
+| `api_base_url` | não | string | `https://api.stripe.com` | API base URL — field, not hardcoded, so tests can point it at a mock server. |
+| `page_limit` | não | integer | `100` | Page size for list requests. Stripe allows up to 100. |
+| `retries` | não | integer | `3` | Number of retries on transient failures (5xx, timeouts, connect errors). |
+| `retry_backoff_seconds` | não | integer | `1` | Base delay between retries in seconds (exponential backoff). |
+| `timeout_seconds` | não | integer | `30` | Timeout in seconds for each HTTP call. |
+
+## `tiktok-ads`
+
+Capability: `bridged`
+
+| Campo | Obrigatório | Tipo | Exemplo | Descrição |
+|---|---|---|---|---|
+| `access_token` | **sim** | string | `SEU_ACCESS_TOKEN` |  |
+| `advertiser_id` | **sim** | string | `valor-exemplo` |  |
+| `report_type` | **sim** | string | `valor-exemplo` | Report type, e.g. `BASIC`. |
+| `data_level` | **sim** | string | `valor-exemplo` | Aggregation level, e.g. `AUCTION_CAMPAIGN`, `AUCTION_AD`. |
+| `dimensions` | **sim** | array<string> | `"[ ... ]"` | Dimension field names (e.g. `campaign_id`, `stat_time_day`). |
+| `metrics` | **sim** | array<string> | `"[ ... ]"` | Metric field names (e.g. `impressions`, `clicks`, `spend`). |
+| `start_date` | **sim** | string | `valor-exemplo` | `YYYY-MM-DD`. |
+| `end_date` | **sim** | string | `valor-exemplo` |  |
+| `page_size` | não | integer | `200` | Rows per page — real page-based pagination (confirmed via the official SDK docs), not offset/cursor. |
+| `api_base_url` | não | string | `https://business-api.tiktok.com` | Base URL for the Business API — field, not hardcoded, so tests can point it at a mock server. |
+| `timeout_seconds` | não | integer | `30` |  |
+
+## `workday`
+
+Capability: `bridged`
+
+| Campo | Obrigatório | Tipo | Exemplo | Descrição |
+|---|---|---|---|---|
+| `base_url` | **sim** | string | `https://api.example.com` |  |
+| `username` | **sim** | string | `nexusflow` |  |
+| `password` | **sim** | string | `s3nhaForte123` |  |
+| `tenant` | **sim** | string | `sua-org` | Workday tenant name — part of the RaaS URL path (`/ccx/service/customreport2/{tenant}/{report_owner}/{report_name}`). |
+| `report_owner` | **sim** | string | `usuario_integracao` | The report's owner (the Workday user account it was published under) — real, required RaaS URL segment. |
+| `report_name` | **sim** | string | `Relatorio_Customizado` | The report's name, exactly as published. |
+| `timeout_seconds` | não | integer | `30` |  |
+| `retries` | não | integer | `3` | Number of retries on transient failures (5xx, timeouts, connect errors). |
+| `retry_backoff_seconds` | não | integer | `1` | Base delay between retries in seconds (exponential backoff). |
+
+## `x-ads`
+
+Capability: `bridged`
+
+| Campo | Obrigatório | Tipo | Exemplo | Descrição |
+|---|---|---|---|---|
+| `consumer_key` | **sim** | string | `SEU_CONSUMER_KEY` |  |
+| `consumer_secret` | **sim** | string | `SEU_CONSUMER_SECRET` |  |
+| `access_token` | **sim** | string | `SEU_ACCESS_TOKEN` |  |
+| `access_token_secret` | **sim** | string | `SEU_ACCESS_TOKEN_SECRET` |  |
+| `account_id` | **sim** | string | `1234567890` | Ads account ID (not the same as a regular X user id). |
+| `entity` | **sim** | enum(ACCOUNT/CAMPAIGN/LINE_ITEM/PROMOTED_TWEET/MEDIA) | `ACCOUNT` |  |
+| `entity_ids` | **sim** | array<string> | `"[ ... ]"` | Up to 20 entity ids of the type above — confirmed API limit. |
+| `metric_groups` | **sim** | array<string> | `"[ ... ]"` | Metric groups to request (e.g. `engagement`, `billing`). |
+| `granularity` | não | enum(DAY/HOUR/TOTAL) | `DAY` |  |
+| `start_time` | **sim** | string | `valor-exemplo` | ISO 8601, on-the-hour (e.g. `2026-08-01T00:00:00Z`) — confirmed API requirement. |
+| `end_time` | **sim** | string | `valor-exemplo` |  |
+| `placement` | não | string | `null` | Restrict to a specific placement (e.g. `ALL_ON_TWITTER`). |
+| `fields` | **sim** | array<string> | `"[ ... ]"` | Metric field names to project into the output schema — every column comes back as `Utf8`, same convention this workspace's other report connectors (Meta/Google/TikTok Ads, GA4) use, since the API returns even numeric metrics inside a nested JSON shape that isn't uniformly typed across metric groups. |
+| `api_base_url` | não | string | `https://ads-api.x.com` |  |
+| `poll_interval_seconds` | não | integer | `5` |  |
+| `timeout_seconds` | não | integer | `3600` | Timeout for the whole create-job+poll+download flow. Defaults high, same reasoning `nexus-connector-meta-ads` documents for its own async Insights jobs — X Ads doesn't document its own job timeout, so this keeps the same conservative ceiling. |
+
+## `youtube-analytics`
+
+Capability: `bridged`
+
+| Campo | Obrigatório | Tipo | Exemplo | Descrição |
+|---|---|---|---|---|
+| `access_token` | **sim** | string | `SEU_ACCESS_TOKEN` |  |
+| `refresh_token` | não | string | `SEU_REFRESH_TOKEN` |  |
+| `client_id` | não | string | `SEU_CLIENT_ID` |  |
+| `client_secret` | não | string | `SEU_CLIENT_SECRET` |  |
+| `ids` | não | string | `channel==MINE` | Target channel — `channel==MINE` (the authenticated user's own channel) or `channel==CHANNEL_ID`. |
+| `dimensions` | **sim** | array<string> | `"[ ... ]"` |  |
+| `metrics` | **sim** | array<string> | `"[ ... ]"` |  |
+| `start_date` | **sim** | string | `valor-exemplo` |  |
+| `end_date` | **sim** | string | `valor-exemplo` |  |
+| `filters` | não | string | `null` |  |
+| `max_results` | não | integer | `200` | Rows per page — real index-based pagination (`startIndex`/`maxResults`), confirmed via the API reference. |
+| `token_uri` | não | string | `https://oauth2.googleapis.com/token` |  |
+| `api_base_url` | não | string | `https://youtubeanalytics.googleapis.com` | Base URL for the Analytics API — field, not hardcoded, so tests can point it at a mock server. |
+| `timeout_seconds` | não | integer | `30` |  |
+
+## `zendesk`
+
+Capability: `bridged`
+
+| Campo | Obrigatório | Tipo | Exemplo | Descrição |
+|---|---|---|---|---|
+| `base_url` | **sim** | string | `https://api.example.com` |  |
+| `email` | **sim** | string | `agente@empresa.com` |  |
+| `api_token` | **sim** | string | `SEU_API_TOKEN` |  |
+| `resource` | **sim** | enum(tickets/users/organizations) | `tickets` | Zendesk Support API v2 resources this connector supports — `tickets`, `users`, `organizations` are the three most commonly integrated, real endpoint names. |
+| `fields` | **sim** | array<string> | `"[ ... ]"` | Top-level JSON keys to project as columns — same "nested objects rendered as JSON text" simplification `nexus-connector-stripe`'s `fields` documents. |
+| `page_size` | não | integer | `100` | Page size for list requests — Zendesk's cursor pagination allows up to 100. |
+| `timeout_seconds` | não | integer | `30` |  |
+| `retries` | não | integer | `3` | Number of retries on transient failures (5xx, timeouts, connect errors). |
+| `retry_backoff_seconds` | não | integer | `1` | Base delay between retries in seconds (exponential backoff). |

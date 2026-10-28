@@ -4,7 +4,7 @@ use std::borrow::Cow;
 
 /// Named, versioned prompt templates (LLMOPS_IMPLEMENTATION_PLAN.md Marco
 /// L4) — `create` always inserts a new version, never overwrites an
-/// existing one (same immutability principle as `license_store`/
+/// existing one (same immutability principle as
 /// checkpoints: a `PipelineSpec` pinned to version 3 must keep resolving
 /// to that exact text forever, even after version 4 is created).
 #[derive(Clone)]

@@ -8316,6 +8316,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexus-connector-dynamics365"
+version = "0.3.3"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-schema 58.4.0",
+ "async-trait",
+ "futures",
+ "nexus-core",
+ "reqwest 0.12.28",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
 name = "nexus-connector-elasticsearch"
 version = "0.3.3"
 dependencies = [
@@ -8352,6 +8369,41 @@ dependencies = [
  "tempfile",
  "tokio",
  "url",
+]
+
+[[package]]
+name = "nexus-connector-ga4"
+version = "0.3.3"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-schema 58.4.0",
+ "async-trait",
+ "futures",
+ "jsonwebtoken",
+ "nexus-core",
+ "reqwest 0.12.28",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
+name = "nexus-connector-google-ads"
+version = "0.3.3"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-schema 58.4.0",
+ "async-trait",
+ "futures",
+ "nexus-core",
+ "reqwest 0.12.28",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+ "wiremock",
 ]
 
 [[package]]
@@ -8404,6 +8456,23 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "nexus-connector-hubspot"
+version = "0.3.3"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-schema 58.4.0",
+ "async-trait",
+ "futures",
+ "nexus-core",
+ "reqwest 0.12.28",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+ "wiremock",
 ]
 
 [[package]]
@@ -8481,6 +8550,40 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "nexus-connector-linkedin-ads"
+version = "0.3.3"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-schema 58.4.0",
+ "async-trait",
+ "futures",
+ "nexus-core",
+ "reqwest 0.12.28",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
+name = "nexus-connector-meta-ads"
+version = "0.3.3"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-schema 58.4.0",
+ "async-trait",
+ "futures",
+ "nexus-core",
+ "reqwest 0.12.28",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+ "wiremock",
 ]
 
 [[package]]
@@ -8591,6 +8694,23 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "nexus-connector-netsuite"
+version = "0.3.3"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-schema 58.4.0",
+ "async-trait",
+ "futures",
+ "nexus-core",
+ "reqwest 0.12.28",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+ "wiremock",
 ]
 
 [[package]]
@@ -8829,7 +8949,60 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexus-connector-salesforce"
+version = "0.3.3"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-csv",
+ "arrow-schema 58.4.0",
+ "async-trait",
+ "futures",
+ "jsonwebtoken",
+ "nexus-core",
+ "reqwest 0.12.28",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
+name = "nexus-connector-servicenow"
+version = "0.3.3"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-schema 58.4.0",
+ "async-trait",
+ "futures",
+ "nexus-core",
+ "reqwest 0.12.28",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
 name = "nexus-connector-sharepoint"
+version = "0.3.3"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-schema 58.4.0",
+ "async-trait",
+ "futures",
+ "nexus-core",
+ "reqwest 0.12.28",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
+name = "nexus-connector-shopify"
 version = "0.3.3"
 dependencies = [
  "arrow-array 58.4.0",
@@ -8896,6 +9069,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexus-connector-stripe"
+version = "0.3.3"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-schema 58.4.0",
+ "async-trait",
+ "futures",
+ "nexus-core",
+ "reqwest 0.12.28",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
 name = "nexus-connector-teradata"
 version = "0.3.3"
 dependencies = [
@@ -8910,6 +9100,23 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "nexus-connector-tiktok-ads"
+version = "0.3.3"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-schema 58.4.0",
+ "async-trait",
+ "futures",
+ "nexus-core",
+ "reqwest 0.12.28",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+ "wiremock",
 ]
 
 [[package]]
@@ -8949,6 +9156,80 @@ dependencies = [
 
 [[package]]
 name = "nexus-connector-weaviate"
+version = "0.3.3"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-schema 58.4.0",
+ "async-trait",
+ "futures",
+ "nexus-core",
+ "reqwest 0.12.28",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
+name = "nexus-connector-workday"
+version = "0.3.3"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-schema 58.4.0",
+ "async-trait",
+ "futures",
+ "nexus-core",
+ "reqwest 0.12.28",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
+name = "nexus-connector-x-ads"
+version = "0.3.3"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-schema 58.4.0",
+ "async-trait",
+ "base64 0.22.1",
+ "flate2",
+ "futures",
+ "hmac 0.12.1",
+ "nexus-core",
+ "percent-encoding",
+ "rand 0.8.7",
+ "reqwest 0.12.28",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
+name = "nexus-connector-youtube-analytics"
+version = "0.3.3"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-schema 58.4.0",
+ "async-trait",
+ "futures",
+ "nexus-core",
+ "reqwest 0.12.28",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
+name = "nexus-connector-zendesk"
 version = "0.3.3"
 dependencies = [
  "arrow-array 58.4.0",

@@ -49,11 +49,12 @@ jobs:
     # 60 min wasn't enough on a real run (2026-09-05): the plain-OSS
     # `cargo build --release --features embed-ui,connectors-all` alone ran
     # 44+ min before the job's own timeout cancelled it mid-build. Bumped
-    # to 150, still not enough on a later real run (2026-09-06): this step
-    # builds the plain-OSS binary AND THEN the full enterprise binary on
-    # top (two separate full cargo builds), hit exactly 150min mid-way
-    # through the second one. Bumped again with real headroom, still well
-    # under GitHub's own 6h hard cap for a job.
+    # to 150, still not enough on a later real run (2026-09-06, back when
+    # this job also built a second, separate enterprise binary on top via
+    # a cloned private repo — removed in Fase 35, 2026-10-28, now that
+    # every connector lives in this repo's own connectors-all). Left at
+    # 240 for headroom rather than re-tuned down now that there's only
+    # one build again — still well under GitHub's own 6h hard cap.
     timeout-minutes: 240
     defaults:
       run:
@@ -174,114 +175,15 @@ jobs:
             cargo install cargo-wix --locked
           }
 
-      # Same feature set as release.yml's Linux build, so GET /connectors
-      # matches across platforms. No ADBC drivers on Windows yet (see
-      # packaging/windows/main.wxs's header comment) — Postgres/SQLite
-      # connectors won't have a driver to dlopen until that's built too.
+      # Same feature set as release.yml's build, so GET /connectors matches
+      # across platforms — every connector lives in this repo's own
+      # connectors-all since Fase 35 (2026-10-28), no more separate
+      # enterprise clone/patch/rebuild dance here. No ADBC drivers on
+      # Windows yet (see packaging/windows/main.wxs's header comment) —
+      # Postgres/SQLite connectors won't have a driver to dlopen until
+      # that's built too.
       - name: cargo build --release
         run: cargo build --release -p nexusflow --features embed-ui,connectors-all
-
-      # Every distributed artifact now ships every enterprise connector
-      # compiled in and license-gated, not just OSS's own connectors-all —
-      # same reasoning as release.yml's Linux `build`/`docker-publish` jobs'
-      # matching steps (see those comments for the full rationale and the
-      # manual Docker Hub validation this was based on). Windows can't reuse
-      # that Docker recipe (native msvc target, not a Linux container), so
-      # this clones the enterprise repo directly and builds
-      # `nexusflow-enterprise` from it with a `[patch]` redirecting its
-      # nexus-core/nexus-server git dependency at this job's own
-      # already-checked-out+frontend-built OSS tree (same trick the
-      # enterprise Dockerfile itself uses, just against a local checkout
-      # instead of a fresh clone) — the OSS `nexusflow` binary above can't
-      # be patched into including enterprise connectors itself, since
-      # nothing in this workspace depends on itself via the git URL a patch
-      # could intercept.
-      #
-      # UNTESTED on a real Windows runner as of this comment (no Windows
-      # machine available to validate locally) — `cargo wix`'s `--no-build`
-      # flag below is assumed, not confirmed, to skip its own internal
-      # `cargo build` (which would otherwise silently overwrite
-      # target\release\nexusflow.exe with the plain-OSS binary right before
-      # packaging, undoing the copy two steps down). If `--no-build` turns
-      # out not to be the right flag name, `cargo wix` should fail loudly
-      # (unrecognized argument) rather than silently ship the wrong binary —
-      # confirm via a real `workflow_dispatch` run before trusting this path.
-      - name: Clone nexus-connectors-enterprise (read-only deploy key)
-        shell: pwsh
-        env:
-          DEPLOY_KEY: ${{ secrets.ENTERPRISE_REPO_DEPLOY_KEY }}
-        run: |
-          $sshDir = "$env:USERPROFILE\.ssh"
-          New-Item -ItemType Directory -Force -Path $sshDir | Out-Null
-          $keyPath = "$sshDir\enterprise_deploy_key"
-          # Real failure on a first real run (2026-09-05): OpenSSH on
-          # Windows rejected the key outright ("invalid format"). Normalize
-          # to LF-only and force a trailing newline before writing — an SSH
-          # private key with CRLF line endings or a missing final newline
-          # (either possible depending on how the GitHub secret's value was
-          # entered) fails PEM parsing even though the key content itself
-          # is correct. Untested whether this was the actual root cause;
-          # it's a safe, idempotent normalization regardless.
-          $normalizedKey = ($env:DEPLOY_KEY -replace "`r`n", "`n" -replace "`r", "`n").TrimEnd("`n") + "`n"
-          [System.IO.File]::WriteAllText($keyPath, $normalizedKey)
-          icacls $keyPath /inheritance:r /grant:r "$($env:USERNAME):(R)" | Out-Null
-          ssh-keyscan.exe github.com 2>$null | Out-File -Append -Encoding ascii "$sshDir\known_hosts"
-          $env:GIT_SSH_COMMAND = "ssh -i `"$keyPath`" -o IdentitiesOnly=yes"
-          git clone --depth 1 ssh://git@github.com/ailake-io/nexus-connectors-enterprise.git enterprise-src
-          Remove-Item $keyPath -Force
-
-      - name: Build enterprise binary (all OSS + enterprise connectors)
-        shell: pwsh
-        run: |
-          # Real failure on a first real run (2026-09-05): this step used
-          # to overlay a "placeholder" nexus-connector-kinesis from
-          # enterprise-src onto this OSS checkout — stale by the time this
-          # ever actually ran. The OSS `nexusflow` repo has never had a
-          # nexus-connector-kinesis crate at all (confirmed earlier this
-          # same session: zero references anywhere in this repo), and the
-          # enterprise repo's own Cargo.toml/bin/main.rs were fixed
-          # separately (kinesis added as its own workspace member,
-          # `extern crate` wired in `bin/main.rs`) so it no longer needs
-          # this overlay — same fix already removed the matching dead step
-          # from the enterprise Dockerfile. Removed here for the same
-          # reason: `crates\nexus-connectors\nexus-connector-kinesis`
-          # doesn't exist in this checkout, so `Remove-Item` on it failed
-          # outright.
-          New-Item -ItemType Directory -Force -Path enterprise-src\.cargo | Out-Null
-          $repoRoot = (Get-Location).Path -replace '\\', '/'
-          @"
-          [patch."https://github.com/ailake-io/nexusflow.git"]
-          nexus-core = { path = "$repoRoot/crates/nexus-core" }
-          nexus-server = { path = "$repoRoot/crates/nexus-server" }
-          "@ | Out-File -Encoding utf8 enterprise-src\.cargo\config.toml
-
-          Push-Location enterprise-src
-          # Forces the lockfile to re-resolve against the patch above —
-          # same reasoning as the enterprise Dockerfile's matching step
-          # (its own comment explains the silent-stale-patch failure mode
-          # this avoids).
-          Remove-Item -Force -ErrorAction SilentlyContinue Cargo.lock
-          cargo generate-lockfile
-          # buoyant_kernel 0.22.2 (Buoyant Data's distribution of delta-
-          # kernel, pulled in transitively by deltalake) declares
-          # `buoyant_kernel_derive = "1"` (imported under the name
-          # `delta_kernel_derive`) but 1.2.0 dropped `parse_column_name`
-          # that 0.22.2 still calls — a semver violation upstream. Same
-          # fix already applied to the enterprise Dockerfile (used by the
-          # Linux/Docker build) — this workflow resolves its own
-          # independent lockfile via the `cargo generate-lockfile` above,
-          # so it needs the identical pin or it hits the same break.
-          cargo update -p buoyant_kernel_derive --precise 1.0.0
-          # The 11-crate aws-sdk-rust pin chain that lived here (2026-09-14)
-          # is gone: confirmed 2026-09-16 that a fresh `cargo
-          # generate-lockfile` (no pins beyond buoyant_kernel_derive above)
-          # resolves and compiles nexus-connector-kinesis cleanly again —
-          # the ecosystem converged back to a compatible set on its own,
-          # exactly as predicted when the block was added. If this
-          # regresses, the original 11-crate pin chain is in git history.
-          cargo build --release -p nexusflow-enterprise --features connectors-all-no-embeddings,dbt,python-transform,embed-ui,connectors-all
-          Pop-Location
-          Copy-Item enterprise-src\target\release\nexusflow-enterprise.exe target\release\nexusflow.exe -Force
 
       - name: cargo wix
         # cargo-wix dropped --input in favor of --include/-I for a custom
@@ -291,10 +193,8 @@ jobs:
         # --package is required in a workspace (this repo is one) — without
         # it cargo-wix errors "Workspace detected. Please pass a package
         # name." instead of guessing which member to build. --no-build
-        # skips cargo-wix's own internal build (see the "UNTESTED" comment
-        # above) so it packages the enterprise binary just copied into
-        # target\release\nexusflow.exe instead of silently rebuilding the
-        # plain-OSS one over it.
+        # skips cargo-wix's own internal build so it packages the binary
+        # already built above instead of rebuilding it a second time.
         run: cargo wix --package nexusflow --include packaging\windows\main.wxs --no-build --nocapture
 
       - name: Locate the built .msi

@@ -1,0 +1,30 @@
+[package]
+name = "nexus-connector-salesforce"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nexus-core = { path = "../../nexus-core" }
+arrow-array = "58.4.0"
+arrow-csv = "58.4.0"
+arrow-schema = "58.4.0"
+async-trait = "0.1.91"
+futures = "0.3.33"
+# Same version/features nexus-server (public repo, Cargo.toml) already
+# pins for its own JWT handling — rust_crypto is pure Rust (no
+# aws-lc-rs/OpenSSL build), use_pem is needed for
+# EncodingKey::from_rsa_pem. First real use of RS256 with this crate in
+# the stack (nexus-server only signs EdDSA/HS256 today) — expected to
+# work since rust_crypto covers RSA, but not yet confirmed against a
+# real Salesforce org.
+jsonwebtoken = { version = "11.0.0", default-features = false, features = ["rust_crypto", "use_pem"] }
+reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+schemars = "1.2.2"
+tokio = { version = "1.53.1", features = ["rt", "time"] }
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
+wiremock = "0.6.5"

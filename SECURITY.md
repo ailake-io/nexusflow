@@ -21,12 +21,6 @@ Inclua, quando possível:
 - Vulnerabilidades em dependências de terceiros usadas por este repo
   (reporte aqui primeiro; nós avaliamos se cabe reportar upstream também).
 
-**Fora de escopo:** conectores enterprise (repositório privado separado,
-`nexus-connectors-enterprise`) e o serviço de licenciamento
-(`nexus-licensing`) — reportar para os mantenedores do NexusFlow mesmo
-assim, mas o gerenciamento de disclosure desses dois é feito à parte por
-não serem código público.
-
 ## Tempo de resposta
 
 Sem SLA formal (projeto mantido fora de horário comercial dedicado) —
@@ -66,5 +60,5 @@ conhecidos".
 ## Segredos e credenciais
 
 Nunca commite `NEXUS_JWT_SECRET`, `NEXUS_ENCRYPTION_KEY`, credenciais de
-conector ou chaves privadas de licença neste repositório. Segredos
+conector ou qualquer chave privada neste repositório. Segredos
 sempre via variável de ambiente — ver `docs/GETTING_STARTED.md` §3.

@@ -199,9 +199,7 @@ impl GitHistoryStore {
     /// plan's Part 4). `token` authenticates as `x-access-token`, the
     /// convention GitHub personal-access/App tokens use over HTTPS.
     /// Callers (see `lib.rs`) only invoke this when a remote is
-    /// configured *and* licensed for the `git-history-github-sync`
-    /// capability — this method itself has no opinion on licensing, it
-    /// just pushes.
+    /// configured.
     pub async fn push_to_remote(
         &self,
         remote_url: &str,
