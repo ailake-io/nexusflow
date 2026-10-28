@@ -6,7 +6,6 @@ import {
   LogOut,
   Sparkles,
   ShieldCheck,
-  Store as StoreIcon,
   Gauge,
   Waypoints,
   BadgeCheck,
@@ -31,7 +30,6 @@ const DagCanvas = lazy(() => import('@/components/DagCanvas'))
 const PipelinesList = lazy(() => import('@/components/PipelinesList'))
 const PipelineStatusBoard = lazy(() => import('@/components/PipelineStatusBoard'))
 const UsersPanel = lazy(() => import('@/components/UsersPanel'))
-const Store = lazy(() => import('@/components/Store'))
 const InfraCanvas = lazy(() => import('@/components/InfraCanvas'))
 const ResourcesPanel = lazy(() => import('@/components/ResourcesPanel'))
 const LineagePanel = lazy(() => import('@/components/LineagePanel'))
@@ -47,7 +45,6 @@ type View =
   | 'canvas'
   | 'pipelines'
   | 'status'
-  | 'store'
   | 'infra'
   | 'resources'
   | 'lineage'
@@ -99,7 +96,6 @@ function App() {
     { id: 'canvas', label: t('nav.canvas'), icon: Workflow },
     { id: 'pipelines', label: t('nav.pipelines'), icon: List },
     { id: 'status', label: t('nav.status'), icon: Activity },
-    { id: 'store', label: t('nav.store'), icon: StoreIcon },
     { id: 'infra', label: t('nav.infra'), icon: Cloud },
     { id: 'resources', label: t('nav.resources'), icon: Gauge },
     { id: 'lineage', label: t('nav.lineage'), icon: Waypoints },
@@ -198,7 +194,6 @@ function App() {
             )}
             {view === 'pipelines' && <PipelinesList onEdit={handleEdit} />}
             {view === 'status' && <PipelineStatusBoard />}
-            {view === 'store' && <Store />}
             {view === 'infra' && <InfraCanvas />}
             {view === 'resources' && <ResourcesPanel />}
             {view === 'lineage' && <LineagePanel />}

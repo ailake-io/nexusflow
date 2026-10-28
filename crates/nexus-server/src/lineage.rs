@@ -140,12 +140,12 @@ pub fn resource_identifier(connector: &str, config: &Value) -> Option<(ResourceK
         "csv" | "parquet" => field("uri")
             .or_else(|| field("path"))
             .map(|p| (ResourceKind::File, p.to_string())),
-        // Enterprise connectors — ODBC batch (database+table, no CDC
+        // Ex-enterprise connectors (Fases 32/35, all OSS now) — ODBC batch (database+table, no CDC
         // variant for any of these yet):
         "teradata" | "vertica" => {
             qualified("database", "table").map(|id| (ResourceKind::Table, id))
         }
-        // Enterprise REST/SaaS — one stable identifier per connector, no
+        // REST/SaaS — one stable identifier per connector, no
         // shared namespace concept:
         "hubspot" => field("object_type").map(|o| (ResourceKind::Collection, o.to_string())),
         "zendesk" => field("resource").map(|r| (ResourceKind::Collection, r.to_string())),
@@ -157,7 +157,7 @@ pub fn resource_identifier(connector: &str, config: &Value) -> Option<(ResourceK
         "sharepoint" => qualified("site_id", "list_id").map(|id| (ResourceKind::Table, id)),
         "netsuite" => field("record_type").map(|r| (ResourceKind::Table, r.to_string())),
         "workday" => field("report_name").map(|r| (ResourceKind::Table, r.to_string())),
-        // Enterprise ODBC/ADBC batch (database+table, no CDC-specific
+        // ODBC/ADBC batch (database+table, no CDC-specific
         // fields needed beyond what the batch variant already has):
         "hana" | "mssql" | "mssql-cdc" | "oracle" | "oracle-cdc" | "redshift" | "synapse" => {
             qualified("database", "table").map(|id| (ResourceKind::Table, id))
@@ -189,7 +189,7 @@ pub fn resource_identifier(connector: &str, config: &Value) -> Option<(ResourceK
             let table = field("table_name")?;
             Some((ResourceKind::Table, format!("{catalog}.{schema}.{table}")))
         }
-        // Enterprise vector/search sinks — same shape as qdrant/milvus
+        // Vector/search sinks — same shape as qdrant/milvus
         // above, one collection-like identifier field each:
         "elasticsearch" | "opensearch" => {
             field("index").map(|i| (ResourceKind::Collection, i.to_string()))
@@ -199,15 +199,15 @@ pub fn resource_identifier(connector: &str, config: &Value) -> Option<(ResourceK
         "vertex-vector-search" => {
             field("index_id").map(|i| (ResourceKind::Collection, i.to_string()))
         }
-        // Enterprise streaming:
+        // Streaming:
         "kinesis" => field("stream_name").map(|s| (ResourceKind::Topic, s.to_string())),
         "pulsar" => field("topic").map(|t| (ResourceKind::Topic, t.to_string())),
-        // Enterprise SaaS/CRM — one stable identifier per connector:
+        // SaaS/CRM — one stable identifier per connector:
         "salesforce" => field("sobject").map(|s| (ResourceKind::Table, s.to_string())),
         "shopify" => field("shop_domain").map(|s| (ResourceKind::Table, s.to_string())),
         "stripe" => field("resource").map(|r| (ResourceKind::Table, r.to_string())),
         "excel" => field("path").map(|p| (ResourceKind::File, p.to_string())),
-        // Enterprise ads/analytics — the queried account/property is the
+        // Ads/analytics — the queried account/property is the
         // closest thing to a stable "resource" (there's no destination
         // table on this side, these are source-only reporting APIs):
         "ga4" => field("property_id").map(|p| (ResourceKind::Table, p.to_string())),

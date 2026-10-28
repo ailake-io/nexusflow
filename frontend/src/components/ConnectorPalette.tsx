@@ -24,16 +24,9 @@ export function ConnectorPalette({ connectors, loading, error }: ConnectorPalett
   const { t } = useI18n()
   const [query, setQuery] = useState('')
 
-  // An enterprise connector the license doesn't cover stays out of the
-  // palette entirely — the Store is where it's discovered/purchased, not
-  // here with a padlock. Once a purchased license activates it,
-  // `licensed` flips to `true` server-side (GET /connectors) and it
-  // starts appearing here like any OSS connector.
-  const unlockedConnectors = connectors.filter((c) => !c.requires_license || c.licensed)
-
   const filteredConnectors = query.trim()
-    ? unlockedConnectors.filter((c) => c.name.toLowerCase().includes(query.trim().toLowerCase()))
-    : unlockedConnectors
+    ? connectors.filter((c) => c.name.toLowerCase().includes(query.trim().toLowerCase()))
+    : connectors
 
   return (
     <aside className="flex flex-1 flex-col overflow-hidden">
@@ -68,7 +61,7 @@ export function ConnectorPalette({ connectors, loading, error }: ConnectorPalett
             {error}
           </div>
         )}
-        {!loading && unlockedConnectors.length === 0 && (
+        {!loading && connectors.length === 0 && (
           <EmptyState
             icon={<Database className="h-5 w-5" />}
             title={t('canvas.noConnectors')}
@@ -76,7 +69,7 @@ export function ConnectorPalette({ connectors, loading, error }: ConnectorPalett
             className="p-3"
           />
         )}
-        {!loading && unlockedConnectors.length > 0 && filteredConnectors.length === 0 && (
+        {!loading && connectors.length > 0 && filteredConnectors.length === 0 && (
           <p className="px-1 py-4 text-center text-xs text-muted-foreground">
             {t('canvas.noConnectorsMatch', { query: query.trim() })}
           </p>

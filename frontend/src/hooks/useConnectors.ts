@@ -27,7 +27,7 @@ export function useConnectors(): UseConnectorsResult {
       .then((result) => {
         // Sorted once here (not registration order, which is whatever
         // order each connector crate happened to link in) so every
-        // consumer — the Canvas palette, the Store — lists connectors
+        // consumer (the Canvas palette, the agent builder, ...) lists connectors
         // alphabetically without each needing its own sort.
         const sorted = [...result].sort((a, b) => a.name.localeCompare(b.name))
         if (!cancelled) setConnectors(sorted)

@@ -4,6 +4,7 @@ members = [
     "crates/nexus-core",
     "crates/nexus-ai",
     "crates/nexus-server",
+    "crates/nexus-infra-terraform",
 ]
 
 [workspace.package]

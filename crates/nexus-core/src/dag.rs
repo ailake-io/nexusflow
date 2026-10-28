@@ -1272,10 +1272,9 @@ fn validate_node_security(
 /// meant to block these connectors' own, expected, use of one.
 ///
 /// Backed by the `LocalPathConnector` registry (`registry.rs`), not a
-/// hardcoded list, so an enterprise connector (private repo) can opt in via
-/// `submit_local_path_connector!` without this file ever naming it —
-/// `LICENSING.md §3` forbids an enterprise connector's name appearing here.
-/// Real bug this replaced: `excel` (private repo) documents its own `path`
+/// hardcoded list, so any connector crate can opt in via
+/// `submit_local_path_connector!` without this file ever naming it.
+/// Real bug this replaced: `excel` documents its own `path`
 /// field exactly like `csv`'s, but had no way to join this list, so every
 /// absolute local path it was given was rejected outright.
 fn is_local_path_connector(connector: &str) -> bool {
@@ -1825,8 +1824,7 @@ mod tests {
     // nexus-core, which every connector crate depends ON, so it can never
     // observe *their* `submit_local_path_connector!` calls; the dependency
     // graph only flows the other way). Exercises the same mechanism real
-    // connectors (csv/sqlite/lancedb/ailake/iceberg/deltalake, and any
-    // enterprise connector like `excel` that opts in from a private repo)
+    // connectors (csv/sqlite/lancedb/ailake/iceberg/deltalake/excel)
     // use, just under a name this test owns.
     crate::submit_local_path_connector!("test-local-path-connector");
 

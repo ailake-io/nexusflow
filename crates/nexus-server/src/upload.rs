@@ -1,6 +1,6 @@
 //! `POST /system/upload` — the only place bytes from the browser land on
-//! disk server-side. Every file-based connector (csv/parquet/sqlite/the
-//! enterprise `pdf-ocr`) needs a real filesystem path to read from; this
+//! disk server-side. Every file-based connector (csv/parquet/sqlite/
+//! `pdf-ocr`) needs a real filesystem path to read from; this
 //! endpoint is what lets the Canvas's "Enviar arquivo(s)"/"Enviar pasta"
 //! buttons (`frontend/src/components/SchemaForm.tsx`) turn a browser file
 //! picker (or a dropped file/folder) into one of those paths, the same way

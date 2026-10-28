@@ -245,7 +245,7 @@ pub fn bucket_samples(
 /// Persisted history for the `resources` tab — SQLite (default) or Postgres,
 /// same dual-dialect pattern as `checkpoint_store.rs`. Shares the checkpoint
 /// database connection (`NEXUS_CHECKPOINT_DB`) rather than getting its own
-/// env var, same call already made for `run_logs`/`license_store` in
+/// env var, same call already made for `run_logs` in
 /// `build_state`: not worth a dedicated connection pool for one small table.
 #[derive(Clone)]
 pub struct ResourceStatsStore {
