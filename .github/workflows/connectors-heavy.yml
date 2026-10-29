@@ -7,22 +7,16 @@ on:
   # full stop, not conditionally on which paths changed).
   push:
     branches: [develop]
-  # On main, this is step 2 of a deliberate 3-stage chain: CI -> connectors-heavy
-  # -> Release (see release.yml's matching workflow_run trigger for step 3).
-  # `workflow_run` is the only way to sequence separate workflow files —
-  # there's no cross-file `needs:`. The job-level `if:` below only lets this
-  # actually run when CI's main-branch run succeeded; a failed/cancelled CI
-  # run on main should not still kick off this heavy suite.
-  workflow_run:
-    workflows: ["CI"]
-    types: [completed]
-    branches: [main]
-  # Manual escape hatch, same rationale as release.yml's own
-  # `workflow_dispatch` — `workflow_run` delivery from CI->connectors-heavy
-  # has proven unreliable in practice on this repo (confirmed: it has never
-  # once auto-fired for a main-branch CI completion). `main-pipeline.yml`
-  # drives this directly via `gh workflow run` instead of waiting on that
-  # event; this trigger also lets a human re-run the suite by hand.
+  # On main, this is step 2 of the CI -> connectors-heavy -> Release chain,
+  # driven by main-pipeline.yml via `gh workflow run connectors-heavy.yml
+  # --ref main` + `gh run watch`. Used to be a `workflow_run` trigger on
+  # CI's completion instead (there's no cross-file `needs:`, so that event
+  # was the only built-in option) — removed after confirming via the
+  # GitHub API that it had never once auto-fired in this repo's history,
+  # and after CodeQL flagged the real cache-poisoning gap that checking out
+  # an unvalidated `github.event.workflow_run.head_sha` opened up once this
+  # job also gained a workflow_dispatch path (PR #141) — simplest fix was
+  # deleting the dead, insecure trigger rather than defending it.
   workflow_dispatch:
 
 permissions:
@@ -34,12 +28,6 @@ env:
 jobs:
   connectors-heavy:
     name: connectors-heavy
-    if: >-
-      (github.event_name == 'push') ||
-      (github.event_name == 'workflow_dispatch') ||
-      (github.event_name == 'workflow_run' &&
-       github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_repository.full_name == github.repository)
     # Moved off a dedicated self-hosted Windows box to hosted `ubuntu-latest`
     # 2026-09-05 (repo went public same day, no more self-hosted NexusFlow
     # Actions — see ci.yml/release.yml for the same migration). Originally
@@ -58,27 +46,11 @@ jobs:
       run:
         working-directory: crates/nexus-connectors
     steps:
-      # workflow_run's default ref/sha context is the repo's default branch,
-      # not the commit CI just validated on main — pin explicitly so this
-      # actually tests the same commit, not an unrelated one. The job-level
-      # `if:` already restricts the workflow_run path to same-repo runs
-      # (head_repository.full_name == github.repository), so this checkout
-      # can never pull an untrusted fork PR's sha into a step that also
-      # writes to the shared HF-model cache below (CodeQL's
-      # actions-cache-poisoning check — flagged for real on PR #141 once
-      # workflow_dispatch gave this job a second, always-same-repo trigger
-      # path; the fix was closing the fork gap on workflow_run, not
-      # dropping workflow_dispatch). workflow_dispatch/push both resolve to
-      # the fixed `develop` ref below, never an attacker-chosen one.
+      # No explicit `ref:` — defaults to whatever ref this run was
+      # triggered for (`develop` on a push, or whatever `--ref` main-
+      # pipeline.yml passed to `gh workflow run`), which is always the
+      # correct commit to test and never attacker-chosen.
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        if: github.event_name == 'workflow_run'
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
-
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        if: github.event_name != 'workflow_run'
-        with:
-          ref: develop
 
       - name: Free disk space
         run: |

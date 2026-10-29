@@ -15,11 +15,15 @@ name: Main Pipeline Orchestrator
 # This workflow replaces waiting on that event with actively driving each
 # step via the API (`gh workflow run` + `gh run watch --exit-status`),
 # which is synchronous and fails loudly instead of silently never firing.
-# The old `workflow_run`/`push` triggers on every downstream workflow are
-# left in place as a harmless redundant path (each job's upsert-style
-# publish step is idempotent, so a double-fire just republishes the same
-# artifacts) — this file is the reliable primary path, not a replacement
-# that requires touching every other workflow's own triggers.
+# connectors-heavy.yml's own `workflow_run` trigger was removed outright
+# (it never fired anyway, and CodeQL flagged a real cache-poisoning gap in
+# its untrusted-sha checkout once it also gained a workflow_dispatch path —
+# simplest fix was deleting the dead trigger). Release/docker-hub-publish/
+# build-windows-installer/build-macos-installer keep their old
+# `workflow_run` triggers as a harmless redundant path (each job's
+# upsert-style publish step is idempotent, so a double-fire just
+# republishes the same artifacts) — this file is the reliable primary
+# path, not a replacement that requires touching every other workflow.
 on:
   push:
     branches: [main]
