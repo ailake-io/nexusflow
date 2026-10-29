@@ -17,6 +17,13 @@ on:
     workflows: ["CI"]
     types: [completed]
     branches: [main]
+  # Manual escape hatch, same rationale as release.yml's own
+  # `workflow_dispatch` — `workflow_run` delivery from CI->connectors-heavy
+  # has proven unreliable in practice on this repo (confirmed: it has never
+  # once auto-fired for a main-branch CI completion). `main-pipeline.yml`
+  # drives this directly via `gh workflow run` instead of waiting on that
+  # event; this trigger also lets a human re-run the suite by hand.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -29,6 +36,7 @@ jobs:
     name: connectors-heavy
     if: >-
       (github.event_name == 'push') ||
+      (github.event_name == 'workflow_dispatch') ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     # Moved off a dedicated self-hosted Windows box to hosted `ubuntu-latest`
     # 2026-09-05 (repo went public same day, no more self-hosted NexusFlow
