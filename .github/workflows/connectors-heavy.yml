@@ -37,7 +37,9 @@ jobs:
     if: >-
       (github.event_name == 'push') ||
       (github.event_name == 'workflow_dispatch') ||
-      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
     # Moved off a dedicated self-hosted Windows box to hosted `ubuntu-latest`
     # 2026-09-05 (repo went public same day, no more self-hosted NexusFlow
     # Actions — see ci.yml/release.yml for the same migration). Originally
@@ -58,9 +60,16 @@ jobs:
     steps:
       # workflow_run's default ref/sha context is the repo's default branch,
       # not the commit CI just validated on main — pin explicitly so this
-      # actually tests the same commit, not an unrelated one. Push runs
-      # use the fixed develop ref; this workflow has no manual trigger that
-      # could execute code from an arbitrary branch with cache write access.
+      # actually tests the same commit, not an unrelated one. The job-level
+      # `if:` already restricts the workflow_run path to same-repo runs
+      # (head_repository.full_name == github.repository), so this checkout
+      # can never pull an untrusted fork PR's sha into a step that also
+      # writes to the shared HF-model cache below (CodeQL's
+      # actions-cache-poisoning check — flagged for real on PR #141 once
+      # workflow_dispatch gave this job a second, always-same-repo trigger
+      # path; the fix was closing the fork gap on workflow_run, not
+      # dropping workflow_dispatch). workflow_dispatch/push both resolve to
+      # the fixed `develop` ref below, never an attacker-chosen one.
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         if: github.event_name == 'workflow_run'
         with:
