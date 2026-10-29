@@ -7,6 +7,7 @@ use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use milvus::client::Client as MilvusClient;
 use milvus::index::{IndexParams, IndexType, MetricType};
+use milvus::query::QueryOptions;
 use milvus::schema::{CollectionSchemaBuilder, FieldSchema};
 use nexus_ai::chunking::{chunk_recursive_character, RecursiveCharacterConfig};
 use nexus_ai::embedding::{
@@ -207,28 +208,32 @@ async fn text_chunk_embed_milvus_end_to_end() {
     sink.write_batch(batch).await.expect("writes batch");
 
     // --- index + load so scalar query can see the data ---
-    let docs = setup_client
-        .get_collection("docs")
-        .await
-        .expect("opens collection");
     // The sink itself never flushes (Milvus rate-limits it aggressively) —
     // only the test's own verification queries need it, and only once each.
-    docs.flush().await.expect("flushes after initial write");
-    docs.create_index(
-        "embedding",
-        IndexParams::new(
-            "embedding_idx".to_string(),
-            IndexType::Flat,
-            MetricType::L2,
-            HashMap::new(),
-        ),
-    )
-    .await
-    .expect("creates index");
-    docs.load(1).await.expect("loads collection");
+    setup_client
+        .flush("docs")
+        .await
+        .expect("flushes after initial write");
+    setup_client
+        .create_index(
+            "docs",
+            "embedding",
+            IndexParams::new(
+                "embedding_idx".to_string(),
+                IndexType::Flat,
+                MetricType::L2,
+                HashMap::new(),
+            ),
+        )
+        .await
+        .expect("creates index");
+    setup_client
+        .load_collection("docs", None)
+        .await
+        .expect("loads collection");
 
-    let rows = docs
-        .query("id > 0", Vec::<String>::new())
+    let rows = setup_client
+        .query("docs", "id > 0", &QueryOptions::new())
         .await
         .expect("queries rows");
     let id_column = rows
@@ -261,9 +266,12 @@ async fn text_chunk_embed_milvus_end_to_end() {
     // Milvus's default flush rate limit is 1 per 10s (collection-scoped) —
     // space this one out from the first `docs.flush()` above.
     tokio::time::sleep(std::time::Duration::from_secs(11)).await;
-    docs.flush().await.expect("flushes after delete");
-    let remaining = docs
-        .query("id == 1", Vec::<String>::new())
+    setup_client
+        .flush("docs")
+        .await
+        .expect("flushes after delete");
+    let remaining = setup_client
+        .query("docs", "id == 1", &QueryOptions::new())
         .await
         .expect("queries rows");
     let remaining_ids = remaining.iter().find(|c| c.name == "id");

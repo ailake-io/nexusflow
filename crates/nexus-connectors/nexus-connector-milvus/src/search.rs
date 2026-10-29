@@ -1,7 +1,6 @@
 use crate::config::MilvusConnectorConfig;
 use milvus::client::Client;
-use milvus::collection::SearchOption;
-use milvus::index::MetricType;
+use milvus::query::SearchOptions;
 use milvus::value::{Value, ValueVec};
 use nexus_core::{with_timeout, NexusError};
 
@@ -11,7 +10,7 @@ use nexus_core::{with_timeout, NexusError};
 /// separate from `MilvusSink` (write-only, pipeline sink), same split
 /// `LanceDbSearchClient` established for LanceDB (Marco L5).
 ///
-/// `MetricType::L2` is hardcoded — `MilvusSink` never creates the
+/// `SEARCH_METRIC` is hardcoded to L2 — `MilvusSink` never creates the
 /// collection/index itself (schema and index come from Milvus, see
 /// `sink.rs`'s own doc comment), so this search has no way to discover
 /// which metric a given collection's index actually uses. If a collection
@@ -19,7 +18,7 @@ use nexus_core::{with_timeout, NexusError};
 /// the search with a clear server-side error rather than returning wrong
 /// results silently — adjust this constant (or thread it through
 /// `MilvusConnectorConfig` as a new field) if that happens in practice.
-const SEARCH_METRIC: MetricType = MetricType::L2;
+const SEARCH_METRIC: &str = "L2";
 
 pub struct MilvusSearchClient {
     client: Client,
@@ -56,23 +55,18 @@ impl MilvusSearchClient {
         source_column: &str,
         limit: usize,
     ) -> Result<Vec<(String, String)>, NexusError> {
-        let collection = with_timeout(self.timeout_seconds, "milvus get_collection", async {
-            self.client
-                .get_collection(&self.collection)
-                .await
-                .map_err(|e| NexusError::Connector(format!("milvus get_collection failed: {e}")))
-        })
-        .await?;
+        let options = SearchOptions::new()
+            .limit(limit)
+            .anns_field(vec![embedding_column.to_string()])
+            .output_fields(vec![self.primary_key.clone(), source_column.to_string()])
+            .add_param("metric_type", SEARCH_METRIC);
 
         let results = with_timeout(self.timeout_seconds, "milvus search", async {
-            collection
+            self.client
                 .search(
+                    &self.collection,
                     vec![Value::from(query_vector)],
-                    embedding_column,
-                    limit as i32,
-                    SEARCH_METRIC,
-                    vec![self.primary_key.as_str(), source_column],
-                    &SearchOption::new(),
+                    Some(options),
                 )
                 .await
                 .map_err(|e| NexusError::Connector(format!("milvus search failed: {e}")))

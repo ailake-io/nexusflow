@@ -7,7 +7,8 @@ use arrow_schema::DataType;
 use async_trait::async_trait;
 use milvus::client::Client;
 use milvus::data::FieldColumn;
-use milvus::schema::FieldSchema;
+use milvus::mutate::DeleteOptions;
+use milvus::schema::{CollectionSchema, FieldSchema};
 use nexus_core::{
     project_column, split_by_opcode, validate_identifier, with_timeout, CheckpointCursor,
     NexusError, Sink,
@@ -154,13 +155,14 @@ impl MilvusSink {
         // primary keys first so re-inserting doesn't create duplicates.
         self.delete(batch).await?;
 
-        let milvus_collection =
-            with_timeout(self.timeout_seconds, "milvus get_collection", async {
+        let schema: CollectionSchema =
+            with_timeout(self.timeout_seconds, "milvus describe_collection", async {
                 self.client
-                    .get_collection(&self.collection)
+                    .describe_collection(&self.collection)
                     .await
+                    .map(|d| d.schema.into())
                     .map_err(|e| {
-                        NexusError::Connector(format!("milvus get_collection failed: {e}"))
+                        NexusError::Connector(format!("milvus describe_collection failed: {e}"))
                     })
             })
             .await?;
@@ -169,16 +171,12 @@ impl MilvusSink {
             .fields()
             .iter()
             .map(|f| {
-                let field_schema =
-                    milvus_collection
-                        .schema()
-                        .get_field(f.name())
-                        .ok_or_else(|| {
-                            NexusError::Schema(format!(
-                                "column '{}' not present in collection schema",
-                                f.name()
-                            ))
-                        })?;
+                let field_schema = schema.get_field(f.name()).ok_or_else(|| {
+                    NexusError::Schema(format!(
+                        "column '{}' not present in collection schema",
+                        f.name()
+                    ))
+                })?;
                 self.field_column(field_schema, batch)
             })
             .collect::<Result<Vec<_>, NexusError>>()?;
@@ -188,10 +186,11 @@ impl MilvusSink {
         // segment-durability operation, not a read-visibility one — the SDK
         // already tracks a per-collection session timestamp from `insert`'s
         // result and uses it as the query guarantee timestamp, so writes are
-        // visible to reads through the same `Collection` handle without it.
+        // visible to reads through subsequent calls on the same `Client`
+        // without it.
         with_timeout(self.timeout_seconds, "milvus insert", async {
-            milvus_collection
-                .insert(field_columns, None)
+            self.client
+                .insert(&self.collection, field_columns, None)
                 .await
                 .map_err(|e| NexusError::Connector(format!("milvus insert failed: {e}")))
         })
@@ -220,19 +219,9 @@ impl MilvusSink {
             .join(", ");
         let expr = format!("{} in [{id_list}]", self.primary_key);
 
-        let milvus_collection =
-            with_timeout(self.timeout_seconds, "milvus get_collection", async {
-                self.client
-                    .get_collection(&self.collection)
-                    .await
-                    .map_err(|e| {
-                        NexusError::Connector(format!("milvus get_collection failed: {e}"))
-                    })
-            })
-            .await?;
         with_timeout(self.timeout_seconds, "milvus delete", async {
-            milvus_collection
-                .delete(&expr, None)
+            self.client
+                .delete(&self.collection, &DeleteOptions::with_filter(expr))
                 .await
                 .map_err(|e| NexusError::Connector(format!("milvus delete failed: {e}")))
         })

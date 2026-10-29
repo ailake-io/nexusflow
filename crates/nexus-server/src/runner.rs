@@ -295,7 +295,21 @@ pub async fn run_pipeline(
             masking_salt,
         )
         .await
-    } else if spec.has_transform() || spec.python.is_some() {
+    } else if spec.llm.is_some()
+        && !spec.has_transform()
+        && spec.python.is_none()
+        && spec.sources.iter().any(|s| s.connector.ends_with("-cdc"))
+    {
+        // `llm` without a SQL transform would otherwise fall into
+        // `run_transform_pipeline` below, which fully materializes every
+        // source first (`drain_sources`) — for a CDC source that never
+        // completes (see the comment on the branch above). Bail with a
+        // clear message instead of hanging forever.
+        anyhow::bail!(
+            "an llm node without a SQL transform isn't supported with a CDC source \
+             — add a transform first (e.g. \"SELECT * FROM source0\")"
+        );
+    } else if spec.has_transform() || spec.python.is_some() || spec.llm.is_some() {
         run_transform_pipeline(
             spec,
             checkpoints,

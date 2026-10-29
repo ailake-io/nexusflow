@@ -969,7 +969,7 @@ async fn execute_pipeline_run(
     logger: RunLogger,
 ) {
     let started = std::time::Instant::now();
-    let mode = if spec.has_transform() {
+    let mode = if spec.has_transform() || spec.python.is_some() || spec.llm.is_some() {
         if spec.dbt.is_some() {
             "transform+dbt"
         } else {

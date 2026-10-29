@@ -10,11 +10,11 @@ arrow-array = "58.4.0"
 arrow-schema = "58.4.0"
 arrow-select = "58.4.0"
 async-trait = "0.1.91"
-calamine = { version = "0.36.1", features = ["chrono"] }
+calamine = { version = "0.37.0", features = ["chrono"] }
 chrono = "0.4.45"
 futures = "0.3.33"
 object_store = { version = "0.10.2", features = ["aws", "gcp", "azure", "http"] }
-rust_xlsxwriter = "0.99.1"
+rust_xlsxwriter = "0.102.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 schemars = "1.2.2"

@@ -8,7 +8,7 @@ license.workspace = true
 arrow-array = "58.4.0"
 arrow-schema = "58.4.0"
 async-trait = "0.1.91"
-milvus-sdk-rust = "0.1.0"
+milvus-sdk-rust = "3.0.3"
 nexus-core = { path = "../../nexus-core" }
 serde = { version = "1.0.229", features = ["derive"] }
 schemars = "1.2.2"

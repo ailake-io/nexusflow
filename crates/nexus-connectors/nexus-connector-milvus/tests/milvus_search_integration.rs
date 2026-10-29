@@ -177,23 +177,27 @@ async fn search_returns_the_most_similar_row_first() {
 
     // Index + load — `MilvusSearchClient::search` (like any Milvus search)
     // needs both before the collection is queryable by vector similarity.
-    let docs = setup_client
-        .get_collection("docs")
+    setup_client
+        .flush("docs")
         .await
-        .expect("opens collection");
-    docs.flush().await.expect("flushes after write");
-    docs.create_index(
-        "embedding",
-        IndexParams::new(
-            "embedding_idx".to_string(),
-            IndexType::Flat,
-            MetricType::L2,
-            HashMap::new(),
-        ),
-    )
-    .await
-    .expect("creates index");
-    docs.load(1).await.expect("loads collection");
+        .expect("flushes after write");
+    setup_client
+        .create_index(
+            "docs",
+            "embedding",
+            IndexParams::new(
+                "embedding_idx".to_string(),
+                IndexType::Flat,
+                MetricType::L2,
+                HashMap::new(),
+            ),
+        )
+        .await
+        .expect("creates index");
+    setup_client
+        .load_collection("docs", None)
+        .await
+        .expect("loads collection");
 
     let question_vector = model
         .embed_batch(&["What does NexusFlow do with data?".to_string()])
