@@ -15,7 +15,14 @@ arrow-array = "58.4.0"
 arrow-schema = "58.4.0"
 async-trait = "0.1.91"
 futures = "0.3.33"
-aws-sdk-kinesis = "1.113.0"
+# `default-features = false` drops this crate's own default `rustls`
+# feature (-> aws-smithy-runtime/tls-rustls -> legacy hyper-rustls 0.24.2 ->
+# vulnerable rustls 0.21.12, GHSA-w44r-93j7-qv28/GHSA-c8m5-c952-6cm4) which
+# coexists pointlessly alongside the modern stack `default-https-client`
+# already pulls (rustls-aws-lc -> rustls 0.23.46) — the modern client is
+# what's actually used at runtime either way, so this only removes dead
+# code + the vulnerable transitive dependency, no behavior change.
+aws-sdk-kinesis = { version = "1.113.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-config = "1"
 aws-credential-types = "1"
 serde = { version = "1.0.229", features = ["derive"] }
