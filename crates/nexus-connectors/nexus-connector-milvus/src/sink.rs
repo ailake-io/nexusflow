@@ -155,10 +155,8 @@ impl MilvusSink {
         // primary keys first so re-inserting doesn't create duplicates.
         self.delete(batch).await?;
 
-        let schema: CollectionSchema = with_timeout(
-            self.timeout_seconds,
-            "milvus describe_collection",
-            async {
+        let schema: CollectionSchema =
+            with_timeout(self.timeout_seconds, "milvus describe_collection", async {
                 self.client
                     .describe_collection(&self.collection)
                     .await
@@ -166,9 +164,8 @@ impl MilvusSink {
                     .map_err(|e| {
                         NexusError::Connector(format!("milvus describe_collection failed: {e}"))
                     })
-            },
-        )
-        .await?;
+            })
+            .await?;
         let field_columns = batch
             .schema()
             .fields()
