@@ -1,0 +1,137 @@
+name: Main Pipeline Orchestrator
+
+# Why this exists: the intended chain on `main` is CI -> connectors-heavy ->
+# Release -> {docker-hub-publish, build-windows-installer,
+# build-macos-installer}, sequenced across separate workflow files via
+# `workflow_run` (there's no cross-file `needs:`, so that event was the only
+# built-in option). In practice `workflow_run` has proven unreliable on this
+# repo: `gh api repos/.../actions/workflows/release.yml/runs` shows zero
+# `workflow_run`-triggered runs since 2026-09-26 — every Release since then
+# was a manual `workflow_dispatch` — and connectors-heavy has never once
+# auto-fired from a main-branch CI completion (same query against
+# connectors-heavy.yml's own run history). GitHub's `workflow_run` delivery
+# for this kind of cross-file chaining is a known pain point community-wide.
+#
+# This workflow replaces waiting on that event with actively driving each
+# step via the API (`gh workflow run` + `gh run watch --exit-status`),
+# which is synchronous and fails loudly instead of silently never firing.
+# connectors-heavy.yml's own `workflow_run` trigger was removed outright
+# (it never fired anyway, and CodeQL flagged a real cache-poisoning gap in
+# its untrusted-sha checkout once it also gained a workflow_dispatch path —
+# simplest fix was deleting the dead trigger). Release/docker-hub-publish/
+# build-windows-installer/build-macos-installer keep their old
+# `workflow_run` triggers as a harmless redundant path (each job's
+# upsert-style publish step is idempotent, so a double-fire just
+# republishes the same artifacts) — this file is the reliable primary
+# path, not a replacement that requires touching every other workflow.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: main-pipeline
+  cancel-in-progress: false
+
+jobs:
+  orchestrate:
+    runs-on: ubuntu-latest
+    # CI (~15-20m) + connectors-heavy (observed up to ~30m) + Release
+    # (observed ~20-25m) + the final fan-out dispatch, with slack for
+    # `gh run watch`'s own polling overhead.
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Wait for CI on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          echo "Waiting for CI to complete on $SHA..."
+          for i in $(seq 1 120); do
+            row="$(gh run list --workflow=ci.yml --branch main --limit 10 \
+              --json headSha,status,conclusion \
+              --jq "[.[] | select(.headSha==\"$SHA\")][0] // {}")"
+            status="$(echo "$row" | jq -r '.status // "missing"')"
+            if [ "$status" = "completed" ]; then
+              conclusion="$(echo "$row" | jq -r '.conclusion')"
+              echo "CI conclusion: $conclusion"
+              if [ "$conclusion" != "success" ]; then
+                echo "::error::CI did not succeed on $SHA, stopping pipeline."
+                exit 1
+              fi
+              break
+            fi
+            if [ "$i" -eq 120 ]; then
+              echo "::error::Timed out waiting for CI."
+              exit 1
+            fi
+            sleep 30
+          done
+
+      - name: Run connectors-heavy and wait
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          before="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          gh workflow run connectors-heavy.yml --ref main
+          run_id=""
+          for i in $(seq 1 20); do
+            run_id="$(gh run list --workflow=connectors-heavy.yml --branch main --limit 5 \
+              --json databaseId,createdAt,event \
+              --jq "[.[] | select(.event==\"workflow_dispatch\" and .createdAt>\"$before\")][0].databaseId // empty")"
+            [ -n "$run_id" ] && break
+            sleep 10
+          done
+          if [ -z "$run_id" ]; then
+            echo "::error::Could not find the dispatched connectors-heavy run."
+            exit 1
+          fi
+          echo "Watching connectors-heavy run $run_id"
+          gh run watch "$run_id" --exit-status
+
+      - name: Determine release version
+        id: version
+        run: |
+          set -euo pipefail
+          version="$(grep -A3 '^\[workspace.package\]' Cargo.toml | grep '^version' | head -1 | cut -d '"' -f2)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Run Release and wait
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          before="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          gh workflow run release.yml --ref main -f version="$VERSION"
+          run_id=""
+          for i in $(seq 1 20); do
+            run_id="$(gh run list --workflow=release.yml --branch main --limit 5 \
+              --json databaseId,createdAt,event \
+              --jq "[.[] | select(.event==\"workflow_dispatch\" and .createdAt>\"$before\")][0].databaseId // empty")"
+            [ -n "$run_id" ] && break
+            sleep 10
+          done
+          if [ -z "$run_id" ]; then
+            echo "::error::Could not find the dispatched Release run."
+            exit 1
+          fi
+          echo "Watching Release run $run_id"
+          gh run watch "$run_id" --exit-status
+
+      - name: Fan out to Docker Hub / Windows / macOS installers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh workflow run docker-hub-publish.yml --ref main -f version="$VERSION"
+          gh workflow run build-windows-installer.yml --ref main -f version="v$VERSION"
+          gh workflow run build-macos-installer.yml --ref main -f version="v$VERSION"
