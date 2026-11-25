@@ -195,11 +195,14 @@ jobs:
           df -h /
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          # Pinned to determine-version's exact output commit (post-bump if
-          # it bumped) — not github.sha/workflow_run.head_sha, which would
-          # be the pre-bump commit and re-introduce the version-mismatch
-          # bug this job ordering exists to fix.
-          ref: ${{ needs.determine-version.outputs.sha }}
+          # Only fetch code from the trusted release branch. The next step
+          # rejects a concurrent main update instead of building a different commit.
+          ref: main
+          persist-credentials: false
+      - name: Verify release commit
+        env:
+          EXPECTED_SHA: ${{ needs.determine-version.outputs.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - uses: dtolnay/rust-toolchain@stable
       # Release executes a dynamically selected commit. Do not read or write
       # shared dependency caches from this privileged workflow.
@@ -490,8 +493,12 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ needs.determine-version.outputs.sha }}
+          ref: main
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify release commit
+        env:
+          EXPECTED_SHA: ${{ needs.determine-version.outputs.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - name: Force-push main onto develop
-        run: git push origin ${{ needs.determine-version.outputs.sha }}:refs/heads/develop --force
+        run: git push origin HEAD:refs/heads/develop --force
