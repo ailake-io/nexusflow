@@ -1,0 +1,298 @@
+# Changelog
+
+## milvus-sdk-rust 3.0.4 (2026-11-17)
+
+### Feature
+
+- Add `list_running_requests` and `cancel_requests` to `ClientV2`: observe cluster-level running
+  requests filtered by database, collection, user, and minimum elapsed time, and cancel them by
+  the returned opaque request ids (the response reports canceled, not-found, and undetermined
+  ids per proxy)
+- Support element-level null in struct sub-fields (`element_nullable`), nested `Array` sub-fields,
+  and struct sub-field add/drop through `add_collection_field` / `drop_collection_field`,
+  matching pymilvus
+- Element-filter query iterators: expand each entity into one row per matched element, count
+  `limit`/`offset` by matched elements, bound every page by elements, and resume between batches
+  at the recorded element position; search iterators match output fields by name so reordered
+  pages no longer break multi-page batches
+
+### Bug
+
+- Strip the struct sub-field wire-name prefix (`clips[note]` -> `note`) in describe conversion,
+  DQL decode, and DML key matching, and correct the `v2_iterator_query` element-filter example
+
+## milvus-sdk-rust 3.0.3 (2026-10-23)
+
+### Feature
+
+- Add row-level security (RLS): create/update/drop/list row policies, set/get/list/delete
+  principal tags, and `rls_principal` / `skip_rls` enforcement on insert, upsert, delete,
+  query, search, hybrid search, and the corresponding iterators
+- Expose query-level group-by aggregation through `QueryRequest.group_by_fields`, combined
+  with aggregate expressions such as `count(*)`, `sum(field)`, `min(field)`, `max(field)`,
+  or `avg(field)` in `output_fields`
+- Add `DataType::Text` for BM25-backed text fields (DML/DQL accept VarChar data against a
+  Text schema); add `HybridSearchRequest.function_chains`; default
+  `DescribeReplicasRequest.with_shard_nodes` to `true`
+- Add `list_compaction_tasks` and enrich compaction/segment observability:
+  `GetCompactionPlansResponse` carries `collection_name` and the full `CompactionMergeInfo`
+  fields (`plan_id`, `trigger_id`, `state`, `failure_reason`, `targets`, ...), and
+  `PersistentSegmentInfo` exposes `insert_channel` / `compaction_from`
+- Add bulk-import `commit_import` / `abort_import` APIs and the `DescribeImportRequest` alias
+- Support struct-level `type_params` (`mmap.enabled`, `warmup`) on `StructFieldSchema`
+- Close C++/Java parity gaps: `SearchIteratorRequest.external_filter_func` page filter,
+  `QueryResponse` `cost` / `scanned_remote_bytes` / `scanned_total_bytes` / `cache_hit_ratio`,
+  `DeleteRequest.consistency_level`, `GetCompactionPlansResponse.compaction_id`,
+  `RefreshExternalCollectionJobInfo.external_spec`, `FunctionType::MolFingerprint`,
+  `ClusterCapability::PRIMARY`, `ConnectConfig` `username` / `password` / `secure`, and
+  `PartitionInfo.in_memory_percentage` / `loaded`
+
+### Bug
+
+- Decode empty `Timestamptz` `LongData` responses on empty query/iterator pages instead of
+  treating them as malformed
+- Emit the `reranker` parameter for RRF and weighted rerankers so the Milvus FunctionScore
+  path accepts them
+
+### Improvement
+
+- Deprecate `ConsistencyLevel::Customized` to match newer SDKs and the proto; behavior is
+  unchanged for existing client code (the variant still encodes/decodes as proto value 4).
+  Leave the consistency level unset to use the server default.
+- Tag Zilliz Cloud only public APIs with a `**Zilliz Cloud only.**` rustdoc marker
+
+## milvus-sdk-rust 2.6.2 (2026-10-23)
+
+### Feature
+
+- Support struct-level `type_params` (`mmap.enabled`, `warmup`) on `StructFieldSchema`
+
+### Bug
+
+- Emit the `reranker` parameter for RRF and weighted rerankers so the Milvus FunctionScore
+  path accepts them
+
+### Improvement
+
+- Deprecate `ConsistencyLevel::Customized` to match newer SDKs and the proto; behavior is
+  unchanged for existing client code (the variant still encodes/decodes as proto value 4).
+  Leave the consistency level unset to use the server default.
+
+## milvus-sdk-rust 3.0.2 (2026-09-16)
+
+### Feature
+
+- Support `bloom_match` and `roaring_match` membership-filter blobs: new
+  `milvus::v2::bloom_filter` (MBF1 split-block Bloom filter) and
+  `milvus::v2::roaring_bitmap` (portable Roaring64) builders, wired into V2
+  query, search, hybrid-search, and delete requests as byte-valued filter
+  template parameters
+- Add `doc/guide/v2/` quick-start and concepts guides, exposed through the
+  crate-level rustdoc
+
+### Improvement
+
+- Harden client telemetry performance and control flow: snapshot creation now
+  swaps collectors and sorts metric buckets outside the heartbeat lock, keeping
+  `record_operation` off the DML/DQL critical path
+
+### Bug
+
+- Preserve binary16 subnormals and signed zero during f32-to-f16 conversion, so
+  Float16/bf16 vectors round-trip without lossy collapse of small magnitudes
+
+### Breaking change
+
+- `filter_templates` on `QueryRequest`, `SearchRequest`, `SubSearchRequest`, and
+  `DeleteRequest` now takes and returns `HashMap<String, FilterTemplateValue>`
+  instead of `HashMap<String, serde_json::Value>`. Pass the typed
+  `FilterTemplateValue` variants (Int64/String/Int64Array/StringArray/Bytes, or
+  the new `add_filter_template` builder method) instead of raw JSON values.
+
+## milvus-sdk-rust 3.0.1 (2026-09-09)
+
+### Feature
+
+- Support ORDER BY on `search` and `query` through the new `OrderByField` value type; scalar
+  fields named in `order_by_fields` order the returned rows
+- Add `OptimizeTask::task_status()`, which reports the final optimize outcome (success, error, or
+  requested cancellation) instead of requiring a separate polling round
+- `CreateSimpleCollectionRequest`: accept `num_shards`, `num_partitions`, `properties`,
+  `description`, and `id_type` string aliases (`"int"`/`"string"`/`"str"`)
+- `LoadCollectionRequest` and `LoadPartitionsRequest`: accept `load_priority`, forwarded as the
+  load-priority load param
+- `DmlResponse`: expose `cost()` parsed from the server status `report_value`
+- `describe_collection`: expose `consistency_level_name`, the schema version, per-field
+  `field_id`/`is_dynamic`/`is_function_output`, and per-function `id`/`input_field_ids`/
+  `output_field_ids`
+
+### Improvement
+
+- `use_database` now verifies that the target database exists (`describe_database`) before
+  switching; an unknown database fails the switch instead of being silently selected, and a
+  failed switch keeps the previous selection
+- `add_collection_field` now routes through the modern `AlterCollectionSchema` RPC (falling back
+  to the legacy `AddCollectionField` RPC when unsupported), letting non-nullable scalar fields
+  with a `default_value` reach the server as pymilvus does
+
+### Breaking change
+
+- `use_database` is now `async`; callers must await the switch and handle a failure when the
+  target database does not exist
+- `add_collection_field`: a vector `FieldSchema` now requires `nullable = true`, matching pymilvus
+- `RunAnalyzerRequest.analyzer_params` changed from a pre-serialized `String` to an optional
+  `serde_json::Value`; pass the analyzer configuration as a JSON object
+
+## milvus-sdk-rust 3.0.0 (2026-09-03)
+
+> **Yanked.** 3.0.0 was yanked from crates.io due to interface design issues fixed in 3.0.1.
+> New dependency resolution selects 3.0.1; existing `Cargo.lock` pins continue to build.
+
+### Feature
+
+- Introduce a session client (`ClientV2::session`) that routes DQL operations (query, search,
+  hybrid search, get, and iterators) to a target global-cluster member, and recognize
+  `*-global-cluster-*` endpoints with topology discovery, primary selection, background refresh,
+  and proactive/reactive failover across generations
+- Add default-on client telemetry to `ClientV2`, shared by clones and cluster-scoped sessions,
+  reporting the seven Go SDK operation families, with heartbeats and the five server commands
+  (`push_config`, `collection_metrics`, `show_errors`, `show_latency_history`, `get_config`)
+- Support snapshots: create/drop/list/describe, restore with state and job listing, and pin/unpin
+  snapshot data
+- Support external collections: refresh, progress, and job listing for file-resource-backed
+  external tables
+- Support struct-field and function-field schema evolution: `add_collection_struct_field`,
+  `add_function_field`, `drop_function_field`, and `drop_collection_field`
+- Support search-time function chains (rerank/refine) and hierarchical bucket search aggregation
+  with typed `FunctionChain`, `SearchAggregation`, `MetricSpec`, `SortSpec`, `TopHitsSpec`, and
+  nested sub-aggregations
+- Support resumable query iterator cursors, so a query can continue from a previously captured
+  cursor after a disconnect or process restart
+- Support nullable struct sub-fields with wire-level `nullable` propagation on insert and query
+- `list_indexes`: add a `field_name` filter; returned indexes are filtered by field name when set
+- `compact`: add `l0_compaction` and `target_size_unit` (`TargetSizeUnit`: B/KB/MB/GB/TB/PB),
+  normalized at `build()` time so `into_builder().build()` round-trips idempotently
+- `grant_privilege` / `revoke_privilege`: add the V1 object-scoped form via `object_type` and
+  `object_name`, routed to the legacy `OperatePrivilege` RPC when set
+
+### Improvement
+
+- Align validation with pymilvus: enforce `round_decimal` in `-1..=6` on `search`,
+  `hybrid_search`, and `search_iterator`, reject `compact.target_size <= 0`, and treat empty
+  insert/upsert data and empty get ids as short-circuited empty results instead of build errors
+- Keep the deprecated V1 surface compiling through the Milvus 3.x proto upgrade
+
+### Breaking change
+
+- This is the first major release targeting Milvus `3.x`; the `2.6.x` line remains supported for
+  existing deployments
+- `compact`: a `target_size` of `0` is now rejected; callers that passed `0` to mean "server
+  default" must omit the field so the server picks its default target size
+- `insert`/`upsert`/`get`: empty input now builds and returns an empty result without issuing an
+  RPC instead of failing at request construction
+
+
+## milvus-sdk-rust 2.6.1 (2026-09-03)
+
+### Feature
+
+- `compact`: add `l0_compaction` mapped to `ManualCompactionRequest.l0_compaction`
+- `compact`: add `target_size_unit` (`TargetSizeUnit`: B/KB/MB/GB/TB/PB) used to convert
+  `target_size` to megabytes before it is sent on the wire; `target_size` and
+  `target_size_unit` are normalized at `build()` time, so `into_builder().build()`
+  round-trips idempotently
+- `list_indexes`: add a `field_name` filter; returned indexes are filtered by field name
+  when set (empty means all fields)
+- `grant_privilege` / `revoke_privilege`: add the V1 object-scoped form via `object_type`
+  and `object_name`, routed to the legacy `OperatePrivilege` RPC when set
+
+### Improvement
+
+- Align `compact`, `list_indexes`, and `round_decimal` validation with pymilvus:
+  reject `compact.target_size <= 0`, filter `list_indexes` by field name, and enforce
+  `round_decimal` in `-1..=6` on `search`, `hybrid_search`, and `search_iterator`
+
+### Breaking change
+
+- `compact`: a `target_size` of `0` is now rejected; callers that passed `0` to mean
+  "server default" must omit the field so the server picks its default target size
+
+
+## milvus-sdk-rust 2.6.0 (2026-08-14)
+
+### Feature
+
+- Introduce `ClientV2`, a validated request/response-style API aligned with Milvus 2.6, while
+  retaining the original `Client` API for compatibility in maintenance mode
+- Connection: support database selection, connect timeout, RPC deadlines, keepalive, retries, TLS
+  server-name override, custom CA certificates, and client certificates/private keys
+- Collection and schema: support full and simple creation, schema and index creation, description,
+  listing, statistics, replicas, rename, truncate, properties, fields, and collection functions
+- Loading: support load, refresh, release, load-state progress, synchronous waiting, and bounded
+  operation timeouts
+- Partition and alias: support complete partition lifecycle and alias creation, retargeting,
+  description, listing, and removal
+- Database: support selection and complete database lifecycle, description, and property management
+- Index: support creation with synchronous waiting, description, listing, removal, and property
+  management for scalar and vector indexes
+- DML: support row- and column-based insert/upsert, partial upsert, per-field update operations,
+  delete, nullable/default values, dynamic fields, and advanced field types
+- DQL: support get, query, search, hybrid search, primary-key ID queries/searches, grouping,
+  full-text and text match, reranking, highlighting, and analyzer execution
+- Iterators: support query and search iterators, including legacy and server-token search pagination
+- Utility: support health and server-version inspection, flush/flush-all, segment listing,
+  compaction, optimization, compaction state/plans, and asynchronous optimize tasks
+- CDC and replication: support replication configuration, replication information, WAL message
+  streaming, checkpoints, and salvage positions
+- Resource groups: support lifecycle, configuration, description, listing, node transfer, and replica
+  transfer operations
+- RBAC: support users, roles, role membership, privileges, privilege groups, password updates, and
+  user/role alteration
+- Support nullable and default-valued fields, dynamic fields, struct arrays, geometry,
+  timestamps with time zones, arrays, JSON, and dense, binary, half-precision, sparse, and Int8
+  vector types
+- Add borrowing `ResultRow`/`ResultRowIter` and type-preserving `ResultValue` APIs for efficient
+  query and search result processing
+- Add the Milvus 2.6 bulk-import REST interfaces: `bulk_import()`, `get_import_progress()`, and
+  `list_import_jobs()`
+
+### Improvement
+
+- Align schema-cache and session-timestamp-cache behavior with the Milvus C++ and Java SDKs,
+  including alias normalization, collection rename handling, lifecycle invalidation, per-client
+  in-flight loads, cancellation safety, and effective TLS endpoint isolation
+- Distinguish idempotent and non-idempotent retries so ambiguous transport failures do not replay
+  committed DML, truncate, credential, or resource-group delta operations
+- Avoid payload-sized request cloning on the normal insert and upsert paths and validate nested
+  vector dimensions and narrowing numeric conversions before sending data
+- Bound connection establishment, load, index, flush, and optimize polling by their configured
+  deadlines
+- Add typed V2 validation, conversion, server, timeout, cancellation, malformed-response, and
+  retry-exhaustion errors
+- Expand V2 examples, README usage guidance, crate publishing automation, and mock/system coverage
+- Add a beginner quick-start tutorial, focused collection/schema/index/DML/DQL tutorials, and
+  advanced database and RBAC administration tutorials
+- Improve V1 rustdoc examples so authentication, database, query, index, and resource-group
+  examples compile with the published crate paths and valid Milvus URLs
+- Replace Docker Compose test setup with a signal-safe standalone Milvus launcher, add macOS
+  non-server validation, and verify published-crate tutorials after release
+- Add complete V2 Rustdoc coverage, clearer V1/V2 navigation, standalone development guidance, and
+  optional `tracing` diagnostics for retries, schema/session caches, iterator paging, and polling
+- Define and validate Rust 1.86 as the MSRV, complete the crates.io package metadata, and restrict
+  published package contents to the SDK sources, examples, tests, protobuf inputs, and release
+  documents
+- Add Windows CI, strict Rustdoc/package validation, Clippy correctness/suspicious enforcement, and
+  mechanical checks for V2 DTO extensibility, builders, accessors, setters, and protobuf boundaries
+- Harden the release workflow by validating tag ancestry and successful post-merge checks, running
+  tutorials against the tagged local SDK before publication, and validating the crates.io artifact
+  before creating the GitHub release
+
+
+## milvus-sdk-rust 0.1.0 (2023-05-23)
+
+### Feature
+
+- Publish the initial Milvus Rust SDK to crates.io
+- Provide the original asynchronous `Client` API for connecting to Milvus and performing core
+  collection, partition, index, mutation, query, and search operations
+- Support authenticated and TLS-enabled connections

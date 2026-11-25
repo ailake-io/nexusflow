@@ -90,3 +90,11 @@ tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
 # varint bounds check locally until Parquet publishes a compatible update.
 [patch.crates-io]
 thrift = { path = "vendor/thrift" }
+
+iceberg-catalog-sql-0-10-1 = { package = "iceberg-catalog-sql", path = "vendor/iceberg-catalog-sql-0.10.1" }
+
+object-store-0-10-2 = { package = "object_store", path = "vendor/object_store-0.10.2" }
+
+object-store-0-13-2 = { package = "object_store", path = "vendor/object_store-0.13.2" }
+
+milvus-sdk-rust = { path = "vendor/milvus-sdk-rust-3.0.4" }

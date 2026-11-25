@@ -1,0 +1,95 @@
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License. You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+use milvus::index::{IndexParams, IndexType};
+use milvus::options::LoadOptions;
+use milvus::query::QueryOptions;
+use milvus::schema::{CollectionSchema, CollectionSchemaBuilder};
+use milvus::{client::Client, data::FieldColumn, error::Error, schema::FieldSchema};
+use std::collections::HashMap;
+
+use rand::prelude::*;
+
+const DEFAULT_VEC_FIELD: &str = "embed";
+const DIM: i64 = 256;
+const COLLECTION_NAME: &str = "RUST_V1_COLLECTION";
+
+#[tokio::main]
+async fn main() -> Result<(), Error> {
+    const URL: &str = "http://localhost:19530";
+
+    let client = Client::new(URL).await?;
+
+    let schema =
+        CollectionSchemaBuilder::new(COLLECTION_NAME, "a guide example for milvus rust SDK")
+            .add_field(FieldSchema::new_primary_int64(
+                "id",
+                "primary key field",
+                true,
+            ))
+            .add_field(FieldSchema::new_float_vector(
+                DEFAULT_VEC_FIELD,
+                "feature field",
+                DIM,
+            ))
+            .build()?;
+    client.create_collection(schema.clone(), None).await?;
+
+    if let Err(err) = hello_milvus(&client, &schema).await {
+        println!("failed to run hello milvus: {:?}", err);
+    }
+    client.drop_collection(schema.name()).await?;
+
+    Ok(())
+}
+
+async fn hello_milvus(client: &Client, collection: &CollectionSchema) -> Result<(), Error> {
+    let mut embed_data = Vec::<f32>::new();
+    for _ in 1..=DIM * 1000 {
+        let mut rng = rand::thread_rng();
+        let embed = rng.gen();
+        embed_data.push(embed);
+    }
+    let embed_column =
+        FieldColumn::new(collection.get_field(DEFAULT_VEC_FIELD).unwrap(), embed_data);
+
+    client
+        .insert(collection.name(), vec![embed_column], None)
+        .await?;
+    client.flush(collection.name()).await?;
+    let index_params = IndexParams::new(
+        "feature_index".to_owned(),
+        IndexType::IvfFlat,
+        milvus::index::MetricType::L2,
+        HashMap::from([("nlist".to_owned(), "32".to_owned())]),
+    );
+    client
+        .create_index(collection.name(), DEFAULT_VEC_FIELD, index_params)
+        .await?;
+    client
+        .load_collection(collection.name(), Some(LoadOptions::default()))
+        .await?;
+
+    let options = QueryOptions::default();
+    let result = client.query(collection.name(), "id > 0", &options).await?;
+
+    println!(
+        "result num: {}",
+        result.first().map(|c| c.len()).unwrap_or(0),
+    );
+
+    Ok(())
+}

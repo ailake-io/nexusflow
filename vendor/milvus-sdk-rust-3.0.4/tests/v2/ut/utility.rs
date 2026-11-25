@@ -1,0 +1,879 @@
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License. You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+use super::common::MockServer;
+use milvus::proto::{common, milvus as pb};
+use milvus::v2::error::Error;
+use milvus::v2::request::collection::{
+    CreateSimpleCollectionRequest, LoadCollectionRequest, RefreshLoadRequest,
+};
+use milvus::v2::request::database::CreateDatabaseRequest;
+use milvus::v2::request::dml::InsertRequest;
+use milvus::v2::request::partition::LoadPartitionsRequest;
+use milvus::v2::request::utility::*;
+use milvus::v2::{
+    CompactionStateCode, CompactionTaskState, CompactionType, FieldData, SegmentLevel, SegmentState,
+};
+use std::time::{Duration, Instant};
+
+#[tokio::test]
+async fn compact_and_optimize_direct_describe_bypass_the_schema_cache() {
+    let server = MockServer::start().await;
+
+    server
+        .client
+        .insert(
+            InsertRequest::builder()
+                .collection_name("books")
+                .columns(vec![
+                    FieldData::Int64 {
+                        name: "id".into(),
+                        values: vec![1],
+                    },
+                    FieldData::VarChar {
+                        name: "text".into(),
+                        values: vec!["book".into()],
+                    },
+                    FieldData::FloatVector {
+                        name: "vector".into(),
+                        values: vec![vec![0.1, 0.2]],
+                    },
+                ])
+                .build()
+                .expect("valid insert request"),
+        )
+        .await
+        .expect("prime schema cache");
+    assert_eq!(server.service.call_count("describe_collection"), 1);
+
+    server
+        .client
+        .compact(
+            CompactRequest::builder()
+                .collection_name("books")
+                .build()
+                .expect("valid compact request"),
+        )
+        .await
+        .expect("compact collection");
+    assert_eq!(server.service.call_count("describe_collection"), 2);
+    server.assert_request_contains("manual_compaction", &["collection_id: 1"]);
+
+    server
+        .client
+        .optimize(
+            OptimizeRequest::builder()
+                .collection_name("books")
+                .target_size("2MB")
+                .build()
+                .expect("valid optimize request"),
+        )
+        .await
+        .expect("optimize collection");
+    assert_eq!(server.service.call_count("describe_collection"), 3);
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn empty_database_name_uses_selected_database_for_workflow_rpcs() {
+    let server = MockServer::start().await;
+    let client = &server.client;
+    client
+        .create_database(
+            CreateDatabaseRequest::builder()
+                .database_name("tenant")
+                .build()
+                .expect("valid database request"),
+        )
+        .await
+        .expect("create tenant database");
+    client
+        .use_database("tenant")
+        .await
+        .expect("select database");
+
+    client
+        .create_collection(
+            CreateSimpleCollectionRequest::builder()
+                .collection_name("tenant_books")
+                .dimension(2)
+                .build()
+                .expect("valid create request"),
+        )
+        .await
+        .expect("create tenant collection");
+    client
+        .load_collection(
+            LoadCollectionRequest::builder()
+                .database_name("")
+                .collection_name("tenant_books")
+                .sync(false)
+                .build()
+                .expect("valid load request"),
+        )
+        .await
+        .expect("load tenant collection");
+    client
+        .refresh_load(
+            RefreshLoadRequest::builder()
+                .database_name("")
+                .collection_name("tenant_books")
+                .sync(false)
+                .build()
+                .expect("valid refresh request"),
+        )
+        .await
+        .expect("refresh tenant collection");
+    client
+        .load_partitions(
+            LoadPartitionsRequest::builder()
+                .database_name("")
+                .collection_name("tenant_books")
+                .partition_name("p1")
+                .sync(false)
+                .build()
+                .expect("valid load partitions request"),
+        )
+        .await
+        .expect("load tenant partitions");
+    client
+        .flush(
+            FlushRequest::builder()
+                .database_name("")
+                .collection_names(["tenant_books"])
+                .wait_flushed_ms(1_000)
+                .build()
+                .expect("valid flush request"),
+        )
+        .await
+        .expect("flush tenant collection");
+    client
+        .flush_all(
+            FlushAllRequest::builder()
+                .database_name("")
+                .wait_flushed_ms(1_000)
+                .build()
+                .expect("valid flush-all request"),
+        )
+        .await
+        .expect("flush tenant database");
+    client
+        .optimize(
+            OptimizeRequest::builder()
+                .database_name("")
+                .collection_name("tenant_books")
+                .target_size("2MB")
+                .build()
+                .expect("valid optimize request"),
+        )
+        .await
+        .expect("optimize tenant collection");
+
+    for rpc in [
+        "load_collection",
+        "load_partitions",
+        "flush",
+        "flush_all",
+        "manual_compaction",
+    ] {
+        server.assert_request_contains(rpc, &["db_name: \"tenant\""]);
+    }
+    let load_requests = server.service.request_texts("load_collection");
+    assert!(
+        load_requests.len() >= 2
+            && load_requests
+                .iter()
+                .all(|request| request.contains("db_name: \"tenant\"")),
+        "load and refresh requests should use the selected database: {load_requests:?}"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn flush_wait_timeout_bounds_stalled_polls_and_visibility_delay() {
+    let server = MockServer::start().await;
+
+    let flush_started = Instant::now();
+    let flush_result = tokio::time::timeout(
+        Duration::from_secs(2),
+        server.client.flush(
+            FlushRequest::builder()
+                .collection_names(["stalled_flush_state"])
+                .wait_flushed_ms(1_050)
+                .build()
+                .expect("valid flush request"),
+        ),
+    )
+    .await
+    .expect("flush must honor its operation timeout");
+    let flush_error = flush_result.expect_err("stalled flush-state poll must time out");
+    assert!(matches!(
+        flush_error,
+        Error::Timeout(message) if message == "waiting for flush completion"
+    ));
+    assert!(flush_started.elapsed() < Duration::from_millis(1_500));
+
+    let flush_all_started = Instant::now();
+    let flush_all_result = tokio::time::timeout(
+        Duration::from_secs(2),
+        server.client.flush_all(
+            FlushAllRequest::builder()
+                .database_name("stalled_flush_all_state")
+                .wait_flushed_ms(550)
+                .build()
+                .expect("valid flush-all request"),
+        ),
+    )
+    .await
+    .expect("flush-all must honor its operation timeout");
+    let flush_all_error = flush_all_result.expect_err("stalled flush-all-state poll must time out");
+    assert!(matches!(
+        flush_all_error,
+        Error::Timeout(message) if message == "waiting for flush completion"
+    ));
+    assert!(flush_all_started.elapsed() < Duration::from_secs(1));
+
+    let visibility_started = Instant::now();
+    server
+        .client
+        .flush(
+            FlushRequest::builder()
+                .collection_names(["short_flush_visibility_delay"])
+                .wait_flushed_ms(1_050)
+                .build()
+                .expect("valid flush request"),
+        )
+        .await
+        .expect("successful flush uses only the remaining visibility delay");
+    assert!(visibility_started.elapsed() < Duration::from_millis(1_500));
+
+    assert_eq!(server.service.call_count("get_flush_state"), 2);
+    assert_eq!(server.service.call_count("get_flush_all_state"), 1);
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn flush_rejects_missing_collection_timestamp() {
+    let server = MockServer::start().await;
+
+    let error = server
+        .client
+        .flush(
+            FlushRequest::builder()
+                .collection_names(["missing_flush_timestamp"])
+                .wait_flushed_ms(1_000)
+                .build()
+                .expect("valid flush request"),
+        )
+        .await
+        .expect_err("flush response without a collection timestamp must fail");
+
+    assert!(matches!(
+        error,
+        Error::MalformedResponse(message)
+            if message.contains("missing_flush_timestamp")
+                && message.contains("no flush timestamp")
+    ));
+    assert_eq!(server.service.call_count("get_flush_state"), 0);
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn optimize_treats_zero_compaction_plans_as_a_successful_noop() {
+    let server = MockServer::start().await;
+    let task = server
+        .client
+        .optimize(
+            OptimizeRequest::builder()
+                .collection_name("books")
+                .target_size("2MB")
+                .build()
+                .expect("valid optimize request"),
+        )
+        .await
+        .expect("start optimize task");
+
+    let result = task
+        .get_result(1_000)
+        .await
+        .expect("zero-plan optimize succeeds");
+    assert_eq!(result.status_text(), "success");
+    assert_eq!(result.compaction_id(), -1);
+    assert!(result
+        .progress_history()
+        .iter()
+        .any(|progress| progress == "no compaction required"));
+    assert_eq!(server.service.call_count("get_compaction_state"), 0);
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn utility_interfaces_reach_rpc_server() {
+    let server = MockServer::start().await;
+    let client = &server.client;
+
+    assert!(!client.sdk_version().is_empty());
+    let version = client
+        .server_version(
+            GetServerVersionRequest::builder()
+                .build()
+                .expect("valid request"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(version.version(), "mock-2.6");
+    assert_eq!(version.build_time(), None);
+
+    let detailed = client
+        .server_version(
+            GetServerVersionRequest::builder()
+                .detail(true)
+                .build()
+                .expect("valid request"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(detailed.version(), "mock-2.6-detail");
+    assert_eq!(detailed.build_time(), Some("2026-07-29"));
+    assert_eq!(detailed.git_commit(), Some("abcdef"));
+    assert_eq!(detailed.go_version(), Some("go1.24"));
+    assert_eq!(detailed.deploy_mode(), Some("STANDALONE"));
+    let health = client
+        .check_health(
+            CheckHealthRequest::builder()
+                .build()
+                .expect("valid request"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(health.is_healthy().to_owned(), true);
+    assert!(health.reasons().is_empty());
+    assert_eq!(health.quota_states().to_owned(), ["ReadLimited"]);
+
+    let flush = client
+        .flush(
+            FlushRequest::builder()
+                .collection_names(["books"])
+                .build()
+                .expect("valid request"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(flush.database_name().to_owned(), "default");
+    assert!(flush.segment_ids().is_empty());
+    assert_eq!(flush.flush_timestamps().get("books").to_owned(), Some(&400));
+
+    let flush_all = client
+        .flush_all(
+            FlushAllRequest::builder()
+                .wait_flushed_ms(1_000)
+                .build()
+                .expect("valid request"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(flush_all.flush_all_timestamp().to_owned(), 401);
+
+    let flush_state = client
+        .get_flush_all_state(
+            GetFlushAllStateRequest::builder()
+                .build()
+                .expect("valid request"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(flush_state.is_flushed().to_owned(), true);
+
+    let persistent = client
+        .list_persistent_segments(
+            ListPersistentSegmentsRequest::builder()
+                .collection_name("books")
+                .build()
+                .expect("valid request"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(persistent.segments().len().to_owned(), 1);
+    let segment = &persistent.segments()[0];
+    assert_eq!(segment.get_segment_id().to_owned(), 40);
+    assert_eq!(segment.get_collection_id().to_owned(), 1);
+    assert_eq!(segment.get_partition_id().to_owned(), 1);
+    assert_eq!(segment.get_row_count().to_owned(), 1);
+    assert_eq!(segment.get_state().to_owned(), SegmentState::Flushed);
+    assert_eq!(segment.get_collection_name().to_owned(), "books");
+    assert_eq!(segment.get_level().to_owned(), SegmentLevel::L1);
+    assert_eq!(segment.get_sorted().to_owned(), true);
+    assert_eq!(segment.get_storage_version().to_owned(), 2);
+
+    let query_segments = client
+        .list_query_segments(
+            ListQuerySegmentsRequest::builder()
+                .collection_name("books")
+                .build()
+                .expect("valid request"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(query_segments.segments().len().to_owned(), 1);
+    let segment = &query_segments.segments()[0];
+    assert_eq!(segment.get_segment_id().to_owned(), 41);
+    assert_eq!(segment.get_collection_id().to_owned(), 1);
+    assert_eq!(segment.get_partition_id().to_owned(), 1);
+    assert_eq!(segment.get_memory_size().to_owned(), 1024);
+    assert_eq!(segment.get_row_count().to_owned(), 1);
+    assert_eq!(segment.get_index_name().to_owned(), "vector_idx");
+    assert_eq!(segment.get_index_id().to_owned(), 10);
+    assert_eq!(segment.get_node_ids().to_owned(), [8, 9]);
+    assert_eq!(segment.get_state().to_owned(), SegmentState::Flushed);
+    assert_eq!(segment.get_collection_name().to_owned(), "books");
+    assert_eq!(segment.get_level().to_owned(), SegmentLevel::L1);
+    assert_eq!(segment.get_sorted().to_owned(), true);
+    assert_eq!(segment.get_storage_version().to_owned(), 2);
+
+    let compact = client
+        .compact(
+            CompactRequest::builder()
+                .collection_name("books")
+                .build()
+                .expect("valid request"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(compact.compaction_id().to_owned(), 1);
+    assert_eq!(compact.plan_count().to_owned(), 1);
+    let task = client
+        .optimize(
+            OptimizeRequest::builder()
+                .collection_name("books")
+                .target_size("1MB")
+                .build()
+                .expect("valid request"),
+        )
+        .await
+        .unwrap();
+    assert!(task.is_done());
+    assert!(!task.is_cancelled());
+    assert!(task.current_progress().is_some());
+    assert!(!task.progress_history().is_empty());
+    let optimize = task.get_result(1_000).await.unwrap();
+    assert_eq!(optimize.status_text().to_owned(), "success");
+    assert_eq!(optimize.collection_name().to_owned(), "books");
+    assert_eq!(optimize.compaction_id().to_owned(), 1);
+    assert_eq!(optimize.target_size().to_owned(), "1MB");
+    assert!(!optimize.progress_history().is_empty());
+    assert!(!task.cancel());
+    let compaction = client
+        .get_compaction_state(
+            GetCompactionStateRequest::builder()
+                .compaction_id(1)
+                .build()
+                .expect("valid request"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        compaction.state().to_owned(),
+        CompactionStateCode::Completed
+    );
+    assert_eq!(compaction.executing_plans().to_owned(), 0);
+    assert_eq!(compaction.timed_out_plans().to_owned(), 0);
+    assert_eq!(compaction.completed_plans().to_owned(), 1);
+    assert_eq!(compaction.failed_plans().to_owned(), 0);
+
+    let plans = client
+        .get_compaction_plans(
+            GetCompactionPlansRequest::builder()
+                .compaction_id(1)
+                .build()
+                .expect("valid request"),
+        )
+        .await
+        .unwrap();
+    server.assert_request_contains(
+        "get_compaction_state_with_plans",
+        &["compaction_id: 1", "collection_name: \"\""],
+    );
+    assert_eq!(plans.state().to_owned(), CompactionStateCode::Completed);
+    assert_eq!(plans.collection_name().to_owned(), "");
+    assert_eq!(plans.merges().len().to_owned(), 1);
+    assert_eq!(
+        plans.merges()[0].get_source_segment_ids().to_owned(),
+        [1, 2]
+    );
+    assert_eq!(plans.merges()[0].get_target_segment_id().to_owned(), 3);
+    assert_eq!(plans.merges()[0].get_plan_id().to_owned(), 10);
+    assert_eq!(plans.merges()[0].get_trigger_id().to_owned(), 11);
+    assert_eq!(plans.merges()[0].get_collection_id().to_owned(), 12);
+    assert_eq!(plans.merges()[0].get_partition_id().to_owned(), 13);
+    assert_eq!(
+        plans.merges()[0].get_channel().to_owned(),
+        "by-dev-rootcoord-dml_0_1v"
+    );
+    assert_eq!(
+        plans.merges()[0].get_compaction_type().to_owned(),
+        CompactionType::Major
+    );
+    assert_eq!(
+        plans.merges()[0].get_state().to_owned(),
+        CompactionTaskState::Completed
+    );
+    assert_eq!(plans.merges()[0].get_failure_reason().to_owned(), "");
+    assert_eq!(
+        plans.merges()[0].get_target_segment_ids().to_owned(),
+        [3, 4]
+    );
+
+    let tasks = client
+        .list_compaction_tasks(
+            ListCompactionTasksRequest::builder()
+                .collection_name("books")
+                .build()
+                .expect("valid request"),
+        )
+        .await
+        .unwrap();
+    server.assert_request_contains(
+        "get_compaction_state_with_plans",
+        &["collection_name: \"books\"", "db_name: \"default\""],
+    );
+    assert_eq!(tasks.state().to_owned(), CompactionStateCode::Completed);
+    assert_eq!(tasks.collection_name().to_owned(), "books");
+    assert_eq!(tasks.merges().len().to_owned(), 1);
+    assert_eq!(
+        tasks.merges()[0].get_target_segment_ids().to_owned(),
+        [3, 4]
+    );
+
+    let analyzer = client
+        .run_analyzer(
+            RunAnalyzerRequest::builder()
+                .analyzer_params(serde_json::json!({}))
+                .texts(["hello"])
+                .build()
+                .expect("valid request"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(analyzer.results().len().to_owned(), 1);
+    assert_eq!(analyzer.results()[0].get_tokens().len().to_owned(), 1);
+    let token = &analyzer.results()[0].get_tokens()[0];
+    assert_eq!(token.get_text().to_owned(), "hello");
+    assert_eq!(token.get_start_offset().to_owned(), 0);
+    assert_eq!(token.get_end_offset().to_owned(), 5);
+    assert_eq!(token.get_position().to_owned(), 0);
+    assert_eq!(token.get_position_length().to_owned(), 1);
+    assert_eq!(token.get_hash().to_owned(), 123);
+    server.assert_request_contains("flush", &["collection_names: [\"books\"]"]);
+    server.assert_request_contains("manual_compaction", &["collection_name: \"books\""]);
+    server.assert_request_contains(
+        "run_analyzer",
+        &["placeholder: [[104, 101, 108, 108, 111]]"],
+    );
+    for rpc in [
+        "get_version",
+        "check_health",
+        "flush",
+        "flush_all",
+        "get_flush_all_state",
+        "get_persistent_segment_info",
+        "get_query_segment_info",
+        "manual_compaction",
+        "get_compaction_state",
+        "get_compaction_state_with_plans",
+        "run_analyzer",
+    ] {
+        server.assert_called(rpc);
+    }
+    server.shutdown().await;
+}
+
+fn grpc_running_request(id: &str, state: &str) -> pb::RunningRequestInfo {
+    pb::RunningRequestInfo {
+        request_id: id.into(),
+        proxy_id: 7,
+        r#type: "Search".into(),
+        db_name: "db".into(),
+        collection_name: "coll".into(),
+        user: "alice".into(),
+        client_addr: "10.0.0.1:5000".into(),
+        nq: 4_000,
+        topk: 100,
+        expr: "id > 0".into(),
+        start_time_ms: 1_700_000_000_000,
+        queued_ms: 3,
+        elapsed_ms: 1_500,
+        state: state.into(),
+        task_ids: vec![11, 12],
+        trace_id: "trace-1".into(),
+        cancellable: true,
+    }
+}
+
+#[tokio::test]
+async fn list_running_requests_applies_filters_and_decodes_rows() {
+    let server = MockServer::start().await;
+    server
+        .service
+        .set_running_requests(vec![grpc_running_request("7-to03zu-1", "Running")]);
+
+    let response = server
+        .client
+        .list_running_requests(
+            ListRunningRequestsRequest::builder()
+                .database_name("db")
+                .collection_name("coll")
+                .user("alice")
+                .min_elapsed_ms(1_000)
+                .build()
+                .expect("valid request"),
+        )
+        .await
+        .expect("list running requests");
+
+    server.assert_request_contains(
+        "list_running_requests",
+        &[
+            "db_name: \"db\"",
+            "collection_name: \"coll\"",
+            "user: \"alice\"",
+            "min_elapsed_ms: 1000",
+        ],
+    );
+
+    assert_eq!(response.requests().len(), 1);
+    let info = &response.requests()[0];
+    assert_eq!(info.get_request_id(), "7-to03zu-1");
+    assert_eq!(info.get_proxy_id(), 7);
+    assert_eq!(info.get_type(), "Search");
+    assert_eq!(info.get_database_name(), "db");
+    assert_eq!(info.get_collection_name(), "coll");
+    assert_eq!(info.get_user(), "alice");
+    assert_eq!(info.get_client_addr(), "10.0.0.1:5000");
+    assert_eq!(info.get_nq(), 4_000);
+    assert_eq!(info.get_top_k(), 100);
+    assert_eq!(info.get_expr(), "id > 0");
+    assert_eq!(info.get_start_time_ms(), 1_700_000_000_000);
+    assert_eq!(info.get_queued_ms(), 3);
+    assert_eq!(info.get_elapsed_ms(), 1_500);
+    assert_eq!(info.get_state(), "Running");
+    assert_eq!(info.get_task_ids(), &[11, 12]);
+    assert_eq!(info.get_trace_id(), "trace-1");
+    assert!(info.is_cancellable());
+
+    assert_eq!(response.node_results().len(), 3);
+    assert!(response.node_results()[0].is_success());
+    assert!(!response.node_results()[0].is_unimplemented());
+    assert!(!response.node_results()[1].is_success());
+    assert_eq!(response.node_results()[1].get_error_code(), 65_535);
+    assert_eq!(response.node_results()[1].get_reason(), "node unreachable");
+    assert!(!response.node_results()[2].is_success());
+    assert!(response.node_results()[2].is_unimplemented());
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn list_running_requests_without_filters_sends_no_filters() {
+    let server = MockServer::start().await;
+
+    let response = server
+        .client
+        .list_running_requests(
+            ListRunningRequestsRequest::builder()
+                .build()
+                .expect("valid request"),
+        )
+        .await
+        .expect("list running requests");
+
+    server.assert_request_contains(
+        "list_running_requests",
+        &[
+            "db_name: \"\"",
+            "collection_name: \"\"",
+            "user: \"\"",
+            "min_elapsed_ms: 0",
+        ],
+    );
+    assert!(response.requests().is_empty());
+    assert_eq!(response.node_results().len(), 3);
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn list_running_requests_propagates_server_error() {
+    let server = MockServer::start().await;
+    server.service.set_running_requests_status(common::Status {
+        code: 1100,
+        reason: "permission denied".into(),
+        ..Default::default()
+    });
+
+    let error = server
+        .client
+        .list_running_requests(
+            ListRunningRequestsRequest::builder()
+                .build()
+                .expect("valid request"),
+        )
+        .await
+        .expect_err("server error must fail the call");
+    assert!(matches!(error, Error::Server(ref server_error) if server_error.code() == 1100));
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn cancel_requests_sends_ids_reason_user_and_decodes_result() {
+    let server = MockServer::start().await;
+    server.service.set_cancel_requests_result(
+        vec![grpc_running_request("7-to03zu-1", "Running")],
+        vec!["7-to03zu-2".into()],
+        vec!["8-to03zv-3".into()],
+    );
+
+    let response = server
+        .client
+        .cancel_requests(
+            CancelRequestsRequest::builder()
+                .request_ids(["7-to03zu-1", "7-to03zu-2", "8-to03zv-3"])
+                .reason("too heavy")
+                .user("alice")
+                .build()
+                .expect("valid request"),
+        )
+        .await
+        .expect("cancel requests");
+
+    server.assert_request_contains(
+        "cancel_requests",
+        &[
+            "request_ids: [\"7-to03zu-1\", \"7-to03zu-2\", \"8-to03zv-3\"]",
+            "reason: \"too heavy\"",
+            "user: \"alice\"",
+        ],
+    );
+
+    assert_eq!(response.canceled().len(), 1);
+    assert_eq!(response.canceled()[0].get_request_id(), "7-to03zu-1");
+    assert_eq!(response.canceled()[0].get_state(), "Running");
+    assert_eq!(response.not_found(), ["7-to03zu-2"]);
+    assert_eq!(response.undetermined(), ["8-to03zv-3"]);
+    assert_eq!(response.node_results().len(), 1);
+    assert!(response.node_results()[0].is_success());
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn cancel_requests_rejects_empty_id_list_without_an_rpc() {
+    let server = MockServer::start().await;
+
+    let empty = CancelRequestsRequest::builder()
+        .build()
+        .expect_err("empty id list must be rejected by build");
+    assert!(matches!(empty, Error::Validation(_)));
+
+    let blank = CancelRequestsRequest::builder()
+        .request_ids([""])
+        .build()
+        .expect_err("blank id must be rejected by build");
+    assert!(matches!(blank, Error::Validation(_)));
+
+    assert_eq!(server.service.call_count("cancel_requests"), 0);
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn cancel_requests_propagates_server_error() {
+    let server = MockServer::start().await;
+    server.service.set_cancel_requests_status(common::Status {
+        code: 1100,
+        reason: "permission denied".into(),
+        ..Default::default()
+    });
+
+    let error = server
+        .client
+        .cancel_requests(
+            CancelRequestsRequest::builder()
+                .request_ids(["7-to03zu-1"])
+                .build()
+                .expect("valid request"),
+        )
+        .await
+        .expect_err("server error must fail the call");
+    assert!(matches!(error, Error::Server(ref server_error) if server_error.code() == 1100));
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn list_running_requests_retries_transport_failures() {
+    let server = MockServer::start().await;
+    server
+        .service
+        .set_running_requests(vec![grpc_running_request("7-to03zu-1", "Running")]);
+    server
+        .service
+        .fail_next_transport("list_running_requests", tonic::Code::Unavailable);
+
+    let response = server
+        .client
+        .list_running_requests(
+            ListRunningRequestsRequest::builder()
+                .build()
+                .expect("valid request"),
+        )
+        .await
+        .expect("transport failure is retried");
+    assert_eq!(response.requests().len(), 1);
+    assert!(server.service.call_count("list_running_requests") > 1);
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn cancel_requests_retries_transport_failures() {
+    let server = MockServer::start().await;
+    server.service.set_cancel_requests_result(
+        vec![grpc_running_request("7-to03zu-1", "Running")],
+        Vec::new(),
+        Vec::new(),
+    );
+    server
+        .service
+        .fail_next_transport("cancel_requests", tonic::Code::Unavailable);
+
+    let response = server
+        .client
+        .cancel_requests(
+            CancelRequestsRequest::builder()
+                .request_ids(["7-to03zu-1"])
+                .build()
+                .expect("valid request"),
+        )
+        .await
+        .expect("cancel is deliberately retried after a transport failure");
+    assert_eq!(response.canceled().len(), 1);
+    assert!(server.service.call_count("cancel_requests") > 1);
+
+    server.shutdown().await;
+}

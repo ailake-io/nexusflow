@@ -97,6 +97,20 @@ fn validate_config_limits(config: &serde_json::Value) -> anyhow::Result<()> {
     visit(config, 0, &mut (256 * 1024))
 }
 
+/// Deserialize only a bounded JSON object into a statically selected config type.
+/// Serializing after the structural checks also gives an exact byte-size limit
+/// before the typed parser can allocate connector-specific containers.
+fn deserialize_config<T: serde::de::DeserializeOwned>(
+    config: &serde_json::Value,
+) -> anyhow::Result<T> {
+    validate_config_limits(config)?;
+    let bytes = serde_json::to_vec(config)?;
+    if bytes.len() > 256 * 1024 {
+        anyhow::bail!("serialized connector config exceeds 256 KiB");
+    }
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
 /// The only place that knows which connector names exist and how to build
 /// them — `nexus-core`/`PipelineEngine` never hardcode a connector list, see
 /// `ConnectorRegistry` (ARCHITECTURE.md §3). Adding an OSS connector means
@@ -121,101 +135,101 @@ pub fn validate_source_config(node: &NodeSpec) -> anyhow::Result<()> {
     validate_config_limits(&node.config)?;
     match node.connector.as_str() {
         "postgres" => {
-            let _: PostgresConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let _: PostgresConnectorConfig = deserialize_config(&node.config)?;
         }
         "sqlite" => {
-            let _: SqliteConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let _: SqliteConnectorConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "mongodb")]
         "mongodb" => {
-            let _: MongoConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let _: MongoConnectorConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "mysql")]
         "mysql" => {
-            let _: MySqlConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let _: MySqlConnectorConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "kafka")]
         "kafka" => {
-            let _: KafkaConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let _: KafkaConnectorConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "mqtt")]
         "mqtt" => {
-            let _: MqttConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let _: MqttConnectorConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "rest")]
         "rest" => {
-            let _: RestConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let _: RestConnectorConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "odbc")]
         "odbc" => {
-            let _: OdbcConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let _: OdbcConnectorConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "deltalake")]
         "deltalake" => {
-            let _: DeltaConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let _: DeltaConnectorConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "iceberg")]
         "iceberg" => {
-            let _: IcebergConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let _: IcebergConnectorConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "parquet")]
         "parquet" => {
-            let _: ParquetConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let _: ParquetConnectorConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "ailake")]
         "ailake" => {
-            let _: AilakeConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let _: AilakeConnectorConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "csv")]
         "csv" => {
-            let _: CsvConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let _: CsvConnectorConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "clickhouse")]
         "clickhouse" => {
-            let _: ClickHouseConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let _: ClickHouseConnectorConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "duckdb")]
         "duckdb" => {
-            let _: DuckdbConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let _: DuckdbConnectorConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "redis")]
         "redis" => {
-            let cfg: RedisConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: RedisConnectorConfig = deserialize_config(&node.config)?;
             cfg.validate()?;
         }
         #[cfg(feature = "nats")]
         "nats" => {
-            let cfg: NatsConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: NatsConnectorConfig = deserialize_config(&node.config)?;
             cfg.validate()?;
         }
         #[cfg(feature = "rabbitmq")]
         "rabbitmq" => {
-            let cfg: RabbitmqConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: RabbitmqConnectorConfig = deserialize_config(&node.config)?;
             cfg.validate()?;
         }
         #[cfg(feature = "postgres-cdc")]
         "postgres-cdc" => {
-            let _: PostgresCdcConfig = serde_json::from_value(node.config.clone())?;
+            let _: PostgresCdcConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "mongodb")]
         "mongodb-cdc" => {
-            let _: MongoCdcConfig = serde_json::from_value(node.config.clone())?;
+            let _: MongoCdcConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "mysql-cdc")]
         "mysql-cdc" => {
-            let _: MySqlCdcConfig = serde_json::from_value(node.config.clone())?;
+            let _: MySqlCdcConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "deltalake-cdc")]
         "deltalake-cdc" => {
-            let _: DeltaCdcConfig = serde_json::from_value(node.config.clone())?;
+            let _: DeltaCdcConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "iceberg-cdc")]
         "iceberg-cdc" => {
-            let _: IcebergCdcConfig = serde_json::from_value(node.config.clone())?;
+            let _: IcebergCdcConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "ailake-cdc")]
         "ailake-cdc" => {
-            let _: AilakeCdcConfig = serde_json::from_value(node.config.clone())?;
+            let _: AilakeCdcConfig = deserialize_config(&node.config)?;
         }
         other => match ConnectorRegistry::find_source_builder(other) {
             Some(builder) => (builder.validate)(&node.config)?,
@@ -233,121 +247,121 @@ pub async fn build_source(
     let name = node.resolved_name(index, "source")?;
     let source: Box<dyn Source> = match node.connector.as_str() {
         "postgres" => {
-            let cfg: PostgresConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: PostgresConnectorConfig = deserialize_config(&node.config)?;
             Box::new(PostgresSource::connect(&cfg, None).await?)
         }
         "sqlite" => {
-            let cfg: SqliteConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: SqliteConnectorConfig = deserialize_config(&node.config)?;
             Box::new(SqliteSource::connect(&cfg).await?)
         }
         #[cfg(feature = "mongodb")]
         "mongodb" => {
-            let cfg: MongoConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: MongoConnectorConfig = deserialize_config(&node.config)?;
             Box::new(MongoSource::connect(&cfg).await?)
         }
         #[cfg(feature = "mysql")]
         "mysql" => {
-            let cfg: MySqlConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: MySqlConnectorConfig = deserialize_config(&node.config)?;
             Box::new(MySqlSource::connect(&cfg).await?)
         }
         #[cfg(feature = "kafka")]
         "kafka" => {
-            let cfg: KafkaConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: KafkaConnectorConfig = deserialize_config(&node.config)?;
             Box::new(KafkaSource::connect(&cfg).await?)
         }
         #[cfg(feature = "mqtt")]
         "mqtt" => {
-            let cfg: MqttConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: MqttConnectorConfig = deserialize_config(&node.config)?;
             Box::new(MqttSource::connect(&cfg).await?)
         }
         #[cfg(feature = "rest")]
         "rest" => {
-            let cfg: RestConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: RestConnectorConfig = deserialize_config(&node.config)?;
             Box::new(RestSource::connect(&cfg).await?)
         }
         #[cfg(feature = "odbc")]
         "odbc" => {
-            let cfg: OdbcConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: OdbcConnectorConfig = deserialize_config(&node.config)?;
             Box::new(OdbcSource::connect(&cfg)?)
         }
         #[cfg(feature = "deltalake")]
         "deltalake" => {
-            let cfg: DeltaConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: DeltaConnectorConfig = deserialize_config(&node.config)?;
             Box::new(DeltaSource::connect(&cfg).await?)
         }
         #[cfg(feature = "iceberg")]
         "iceberg" => {
-            let cfg: IcebergConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: IcebergConnectorConfig = deserialize_config(&node.config)?;
             Box::new(IcebergSource::connect(&cfg).await?)
         }
         #[cfg(feature = "parquet")]
         "parquet" => {
-            let cfg: ParquetConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: ParquetConnectorConfig = deserialize_config(&node.config)?;
             Box::new(ParquetSource::connect(&cfg).await?)
         }
         #[cfg(feature = "ailake")]
         "ailake" => {
-            let cfg: AilakeConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: AilakeConnectorConfig = deserialize_config(&node.config)?;
             Box::new(AilakeSource::connect(&cfg).await?)
         }
         #[cfg(feature = "csv")]
         "csv" => {
-            let cfg: CsvConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: CsvConnectorConfig = deserialize_config(&node.config)?;
             Box::new(CsvSource::connect(&cfg).await?)
         }
         #[cfg(feature = "clickhouse")]
         "clickhouse" => {
-            let cfg: ClickHouseConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: ClickHouseConnectorConfig = deserialize_config(&node.config)?;
             Box::new(ClickHouseSource::connect(&cfg, None).await?)
         }
         #[cfg(feature = "duckdb")]
         "duckdb" => {
-            let cfg: DuckdbConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: DuckdbConnectorConfig = deserialize_config(&node.config)?;
             Box::new(DuckdbSource::connect(&cfg).await?)
         }
         #[cfg(feature = "redis")]
         "redis" => {
-            let cfg: RedisConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: RedisConnectorConfig = deserialize_config(&node.config)?;
             Box::new(RedisSource::connect(&cfg).await?)
         }
         #[cfg(feature = "nats")]
         "nats" => {
-            let cfg: NatsConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: NatsConnectorConfig = deserialize_config(&node.config)?;
             Box::new(NatsSource::connect(&cfg).await?)
         }
         #[cfg(feature = "rabbitmq")]
         "rabbitmq" => {
-            let cfg: RabbitmqConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: RabbitmqConnectorConfig = deserialize_config(&node.config)?;
             Box::new(RabbitmqSource::connect(&cfg).await?)
         }
         #[cfg(feature = "postgres-cdc")]
         "postgres-cdc" => {
-            let cfg: PostgresCdcConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: PostgresCdcConfig = deserialize_config(&node.config)?;
             Box::new(PostgresCdcSource::connect(&cfg).await?)
         }
         #[cfg(feature = "mongodb")]
         "mongodb-cdc" => {
-            let cfg: MongoCdcConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: MongoCdcConfig = deserialize_config(&node.config)?;
             Box::new(MongoCdcSource::connect(&cfg).await?)
         }
         #[cfg(feature = "mysql-cdc")]
         "mysql-cdc" => {
-            let cfg: MySqlCdcConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: MySqlCdcConfig = deserialize_config(&node.config)?;
             Box::new(MySqlCdcSource::connect(&cfg).await?)
         }
         #[cfg(feature = "deltalake-cdc")]
         "deltalake-cdc" => {
-            let cfg: DeltaCdcConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: DeltaCdcConfig = deserialize_config(&node.config)?;
             Box::new(DeltaCdcSource::connect(&cfg).await?)
         }
         #[cfg(feature = "iceberg-cdc")]
         "iceberg-cdc" => {
-            let cfg: IcebergCdcConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: IcebergCdcConfig = deserialize_config(&node.config)?;
             Box::new(IcebergCdcSource::connect(&cfg).await?)
         }
         #[cfg(feature = "ailake-cdc")]
         "ailake-cdc" => {
-            let cfg: AilakeCdcConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: AilakeCdcConfig = deserialize_config(&node.config)?;
             Box::new(AilakeCdcSource::connect(&cfg).await?)
         }
         other => match ConnectorRegistry::find_source_builder(other) {
@@ -364,96 +378,96 @@ pub fn validate_sink_config(node: &NodeSpec) -> anyhow::Result<()> {
     validate_config_limits(&node.config)?;
     match node.connector.as_str() {
         "postgres" => {
-            let _: PostgresConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let _: PostgresConnectorConfig = deserialize_config(&node.config)?;
         }
         "sqlite" => {
-            let _: SqliteConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let _: SqliteConnectorConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "mongodb")]
         "mongodb" => {
-            let _: MongoConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let _: MongoConnectorConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "mysql")]
         "mysql" => {
-            let _: MySqlConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let _: MySqlConnectorConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "odbc")]
         "odbc" => {
-            let _: OdbcConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let _: OdbcConnectorConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "milvus")]
         "milvus" => {
-            let _: MilvusConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let _: MilvusConnectorConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "qdrant")]
         "qdrant" => {
-            let _: QdrantConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let _: QdrantConnectorConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "lancedb")]
         "lancedb" => {
-            let _: LanceDbConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let _: LanceDbConnectorConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "pgvector")]
         "pgvector" => {
-            let _: PgVectorConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let _: PgVectorConnectorConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "pinecone")]
         "pinecone" => {
-            let _: PineconeConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let _: PineconeConnectorConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "chromadb")]
         "chromadb" => {
-            let _: ChromaConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let _: ChromaConnectorConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "rest")]
         "webhook" => {
-            let _: WebhookSinkConfig = serde_json::from_value(node.config.clone())?;
+            let _: WebhookSinkConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "deltalake")]
         "deltalake" => {
-            let _: DeltaConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let _: DeltaConnectorConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "iceberg")]
         "iceberg" => {
-            let _: IcebergConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let _: IcebergConnectorConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "parquet")]
         "parquet" => {
-            let _: ParquetConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let _: ParquetConnectorConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "ailake")]
         "ailake" => {
-            let _: AilakeConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let _: AilakeConnectorConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "csv")]
         "csv" => {
-            let _: CsvConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let _: CsvConnectorConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "clickhouse")]
         "clickhouse" => {
-            let _: ClickHouseConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let _: ClickHouseConnectorConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "duckdb")]
         "duckdb" => {
-            let _: DuckdbConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let _: DuckdbConnectorConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "kafka")]
         "kafka" => {
-            let _: KafkaConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let _: KafkaConnectorConfig = deserialize_config(&node.config)?;
         }
         #[cfg(feature = "redis")]
         "redis" => {
-            let cfg: RedisConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: RedisConnectorConfig = deserialize_config(&node.config)?;
             cfg.validate()?;
         }
         #[cfg(feature = "nats")]
         "nats" => {
-            let cfg: NatsConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: NatsConnectorConfig = deserialize_config(&node.config)?;
             cfg.validate()?;
         }
         #[cfg(feature = "rabbitmq")]
         "rabbitmq" => {
-            let cfg: RabbitmqConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: RabbitmqConnectorConfig = deserialize_config(&node.config)?;
             cfg.validate()?;
         }
         other => match ConnectorRegistry::find_sink_builder(other) {
@@ -504,46 +518,46 @@ pub async fn build_sink(
     let columns: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
     let sink: Box<dyn Sink> = match node.connector.as_str() {
         "postgres" => {
-            let cfg: PostgresConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: PostgresConnectorConfig = deserialize_config(&node.config)?;
             Box::new(PostgresSink::connect(&cfg, schema).await?)
         }
         "sqlite" => {
-            let cfg: SqliteConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: SqliteConnectorConfig = deserialize_config(&node.config)?;
             Box::new(SqliteSink::connect(&cfg, schema).await?)
         }
         #[cfg(feature = "mongodb")]
         "mongodb" => {
-            let cfg: MongoConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: MongoConnectorConfig = deserialize_config(&node.config)?;
             Box::new(MongoSink::connect(&cfg).await?)
         }
         #[cfg(feature = "mysql")]
         "mysql" => {
-            let cfg: MySqlConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: MySqlConnectorConfig = deserialize_config(&node.config)?;
             Box::new(MySqlSink::connect(&cfg, schema).await?)
         }
         #[cfg(feature = "odbc")]
         "odbc" => {
-            let cfg: OdbcConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: OdbcConnectorConfig = deserialize_config(&node.config)?;
             Box::new(OdbcSink::connect(&cfg)?)
         }
         #[cfg(feature = "milvus")]
         "milvus" => {
-            let cfg: MilvusConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: MilvusConnectorConfig = deserialize_config(&node.config)?;
             Box::new(MilvusSink::connect(&cfg).await?)
         }
         #[cfg(feature = "qdrant")]
         "qdrant" => {
-            let cfg: QdrantConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: QdrantConnectorConfig = deserialize_config(&node.config)?;
             Box::new(QdrantSink::connect(&cfg)?)
         }
         #[cfg(feature = "lancedb")]
         "lancedb" => {
-            let cfg: LanceDbConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: LanceDbConnectorConfig = deserialize_config(&node.config)?;
             Box::new(LanceDbSink::connect(&cfg).await?)
         }
         #[cfg(feature = "pgvector")]
         "pgvector" => {
-            let cfg: PgVectorConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: PgVectorConnectorConfig = deserialize_config(&node.config)?;
             // `PgVectorSink::connect`'s `columns` are documented as "the
             // non-embedding data columns" — it binds the embedding
             // separately via `rows::extract_embeddings` (a `vector(N)`
@@ -563,72 +577,72 @@ pub async fn build_sink(
         }
         #[cfg(feature = "pinecone")]
         "pinecone" => {
-            let cfg: PineconeConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: PineconeConnectorConfig = deserialize_config(&node.config)?;
             Box::new(PineconeSink::connect(&cfg)?)
         }
         #[cfg(feature = "chromadb")]
         "chromadb" => {
-            let cfg: ChromaConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: ChromaConnectorConfig = deserialize_config(&node.config)?;
             Box::new(ChromaSink::connect(&cfg).await?)
         }
         #[cfg(feature = "rest")]
         "webhook" => {
-            let cfg: WebhookSinkConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: WebhookSinkConfig = deserialize_config(&node.config)?;
             Box::new(WebhookSink::connect(&cfg)?)
         }
         #[cfg(feature = "deltalake")]
         "deltalake" => {
-            let cfg: DeltaConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: DeltaConnectorConfig = deserialize_config(&node.config)?;
             Box::new(DeltaSink::connect(&cfg)?)
         }
         #[cfg(feature = "iceberg")]
         "iceberg" => {
-            let cfg: IcebergConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: IcebergConnectorConfig = deserialize_config(&node.config)?;
             Box::new(IcebergSink::connect(&cfg)?)
         }
         #[cfg(feature = "parquet")]
         "parquet" => {
-            let cfg: ParquetConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: ParquetConnectorConfig = deserialize_config(&node.config)?;
             Box::new(ParquetSink::connect(&cfg)?)
         }
         #[cfg(feature = "ailake")]
         "ailake" => {
-            let cfg: AilakeConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: AilakeConnectorConfig = deserialize_config(&node.config)?;
             Box::new(AilakeSink::connect(&cfg)?)
         }
         #[cfg(feature = "csv")]
         "csv" => {
-            let cfg: CsvConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: CsvConnectorConfig = deserialize_config(&node.config)?;
             Box::new(CsvSink::connect(&cfg)?)
         }
         #[cfg(feature = "clickhouse")]
         "clickhouse" => {
-            let cfg: ClickHouseConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: ClickHouseConnectorConfig = deserialize_config(&node.config)?;
             Box::new(ClickHouseSink::connect(&cfg, &columns).await?)
         }
         #[cfg(feature = "duckdb")]
         "duckdb" => {
-            let cfg: DuckdbConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: DuckdbConnectorConfig = deserialize_config(&node.config)?;
             Box::new(DuckdbSink::connect(&cfg, schema).await?)
         }
         #[cfg(feature = "kafka")]
         "kafka" => {
-            let cfg: KafkaConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: KafkaConnectorConfig = deserialize_config(&node.config)?;
             Box::new(KafkaSink::connect(&cfg)?)
         }
         #[cfg(feature = "redis")]
         "redis" => {
-            let cfg: RedisConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: RedisConnectorConfig = deserialize_config(&node.config)?;
             Box::new(RedisSink::connect(&cfg).await?)
         }
         #[cfg(feature = "nats")]
         "nats" => {
-            let cfg: NatsConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: NatsConnectorConfig = deserialize_config(&node.config)?;
             Box::new(NatsSink::connect(&cfg).await?)
         }
         #[cfg(feature = "rabbitmq")]
         "rabbitmq" => {
-            let cfg: RabbitmqConnectorConfig = serde_json::from_value(node.config.clone())?;
+            let cfg: RabbitmqConnectorConfig = deserialize_config(&node.config)?;
             Box::new(RabbitmqSink::connect(&cfg).await?)
         }
         other => match ConnectorRegistry::find_sink_builder(other) {
@@ -657,6 +671,19 @@ mod tests {
             nested = serde_json::json!({"nested": nested});
         }
         assert!(validate_config_limits(&nested).is_err());
+    }
+
+    #[test]
+    fn typed_config_parser_checks_encoded_size_and_shape() {
+        let valid = serde_json::json!({"uri": "sqlite://local"});
+        let parsed: serde_json::Value = deserialize_config(&valid).unwrap();
+        assert_eq!(parsed, valid);
+        // Escaping expands the JSON beyond the byte limit despite fitting the
+        // structural budget. Reject it before typed deserialization.
+        let expanded = serde_json::json!({"token": "\u{0001}".repeat(50_000)});
+        assert!(validate_config_limits(&expanded).is_ok());
+        assert!(deserialize_config::<serde_json::Value>(&expanded).is_err());
+        assert!(deserialize_config::<PostgresConnectorConfig>(&serde_json::json!({})).is_err());
     }
 
     // --- Plugin builder fallback (ROADMAP.md Fase 12 Bloco 3 prerequisite) ---

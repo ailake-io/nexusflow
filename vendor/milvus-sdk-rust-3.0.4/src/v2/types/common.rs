@@ -1,0 +1,4688 @@
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License. You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//! Common V2 configuration, data, function, identifier, and metric types.
+
+use crate::proto::{common, schema};
+use crate::v2::error::{Error, Result};
+use crate::v2::types::dql::{BoostRerank, DecayRerank, ModelRerank, RRFRerank, WeightedRerank};
+use std::collections::{BTreeMap, HashMap};
+use std::time::Duration;
+
+///////////////////////////////////////////////////////////////////////////////
+// ConsistencyLevel
+///////////////////////////////////////////////////////////////////////////////
+/// Consistency guarantee used by query and search operations.
+///
+/// See also:
+/// - [`crate::v2::request::dql::QueryRequest::builder`], [`crate::v2::request::dql::SearchRequest::builder`],
+///   and [`crate::v2::request::dql::GetRequest::builder`] to set consistency on a read request.
+/// - [`crate::v2::request::collection::CreateCollectionRequest::builder`] to set the collection default.
+/// - [`crate::v2::ClientV2::query`] and [`crate::v2::ClientV2::search`] for the client operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ConsistencyLevel {
+    /// Reads see all data committed before the request starts. Strongest guarantee, highest latency.
+    Strong,
+    /// Uses a per-session timestamp shared across operations so a read sees data written earlier by
+    /// the same session.
+    Session,
+    /// Reads tolerate staleness within a bounded time window, trading a little recency for lower
+    /// latency.
+    Bounded,
+    /// Reads may see data from some time in the past. Weakest guarantee, lowest latency.
+    Eventually,
+    #[deprecated(
+        note = "Prefer leaving the consistency level unset so the request uses the default."
+    )]
+    /// Lets the server apply its own configured consistency policy when the request carries no
+    /// explicit setting.
+    ///
+    /// Deprecated: the Java SDK removed this value and the Node SDK deprecated it; the proto
+    /// documents that Customized means callers pass their own guarantee_timestamp. Prefer leaving
+    /// the consistency level unset so the request uses the default.
+    Customized,
+}
+
+impl Default for ConsistencyLevel {
+    #[allow(deprecated)]
+    fn default() -> Self {
+        Self::Customized
+    }
+}
+
+impl ConsistencyLevel {
+    #[allow(deprecated)]
+    pub(crate) fn into_proto(self) -> common::ConsistencyLevel {
+        match self {
+            Self::Strong => common::ConsistencyLevel::Strong,
+            Self::Session => common::ConsistencyLevel::Session,
+            Self::Bounded => common::ConsistencyLevel::Bounded,
+            Self::Eventually => common::ConsistencyLevel::Eventually,
+            Self::Customized => common::ConsistencyLevel::Customized,
+        }
+    }
+
+    #[allow(deprecated)]
+    pub(crate) fn from_proto(value: i32) -> Self {
+        match common::ConsistencyLevel::try_from(value).ok() {
+            Some(common::ConsistencyLevel::Strong) => Self::Strong,
+            Some(common::ConsistencyLevel::Session) => Self::Session,
+            Some(common::ConsistencyLevel::Bounded) => Self::Bounded,
+            Some(common::ConsistencyLevel::Eventually) => Self::Eventually,
+            Some(common::ConsistencyLevel::Customized) | None => Self::Customized,
+        }
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// MetricType
+///////////////////////////////////////////////////////////////////////////////
+/// Distance or similarity metric used by vector indexes and searches.
+///
+/// See also:
+/// - [`crate::v2::types::IndexParam::metric_type`] to select the metric when building an index.
+/// - [`crate::v2::request::index::CreateIndexRequest::builder`] to attach the metric to an index.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MetricType {
+    /// Lets the Milvus server determine the metric type.
+    #[default]
+    Default,
+    /// Euclidean distance; Milvus returns the squared value `sum((a_i - b_i)^2)`. Smaller is more
+    /// similar.
+    L2,
+    /// Inner product, `sum(a_i * b_i)`. Larger is more similar.
+    Ip,
+    /// Cosine similarity, `cos(a, b)`. Larger is more similar.
+    Cosine,
+    /// Hamming distance, the number of positions at which two binary vectors differ. Smaller is
+    /// more similar.
+    Hamming,
+    /// Jaccard distance, `1 - |A ∩ B| / |A ∪ B|`. Smaller is more similar.
+    Jaccard,
+    /// MinHash Jaccard distance over binary MinHash signatures, `1 - estimated similarity`.
+    /// Smaller is more similar.
+    MhJaccard,
+    /// BM25 relevance score for full-text search over sparse vectors.
+    Bm25,
+    /// MaxSim Cosine, used to search embedding lists stored in array-of-structs vector fields.
+    MaxSimCosine,
+    /// MaxSim Inner Product, used to search embedding lists stored in array-of-structs vector
+    /// fields.
+    MaxSimIp,
+    /// MaxSim L2, used to search embedding lists stored in array-of-structs vector fields.
+    MaxSimL2,
+    /// MaxSim Jaccard, used to search embedding lists stored in array-of-structs vector fields.
+    MaxSimJaccard,
+    /// MaxSim Hamming, used to search embedding lists stored in array-of-structs vector fields.
+    MaxSimHamming,
+}
+
+impl MetricType {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "DEFAULT",
+            Self::L2 => "L2",
+            Self::Ip => "IP",
+            Self::Cosine => "COSINE",
+            Self::Hamming => "HAMMING",
+            Self::Jaccard => "JACCARD",
+            Self::MhJaccard => "MHJACCARD",
+            Self::Bm25 => "BM25",
+            Self::MaxSimCosine => "MAX_SIM_COSINE",
+            Self::MaxSimIp => "MAX_SIM_IP",
+            Self::MaxSimL2 => "MAX_SIM_L2",
+            Self::MaxSimJaccard => "MAX_SIM_JACCARD",
+            Self::MaxSimHamming => "MAX_SIM_HAMMING",
+        }
+    }
+
+    pub(crate) fn from_str(value: &str) -> Self {
+        match value.to_ascii_uppercase().as_str() {
+            "DEFAULT" | "INVALID" => Self::Default,
+            "L2" => Self::L2,
+            "IP" => Self::Ip,
+            "COSINE" => Self::Cosine,
+            "HAMMING" => Self::Hamming,
+            "JACCARD" => Self::Jaccard,
+            "MHJACCARD" => Self::MhJaccard,
+            "BM25" => Self::Bm25,
+            "MAX_SIM" | "MAX_SIM_COSINE" => Self::MaxSimCosine,
+            "MAX_SIM_IP" => Self::MaxSimIp,
+            "MAX_SIM_L2" => Self::MaxSimL2,
+            "MAX_SIM_JACCARD" => Self::MaxSimJaccard,
+            "MAX_SIM_HAMMING" => Self::MaxSimHamming,
+            _ => Self::Default,
+        }
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// DataType
+///////////////////////////////////////////////////////////////////////////////
+/// Milvus field data type.
+///
+/// See also:
+/// - [`crate::v2::types::FieldSchema::data_type`] to declare a field in a collection schema.
+/// - [`crate::v2::types::FieldData`] for the corresponding in-memory column values.
+/// - [`crate::v2::ClientV2::create_collection`] to build a collection from a schema.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DataType {
+    #[default]
+    /// Unspecified or unrecognized field type.
+    Unknown,
+    /// Boolean value, `true` or `false`.
+    Bool,
+    /// 8-bit signed integer.
+    Int8,
+    /// 16-bit signed integer.
+    Int16,
+    /// 32-bit signed integer.
+    Int32,
+    /// 64-bit signed integer.
+    Int64,
+    /// 32-bit IEEE 754 floating-point number.
+    Float,
+    /// 64-bit IEEE 754 floating-point number.
+    Double,
+    /// Variable-length UTF-8 string. Constrain its size with `max_length`.
+    VarChar,
+    /// JSON document stored as-is.
+    Json,
+    /// Geometry value used by spatial queries (WKT-encoded).
+    Geometry,
+    /// Full-text searchable text scalar field.
+    ///
+    /// Values are UTF-8 strings that typically feed a server-side BM25
+    /// function. Unlike [`DataType::VarChar`] there is no `max_length`
+    /// constraint.
+    Text,
+    /// Timestamp with timezone.
+    Timestamptz,
+    /// Array of scalar elements, all with the same element type.
+    Array,
+    /// Nested struct of named sub-fields.
+    Struct,
+    /// Dense vector of 32-bit floats.
+    FloatVector,
+    /// Dense binary vector stored as packed bytes.
+    BinaryVector,
+    /// Dense vector of IEEE 754 half-precision floats.
+    Float16Vector,
+    /// Dense vector of bfloat16 values.
+    BFloat16Vector,
+    /// Sparse vector stored as a map of dimension index to float value.
+    SparseFloatVector,
+    /// Dense vector of 8-bit signed integers.
+    Int8Vector,
+}
+
+impl DataType {
+    pub(crate) fn into_proto(self) -> schema::DataType {
+        match self {
+            Self::Unknown => schema::DataType::None,
+            Self::Bool => schema::DataType::Bool,
+            Self::Int8 => schema::DataType::Int8,
+            Self::Int16 => schema::DataType::Int16,
+            Self::Int32 => schema::DataType::Int32,
+            Self::Int64 => schema::DataType::Int64,
+            Self::Float => schema::DataType::Float,
+            Self::Double => schema::DataType::Double,
+            Self::VarChar => schema::DataType::VarChar,
+            Self::Json => schema::DataType::Json,
+            Self::Geometry => schema::DataType::Geometry,
+            Self::Text => schema::DataType::Text,
+            Self::Timestamptz => schema::DataType::Timestamptz,
+            Self::Array => schema::DataType::Array,
+            Self::Struct => schema::DataType::Struct,
+            Self::FloatVector => schema::DataType::FloatVector,
+            Self::BinaryVector => schema::DataType::BinaryVector,
+            Self::Float16Vector => schema::DataType::Float16Vector,
+            Self::BFloat16Vector => schema::DataType::BFloat16Vector,
+            Self::SparseFloatVector => schema::DataType::SparseFloatVector,
+            Self::Int8Vector => schema::DataType::Int8Vector,
+        }
+    }
+
+    pub(crate) fn try_from_proto(value: schema::DataType) -> Result<Self> {
+        Ok(match value {
+            schema::DataType::None => Self::Unknown,
+            schema::DataType::Bool => Self::Bool,
+            schema::DataType::Int8 => Self::Int8,
+            schema::DataType::Int16 => Self::Int16,
+            schema::DataType::Int32 => Self::Int32,
+            schema::DataType::Int64 => Self::Int64,
+            schema::DataType::Float => Self::Float,
+            schema::DataType::Double => Self::Double,
+            schema::DataType::VarChar | schema::DataType::String => Self::VarChar,
+            schema::DataType::Json => Self::Json,
+            schema::DataType::Geometry => Self::Geometry,
+            schema::DataType::Text => Self::Text,
+            schema::DataType::Timestamptz => Self::Timestamptz,
+            schema::DataType::Array => Self::Array,
+            schema::DataType::Struct => Self::Struct,
+            schema::DataType::FloatVector => Self::FloatVector,
+            schema::DataType::BinaryVector => Self::BinaryVector,
+            schema::DataType::Float16Vector => Self::Float16Vector,
+            schema::DataType::BFloat16Vector => Self::BFloat16Vector,
+            schema::DataType::SparseFloatVector => Self::SparseFloatVector,
+            schema::DataType::Int8Vector => Self::Int8Vector,
+            _ => {
+                return Err(Error::conversion(format!(
+                    "unsupported protobuf data type {value:?}"
+                )))
+            }
+        })
+    }
+
+    pub(crate) fn is_vector(self) -> bool {
+        matches!(
+            self,
+            Self::FloatVector
+                | Self::BinaryVector
+                | Self::Float16Vector
+                | Self::BFloat16Vector
+                | Self::SparseFloatVector
+                | Self::Int8Vector
+        )
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// FunctionType
+///////////////////////////////////////////////////////////////////////////////
+/// Type of server-side schema function.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FunctionType {
+    #[default]
+    /// Unspecified or unrecognized function type.
+    Unknown,
+    /// BM25 ranking function that turns an input text field into a sparse vector output field.
+    Bm25,
+    /// Text-embedding function that turns an input text field into a dense vector output field.
+    TextEmbedding,
+    /// Reranking function that applies a configured reranking strategy to a candidate set.
+    Rerank,
+    /// MinHash function that turns an input text field into a binary MinHash signature.
+    MinHash,
+    /// Molecular-fingerprint function that turns an input SMILES field into a binary fingerprint.
+    MolFingerprint,
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Function
+///////////////////////////////////////////////////////////////////////////////
+/// Server-side function attached to a collection schema.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Function {
+    pub(crate) id: i64,
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) function_type: FunctionType,
+    pub(crate) input_fields: Vec<String>,
+    pub(crate) output_fields: Vec<String>,
+    pub(crate) input_field_ids: Vec<i64>,
+    pub(crate) output_field_ids: Vec<i64>,
+    pub(crate) params: HashMap<String, String>,
+}
+
+impl Function {
+    /// Creates a value initialized with its SDK defaults.
+    pub fn new() -> Self {
+        Self {
+            id: 0,
+            name: String::new(),
+            description: String::new(),
+            function_type: FunctionType::Unknown,
+            input_fields: Vec::new(),
+            output_fields: Vec::new(),
+            input_field_ids: Vec::new(),
+            output_field_ids: Vec::new(),
+            params: HashMap::new(),
+        }
+    }
+
+    /// Sets the name and returns the updated value.
+    pub fn name(mut self, value: impl Into<String>) -> Self {
+        self.name = value.into();
+        self
+    }
+
+    /// Sets the name and returns this value for further mutation.
+    pub fn set_name(&mut self, value: impl Into<String>) -> &mut Self {
+        self.name = value.into();
+        self
+    }
+
+    /// Returns the configured name.
+    pub fn get_name(&self) -> &str {
+        &self.name
+    }
+
+    /// Sets the description and returns the updated value.
+    pub fn description(mut self, value: impl Into<String>) -> Self {
+        self.description = value.into();
+        self
+    }
+
+    /// Sets the description and returns this value for further mutation.
+    pub fn set_description(&mut self, value: impl Into<String>) -> &mut Self {
+        self.description = value.into();
+        self
+    }
+
+    /// Returns the configured description.
+    pub fn get_description(&self) -> &str {
+        &self.description
+    }
+
+    /// Sets the function type and returns the updated value.
+    pub fn function_type(mut self, value: FunctionType) -> Self {
+        self.function_type = value;
+        self
+    }
+
+    /// Sets the function type and returns this value for further mutation.
+    pub fn set_function_type(&mut self, value: FunctionType) -> &mut Self {
+        self.function_type = value;
+        self
+    }
+
+    /// Returns the configured function type.
+    pub fn get_function_type(&self) -> FunctionType {
+        self.function_type
+    }
+
+    /// Sets the input fields and returns the updated value.
+    pub fn input_fields(mut self, values: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.input_fields = values.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Sets the input fields and returns this value for further mutation.
+    pub fn set_input_fields(
+        &mut self,
+        values: impl IntoIterator<Item = impl Into<String>>,
+    ) -> &mut Self {
+        self.input_fields = values.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Returns the configured input fields.
+    pub fn get_input_fields(&self) -> &[String] {
+        &self.input_fields
+    }
+
+    /// Sets the output fields and returns the updated value.
+    pub fn output_fields(mut self, values: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.output_fields = values.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Sets the output fields and returns this value for further mutation.
+    pub fn set_output_fields(
+        &mut self,
+        values: impl IntoIterator<Item = impl Into<String>>,
+    ) -> &mut Self {
+        self.output_fields = values.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Returns the configured output fields.
+    pub fn get_output_fields(&self) -> &[String] {
+        &self.output_fields
+    }
+
+    /// Returns the input field ids assigned by the server.
+    ///
+    /// This is populated when decoding a `describe_collection` response and
+    /// cannot be set when building a create-collection request; the server
+    /// assigns function field ids at collection creation.
+    pub fn get_input_field_ids(&self) -> &[i64] {
+        &self.input_field_ids
+    }
+
+    /// Returns the output field ids assigned by the server.
+    ///
+    /// This is populated when decoding a `describe_collection` response and
+    /// cannot be set when building a create-collection request; the server
+    /// assigns function field ids at collection creation.
+    pub fn get_output_field_ids(&self) -> &[i64] {
+        &self.output_field_ids
+    }
+
+    /// Returns the function id assigned by the server.
+    ///
+    /// This is populated when decoding a `describe_collection` response and
+    /// cannot be set when building a create-collection request; the server
+    /// assigns function ids at collection creation.
+    pub fn get_id(&self) -> i64 {
+        self.id
+    }
+
+    /// Sets the params and returns the updated value.
+    pub fn params(mut self, value: HashMap<String, String>) -> Self {
+        self.params = value;
+        self
+    }
+
+    /// Sets the params and returns this value for further mutation.
+    pub fn set_params(&mut self, value: HashMap<String, String>) -> &mut Self {
+        self.params = value;
+        self
+    }
+
+    /// Returns the configured params.
+    pub fn get_params(&self) -> &HashMap<String, String> {
+        &self.params
+    }
+
+    /// Adds one input field to the existing values.
+    pub fn add_input_field(mut self, value: impl Into<String>) -> Self {
+        self.input_fields.push(value.into());
+        self
+    }
+
+    /// Adds one output field to the existing values.
+    pub fn add_output_field(mut self, value: impl Into<String>) -> Self {
+        self.output_fields.push(value.into());
+        self
+    }
+
+    /// Sets the param and returns the updated value.
+    pub fn param(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.params.insert(key.into(), value.into());
+        self
+    }
+
+    pub(crate) fn into_proto(self) -> schema::FunctionSchema {
+        schema::FunctionSchema {
+            name: self.name,
+            id: self.id,
+            description: self.description,
+            r#type: match self.function_type {
+                FunctionType::Unknown => schema::FunctionType::Unknown,
+                FunctionType::Bm25 => schema::FunctionType::Bm25,
+                FunctionType::TextEmbedding => schema::FunctionType::TextEmbedding,
+                FunctionType::Rerank => schema::FunctionType::Rerank,
+                FunctionType::MinHash => schema::FunctionType::MinHash,
+                FunctionType::MolFingerprint => schema::FunctionType::MolFingerprint,
+            } as i32,
+            input_field_names: self.input_fields,
+            input_field_ids: self.input_field_ids,
+            output_field_names: self.output_fields,
+            output_field_ids: self.output_field_ids,
+            params: pairs(self.params),
+            ..Default::default()
+        }
+    }
+
+    pub(crate) fn from_proto(value: schema::FunctionSchema) -> Self {
+        Self {
+            id: value.id,
+            name: value.name,
+            description: value.description,
+            function_type: match schema::FunctionType::try_from(value.r#type)
+                .unwrap_or(schema::FunctionType::Unknown)
+            {
+                schema::FunctionType::Bm25 => FunctionType::Bm25,
+                schema::FunctionType::TextEmbedding => FunctionType::TextEmbedding,
+                schema::FunctionType::Rerank => FunctionType::Rerank,
+                schema::FunctionType::MinHash => FunctionType::MinHash,
+                schema::FunctionType::MolFingerprint => FunctionType::MolFingerprint,
+                _ => FunctionType::Unknown,
+            },
+            input_fields: value.input_field_names,
+            output_fields: value.output_field_names,
+            input_field_ids: value.input_field_ids,
+            output_field_ids: value.output_field_ids,
+            params: value.params.into_iter().map(|v| (v.key, v.value)).collect(),
+        }
+    }
+}
+
+impl From<RRFRerank> for Function {
+    fn from(value: RRFRerank) -> Self {
+        value.function
+    }
+}
+
+impl From<WeightedRerank> for Function {
+    fn from(value: WeightedRerank) -> Self {
+        value.function
+    }
+}
+
+impl From<BoostRerank> for Function {
+    fn from(value: BoostRerank) -> Self {
+        value.function
+    }
+}
+
+impl From<DecayRerank> for Function {
+    fn from(value: DecayRerank) -> Self {
+        value.function
+    }
+}
+
+impl From<ModelRerank> for Function {
+    fn from(value: ModelRerank) -> Self {
+        value.function
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Ids
+///////////////////////////////////////////////////////////////////////////////
+/// Primary-key values represented as either integers or strings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Ids {
+    /// Integer primary-key values.
+    Int64(Vec<i64>),
+    /// String primary-key values.
+    VarChar(Vec<String>),
+}
+
+impl Ids {
+    /// Returns the len.
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Int64(values) => values.len(),
+            Self::VarChar(values) => values.len(),
+        }
+    }
+
+    /// Returns whether empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub(crate) fn value_at(&self, index: usize) -> Result<serde_json::Value> {
+        match self {
+            Self::Int64(values) => values.get(index).copied().map(serde_json::Value::from),
+            Self::VarChar(values) => values.get(index).cloned().map(serde_json::Value::from),
+        }
+        .ok_or_else(|| {
+            Error::validation(
+                "index".into(),
+                format!("row index {index} is out of bounds for {} rows", self.len()),
+            )
+        })
+    }
+
+    pub(crate) fn into_json(self) -> serde_json::Value {
+        match self {
+            Self::Int64(values) => {
+                serde_json::Value::Array(values.into_iter().map(serde_json::Value::from).collect())
+            }
+            Self::VarChar(values) => {
+                serde_json::Value::Array(values.into_iter().map(serde_json::Value::from).collect())
+            }
+        }
+    }
+
+    pub(crate) fn append(&mut self, other: Self) -> Result<()> {
+        match (self, other) {
+            (Self::Int64(values), Self::Int64(other)) => values.extend(other),
+            (Self::VarChar(values), Self::VarChar(other)) => values.extend(other),
+            _ => {
+                return Err(Error::MalformedResponse(
+                    "cannot combine search results with different primary-key types".into(),
+                ))
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn is_compatible_with(&self, other: &Self) -> bool {
+        matches!(
+            (self, other),
+            (Self::Int64(_), Self::Int64(_)) | (Self::VarChar(_), Self::VarChar(_))
+        )
+    }
+
+    /// Selects the rows at `keep` positions, preserving their order.
+    pub(crate) fn select(self, keep: &[usize]) -> Self {
+        match self {
+            Self::Int64(values) => Self::Int64(keep.iter().map(|index| values[*index]).collect()),
+            Self::VarChar(values) => {
+                Self::VarChar(keep.iter().map(|index| values[*index].clone()).collect())
+            }
+        }
+    }
+}
+
+impl Default for Ids {
+    fn default() -> Self {
+        Self::Int64(Vec::new())
+    }
+}
+
+impl Ids {
+    pub(crate) fn from_proto(ids: Option<schema::IDs>) -> Result<Self> {
+        match ids.and_then(|ids| ids.id_field) {
+            Some(schema::i_ds::IdField::IntId(values)) => Ok(Self::Int64(values.data)),
+            Some(schema::i_ds::IdField::StrId(values)) => Ok(Self::VarChar(values.data)),
+            Some(schema::i_ds::IdField::UuidId(_)) => Err(Error::MalformedResponse(
+                "uuid primary keys are not supported".into(),
+            )),
+            None => Ok(Self::default()),
+        }
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// FieldData
+///////////////////////////////////////////////////////////////////////////////
+/// Column-oriented field values accepted by DML operations and returned by reads.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum FieldData {
+    /// Boolean values.
+    Bool {
+        /// Field name shared with the collection schema.
+        name: String,
+        /// Values for this field, in row order.
+        values: Vec<bool>,
+    },
+    /// 8-bit signed integer values.
+    Int8 {
+        /// Field name shared with the collection schema.
+        name: String,
+        /// Values for this field, in row order.
+        values: Vec<i8>,
+    },
+    /// 16-bit signed integer values.
+    Int16 {
+        /// Field name shared with the collection schema.
+        name: String,
+        /// Values for this field, in row order.
+        values: Vec<i16>,
+    },
+    /// 32-bit signed integer values.
+    Int32 {
+        /// Field name shared with the collection schema.
+        name: String,
+        /// Values for this field, in row order.
+        values: Vec<i32>,
+    },
+    /// 64-bit signed integer values.
+    Int64 {
+        /// Field name shared with the collection schema.
+        name: String,
+        /// Values for this field, in row order.
+        values: Vec<i64>,
+    },
+    /// 32-bit floating-point values.
+    Float {
+        /// Field name shared with the collection schema.
+        name: String,
+        /// Values for this field, in row order.
+        values: Vec<f32>,
+    },
+    /// 64-bit floating-point values.
+    Double {
+        /// Field name shared with the collection schema.
+        name: String,
+        /// Values for this field, in row order.
+        values: Vec<f64>,
+    },
+    /// Variable-length UTF-8 string values.
+    VarChar {
+        /// Field name shared with the collection schema.
+        name: String,
+        /// Values for this field, in row order.
+        values: Vec<String>,
+    },
+    /// JSON document values.
+    Json {
+        /// Field name shared with the collection schema.
+        name: String,
+        /// Values for this field, in row order.
+        values: Vec<serde_json::Value>,
+    },
+    /// Geometry values encoded as WKT strings.
+    Geometry {
+        /// Field name shared with the collection schema.
+        name: String,
+        /// Values for this field, in row order.
+        values: Vec<String>,
+    },
+    /// Timestamp-with-timezone values.
+    Timestamptz {
+        /// Field name shared with the collection schema.
+        name: String,
+        /// Values for this field, in row order.
+        values: Vec<String>,
+    },
+    /// Array of boolean elements.
+    ArrayBool {
+        /// Field name shared with the collection schema.
+        name: String,
+        /// Values for this field, in row order.
+        values: Vec<Vec<bool>>,
+    },
+    /// Array of 8-bit signed integer elements.
+    ArrayInt8 {
+        /// Field name shared with the collection schema.
+        name: String,
+        /// Values for this field, in row order.
+        values: Vec<Vec<i8>>,
+    },
+    /// Array of 16-bit signed integer elements.
+    ArrayInt16 {
+        /// Field name shared with the collection schema.
+        name: String,
+        /// Values for this field, in row order.
+        values: Vec<Vec<i16>>,
+    },
+    /// Array of 32-bit signed integer elements.
+    ArrayInt32 {
+        /// Field name shared with the collection schema.
+        name: String,
+        /// Values for this field, in row order.
+        values: Vec<Vec<i32>>,
+    },
+    /// Array of 64-bit signed integer elements.
+    ArrayInt64 {
+        /// Field name shared with the collection schema.
+        name: String,
+        /// Values for this field, in row order.
+        values: Vec<Vec<i64>>,
+    },
+    /// Array of 32-bit floating-point elements.
+    ArrayFloat {
+        /// Field name shared with the collection schema.
+        name: String,
+        /// Values for this field, in row order.
+        values: Vec<Vec<f32>>,
+    },
+    /// Array of 64-bit floating-point elements.
+    ArrayDouble {
+        /// Field name shared with the collection schema.
+        name: String,
+        /// Values for this field, in row order.
+        values: Vec<Vec<f64>>,
+    },
+    /// Array of UTF-8 string elements.
+    ArrayVarChar {
+        /// Field name shared with the collection schema.
+        name: String,
+        /// Values for this field, in row order.
+        values: Vec<Vec<String>>,
+    },
+    /// Struct values, each a list of named sub-field values.
+    Struct {
+        /// Field name shared with the collection schema.
+        name: String,
+        /// Values for this field, in row order.
+        values: Vec<Vec<StructValue>>,
+    },
+    /// Dense float vectors, one vector per row.
+    FloatVector {
+        /// Field name shared with the collection schema.
+        name: String,
+        /// Values for this field, in row order.
+        values: Vec<Vec<f32>>,
+    },
+    /// Dense binary vectors stored as packed bytes, one vector per row.
+    BinaryVector {
+        /// Field name shared with the collection schema.
+        name: String,
+        /// Values for this field, in row order.
+        values: Vec<Vec<u8>>,
+    },
+    /// Dense half-precision float vectors, one vector per row.
+    Float16Vector {
+        /// Field name shared with the collection schema.
+        name: String,
+        /// Values for this field, in row order.
+        values: Vec<Vec<u16>>,
+    },
+    /// Dense bfloat16 vectors, one vector per row.
+    BFloat16Vector {
+        /// Field name shared with the collection schema.
+        name: String,
+        /// Values for this field, in row order.
+        values: Vec<Vec<u16>>,
+    },
+    /// Sparse float vectors, one per row.
+    SparseFloatVector {
+        /// Field name shared with the collection schema.
+        name: String,
+        /// Values for this field, in row order.
+        values: Vec<SparseVector>,
+    },
+    /// Dense int8 vectors, one vector per row.
+    Int8Vector {
+        /// Field name shared with the collection schema.
+        name: String,
+        /// Values for this field, in row order.
+        values: Vec<Vec<i8>>,
+    },
+    /// A nullable field value paired with a per-row validity bitmap.
+    Nullable {
+        /// Wrapped field data.
+        data: Box<FieldData>,
+        /// Validity bitmap corresponding to `data`.
+        valid_data: Vec<bool>,
+    },
+}
+
+impl FieldData {
+    /// Creates a [`FieldData::Bool`] column for `name` with the given row values.
+    pub fn boolean(name: impl Into<String>, values: Vec<bool>) -> Self {
+        Self::Bool {
+            name: name.into(),
+            values,
+        }
+    }
+
+    /// Creates a [`FieldData::Int8`] column for `name` with the given row values.
+    pub fn int8(name: impl Into<String>, values: Vec<i8>) -> Self {
+        Self::Int8 {
+            name: name.into(),
+            values,
+        }
+    }
+
+    /// Creates a [`FieldData::Int16`] column for `name` with the given row values.
+    pub fn int16(name: impl Into<String>, values: Vec<i16>) -> Self {
+        Self::Int16 {
+            name: name.into(),
+            values,
+        }
+    }
+
+    /// Creates a [`FieldData::Int32`] column for `name` with the given row values.
+    pub fn int32(name: impl Into<String>, values: Vec<i32>) -> Self {
+        Self::Int32 {
+            name: name.into(),
+            values,
+        }
+    }
+
+    /// Creates a [`FieldData::Int64`] column for `name` with the given row values.
+    pub fn int64(name: impl Into<String>, values: Vec<i64>) -> Self {
+        Self::Int64 {
+            name: name.into(),
+            values,
+        }
+    }
+
+    /// Creates a [`FieldData::Float`] column for `name` with the given row values.
+    pub fn float(name: impl Into<String>, values: Vec<f32>) -> Self {
+        Self::Float {
+            name: name.into(),
+            values,
+        }
+    }
+
+    /// Creates a [`FieldData::Double`] column for `name` with the given row values.
+    pub fn double(name: impl Into<String>, values: Vec<f64>) -> Self {
+        Self::Double {
+            name: name.into(),
+            values,
+        }
+    }
+
+    /// Creates a [`FieldData::VarChar`] column for `name` with the given row values.
+    pub fn varchar(name: impl Into<String>, values: Vec<String>) -> Self {
+        Self::VarChar {
+            name: name.into(),
+            values,
+        }
+    }
+
+    /// Creates a [`FieldData::Json`] column for `name` with the given row values.
+    pub fn json(name: impl Into<String>, values: Vec<serde_json::Value>) -> Self {
+        Self::Json {
+            name: name.into(),
+            values,
+        }
+    }
+
+    /// Creates a [`FieldData::Geometry`] column for `name` with the given row values.
+    pub fn geometry(name: impl Into<String>, values: Vec<String>) -> Self {
+        Self::Geometry {
+            name: name.into(),
+            values,
+        }
+    }
+
+    /// Creates a [`FieldData::Timestamptz`] column for `name` with the given row values.
+    pub fn timestamptz(name: impl Into<String>, values: Vec<String>) -> Self {
+        Self::Timestamptz {
+            name: name.into(),
+            values,
+        }
+    }
+
+    /// Creates a [`FieldData::ArrayBool`] column for `name` with the given per-row values.
+    pub fn array_bool(name: impl Into<String>, values: Vec<Vec<bool>>) -> Self {
+        Self::ArrayBool {
+            name: name.into(),
+            values,
+        }
+    }
+
+    /// Creates a [`FieldData::ArrayInt8`] column for `name` with the given per-row values.
+    pub fn array_int8(name: impl Into<String>, values: Vec<Vec<i8>>) -> Self {
+        Self::ArrayInt8 {
+            name: name.into(),
+            values,
+        }
+    }
+
+    /// Creates a [`FieldData::ArrayInt16`] column for `name` with the given per-row values.
+    pub fn array_int16(name: impl Into<String>, values: Vec<Vec<i16>>) -> Self {
+        Self::ArrayInt16 {
+            name: name.into(),
+            values,
+        }
+    }
+
+    /// Creates a [`FieldData::ArrayInt32`] column for `name` with the given per-row values.
+    pub fn array_int32(name: impl Into<String>, values: Vec<Vec<i32>>) -> Self {
+        Self::ArrayInt32 {
+            name: name.into(),
+            values,
+        }
+    }
+
+    /// Creates a [`FieldData::ArrayInt64`] column for `name` with the given per-row values.
+    pub fn array_int64(name: impl Into<String>, values: Vec<Vec<i64>>) -> Self {
+        Self::ArrayInt64 {
+            name: name.into(),
+            values,
+        }
+    }
+
+    /// Creates a [`FieldData::ArrayFloat`] column for `name` with the given per-row values.
+    pub fn array_float(name: impl Into<String>, values: Vec<Vec<f32>>) -> Self {
+        Self::ArrayFloat {
+            name: name.into(),
+            values,
+        }
+    }
+
+    /// Creates a [`FieldData::ArrayDouble`] column for `name` with the given per-row values.
+    pub fn array_double(name: impl Into<String>, values: Vec<Vec<f64>>) -> Self {
+        Self::ArrayDouble {
+            name: name.into(),
+            values,
+        }
+    }
+
+    /// Creates a [`FieldData::ArrayVarChar`] column for `name` with the given per-row values.
+    pub fn array_varchar(name: impl Into<String>, values: Vec<Vec<String>>) -> Self {
+        Self::ArrayVarChar {
+            name: name.into(),
+            values,
+        }
+    }
+
+    /// Creates a [`FieldData::Struct`] column for `name` with the given per-row values.
+    pub fn struct_field(name: impl Into<String>, values: Vec<Vec<StructValue>>) -> Self {
+        Self::Struct {
+            name: name.into(),
+            values,
+        }
+    }
+
+    /// Creates a [`FieldData::FloatVector`] column for `name` with the given per-row vectors.
+    pub fn float_vector(name: impl Into<String>, values: Vec<Vec<f32>>) -> Self {
+        Self::FloatVector {
+            name: name.into(),
+            values,
+        }
+    }
+
+    /// Creates a [`FieldData::BinaryVector`] column for `name` with the given per-row vectors.
+    pub fn binary_vector(name: impl Into<String>, values: Vec<Vec<u8>>) -> Self {
+        Self::BinaryVector {
+            name: name.into(),
+            values,
+        }
+    }
+
+    /// Creates a [`FieldData::Float16Vector`] column for `name` with the given per-row vectors.
+    pub fn float16_vector(name: impl Into<String>, values: Vec<Vec<u16>>) -> Self {
+        Self::Float16Vector {
+            name: name.into(),
+            values,
+        }
+    }
+
+    /// Creates a [`FieldData::BFloat16Vector`] column for `name` with the given per-row vectors.
+    pub fn bfloat16_vector(name: impl Into<String>, values: Vec<Vec<u16>>) -> Self {
+        Self::BFloat16Vector {
+            name: name.into(),
+            values,
+        }
+    }
+
+    /// Creates a [`FieldData::SparseFloatVector`] column for `name` with the given per-row vectors.
+    pub fn sparse_float_vector(name: impl Into<String>, values: Vec<SparseVector>) -> Self {
+        Self::SparseFloatVector {
+            name: name.into(),
+            values,
+        }
+    }
+
+    /// Creates a [`FieldData::Int8Vector`] column for `name` with the given per-row vectors.
+    pub fn int8_vector(name: impl Into<String>, values: Vec<Vec<i8>>) -> Self {
+        Self::Int8Vector {
+            name: name.into(),
+            values,
+        }
+    }
+
+    /// Wraps this field data as a nullable field carrying the given per-row validity bitmap.
+    pub fn with_validity(self, valid_data: Vec<bool>) -> Result<Self> {
+        Self::nullable(self, valid_data)
+    }
+
+    /// Returns the values if this field holds [`FieldData::Bool`], otherwise `None`.
+    pub fn as_bool(&self) -> Option<&[bool]> {
+        match self.inner() {
+            Self::Bool { values, .. } => Some(values),
+            _ => None,
+        }
+    }
+
+    /// Returns the values if this field holds [`FieldData::Int8`], otherwise `None`.
+    pub fn as_int8(&self) -> Option<&[i8]> {
+        match self.inner() {
+            Self::Int8 { values, .. } => Some(values),
+            _ => None,
+        }
+    }
+
+    /// Returns the values if this field holds [`FieldData::Int16`], otherwise `None`.
+    pub fn as_int16(&self) -> Option<&[i16]> {
+        match self.inner() {
+            Self::Int16 { values, .. } => Some(values),
+            _ => None,
+        }
+    }
+
+    /// Returns the values if this field holds [`FieldData::Int32`], otherwise `None`.
+    pub fn as_int32(&self) -> Option<&[i32]> {
+        match self.inner() {
+            Self::Int32 { values, .. } => Some(values),
+            _ => None,
+        }
+    }
+
+    /// Returns the values if this field holds [`FieldData::Int64`], otherwise `None`.
+    pub fn as_int64(&self) -> Option<&[i64]> {
+        match self.inner() {
+            Self::Int64 { values, .. } => Some(values),
+            _ => None,
+        }
+    }
+
+    /// Returns the values if this field holds [`FieldData::Float`], otherwise `None`.
+    pub fn as_float(&self) -> Option<&[f32]> {
+        match self.inner() {
+            Self::Float { values, .. } => Some(values),
+            _ => None,
+        }
+    }
+
+    /// Returns the values if this field holds [`FieldData::Double`], otherwise `None`.
+    pub fn as_double(&self) -> Option<&[f64]> {
+        match self.inner() {
+            Self::Double { values, .. } => Some(values),
+            _ => None,
+        }
+    }
+
+    /// Returns the values if this field holds [`FieldData::VarChar`], otherwise `None`.
+    pub fn as_varchar(&self) -> Option<&[String]> {
+        match self.inner() {
+            Self::VarChar { values, .. } => Some(values),
+            _ => None,
+        }
+    }
+
+    /// Returns the values if this field holds [`FieldData::Json`], otherwise `None`.
+    pub fn as_json(&self) -> Option<&[serde_json::Value]> {
+        match self.inner() {
+            Self::Json { values, .. } => Some(values),
+            _ => None,
+        }
+    }
+
+    /// Returns the values if this field holds [`FieldData::Geometry`], otherwise `None`.
+    pub fn as_geometry(&self) -> Option<&[String]> {
+        match self.inner() {
+            Self::Geometry { values, .. } => Some(values),
+            _ => None,
+        }
+    }
+
+    /// Returns the values if this field holds [`FieldData::Timestamptz`], otherwise `None`.
+    pub fn as_timestamptz(&self) -> Option<&[String]> {
+        match self.inner() {
+            Self::Timestamptz { values, .. } => Some(values),
+            _ => None,
+        }
+    }
+
+    /// Returns the values if this field holds [`FieldData::ArrayBool`], otherwise `None`.
+    pub fn as_array_bool(&self) -> Option<&[Vec<bool>]> {
+        match self.inner() {
+            Self::ArrayBool { values, .. } => Some(values),
+            _ => None,
+        }
+    }
+
+    /// Returns the values if this field holds [`FieldData::ArrayInt8`], otherwise `None`.
+    pub fn as_array_int8(&self) -> Option<&[Vec<i8>]> {
+        match self.inner() {
+            Self::ArrayInt8 { values, .. } => Some(values),
+            _ => None,
+        }
+    }
+
+    /// Returns the values if this field holds [`FieldData::ArrayInt16`], otherwise `None`.
+    pub fn as_array_int16(&self) -> Option<&[Vec<i16>]> {
+        match self.inner() {
+            Self::ArrayInt16 { values, .. } => Some(values),
+            _ => None,
+        }
+    }
+
+    /// Returns the values if this field holds [`FieldData::ArrayInt32`], otherwise `None`.
+    pub fn as_array_int32(&self) -> Option<&[Vec<i32>]> {
+        match self.inner() {
+            Self::ArrayInt32 { values, .. } => Some(values),
+            _ => None,
+        }
+    }
+
+    /// Returns the values if this field holds [`FieldData::ArrayInt64`], otherwise `None`.
+    pub fn as_array_int64(&self) -> Option<&[Vec<i64>]> {
+        match self.inner() {
+            Self::ArrayInt64 { values, .. } => Some(values),
+            _ => None,
+        }
+    }
+
+    /// Returns the values if this field holds [`FieldData::ArrayFloat`], otherwise `None`.
+    pub fn as_array_float(&self) -> Option<&[Vec<f32>]> {
+        match self.inner() {
+            Self::ArrayFloat { values, .. } => Some(values),
+            _ => None,
+        }
+    }
+
+    /// Returns the values if this field holds [`FieldData::ArrayDouble`], otherwise `None`.
+    pub fn as_array_double(&self) -> Option<&[Vec<f64>]> {
+        match self.inner() {
+            Self::ArrayDouble { values, .. } => Some(values),
+            _ => None,
+        }
+    }
+
+    /// Returns the values if this field holds [`FieldData::ArrayVarChar`], otherwise `None`.
+    pub fn as_array_varchar(&self) -> Option<&[Vec<String>]> {
+        match self.inner() {
+            Self::ArrayVarChar { values, .. } => Some(values),
+            _ => None,
+        }
+    }
+
+    /// Returns the values if this field holds [`FieldData::Struct`], otherwise `None`.
+    pub fn as_struct(&self) -> Option<&[Vec<StructValue>]> {
+        match self.inner() {
+            Self::Struct { values, .. } => Some(values),
+            _ => None,
+        }
+    }
+
+    /// Returns the values if this field holds [`FieldData::FloatVector`], otherwise `None`.
+    pub fn as_float_vectors(&self) -> Option<&[Vec<f32>]> {
+        match self.inner() {
+            Self::FloatVector { values, .. } => Some(values),
+            _ => None,
+        }
+    }
+
+    /// Returns the values if this field holds [`FieldData::BinaryVector`], otherwise `None`.
+    pub fn as_binary_vectors(&self) -> Option<&[Vec<u8>]> {
+        match self.inner() {
+            Self::BinaryVector { values, .. } => Some(values),
+            _ => None,
+        }
+    }
+
+    /// Returns the values if this field holds [`FieldData::Float16Vector`], otherwise `None`.
+    pub fn as_float16_vectors(&self) -> Option<&[Vec<u16>]> {
+        match self.inner() {
+            Self::Float16Vector { values, .. } => Some(values),
+            _ => None,
+        }
+    }
+
+    /// Returns the values if this field holds [`FieldData::BFloat16Vector`], otherwise `None`.
+    pub fn as_bfloat16_vectors(&self) -> Option<&[Vec<u16>]> {
+        match self.inner() {
+            Self::BFloat16Vector { values, .. } => Some(values),
+            _ => None,
+        }
+    }
+
+    /// Returns the values if this field holds [`FieldData::SparseFloatVector`], otherwise `None`.
+    pub fn as_sparse_float_vectors(&self) -> Option<&[SparseVector]> {
+        match self.inner() {
+            Self::SparseFloatVector { values, .. } => Some(values),
+            _ => None,
+        }
+    }
+
+    /// Returns the values if this field holds [`FieldData::Int8Vector`], otherwise `None`.
+    pub fn as_int8_vectors(&self) -> Option<&[Vec<i8>]> {
+        match self.inner() {
+            Self::Int8Vector { values, .. } => Some(values),
+            _ => None,
+        }
+    }
+
+    /// Returns the name.
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Bool { name, .. }
+            | Self::Int8 { name, .. }
+            | Self::Int16 { name, .. }
+            | Self::Int32 { name, .. }
+            | Self::Int64 { name, .. }
+            | Self::Float { name, .. }
+            | Self::Double { name, .. }
+            | Self::VarChar { name, .. }
+            | Self::Json { name, .. }
+            | Self::Geometry { name, .. }
+            | Self::Timestamptz { name, .. }
+            | Self::ArrayBool { name, .. }
+            | Self::ArrayInt8 { name, .. }
+            | Self::ArrayInt16 { name, .. }
+            | Self::ArrayInt32 { name, .. }
+            | Self::ArrayInt64 { name, .. }
+            | Self::ArrayFloat { name, .. }
+            | Self::ArrayDouble { name, .. }
+            | Self::ArrayVarChar { name, .. }
+            | Self::Struct { name, .. }
+            | Self::FloatVector { name, .. }
+            | Self::BinaryVector { name, .. }
+            | Self::Float16Vector { name, .. }
+            | Self::BFloat16Vector { name, .. }
+            | Self::SparseFloatVector { name, .. }
+            | Self::Int8Vector { name, .. } => name,
+            Self::Nullable { data, .. } => data.name(),
+        }
+    }
+
+    /// Returns the len.
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Bool { values, .. } => values.len(),
+            Self::Int8 { values, .. } => values.len(),
+            Self::Int16 { values, .. } => values.len(),
+            Self::Int32 { values, .. } => values.len(),
+            Self::Int64 { values, .. } => values.len(),
+            Self::Float { values, .. } => values.len(),
+            Self::Double { values, .. } => values.len(),
+            Self::VarChar { values, .. } => values.len(),
+            Self::Json { values, .. } => values.len(),
+            Self::Geometry { values, .. } => values.len(),
+            Self::Timestamptz { values, .. } => values.len(),
+            Self::ArrayBool { values, .. } => values.len(),
+            Self::ArrayInt8 { values, .. } => values.len(),
+            Self::ArrayInt16 { values, .. } => values.len(),
+            Self::ArrayInt32 { values, .. } => values.len(),
+            Self::ArrayInt64 { values, .. } => values.len(),
+            Self::ArrayFloat { values, .. } => values.len(),
+            Self::ArrayDouble { values, .. } => values.len(),
+            Self::ArrayVarChar { values, .. } => values.len(),
+            Self::Struct { values, .. } => values.len(),
+            Self::FloatVector { values, .. } => values.len(),
+            Self::BinaryVector { values, .. } => values.len(),
+            Self::Float16Vector { values, .. } => values.len(),
+            Self::BFloat16Vector { values, .. } => values.len(),
+            Self::SparseFloatVector { values, .. } => values.len(),
+            Self::Int8Vector { values, .. } => values.len(),
+            Self::Nullable { valid_data, .. } => valid_data.len(),
+        }
+    }
+
+    /// Returns whether empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Returns the valid data.
+    pub fn valid_data(&self) -> Option<&[bool]> {
+        match self {
+            Self::Nullable { valid_data, .. } => Some(valid_data),
+            _ => None,
+        }
+    }
+
+    /// Returns whether null.
+    pub fn is_null(&self, index: usize) -> bool {
+        self.valid_data()
+            .and_then(|values| values.get(index))
+            .is_some_and(|valid| !valid)
+    }
+
+    /// Wraps `data` as a nullable field with the given per-row validity bitmap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Validation`] when the number of valid rows in the
+    /// validity bitmap does not match the number of values in `data`.
+    pub fn nullable(data: FieldData, valid_data: Vec<bool>) -> Result<Self> {
+        let valid_count = valid_data.iter().filter(|valid| **valid).count();
+        if data.len() != valid_count {
+            return Err(Error::validation(
+                data.name().to_owned(),
+                format!(
+                    "nullable data contains {} values but validity bitmap contains {valid_count} valid rows",
+                    data.len()
+                ),
+            ));
+        }
+        Ok(Self::Nullable {
+            data: Box::new(data),
+            valid_data,
+        })
+    }
+
+    /// Returns the inner.
+    pub fn inner(&self) -> &FieldData {
+        match self {
+            Self::Nullable { data, .. } => data,
+            data => data,
+        }
+    }
+
+    pub(crate) fn append(&mut self, other: FieldData) -> Result<()> {
+        let compatible = match (self, other) {
+            (
+                Self::Bool { name, values },
+                Self::Bool {
+                    name: other_name,
+                    values: other,
+                },
+            ) if *name == other_name => {
+                values.extend(other);
+                true
+            }
+            (
+                Self::Int8 { name, values },
+                Self::Int8 {
+                    name: other_name,
+                    values: other,
+                },
+            ) if *name == other_name => {
+                values.extend(other);
+                true
+            }
+            (
+                Self::Int16 { name, values },
+                Self::Int16 {
+                    name: other_name,
+                    values: other,
+                },
+            ) if *name == other_name => {
+                values.extend(other);
+                true
+            }
+            (
+                Self::Int32 { name, values },
+                Self::Int32 {
+                    name: other_name,
+                    values: other,
+                },
+            ) if *name == other_name => {
+                values.extend(other);
+                true
+            }
+            (
+                Self::Int64 { name, values },
+                Self::Int64 {
+                    name: other_name,
+                    values: other,
+                },
+            ) if *name == other_name => {
+                values.extend(other);
+                true
+            }
+            (
+                Self::Float { name, values },
+                Self::Float {
+                    name: other_name,
+                    values: other,
+                },
+            ) if *name == other_name => {
+                values.extend(other);
+                true
+            }
+            (
+                Self::Double { name, values },
+                Self::Double {
+                    name: other_name,
+                    values: other,
+                },
+            ) if *name == other_name => {
+                values.extend(other);
+                true
+            }
+            (
+                Self::VarChar { name, values },
+                Self::VarChar {
+                    name: other_name,
+                    values: other,
+                },
+            ) if *name == other_name => {
+                values.extend(other);
+                true
+            }
+            (
+                Self::Json { name, values },
+                Self::Json {
+                    name: other_name,
+                    values: other,
+                },
+            ) if *name == other_name => {
+                values.extend(other);
+                true
+            }
+            (
+                Self::Geometry { name, values },
+                Self::Geometry {
+                    name: other_name,
+                    values: other,
+                },
+            ) if *name == other_name => {
+                values.extend(other);
+                true
+            }
+            (
+                Self::Timestamptz { name, values },
+                Self::Timestamptz {
+                    name: other_name,
+                    values: other,
+                },
+            ) if *name == other_name => {
+                values.extend(other);
+                true
+            }
+            (
+                Self::ArrayBool { name, values },
+                Self::ArrayBool {
+                    name: other_name,
+                    values: other,
+                },
+            ) if *name == other_name => {
+                values.extend(other);
+                true
+            }
+            (
+                Self::ArrayInt8 { name, values },
+                Self::ArrayInt8 {
+                    name: other_name,
+                    values: other,
+                },
+            ) if *name == other_name => {
+                values.extend(other);
+                true
+            }
+            (
+                Self::ArrayInt16 { name, values },
+                Self::ArrayInt16 {
+                    name: other_name,
+                    values: other,
+                },
+            ) if *name == other_name => {
+                values.extend(other);
+                true
+            }
+            (
+                Self::ArrayInt32 { name, values },
+                Self::ArrayInt32 {
+                    name: other_name,
+                    values: other,
+                },
+            ) if *name == other_name => {
+                values.extend(other);
+                true
+            }
+            (
+                Self::ArrayInt64 { name, values },
+                Self::ArrayInt64 {
+                    name: other_name,
+                    values: other,
+                },
+            ) if *name == other_name => {
+                values.extend(other);
+                true
+            }
+            (
+                Self::ArrayFloat { name, values },
+                Self::ArrayFloat {
+                    name: other_name,
+                    values: other,
+                },
+            ) if *name == other_name => {
+                values.extend(other);
+                true
+            }
+            (
+                Self::ArrayDouble { name, values },
+                Self::ArrayDouble {
+                    name: other_name,
+                    values: other,
+                },
+            ) if *name == other_name => {
+                values.extend(other);
+                true
+            }
+            (
+                Self::ArrayVarChar { name, values },
+                Self::ArrayVarChar {
+                    name: other_name,
+                    values: other,
+                },
+            ) if *name == other_name => {
+                values.extend(other);
+                true
+            }
+            (
+                Self::Struct { name, values },
+                Self::Struct {
+                    name: other_name,
+                    values: other,
+                },
+            ) if *name == other_name => {
+                values.extend(other);
+                true
+            }
+            (
+                Self::FloatVector { name, values },
+                Self::FloatVector {
+                    name: other_name,
+                    values: other,
+                },
+            ) if *name == other_name => {
+                values.extend(other);
+                true
+            }
+            (
+                Self::BinaryVector { name, values },
+                Self::BinaryVector {
+                    name: other_name,
+                    values: other,
+                },
+            ) if *name == other_name => {
+                values.extend(other);
+                true
+            }
+            (
+                Self::Float16Vector { name, values },
+                Self::Float16Vector {
+                    name: other_name,
+                    values: other,
+                },
+            ) if *name == other_name => {
+                values.extend(other);
+                true
+            }
+            (
+                Self::BFloat16Vector { name, values },
+                Self::BFloat16Vector {
+                    name: other_name,
+                    values: other,
+                },
+            ) if *name == other_name => {
+                values.extend(other);
+                true
+            }
+            (
+                Self::SparseFloatVector { name, values },
+                Self::SparseFloatVector {
+                    name: other_name,
+                    values: other,
+                },
+            ) if *name == other_name => {
+                values.extend(other);
+                true
+            }
+            (
+                Self::Int8Vector { name, values },
+                Self::Int8Vector {
+                    name: other_name,
+                    values: other,
+                },
+            ) if *name == other_name => {
+                values.extend(other);
+                true
+            }
+            (
+                Self::Nullable { data, valid_data },
+                Self::Nullable {
+                    data: other_data,
+                    valid_data: other_valid_data,
+                },
+            ) => {
+                data.append(*other_data)?;
+                valid_data.extend(other_valid_data);
+                true
+            }
+            _ => false,
+        };
+        if compatible {
+            Ok(())
+        } else {
+            Err(Error::MalformedResponse(
+                "cannot combine incompatible search output fields".into(),
+            ))
+        }
+    }
+
+    pub(crate) fn is_compatible_with(&self, other: &FieldData) -> bool {
+        match (self, other) {
+            (
+                Self::Nullable { data, .. },
+                Self::Nullable {
+                    data: other_data, ..
+                },
+            ) => data.is_compatible_with(other_data),
+            (Self::Nullable { .. }, _) | (_, Self::Nullable { .. }) => false,
+            _ => {
+                self.name() == other.name()
+                    && self.data_type() == other.data_type()
+                    && self.array_element_type() == other.array_element_type()
+                    && self.dimension() == other.dimension()
+            }
+        }
+    }
+
+    pub(crate) fn value_at(&self, index: usize) -> Result<serde_json::Value> {
+        use serde_json::{json, Value};
+
+        fn value<T: serde::Serialize>(values: &[T], index: usize) -> Result<Value> {
+            values
+                .get(index)
+                .ok_or_else(|| {
+                    Error::validation(
+                        "index".into(),
+                        format!(
+                            "row index {index} is out of bounds for {} rows",
+                            values.len()
+                        ),
+                    )
+                })
+                .and_then(|value| serde_json::to_value(value).map_err(Into::into))
+        }
+
+        match self {
+            Self::Bool { values, .. } => value(values, index),
+            Self::Int8 { values, .. } => value(values, index),
+            Self::Int16 { values, .. } => value(values, index),
+            Self::Int32 { values, .. } => value(values, index),
+            Self::Int64 { values, .. } => value(values, index),
+            Self::Float { values, .. } => value(values, index),
+            Self::Double { values, .. } => value(values, index),
+            Self::VarChar { values, .. } => value(values, index),
+            Self::Json { values, .. } => value(values, index),
+            Self::Geometry { values, .. } => value(values, index),
+            Self::Timestamptz { values, .. } => value(values, index),
+            Self::ArrayBool { values, .. } => value(values, index),
+            Self::ArrayInt8 { values, .. } => value(values, index),
+            Self::ArrayInt16 { values, .. } => value(values, index),
+            Self::ArrayInt32 { values, .. } => value(values, index),
+            Self::ArrayInt64 { values, .. } => value(values, index),
+            Self::ArrayFloat { values, .. } => value(values, index),
+            Self::ArrayDouble { values, .. } => value(values, index),
+            Self::ArrayVarChar { values, .. } => value(values, index),
+            Self::Struct { values, .. } => value(values, index),
+            Self::FloatVector { values, .. } => value(values, index),
+            Self::BinaryVector { values, .. } => value(values, index),
+            Self::Float16Vector { values, .. } => value(values, index),
+            Self::BFloat16Vector { values, .. } => value(values, index),
+            Self::SparseFloatVector { values, .. } => Ok(Value::Object(
+                values
+                    .get(index)
+                    .ok_or_else(|| {
+                        Error::validation(
+                            "index".into(),
+                            format!(
+                                "row index {index} is out of bounds for {} rows",
+                                values.len()
+                            ),
+                        )
+                    })?
+                    .iter()
+                    .map(|(key, value)| (key.to_string(), json!(value)))
+                    .collect(),
+            )),
+            Self::Int8Vector { values, .. } => value(values, index),
+            Self::Nullable { data, valid_data } => {
+                let valid = *valid_data.get(index).ok_or_else(|| {
+                    Error::validation(
+                        "index".into(),
+                        format!(
+                            "row index {index} is out of bounds for {} rows",
+                            valid_data.len()
+                        ),
+                    )
+                })?;
+                if !valid {
+                    return Ok(Value::Null);
+                }
+                let compact_index = valid_data[..index].iter().filter(|valid| **valid).count();
+                data.value_at(compact_index)
+            }
+        }
+    }
+
+    pub(crate) fn data_type(&self) -> DataType {
+        match self {
+            Self::Bool { .. } => DataType::Bool,
+            Self::Int8 { .. } => DataType::Int8,
+            Self::Int16 { .. } => DataType::Int16,
+            Self::Int32 { .. } => DataType::Int32,
+            Self::Int64 { .. } => DataType::Int64,
+            Self::Float { .. } => DataType::Float,
+            Self::Double { .. } => DataType::Double,
+            Self::VarChar { .. } => DataType::VarChar,
+            Self::Json { .. } => DataType::Json,
+            Self::Geometry { .. } => DataType::Geometry,
+            Self::Timestamptz { .. } => DataType::Timestamptz,
+            Self::ArrayBool { .. }
+            | Self::ArrayInt8 { .. }
+            | Self::ArrayInt16 { .. }
+            | Self::ArrayInt32 { .. }
+            | Self::ArrayInt64 { .. }
+            | Self::ArrayFloat { .. }
+            | Self::ArrayDouble { .. }
+            | Self::ArrayVarChar { .. } => DataType::Array,
+            Self::Struct { .. } => DataType::Struct,
+            Self::FloatVector { .. } => DataType::FloatVector,
+            Self::BinaryVector { .. } => DataType::BinaryVector,
+            Self::Float16Vector { .. } => DataType::Float16Vector,
+            Self::BFloat16Vector { .. } => DataType::BFloat16Vector,
+            Self::SparseFloatVector { .. } => DataType::SparseFloatVector,
+            Self::Int8Vector { .. } => DataType::Int8Vector,
+            Self::Nullable { data, .. } => data.data_type(),
+        }
+    }
+
+    pub(crate) fn dimension(&self) -> Option<usize> {
+        match self {
+            Self::FloatVector { values, .. } => values.first().map(Vec::len),
+            Self::Float16Vector { values, .. } => values.first().map(Vec::len),
+            Self::BFloat16Vector { values, .. } => values.first().map(Vec::len),
+            Self::BinaryVector { values, .. } => {
+                values.first().and_then(|value| value.len().checked_mul(8))
+            }
+            Self::Int8Vector { values, .. } => values.first().map(Vec::len),
+            Self::Nullable { data, .. } => data.dimension(),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn array_element_type(&self) -> Option<DataType> {
+        match self {
+            Self::ArrayBool { .. } => Some(DataType::Bool),
+            Self::ArrayInt8 { .. } => Some(DataType::Int8),
+            Self::ArrayInt16 { .. } => Some(DataType::Int16),
+            Self::ArrayInt32 { .. } => Some(DataType::Int32),
+            Self::ArrayInt64 { .. } => Some(DataType::Int64),
+            Self::ArrayFloat { .. } => Some(DataType::Float),
+            Self::ArrayDouble { .. } => Some(DataType::Double),
+            Self::ArrayVarChar { .. } => Some(DataType::VarChar),
+            Self::Nullable { data, .. } => data.array_element_type(),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn validate_value_constraints(&self, field: &schema::FieldSchema) -> Result<()> {
+        match self {
+            Self::Nullable { data, .. } => data.validate_value_constraints(field),
+            Self::VarChar { name, values }
+            | Self::Geometry { name, values }
+            | Self::Timestamptz { name, values } => {
+                if field.data_type != schema::DataType::Text as i32 {
+                    let max_length = field
+                        .type_params
+                        .iter()
+                        .find(|pair| pair.key == "max_length")
+                        .and_then(|pair| pair.value.parse::<usize>().ok());
+                    if let Some(max_length) = max_length {
+                        if values.iter().any(|value| value.len() > max_length) {
+                            return Err(Error::validation(
+                                name.clone(),
+                                format!("string exceeds max_length {max_length}"),
+                            ));
+                        }
+                    }
+                }
+                Ok(())
+            }
+            Self::ArrayBool { name, values } => validate_array_capacity(name, values, field),
+            Self::ArrayInt8 { name, values } => validate_array_capacity(name, values, field),
+            Self::ArrayInt16 { name, values } => validate_array_capacity(name, values, field),
+            Self::ArrayInt32 { name, values } => validate_array_capacity(name, values, field),
+            Self::ArrayInt64 { name, values } => validate_array_capacity(name, values, field),
+            Self::ArrayFloat { name, values } => validate_array_capacity(name, values, field),
+            Self::ArrayDouble { name, values } => validate_array_capacity(name, values, field),
+            Self::ArrayVarChar { name, values } => validate_array_capacity(name, values, field),
+            _ => Ok(()),
+        }
+    }
+
+    pub(crate) fn into_proto(self) -> Result<schema::FieldData> {
+        use schema::{field_data, scalar_field, vector_field};
+        if let Self::Nullable { data, valid_data } = self {
+            let valid_count = valid_data.iter().filter(|valid| **valid).count();
+            if data.len() != valid_count {
+                return Err(Error::validation(
+                    data.name().to_owned(),
+                    "nullable data and validity bitmap have inconsistent lengths".into(),
+                ));
+            }
+            let mut proto = data.into_proto()?;
+            // Prefer the field-specific validity channel and keep the legacy
+            // top-level field for older readers.
+            match proto.field.as_mut() {
+                Some(field_data::Field::Scalars(scalars)) => {
+                    scalars.valid_data = valid_data.clone();
+                }
+                Some(field_data::Field::Vectors(vectors)) => {
+                    vectors.valid_data = valid_data.clone();
+                }
+                _ => {}
+            }
+            proto.valid_data = valid_data;
+            return Ok(proto);
+        }
+        let (name, data_type, field) = match self {
+            Self::Bool { name, values } => (
+                name,
+                schema::DataType::Bool,
+                field_data::Field::Scalars(schema::ScalarField {
+                    valid_data: Vec::new(),
+                    data: Some(scalar_field::Data::BoolData(schema::BoolArray {
+                        data: values,
+                    })),
+                    ..Default::default()
+                }),
+            ),
+            Self::Int8 { name, values } => (
+                name,
+                schema::DataType::Int8,
+                field_data::Field::Scalars(schema::ScalarField {
+                    valid_data: Vec::new(),
+                    data: Some(scalar_field::Data::IntData(schema::IntArray {
+                        data: values.into_iter().map(i32::from).collect(),
+                    })),
+                    ..Default::default()
+                }),
+            ),
+            Self::Int16 { name, values } => (
+                name,
+                schema::DataType::Int16,
+                field_data::Field::Scalars(schema::ScalarField {
+                    valid_data: Vec::new(),
+                    data: Some(scalar_field::Data::IntData(schema::IntArray {
+                        data: values.into_iter().map(i32::from).collect(),
+                    })),
+                    ..Default::default()
+                }),
+            ),
+            Self::Int32 { name, values } => (
+                name,
+                schema::DataType::Int32,
+                field_data::Field::Scalars(schema::ScalarField {
+                    valid_data: Vec::new(),
+                    data: Some(scalar_field::Data::IntData(schema::IntArray {
+                        data: values,
+                    })),
+                    ..Default::default()
+                }),
+            ),
+            Self::Int64 { name, values } => (
+                name,
+                schema::DataType::Int64,
+                field_data::Field::Scalars(schema::ScalarField {
+                    valid_data: Vec::new(),
+                    data: Some(scalar_field::Data::LongData(schema::LongArray {
+                        data: values,
+                    })),
+                    ..Default::default()
+                }),
+            ),
+            Self::Float { name, values } => (
+                name,
+                schema::DataType::Float,
+                field_data::Field::Scalars(schema::ScalarField {
+                    valid_data: Vec::new(),
+                    data: Some(scalar_field::Data::FloatData(schema::FloatArray {
+                        data: values,
+                    })),
+                    ..Default::default()
+                }),
+            ),
+            Self::Double { name, values } => (
+                name,
+                schema::DataType::Double,
+                field_data::Field::Scalars(schema::ScalarField {
+                    valid_data: Vec::new(),
+                    data: Some(scalar_field::Data::DoubleData(schema::DoubleArray {
+                        data: values,
+                    })),
+                    ..Default::default()
+                }),
+            ),
+            Self::VarChar { name, values } => (
+                name,
+                schema::DataType::VarChar,
+                field_data::Field::Scalars(schema::ScalarField {
+                    valid_data: Vec::new(),
+                    data: Some(scalar_field::Data::StringData(schema::StringArray {
+                        data: values,
+                    })),
+                    ..Default::default()
+                }),
+            ),
+            Self::Json { name, values } => (
+                name,
+                schema::DataType::Json,
+                field_data::Field::Scalars(schema::ScalarField {
+                    valid_data: Vec::new(),
+                    data: Some(scalar_field::Data::JsonData(schema::JsonArray {
+                        data: values
+                            .into_iter()
+                            .map(|value| serde_json::to_vec(&value))
+                            .collect::<std::result::Result<Vec<_>, _>>()?,
+                    })),
+                    ..Default::default()
+                }),
+            ),
+            Self::Geometry { name, values } => (
+                name,
+                schema::DataType::Geometry,
+                field_data::Field::Scalars(schema::ScalarField {
+                    valid_data: Vec::new(),
+                    data: Some(scalar_field::Data::GeometryWktData(
+                        schema::GeometryWktArray { data: values },
+                    )),
+                    ..Default::default()
+                }),
+            ),
+            Self::Timestamptz { name, values } => (
+                name,
+                schema::DataType::Timestamptz,
+                field_data::Field::Scalars(schema::ScalarField {
+                    valid_data: Vec::new(),
+                    data: Some(scalar_field::Data::StringData(schema::StringArray {
+                        data: values,
+                    })),
+                    ..Default::default()
+                }),
+            ),
+            Self::ArrayBool { name, values } => (
+                name,
+                schema::DataType::Array,
+                array_proto_field(DataType::Bool, values, |data| {
+                    scalar_field::Data::BoolData(schema::BoolArray {
+                        data,
+                        ..Default::default()
+                    })
+                }),
+            ),
+            Self::ArrayInt8 { name, values } => (
+                name,
+                schema::DataType::Array,
+                array_proto_field(DataType::Int8, values, |data| {
+                    scalar_field::Data::IntData(schema::IntArray {
+                        data: data.into_iter().map(i32::from).collect(),
+                        ..Default::default()
+                    })
+                }),
+            ),
+            Self::ArrayInt16 { name, values } => (
+                name,
+                schema::DataType::Array,
+                array_proto_field(DataType::Int16, values, |data| {
+                    scalar_field::Data::IntData(schema::IntArray {
+                        data: data.into_iter().map(i32::from).collect(),
+                        ..Default::default()
+                    })
+                }),
+            ),
+            Self::ArrayInt32 { name, values } => (
+                name,
+                schema::DataType::Array,
+                array_proto_field(DataType::Int32, values, |data| {
+                    scalar_field::Data::IntData(schema::IntArray {
+                        data,
+                        ..Default::default()
+                    })
+                }),
+            ),
+            Self::ArrayInt64 { name, values } => (
+                name,
+                schema::DataType::Array,
+                array_proto_field(DataType::Int64, values, |data| {
+                    scalar_field::Data::LongData(schema::LongArray {
+                        data,
+                        ..Default::default()
+                    })
+                }),
+            ),
+            Self::ArrayFloat { name, values } => (
+                name,
+                schema::DataType::Array,
+                array_proto_field(DataType::Float, values, |data| {
+                    scalar_field::Data::FloatData(schema::FloatArray {
+                        data,
+                        ..Default::default()
+                    })
+                }),
+            ),
+            Self::ArrayDouble { name, values } => (
+                name,
+                schema::DataType::Array,
+                array_proto_field(DataType::Double, values, |data| {
+                    scalar_field::Data::DoubleData(schema::DoubleArray {
+                        data,
+                        ..Default::default()
+                    })
+                }),
+            ),
+            Self::ArrayVarChar { name, values } => (
+                name,
+                schema::DataType::Array,
+                array_proto_field(DataType::VarChar, values, |data| {
+                    scalar_field::Data::StringData(schema::StringArray {
+                        data,
+                        ..Default::default()
+                    })
+                }),
+            ),
+            Self::Struct { name, .. } => {
+                return Err(Error::validation(
+                    name,
+                    "struct field data requires its collection schema".into(),
+                ))
+            }
+            Self::FloatVector { name, values } => {
+                let dimension = vector_dimension(&name, &values)?;
+                let data = values.into_iter().flatten().collect();
+                (
+                    name,
+                    schema::DataType::FloatVector,
+                    field_data::Field::Vectors(schema::VectorField {
+                        valid_data: Vec::new(),
+                        dim: dimension as i64,
+                        data: Some(vector_field::Data::FloatVector(schema::FloatArray { data })),
+                        ..Default::default()
+                    }),
+                )
+            }
+            Self::BinaryVector { name, values } => {
+                let width = vector_dimension(&name, &values)?;
+                let dimension = width.checked_mul(8).ok_or_else(|| {
+                    Error::validation(name.clone(), "binary vector dimension overflows".into())
+                })?;
+                (
+                    name,
+                    schema::DataType::BinaryVector,
+                    field_data::Field::Vectors(schema::VectorField {
+                        valid_data: Vec::new(),
+                        dim: dimension as i64,
+                        data: Some(vector_field::Data::BinaryVector(
+                            values.into_iter().flatten().collect(),
+                        )),
+                        ..Default::default()
+                    }),
+                )
+            }
+            Self::Float16Vector { name, values } => {
+                let dimension = vector_dimension(&name, &values)?;
+                let data = encode_u16_vectors(values);
+                (
+                    name,
+                    schema::DataType::Float16Vector,
+                    field_data::Field::Vectors(schema::VectorField {
+                        valid_data: Vec::new(),
+                        dim: dimension as i64,
+                        data: Some(vector_field::Data::Float16Vector(data)),
+                        ..Default::default()
+                    }),
+                )
+            }
+            Self::BFloat16Vector { name, values } => {
+                let dimension = vector_dimension(&name, &values)?;
+                let data = encode_u16_vectors(values);
+                (
+                    name,
+                    schema::DataType::BFloat16Vector,
+                    field_data::Field::Vectors(schema::VectorField {
+                        valid_data: Vec::new(),
+                        dim: dimension as i64,
+                        data: Some(vector_field::Data::Bfloat16Vector(data)),
+                        ..Default::default()
+                    }),
+                )
+            }
+            Self::SparseFloatVector { name, values } => {
+                let dimension = values
+                    .iter()
+                    .flat_map(|value| value.keys().copied())
+                    .max()
+                    .map_or(0, |value| i64::from(value) + 1);
+                let contents = values
+                    .into_iter()
+                    .map(|values| encode_sparse_vector(&name, values))
+                    .collect::<Result<_>>()?;
+                (
+                    name,
+                    schema::DataType::SparseFloatVector,
+                    field_data::Field::Vectors(schema::VectorField {
+                        valid_data: Vec::new(),
+                        dim: dimension,
+                        data: Some(vector_field::Data::SparseFloatVector(
+                            schema::SparseFloatArray {
+                                contents,
+                                dim: dimension,
+                            },
+                        )),
+                        ..Default::default()
+                    }),
+                )
+            }
+            Self::Int8Vector { name, values } => {
+                let dimension = vector_dimension(&name, &values)?;
+                (
+                    name,
+                    schema::DataType::Int8Vector,
+                    field_data::Field::Vectors(schema::VectorField {
+                        valid_data: Vec::new(),
+                        dim: dimension as i64,
+                        data: Some(vector_field::Data::Int8Vector(
+                            values
+                                .into_iter()
+                                .flatten()
+                                .map(|value| value as u8)
+                                .collect(),
+                        )),
+                        ..Default::default()
+                    }),
+                )
+            }
+            Self::Nullable { .. } => unreachable!(),
+        };
+
+        Ok(schema::FieldData {
+            r#type: data_type as i32,
+            field_name: name,
+            field_id: 0,
+            is_dynamic: false,
+            valid_data: Vec::new(),
+            field: Some(field),
+            ..Default::default()
+        })
+    }
+
+    /// Encodes a borrowed column directly into its final protobuf buffers.
+    ///
+    /// DML keeps the SDK payload available for a possible schema refresh, so
+    /// this path must not clone the whole `FieldData` before flattening vectors.
+    pub(crate) fn to_proto(&self) -> Result<schema::FieldData> {
+        use schema::{field_data, scalar_field, vector_field};
+        if let Self::Nullable { data, valid_data } = self {
+            let valid_count = valid_data.iter().filter(|valid| **valid).count();
+            if data.len() != valid_count {
+                return Err(Error::validation(
+                    data.name().to_owned(),
+                    "nullable data and validity bitmap have inconsistent lengths".into(),
+                ));
+            }
+            let mut proto = data.to_proto()?;
+            // Prefer the field-specific validity channel and keep the legacy
+            // top-level field for older readers.
+            match proto.field.as_mut() {
+                Some(field_data::Field::Scalars(scalars)) => {
+                    scalars.valid_data = valid_data.clone();
+                }
+                Some(field_data::Field::Vectors(vectors)) => {
+                    vectors.valid_data = valid_data.clone();
+                }
+                _ => {}
+            }
+            proto.valid_data = valid_data.clone();
+            return Ok(proto);
+        }
+        let (name, data_type, field) = match self {
+            Self::Bool { name, values } => (
+                name.clone(),
+                schema::DataType::Bool,
+                field_data::Field::Scalars(schema::ScalarField {
+                    valid_data: Vec::new(),
+                    data: Some(scalar_field::Data::BoolData(schema::BoolArray {
+                        data: values.clone(),
+                    })),
+                    ..Default::default()
+                }),
+            ),
+            Self::Int8 { name, values } => (
+                name.clone(),
+                schema::DataType::Int8,
+                field_data::Field::Scalars(schema::ScalarField {
+                    valid_data: Vec::new(),
+                    data: Some(scalar_field::Data::IntData(schema::IntArray {
+                        data: values.iter().copied().map(i32::from).collect(),
+                    })),
+                    ..Default::default()
+                }),
+            ),
+            Self::Int16 { name, values } => (
+                name.clone(),
+                schema::DataType::Int16,
+                field_data::Field::Scalars(schema::ScalarField {
+                    valid_data: Vec::new(),
+                    data: Some(scalar_field::Data::IntData(schema::IntArray {
+                        data: values.iter().copied().map(i32::from).collect(),
+                    })),
+                    ..Default::default()
+                }),
+            ),
+            Self::Int32 { name, values } => (
+                name.clone(),
+                schema::DataType::Int32,
+                field_data::Field::Scalars(schema::ScalarField {
+                    valid_data: Vec::new(),
+                    data: Some(scalar_field::Data::IntData(schema::IntArray {
+                        data: values.clone(),
+                    })),
+                    ..Default::default()
+                }),
+            ),
+            Self::Int64 { name, values } => (
+                name.clone(),
+                schema::DataType::Int64,
+                field_data::Field::Scalars(schema::ScalarField {
+                    valid_data: Vec::new(),
+                    data: Some(scalar_field::Data::LongData(schema::LongArray {
+                        data: values.clone(),
+                    })),
+                    ..Default::default()
+                }),
+            ),
+            Self::Float { name, values } => (
+                name.clone(),
+                schema::DataType::Float,
+                field_data::Field::Scalars(schema::ScalarField {
+                    valid_data: Vec::new(),
+                    data: Some(scalar_field::Data::FloatData(schema::FloatArray {
+                        data: values.clone(),
+                    })),
+                    ..Default::default()
+                }),
+            ),
+            Self::Double { name, values } => (
+                name.clone(),
+                schema::DataType::Double,
+                field_data::Field::Scalars(schema::ScalarField {
+                    valid_data: Vec::new(),
+                    data: Some(scalar_field::Data::DoubleData(schema::DoubleArray {
+                        data: values.clone(),
+                    })),
+                    ..Default::default()
+                }),
+            ),
+            Self::VarChar { name, values } => (
+                name.clone(),
+                schema::DataType::VarChar,
+                field_data::Field::Scalars(schema::ScalarField {
+                    valid_data: Vec::new(),
+                    data: Some(scalar_field::Data::StringData(schema::StringArray {
+                        data: values.clone(),
+                    })),
+                    ..Default::default()
+                }),
+            ),
+            Self::Json { name, values } => (
+                name.clone(),
+                schema::DataType::Json,
+                field_data::Field::Scalars(schema::ScalarField {
+                    valid_data: Vec::new(),
+                    data: Some(scalar_field::Data::JsonData(schema::JsonArray {
+                        data: values
+                            .iter()
+                            .map(serde_json::to_vec)
+                            .collect::<std::result::Result<Vec<_>, _>>()?,
+                    })),
+                    ..Default::default()
+                }),
+            ),
+            Self::Geometry { name, values } => (
+                name.clone(),
+                schema::DataType::Geometry,
+                field_data::Field::Scalars(schema::ScalarField {
+                    valid_data: Vec::new(),
+                    data: Some(scalar_field::Data::GeometryWktData(
+                        schema::GeometryWktArray {
+                            data: values.clone(),
+                        },
+                    )),
+                    ..Default::default()
+                }),
+            ),
+            Self::Timestamptz { name, values } => (
+                name.clone(),
+                schema::DataType::Timestamptz,
+                field_data::Field::Scalars(schema::ScalarField {
+                    valid_data: Vec::new(),
+                    data: Some(scalar_field::Data::StringData(schema::StringArray {
+                        data: values.clone(),
+                    })),
+                    ..Default::default()
+                }),
+            ),
+            Self::ArrayBool { name, values } => (
+                name.clone(),
+                schema::DataType::Array,
+                array_proto_field_by_ref(DataType::Bool, values, |data| {
+                    scalar_field::Data::BoolData(schema::BoolArray {
+                        data,
+                        ..Default::default()
+                    })
+                }),
+            ),
+            Self::ArrayInt8 { name, values } => (
+                name.clone(),
+                schema::DataType::Array,
+                array_proto_field_by_ref(DataType::Int8, values, |data| {
+                    scalar_field::Data::IntData(schema::IntArray {
+                        data: data.into_iter().map(i32::from).collect(),
+                        ..Default::default()
+                    })
+                }),
+            ),
+            Self::ArrayInt16 { name, values } => (
+                name.clone(),
+                schema::DataType::Array,
+                array_proto_field_by_ref(DataType::Int16, values, |data| {
+                    scalar_field::Data::IntData(schema::IntArray {
+                        data: data.into_iter().map(i32::from).collect(),
+                        ..Default::default()
+                    })
+                }),
+            ),
+            Self::ArrayInt32 { name, values } => (
+                name.clone(),
+                schema::DataType::Array,
+                array_proto_field_by_ref(DataType::Int32, values, |data| {
+                    scalar_field::Data::IntData(schema::IntArray {
+                        data,
+                        ..Default::default()
+                    })
+                }),
+            ),
+            Self::ArrayInt64 { name, values } => (
+                name.clone(),
+                schema::DataType::Array,
+                array_proto_field_by_ref(DataType::Int64, values, |data| {
+                    scalar_field::Data::LongData(schema::LongArray {
+                        data,
+                        ..Default::default()
+                    })
+                }),
+            ),
+            Self::ArrayFloat { name, values } => (
+                name.clone(),
+                schema::DataType::Array,
+                array_proto_field_by_ref(DataType::Float, values, |data| {
+                    scalar_field::Data::FloatData(schema::FloatArray {
+                        data,
+                        ..Default::default()
+                    })
+                }),
+            ),
+            Self::ArrayDouble { name, values } => (
+                name.clone(),
+                schema::DataType::Array,
+                array_proto_field_by_ref(DataType::Double, values, |data| {
+                    scalar_field::Data::DoubleData(schema::DoubleArray {
+                        data,
+                        ..Default::default()
+                    })
+                }),
+            ),
+            Self::ArrayVarChar { name, values } => (
+                name.clone(),
+                schema::DataType::Array,
+                array_proto_field_by_ref(DataType::VarChar, values, |data| {
+                    scalar_field::Data::StringData(schema::StringArray {
+                        data,
+                        ..Default::default()
+                    })
+                }),
+            ),
+            Self::Struct { name, .. } => {
+                return Err(Error::validation(
+                    name.clone(),
+                    "struct field data requires its collection schema".into(),
+                ))
+            }
+            Self::FloatVector { name, values } => {
+                let dimension = vector_dimension(name, values)?;
+                let data = values.iter().flatten().copied().collect();
+                (
+                    name.clone(),
+                    schema::DataType::FloatVector,
+                    field_data::Field::Vectors(schema::VectorField {
+                        valid_data: Vec::new(),
+                        dim: dimension as i64,
+                        data: Some(vector_field::Data::FloatVector(schema::FloatArray { data })),
+                        ..Default::default()
+                    }),
+                )
+            }
+            Self::BinaryVector { name, values } => {
+                let width = vector_dimension(name, values)?;
+                let dimension = width.checked_mul(8).ok_or_else(|| {
+                    Error::validation(name.clone(), "binary vector dimension overflows".into())
+                })?;
+                (
+                    name.clone(),
+                    schema::DataType::BinaryVector,
+                    field_data::Field::Vectors(schema::VectorField {
+                        valid_data: Vec::new(),
+                        dim: dimension as i64,
+                        data: Some(vector_field::Data::BinaryVector(
+                            values.iter().flatten().copied().collect(),
+                        )),
+                        ..Default::default()
+                    }),
+                )
+            }
+            Self::Float16Vector { name, values } => {
+                let dimension = vector_dimension(name, values)?;
+                let data = encode_u16_vectors_by_ref(values);
+                (
+                    name.clone(),
+                    schema::DataType::Float16Vector,
+                    field_data::Field::Vectors(schema::VectorField {
+                        valid_data: Vec::new(),
+                        dim: dimension as i64,
+                        data: Some(vector_field::Data::Float16Vector(data)),
+                        ..Default::default()
+                    }),
+                )
+            }
+            Self::BFloat16Vector { name, values } => {
+                let dimension = vector_dimension(name, values)?;
+                let data = encode_u16_vectors_by_ref(values);
+                (
+                    name.clone(),
+                    schema::DataType::BFloat16Vector,
+                    field_data::Field::Vectors(schema::VectorField {
+                        valid_data: Vec::new(),
+                        dim: dimension as i64,
+                        data: Some(vector_field::Data::Bfloat16Vector(data)),
+                        ..Default::default()
+                    }),
+                )
+            }
+            Self::SparseFloatVector { name, values } => {
+                let dimension = values
+                    .iter()
+                    .flat_map(|value| value.keys().copied())
+                    .max()
+                    .map_or(0, |value| i64::from(value) + 1);
+                let contents = values
+                    .iter()
+                    .map(|values| encode_sparse_vector_by_ref(name, values))
+                    .collect::<Result<_>>()?;
+                (
+                    name.clone(),
+                    schema::DataType::SparseFloatVector,
+                    field_data::Field::Vectors(schema::VectorField {
+                        valid_data: Vec::new(),
+                        dim: dimension,
+                        data: Some(vector_field::Data::SparseFloatVector(
+                            schema::SparseFloatArray {
+                                contents,
+                                dim: dimension,
+                            },
+                        )),
+                        ..Default::default()
+                    }),
+                )
+            }
+            Self::Int8Vector { name, values } => {
+                let dimension = vector_dimension(name, values)?;
+                (
+                    name.clone(),
+                    schema::DataType::Int8Vector,
+                    field_data::Field::Vectors(schema::VectorField {
+                        valid_data: Vec::new(),
+                        dim: dimension as i64,
+                        data: Some(vector_field::Data::Int8Vector(
+                            values
+                                .iter()
+                                .flatten()
+                                .copied()
+                                .map(|value| value as u8)
+                                .collect(),
+                        )),
+                        ..Default::default()
+                    }),
+                )
+            }
+            Self::Nullable { .. } => unreachable!(),
+        };
+
+        Ok(schema::FieldData {
+            r#type: data_type as i32,
+            field_name: name,
+            field_id: 0,
+            is_dynamic: false,
+            valid_data: Vec::new(),
+            field: Some(field),
+            ..Default::default()
+        })
+    }
+
+    pub(crate) fn into_proto_with_schema(
+        self,
+        field: &schema::FieldSchema,
+    ) -> Result<schema::FieldData> {
+        let mut proto = self.into_proto()?;
+        proto.r#type = field.data_type;
+        proto.field_id = field.field_id;
+        proto.is_dynamic = field.is_dynamic;
+        if let Some(schema::field_data::Field::Vectors(vectors)) = proto.field.as_mut() {
+            if let Some(dimension) = field
+                .type_params
+                .iter()
+                .find(|pair| pair.key == "dim")
+                .and_then(|pair| pair.value.parse::<i64>().ok())
+            {
+                vectors.dim = dimension;
+            }
+        }
+        Ok(proto)
+    }
+
+    pub(crate) fn to_proto_with_schema(
+        &self,
+        field: &schema::FieldSchema,
+    ) -> Result<schema::FieldData> {
+        let mut proto = self.to_proto()?;
+        proto.r#type = field.data_type;
+        proto.field_id = field.field_id;
+        proto.is_dynamic = field.is_dynamic;
+        if let Some(schema::field_data::Field::Vectors(vectors)) = proto.field.as_mut() {
+            if let Some(dimension) = field
+                .type_params
+                .iter()
+                .find(|pair| pair.key == "dim")
+                .and_then(|pair| pair.value.parse::<i64>().ok())
+            {
+                vectors.dim = dimension;
+            }
+        }
+        Ok(proto)
+    }
+}
+
+/// Selects the rows at `keep` positions from a field, preserving their order.
+///
+/// Nullable fields keep only the validity entries at `keep` and select the corresponding rows
+/// from the compacted inner payload. Used by the search-iterator page filter to prune hits.
+pub(crate) fn select_field_data_rows(data: FieldData, keep: &[usize]) -> Result<FieldData> {
+    fn collect<T: Clone>(values: Vec<T>, keep: &[usize]) -> Vec<T> {
+        keep.iter().map(|index| values[*index].clone()).collect()
+    }
+    Ok(match data {
+        FieldData::Bool { name, values } => FieldData::Bool {
+            name,
+            values: collect(values, keep),
+        },
+        FieldData::Int8 { name, values } => FieldData::Int8 {
+            name,
+            values: collect(values, keep),
+        },
+        FieldData::Int16 { name, values } => FieldData::Int16 {
+            name,
+            values: collect(values, keep),
+        },
+        FieldData::Int32 { name, values } => FieldData::Int32 {
+            name,
+            values: collect(values, keep),
+        },
+        FieldData::Int64 { name, values } => FieldData::Int64 {
+            name,
+            values: collect(values, keep),
+        },
+        FieldData::Float { name, values } => FieldData::Float {
+            name,
+            values: collect(values, keep),
+        },
+        FieldData::Double { name, values } => FieldData::Double {
+            name,
+            values: collect(values, keep),
+        },
+        FieldData::VarChar { name, values } => FieldData::VarChar {
+            name,
+            values: collect(values, keep),
+        },
+        FieldData::Json { name, values } => FieldData::Json {
+            name,
+            values: collect(values, keep),
+        },
+        FieldData::Geometry { name, values } => FieldData::Geometry {
+            name,
+            values: collect(values, keep),
+        },
+        FieldData::Timestamptz { name, values } => FieldData::Timestamptz {
+            name,
+            values: collect(values, keep),
+        },
+        FieldData::ArrayBool { name, values } => FieldData::ArrayBool {
+            name,
+            values: collect(values, keep),
+        },
+        FieldData::ArrayInt8 { name, values } => FieldData::ArrayInt8 {
+            name,
+            values: collect(values, keep),
+        },
+        FieldData::ArrayInt16 { name, values } => FieldData::ArrayInt16 {
+            name,
+            values: collect(values, keep),
+        },
+        FieldData::ArrayInt32 { name, values } => FieldData::ArrayInt32 {
+            name,
+            values: collect(values, keep),
+        },
+        FieldData::ArrayInt64 { name, values } => FieldData::ArrayInt64 {
+            name,
+            values: collect(values, keep),
+        },
+        FieldData::ArrayFloat { name, values } => FieldData::ArrayFloat {
+            name,
+            values: collect(values, keep),
+        },
+        FieldData::ArrayDouble { name, values } => FieldData::ArrayDouble {
+            name,
+            values: collect(values, keep),
+        },
+        FieldData::ArrayVarChar { name, values } => FieldData::ArrayVarChar {
+            name,
+            values: collect(values, keep),
+        },
+        FieldData::Struct { name, values } => FieldData::Struct {
+            name,
+            values: collect(values, keep),
+        },
+        FieldData::FloatVector { name, values } => FieldData::FloatVector {
+            name,
+            values: collect(values, keep),
+        },
+        FieldData::BinaryVector { name, values } => FieldData::BinaryVector {
+            name,
+            values: collect(values, keep),
+        },
+        FieldData::Float16Vector { name, values } => FieldData::Float16Vector {
+            name,
+            values: collect(values, keep),
+        },
+        FieldData::BFloat16Vector { name, values } => FieldData::BFloat16Vector {
+            name,
+            values: collect(values, keep),
+        },
+        FieldData::SparseFloatVector { name, values } => FieldData::SparseFloatVector {
+            name,
+            values: collect(values, keep),
+        },
+        FieldData::Int8Vector { name, values } => FieldData::Int8Vector {
+            name,
+            values: collect(values, keep),
+        },
+        FieldData::Nullable { data, valid_data } => {
+            let mut kept_inner = Vec::with_capacity(keep.len());
+            let mut kept_valid = Vec::with_capacity(keep.len());
+            for &index in keep {
+                let valid = *valid_data.get(index).ok_or_else(|| {
+                    Error::validation(
+                        "keep".into(),
+                        format!(
+                            "row index {index} is out of range for {} rows",
+                            valid_data.len()
+                        ),
+                    )
+                })?;
+                kept_valid.push(valid);
+                if valid {
+                    kept_inner.push(valid_data[..index].iter().filter(|valid| **valid).count());
+                }
+            }
+            let inner = select_field_data_rows(*data, &kept_inner)?;
+            FieldData::Nullable {
+                data: Box::new(inner),
+                valid_data: kept_valid,
+            }
+        }
+    })
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// RetryConfig
+///////////////////////////////////////////////////////////////////////////////
+/// Retry policy applied to V2 RPC calls.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct RetryConfig {
+    /// Maximum number of attempts, including the initial RPC call.
+    pub(crate) max_attempts: u32,
+    /// Maximum wall-clock time spent retrying one RPC. Zero disables this limit.
+    pub(crate) max_retry_timeout: Duration,
+    /// Delay before the second attempt.
+    pub(crate) initial_backoff: Duration,
+    /// Upper bound for the delay between attempts.
+    pub(crate) max_backoff: Duration,
+    /// Multiplier applied to the delay after each failed attempt.
+    pub(crate) backoff_multiplier: f64,
+    /// Whether server-side rate-limit responses may be retried.
+    pub(crate) retry_on_rate_limit: bool,
+}
+
+impl RetryConfig {
+    /// Creates a value initialized with its SDK defaults.
+    pub fn new() -> Self {
+        Self {
+            max_attempts: 75,
+            max_retry_timeout: Duration::ZERO,
+            initial_backoff: Duration::from_millis(10),
+            max_backoff: Duration::from_secs(3),
+            backoff_multiplier: 3.0,
+            retry_on_rate_limit: true,
+        }
+    }
+
+    /// Sets the max attempts and returns the updated value.
+    pub fn max_attempts(mut self, value: u32) -> Self {
+        self.max_attempts = value;
+        self
+    }
+
+    /// Sets the max attempts and returns this value for further mutation.
+    pub fn set_max_attempts(&mut self, value: u32) -> &mut Self {
+        self.max_attempts = value;
+        self
+    }
+
+    /// Returns the configured max attempts.
+    pub fn get_max_attempts(&self) -> u32 {
+        self.max_attempts
+    }
+
+    /// Sets the max retry timeout and returns the updated value.
+    pub fn max_retry_timeout(mut self, value: Duration) -> Self {
+        self.max_retry_timeout = value;
+        self
+    }
+
+    /// Sets the max retry timeout and returns this value for further mutation.
+    pub fn set_max_retry_timeout(&mut self, value: Duration) -> &mut Self {
+        self.max_retry_timeout = value;
+        self
+    }
+
+    /// Returns the configured max retry timeout.
+    pub fn get_max_retry_timeout(&self) -> Duration {
+        self.max_retry_timeout
+    }
+
+    /// Sets the initial backoff and returns the updated value.
+    pub fn initial_backoff(mut self, value: Duration) -> Self {
+        self.initial_backoff = value;
+        self
+    }
+
+    /// Sets the initial backoff and returns this value for further mutation.
+    pub fn set_initial_backoff(&mut self, value: Duration) -> &mut Self {
+        self.initial_backoff = value;
+        self
+    }
+
+    /// Returns the configured initial backoff.
+    pub fn get_initial_backoff(&self) -> Duration {
+        self.initial_backoff
+    }
+
+    /// Sets the max backoff and returns the updated value.
+    pub fn max_backoff(mut self, value: Duration) -> Self {
+        self.max_backoff = value;
+        self
+    }
+
+    /// Sets the max backoff and returns this value for further mutation.
+    pub fn set_max_backoff(&mut self, value: Duration) -> &mut Self {
+        self.max_backoff = value;
+        self
+    }
+
+    /// Returns the configured max backoff.
+    pub fn get_max_backoff(&self) -> Duration {
+        self.max_backoff
+    }
+
+    /// Sets the backoff multiplier and returns the updated value.
+    pub fn backoff_multiplier(mut self, value: f64) -> Self {
+        self.backoff_multiplier = value;
+        self
+    }
+
+    /// Sets the backoff multiplier and returns this value for further mutation.
+    pub fn set_backoff_multiplier(&mut self, value: f64) -> &mut Self {
+        self.backoff_multiplier = value;
+        self
+    }
+
+    /// Returns the configured backoff multiplier.
+    pub fn get_backoff_multiplier(&self) -> f64 {
+        self.backoff_multiplier
+    }
+
+    /// Sets the retry on rate limit and returns the updated value.
+    pub fn retry_on_rate_limit(mut self, value: bool) -> Self {
+        self.retry_on_rate_limit = value;
+        self
+    }
+
+    /// Sets the retry on rate limit and returns this value for further mutation.
+    pub fn set_retry_on_rate_limit(&mut self, value: bool) -> &mut Self {
+        self.retry_on_rate_limit = value;
+        self
+    }
+
+    /// Returns the configured retry on rate limit.
+    pub fn get_retry_on_rate_limit(&self) -> bool {
+        self.retry_on_rate_limit
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// TelemetryConfig
+///////////////////////////////////////////////////////////////////////////////
+/// Client-side telemetry settings.
+///
+/// Telemetry is enabled by default. An initial [`Self::enabled`] value of `false`
+/// prevents the heartbeat task from starting. If an already-running client is disabled
+/// by a server command, operation collection and metric payloads stop while its lightweight
+/// command heartbeat continues to deliver acknowledgements and receive a later re-enable.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct TelemetryConfig {
+    pub(crate) enabled: bool,
+    pub(crate) heartbeat_interval: Duration,
+    pub(crate) sampling_rate: f64,
+    pub(crate) error_max_count: usize,
+    pub(crate) client_id: String,
+}
+
+impl TelemetryConfig {
+    /// Creates telemetry settings initialized with the SDK defaults.
+    pub fn new() -> Self {
+        Self {
+            enabled: true,
+            heartbeat_interval: Duration::from_secs(10),
+            sampling_rate: 1.0,
+            error_max_count: 100,
+            client_id: String::new(),
+        }
+    }
+
+    /// Enables or disables telemetry at connection startup.
+    ///
+    /// A server command that disables an already-running client keeps only its command
+    /// heartbeat active so acknowledgements and a later re-enable can flow.
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// Enables or disables telemetry and returns this value for further mutation.
+    pub fn set_enabled(&mut self, enabled: bool) -> &mut Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// Sets the heartbeat interval.
+    ///
+    /// A zero interval is stored as configured, so [`Self::get_heartbeat_interval`]
+    /// returns [`Duration::ZERO`]. It is normalized to the 10-second default only when
+    /// a client constructs its telemetry runtime, matching the Go SDK.
+    pub fn heartbeat_interval(mut self, interval: Duration) -> Self {
+        self.heartbeat_interval = interval;
+        self
+    }
+
+    /// Sets the heartbeat interval and returns this value for further mutation.
+    pub fn set_heartbeat_interval(&mut self, interval: Duration) -> &mut Self {
+        self.heartbeat_interval = interval;
+        self
+    }
+
+    /// Sets the operation sampling rate. Values are clamped to `0.0..=1.0`.
+    pub fn sampling_rate(mut self, rate: f64) -> Self {
+        self.sampling_rate = if rate.is_finite() {
+            rate.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        self
+    }
+
+    /// Sets the operation sampling rate and returns this value for further mutation.
+    pub fn set_sampling_rate(&mut self, rate: f64) -> &mut Self {
+        self.sampling_rate = if rate.is_finite() {
+            rate.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        self
+    }
+
+    /// Sets the maximum number of recent errors retained by the client.
+    ///
+    /// Zero is stored as configured, so [`Self::get_error_max_count`] returns `0`.
+    /// It is normalized to the default of 100 only when a client constructs its
+    /// telemetry runtime.
+    pub fn error_max_count(mut self, count: usize) -> Self {
+        self.error_max_count = count;
+        self
+    }
+
+    /// Sets the recent-error capacity and returns this value for further mutation.
+    pub fn set_error_max_count(&mut self, count: usize) -> &mut Self {
+        self.error_max_count = count;
+        self
+    }
+
+    /// Pins a client identifier that remains stable across process restarts.
+    ///
+    /// It must be unique per running client. An empty value asks the SDK to
+    /// generate a new process-local UUID.
+    pub fn client_id(mut self, client_id: impl Into<String>) -> Self {
+        self.client_id = client_id.into();
+        self
+    }
+
+    /// Sets the stable client identifier and returns this value for further mutation.
+    pub fn set_client_id(&mut self, client_id: impl Into<String>) -> &mut Self {
+        self.client_id = client_id.into();
+        self
+    }
+
+    /// Returns whether telemetry is enabled.
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Returns the raw configured heartbeat interval.
+    ///
+    /// A zero value remains observable here and is normalized only when a client
+    /// constructs its telemetry runtime.
+    pub fn get_heartbeat_interval(&self) -> Duration {
+        self.heartbeat_interval
+    }
+
+    /// Returns the effective operation sampling rate.
+    pub fn get_sampling_rate(&self) -> f64 {
+        self.sampling_rate
+    }
+
+    /// Returns the raw configured recent-error capacity.
+    ///
+    /// A zero value remains observable here and is normalized only when a client
+    /// constructs its telemetry runtime.
+    pub fn get_error_max_count(&self) -> usize {
+        self.error_max_count
+    }
+
+    /// Returns the pinned client identifier, or an empty string when generated.
+    pub fn get_client_id(&self) -> &str {
+        &self.client_id
+    }
+}
+
+impl Default for TelemetryConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// ConnectConfig
+///////////////////////////////////////////////////////////////////////////////
+/// Connection settings used to create a ClientV2.
+///
+/// ```
+/// use milvus::v2::ConnectConfig;
+///
+/// let config = ConnectConfig::new()
+///     .uri("http://localhost:19530")
+///     .token("root:Milvus")
+///     .database("books");
+/// assert_eq!(config.get_uri().to_string(), "http://localhost:19530");
+/// assert_eq!(config.get_database(), "books");
+/// ```
+#[derive(Clone)]
+#[non_exhaustive]
+pub struct ConnectConfig {
+    pub(crate) uri: String,
+    pub(crate) token: Option<String>,
+    pub(crate) token_explicit: bool,
+    pub(crate) username: Option<String>,
+    pub(crate) password: Option<String>,
+    pub(crate) tls_server_name: Option<String>,
+    pub(crate) secure: bool,
+    pub(crate) ca_certificate: Option<String>,
+    pub(crate) client_certificate: Option<String>,
+    pub(crate) client_key: Option<String>,
+    pub(crate) connect_timeout: Duration,
+    pub(crate) rpc_timeout: Duration,
+    pub(crate) keepalive_time: Duration,
+    pub(crate) keepalive_timeout: Duration,
+    pub(crate) keepalive_while_idle: bool,
+    pub(crate) database: String,
+    pub(crate) retry: RetryConfig,
+    pub(crate) telemetry: TelemetryConfig,
+}
+
+impl std::fmt::Debug for ConnectConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let token = self.token.as_ref().map(|_| "[REDACTED]");
+        let client_key = self.client_key.as_ref().map(|_| "[REDACTED]");
+        let password = self.password.as_ref().map(|_| "[REDACTED]");
+        formatter
+            .debug_struct("ConnectConfig")
+            .field("uri", &self.uri)
+            .field("token", &token)
+            .field("username", &self.username)
+            .field("password", &password)
+            .field("tls_server_name", &self.tls_server_name)
+            .field("secure", &self.secure)
+            .field("ca_certificate", &self.ca_certificate)
+            .field("client_certificate", &self.client_certificate)
+            .field("client_key", &client_key)
+            .field("connect_timeout", &self.connect_timeout)
+            .field("rpc_timeout", &self.rpc_timeout)
+            .field("keepalive_time", &self.keepalive_time)
+            .field("keepalive_timeout", &self.keepalive_timeout)
+            .field("keepalive_while_idle", &self.keepalive_while_idle)
+            .field("database", &self.database)
+            .field("retry", &self.retry)
+            .field("telemetry", &self.telemetry)
+            .finish()
+    }
+}
+
+impl ConnectConfig {
+    /// Creates a value initialized with its SDK defaults.
+    pub fn new() -> Self {
+        Self {
+            uri: "http://localhost:19530".to_owned(),
+            token: None,
+            token_explicit: false,
+            username: None,
+            password: None,
+            tls_server_name: None,
+            secure: false,
+            ca_certificate: None,
+            client_certificate: None,
+            client_key: None,
+            connect_timeout: Duration::from_secs(10),
+            rpc_timeout: Duration::ZERO,
+            keepalive_time: Duration::from_secs(10),
+            keepalive_timeout: Duration::from_secs(5),
+            keepalive_while_idle: true,
+            database: String::new(),
+            retry: RetryConfig::new(),
+            telemetry: TelemetryConfig::new(),
+        }
+    }
+
+    /// Sets the uri and returns the updated value.
+    pub fn uri(mut self, uri: impl Into<String>) -> Self {
+        self.uri = uri.into();
+        self
+    }
+
+    /// Sets the uri and returns this value for further mutation.
+    pub fn set_uri(&mut self, uri: impl Into<String>) -> &mut Self {
+        self.uri = uri.into();
+        self
+    }
+
+    /// Returns the configured uri.
+    pub fn get_uri(&self) -> &str {
+        &self.uri
+    }
+
+    /// Sets the token and returns the updated value.
+    ///
+    /// An explicitly-set token takes precedence over any [`Self::username`] / [`Self::password`]
+    /// credential, matching the Java SDK's `getAuthorizationValue()` precedence.
+    pub fn token(mut self, token: impl Into<String>) -> Self {
+        use base64::Engine;
+        self.token = Some(base64::engine::general_purpose::STANDARD.encode(token.into()));
+        self.token_explicit = true;
+        self
+    }
+
+    /// Sets the token and returns this value for further mutation.
+    ///
+    /// An explicitly-set token takes precedence over any [`Self::username`] / [`Self::password`]
+    /// credential, matching the Java SDK's `getAuthorizationValue()` precedence.
+    pub fn set_token(&mut self, token: impl Into<String>) -> &mut Self {
+        use base64::Engine;
+        self.token = Some(base64::engine::general_purpose::STANDARD.encode(token.into()));
+        self.token_explicit = true;
+        self
+    }
+
+    /// Returns the configured token.
+    pub fn get_token(&self) -> &Option<String> {
+        &self.token
+    }
+
+    /// Returns the raw (pre-encoding) token, if one was configured.
+    ///
+    /// The [`Self::token`] setter base64-encodes the credential for the gRPC `authorization`
+    /// metadata. REST endpoints authenticate with the plain credential, so this decodes the
+    /// stored value back to the raw token.
+    pub(crate) fn raw_token(&self) -> Option<String> {
+        use base64::Engine;
+        self.token.as_ref().and_then(|token| {
+            base64::engine::general_purpose::STANDARD
+                .decode(token)
+                .ok()
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+        })
+    }
+
+    /// Sets the username and returns the updated value.
+    ///
+    /// Together with [`Self::password`] it forms the `username:password` credential used for
+    /// authentication, matching the C++ and Java SDK `username`/`password` connection members.
+    pub fn username(mut self, username: impl Into<String>) -> Self {
+        self.username = optional_config_string(username);
+        self.refresh_credentials();
+        self
+    }
+
+    /// Sets the username and returns this value for further mutation.
+    pub fn set_username(&mut self, username: impl Into<String>) -> &mut Self {
+        self.username = optional_config_string(username);
+        self.refresh_credentials();
+        self
+    }
+
+    /// Returns the configured username.
+    pub fn get_username(&self) -> &Option<String> {
+        &self.username
+    }
+
+    /// Sets the password and returns the updated value.
+    ///
+    /// Together with [`Self::username`] it forms the `username:password` credential used for
+    /// authentication, matching the C++ and Java SDK `username`/`password` connection members.
+    pub fn password(mut self, password: impl Into<String>) -> Self {
+        self.password = optional_config_string(password);
+        self.refresh_credentials();
+        self
+    }
+
+    /// Sets the password and returns this value for further mutation.
+    pub fn set_password(&mut self, password: impl Into<String>) -> &mut Self {
+        self.password = optional_config_string(password);
+        self.refresh_credentials();
+        self
+    }
+
+    /// Returns the configured password.
+    pub fn get_password(&self) -> &Option<String> {
+        &self.password
+    }
+
+    /// Re-derives the gRPC authorization token from the configured username and password.
+    ///
+    /// The derivation fills the token only when it was not explicitly set via [`Self::token`],
+    /// so an explicit token always wins over the username/password credential (matching the Java
+    /// SDK's `getAuthorizationValue()` precedence). Re-running it after a username or password
+    /// change keeps a derived token in sync while leaving an explicit token untouched.
+    fn refresh_credentials(&mut self) {
+        if !self.token_explicit {
+            if let (Some(username), Some(password)) = (&self.username, &self.password) {
+                use base64::Engine;
+                self.token = Some(
+                    base64::engine::general_purpose::STANDARD
+                        .encode(format!("{username}:{password}")),
+                );
+            }
+        }
+    }
+
+    /// Overrides the DNS name used to verify the Milvus server's TLS certificate.
+    pub fn tls_server_name(mut self, value: impl Into<String>) -> Self {
+        self.tls_server_name = optional_config_string(value);
+        self
+    }
+
+    /// Updates the DNS name used to verify the Milvus server's TLS certificate.
+    pub fn set_tls_server_name(&mut self, value: impl Into<String>) -> &mut Self {
+        self.tls_server_name = optional_config_string(value);
+        self
+    }
+
+    /// Returns the configured TLS server-name override.
+    pub fn get_tls_server_name(&self) -> &Option<String> {
+        &self.tls_server_name
+    }
+
+    /// Sets whether a secure (TLS) connection is used and returns the updated value.
+    ///
+    /// When enabled, the connection is upgraded to TLS even when the URI scheme is `http://`
+    /// or omitted, matching the Java SDK's `secure` connection member.
+    pub fn secure(mut self, secure: bool) -> Self {
+        self.secure = secure;
+        self
+    }
+
+    /// Sets whether a secure (TLS) connection is used and returns this value for further mutation.
+    pub fn set_secure(&mut self, secure: bool) -> &mut Self {
+        self.secure = secure;
+        self
+    }
+
+    /// Returns whether a secure (TLS) connection is used.
+    pub fn is_secure(&self) -> bool {
+        self.secure
+    }
+
+    /// Sets the path to a PEM-encoded custom CA certificate file.
+    pub fn ca_certificate(mut self, value: impl Into<String>) -> Self {
+        self.ca_certificate = optional_config_string(value);
+        self
+    }
+
+    /// Updates the path to a PEM-encoded custom CA certificate file.
+    pub fn set_ca_certificate(&mut self, value: impl Into<String>) -> &mut Self {
+        self.ca_certificate = optional_config_string(value);
+        self
+    }
+
+    /// Returns the custom CA certificate file path.
+    pub fn get_ca_certificate(&self) -> &Option<String> {
+        &self.ca_certificate
+    }
+
+    /// Sets the path to the PEM-encoded client certificate file used for mutual TLS.
+    pub fn client_certificate(mut self, value: impl Into<String>) -> Self {
+        self.client_certificate = optional_config_string(value);
+        self
+    }
+
+    /// Updates the path to the PEM-encoded client certificate file used for mutual TLS.
+    pub fn set_client_certificate(&mut self, value: impl Into<String>) -> &mut Self {
+        self.client_certificate = optional_config_string(value);
+        self
+    }
+
+    /// Returns the client certificate file path.
+    pub fn get_client_certificate(&self) -> &Option<String> {
+        &self.client_certificate
+    }
+
+    /// Sets the path to the PEM-encoded client private-key file used for mutual TLS.
+    pub fn client_key(mut self, value: impl Into<String>) -> Self {
+        self.client_key = optional_config_string(value);
+        self
+    }
+
+    /// Updates the path to the PEM-encoded client private-key file used for mutual TLS.
+    pub fn set_client_key(&mut self, value: impl Into<String>) -> &mut Self {
+        self.client_key = optional_config_string(value);
+        self
+    }
+
+    /// Returns the client private-key file path.
+    pub fn get_client_key(&self) -> &Option<String> {
+        &self.client_key
+    }
+
+    /// Sets the maximum time ClientV2::new waits for Milvus to become ready.
+    pub fn connect_timeout(mut self, timeout: Duration) -> Self {
+        self.connect_timeout = timeout;
+        self
+    }
+
+    /// Updates the maximum time ClientV2::new waits for Milvus to become ready.
+    pub fn set_connect_timeout(&mut self, timeout: Duration) -> &mut Self {
+        self.connect_timeout = timeout;
+        self
+    }
+
+    /// Returns the maximum time ClientV2::new waits for Milvus to become ready.
+    pub fn get_connect_timeout(&self) -> Duration {
+        self.connect_timeout
+    }
+
+    /// Sets the rpc timeout and returns the updated value.
+    pub fn rpc_timeout(mut self, timeout: Duration) -> Self {
+        self.rpc_timeout = timeout;
+        self
+    }
+
+    /// Sets the rpc timeout and returns this value for further mutation.
+    pub fn set_rpc_timeout(&mut self, timeout: Duration) -> &mut Self {
+        self.rpc_timeout = timeout;
+        self
+    }
+
+    /// Returns the configured rpc timeout.
+    pub fn get_rpc_timeout(&self) -> Duration {
+        self.rpc_timeout
+    }
+
+    /// Sets the keepalive time and returns the updated value.
+    pub fn keepalive_time(mut self, value: Duration) -> Self {
+        self.keepalive_time = value;
+        self
+    }
+
+    /// Sets the keepalive time and returns this value for further mutation.
+    pub fn set_keepalive_time(&mut self, value: Duration) -> &mut Self {
+        self.keepalive_time = value;
+        self
+    }
+
+    /// Returns the configured keepalive time.
+    pub fn get_keepalive_time(&self) -> Duration {
+        self.keepalive_time
+    }
+
+    /// Sets the keepalive timeout and returns the updated value.
+    pub fn keepalive_timeout(mut self, value: Duration) -> Self {
+        self.keepalive_timeout = value;
+        self
+    }
+
+    /// Sets the keepalive timeout and returns this value for further mutation.
+    pub fn set_keepalive_timeout(&mut self, value: Duration) -> &mut Self {
+        self.keepalive_timeout = value;
+        self
+    }
+
+    /// Returns the configured keepalive timeout.
+    pub fn get_keepalive_timeout(&self) -> Duration {
+        self.keepalive_timeout
+    }
+
+    /// Sets the keepalive while idle and returns the updated value.
+    pub fn keepalive_while_idle(mut self, value: bool) -> Self {
+        self.keepalive_while_idle = value;
+        self
+    }
+
+    /// Sets the keepalive while idle and returns this value for further mutation.
+    pub fn set_keepalive_while_idle(&mut self, value: bool) -> &mut Self {
+        self.keepalive_while_idle = value;
+        self
+    }
+
+    /// Returns the configured keepalive while idle.
+    pub fn get_keepalive_while_idle(&self) -> bool {
+        self.keepalive_while_idle
+    }
+
+    /// Sets the database and returns the updated value.
+    pub fn database(mut self, database: impl Into<String>) -> Self {
+        self.database = database.into();
+        self
+    }
+
+    /// Sets the database and returns this value for further mutation.
+    pub fn set_database(&mut self, database: impl Into<String>) -> &mut Self {
+        self.database = database.into();
+        self
+    }
+
+    /// Returns the configured database.
+    pub fn get_database(&self) -> &str {
+        &self.database
+    }
+
+    /// Sets the retry and returns the updated value.
+    pub fn retry(mut self, retry: RetryConfig) -> Self {
+        self.retry = retry;
+        self
+    }
+
+    /// Sets the retry and returns this value for further mutation.
+    pub fn set_retry(&mut self, retry: RetryConfig) -> &mut Self {
+        self.retry = retry;
+        self
+    }
+
+    /// Returns the configured retry.
+    pub fn get_retry(&self) -> &RetryConfig {
+        &self.retry
+    }
+
+    /// Sets client-side telemetry configuration.
+    pub fn telemetry(mut self, telemetry: TelemetryConfig) -> Self {
+        self.telemetry = telemetry;
+        self
+    }
+
+    /// Updates client-side telemetry configuration.
+    pub fn set_telemetry(&mut self, telemetry: TelemetryConfig) -> &mut Self {
+        self.telemetry = telemetry;
+        self
+    }
+
+    /// Returns client-side telemetry configuration.
+    pub fn get_telemetry(&self) -> &TelemetryConfig {
+        &self.telemetry
+    }
+
+    /// Sets the username and password credentials and returns the updated value.
+    pub fn username_password(mut self, username: &str, password: &str) -> Self {
+        self.username = Some(username.to_owned());
+        self.password = Some(password.to_owned());
+        self.refresh_credentials();
+        self
+    }
+}
+
+fn optional_config_string(value: impl Into<String>) -> Option<String> {
+    let value = value.into();
+    (!value.is_empty()).then_some(value)
+}
+
+pub(super) fn pairs(values: HashMap<String, String>) -> Vec<common::KeyValuePair> {
+    values
+        .into_iter()
+        .map(|(key, value)| common::KeyValuePair {
+            key,
+            value,
+            ..Default::default()
+        })
+        .collect()
+}
+
+/// JSON object used as the value of a Milvus struct field.
+pub type StructValue = serde_json::Map<String, serde_json::Value>;
+
+/// JSON object representing one row for row-oriented DML input.
+///
+/// ```
+/// use milvus::v2::prelude::*;
+/// use serde_json::json;
+///
+/// let row: EntityRow = json!({ "id": 1, "title": "book", "vector": [0.1, 0.2] })
+///     .as_object()
+///     .unwrap()
+///     .clone();
+/// assert_eq!(row["id"], 1);
+/// ```
+pub type EntityRow = serde_json::Map<String, serde_json::Value>;
+
+/// Sparse vector represented by dimension indexes and values.
+pub type SparseVector = BTreeMap<u32, f32>;
+
+fn validate_array_capacity<T>(
+    name: &str,
+    values: &[Vec<T>],
+    field: &schema::FieldSchema,
+) -> Result<()> {
+    let max_capacity = field
+        .type_params
+        .iter()
+        .find(|pair| pair.key == "max_capacity")
+        .and_then(|pair| pair.value.parse::<usize>().ok());
+    if max_capacity.is_some_and(|limit| values.iter().any(|value| value.len() > limit)) {
+        return Err(Error::validation(
+            name.to_owned(),
+            format!("array exceeds max_capacity {}", max_capacity.unwrap()),
+        ));
+    }
+    Ok(())
+}
+
+fn array_proto_field<T>(
+    element_type: DataType,
+    values: Vec<Vec<T>>,
+    encode: impl Fn(Vec<T>) -> schema::scalar_field::Data,
+) -> schema::field_data::Field {
+    schema::field_data::Field::Scalars(schema::ScalarField {
+        valid_data: Vec::new(),
+        data: Some(schema::scalar_field::Data::ArrayData(schema::ArrayArray {
+            data: values
+                .into_iter()
+                .map(|values| schema::ScalarField {
+                    valid_data: Vec::new(),
+                    data: Some(encode(values)),
+                })
+                .collect(),
+            element_type: element_type.into_proto() as i32,
+        })),
+        ..Default::default()
+    })
+}
+
+fn array_proto_field_by_ref<T: Clone>(
+    element_type: DataType,
+    values: &[Vec<T>],
+    encode: impl Fn(Vec<T>) -> schema::scalar_field::Data,
+) -> schema::field_data::Field {
+    schema::field_data::Field::Scalars(schema::ScalarField {
+        valid_data: Vec::new(),
+        data: Some(schema::scalar_field::Data::ArrayData(schema::ArrayArray {
+            data: values
+                .iter()
+                .map(|values| schema::ScalarField {
+                    valid_data: Vec::new(),
+                    data: Some(encode(values.clone())),
+                })
+                .collect(),
+            element_type: element_type.into_proto() as i32,
+        })),
+        ..Default::default()
+    })
+}
+
+pub(crate) fn validate_sparse_vector(name: &str, values: &SparseVector) -> Result<()> {
+    for (&index, &value) in values {
+        if index == u32::MAX {
+            return Err(Error::validation(
+                name.to_owned(),
+                "sparse vector indices must be less than u32::MAX".into(),
+            ));
+        }
+        if !value.is_finite() {
+            return Err(Error::validation(
+                name.to_owned(),
+                "sparse vector values must be finite".into(),
+            ));
+        }
+        if value < 0.0 {
+            return Err(Error::validation(
+                name.to_owned(),
+                "sparse vector values must not be negative".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn encode_sparse_vector(name: &str, values: SparseVector) -> Result<Vec<u8>> {
+    validate_sparse_vector(name, &values)?;
+    let mut bytes = Vec::with_capacity(values.len() * 8);
+    for (index, value) in values {
+        bytes.extend(index.to_le_bytes());
+        bytes.extend(value.to_le_bytes());
+    }
+    Ok(bytes)
+}
+
+fn encode_sparse_vector_by_ref(name: &str, values: &SparseVector) -> Result<Vec<u8>> {
+    validate_sparse_vector(name, values)?;
+    let mut bytes = Vec::with_capacity(values.len() * 8);
+    for (&index, &value) in values {
+        bytes.extend(index.to_le_bytes());
+        bytes.extend(value.to_le_bytes());
+    }
+    Ok(bytes)
+}
+
+fn vector_dimension<T>(name: &str, values: &[Vec<T>]) -> Result<usize> {
+    let Some(dimension) = values.first().map(Vec::len) else {
+        return Ok(0);
+    };
+    if dimension == 0 {
+        return Err(Error::validation(
+            name.to_owned(),
+            "vectors must not be empty".into(),
+        ));
+    }
+    if values.iter().any(|value| value.len() != dimension) {
+        return Err(Error::validation(
+            name.to_owned(),
+            format!("every vector must contain {dimension} elements/bytes"),
+        ));
+    }
+    Ok(dimension)
+}
+
+fn encode_u16_vectors(values: Vec<Vec<u16>>) -> Vec<u8> {
+    values
+        .into_iter()
+        .flatten()
+        .flat_map(u16::to_le_bytes)
+        .collect()
+}
+
+fn encode_u16_vectors_by_ref(values: &[Vec<u16>]) -> Vec<u8> {
+    values
+        .iter()
+        .flatten()
+        .flat_map(|value| value.to_le_bytes())
+        .collect()
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Test Cases
+///////////////////////////////////////////////////////////////////////////////
+
+#[cfg(test)]
+mod data_type_tests {
+    use super::DataType;
+    use crate::proto::schema;
+
+    #[test]
+    fn non_primitive_types_convert_to_and_from_proto() {
+        let cases = [
+            (DataType::Geometry, schema::DataType::Geometry),
+            (DataType::Timestamptz, schema::DataType::Timestamptz),
+            (DataType::Struct, schema::DataType::Struct),
+        ];
+
+        for (sdk, proto) in cases {
+            assert_eq!(sdk.into_proto(), proto);
+            assert_eq!(DataType::try_from_proto(proto).unwrap(), sdk);
+        }
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Test Cases
+///////////////////////////////////////////////////////////////////////////////
+
+#[cfg(test)]
+mod field_data_tests {
+    use super::{DataType, Error, FieldData, SparseVector};
+    use crate::proto::schema::{self, field_data, scalar_field, vector_field};
+
+    #[test]
+    fn typed_constructors_and_accessors_cover_scalar_array_and_vector_values() {
+        let ids = FieldData::int64("id", vec![1, 2]);
+        assert_eq!(ids.name(), "id");
+        assert_eq!(ids.as_int64(), Some([1, 2].as_slice()));
+        assert!(ids.as_varchar().is_none());
+
+        let tags = FieldData::array_varchar("tags", vec![vec!["rust".into(), "milvus".into()]]);
+        assert_eq!(
+            tags.as_array_varchar(),
+            Some([vec!["rust".to_owned(), "milvus".to_owned()]].as_slice())
+        );
+
+        let vectors = FieldData::float_vector("embedding", vec![vec![0.1, 0.2], vec![0.3, 0.4]]);
+        assert_eq!(
+            vectors.as_float_vectors(),
+            Some([vec![0.1, 0.2], vec![0.3, 0.4]].as_slice())
+        );
+    }
+
+    #[test]
+    fn borrowed_encoding_matches_consuming_encoding() {
+        let fields = vec![
+            FieldData::Int64 {
+                name: "id".into(),
+                values: vec![1, 2],
+            },
+            FieldData::VarChar {
+                name: "text".into(),
+                values: vec!["a".into(), "b".into()],
+            },
+            FieldData::ArrayFloat {
+                name: "weights".into(),
+                values: vec![vec![0.1, 0.2], vec![0.3]],
+            },
+            FieldData::FloatVector {
+                name: "dense".into(),
+                values: vec![vec![0.1, 0.2], vec![0.3, 0.4]],
+            },
+            FieldData::Float16Vector {
+                name: "half".into(),
+                values: vec![vec![0x3c00, 0xbc00]],
+            },
+            FieldData::SparseFloatVector {
+                name: "sparse".into(),
+                values: vec![SparseVector::from([(1, 0.5), (3, 1.5)])],
+            },
+            FieldData::nullable(
+                FieldData::Int32 {
+                    name: "nullable".into(),
+                    values: vec![10, 30],
+                },
+                vec![true, false, true],
+            )
+            .unwrap(),
+        ];
+
+        for field in fields {
+            assert_eq!(
+                field.to_proto().unwrap(),
+                field.clone().into_proto().unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn sparse_vector_columns_reject_negative_values_and_maximum_index() {
+        for values in [
+            SparseVector::from([(1, -0.5)]),
+            SparseVector::from([(u32::MAX, 0.5)]),
+        ] {
+            assert!(FieldData::sparse_float_vector("sparse", vec![values])
+                .into_proto()
+                .is_err());
+        }
+    }
+
+    #[test]
+    fn with_validity_wraps_compact_values_and_checks_the_bitmap() {
+        let nullable = FieldData::int64("age", vec![18, 30])
+            .with_validity(vec![true, false, true])
+            .unwrap();
+
+        assert_eq!(nullable.len(), 3);
+        assert_eq!(nullable.as_int64(), Some([18, 30].as_slice()));
+        assert_eq!(nullable.valid_data(), Some([true, false, true].as_slice()));
+        assert!(nullable.is_null(1));
+
+        let error = FieldData::int64("age", vec![18, 30])
+            .with_validity(vec![true, false])
+            .unwrap_err();
+        assert!(matches!(error, Error::Validation(_)));
+    }
+
+    #[test]
+    fn geometry_and_timestamptz_use_their_sdk_and_wire_types() {
+        let geometry = FieldData::Geometry {
+            name: "location".into(),
+            values: vec!["POINT (1 2)".into()],
+        }
+        .into_proto()
+        .unwrap();
+        assert_eq!(geometry.r#type, schema::DataType::Geometry as i32);
+        assert!(matches!(
+            geometry.field,
+            Some(field_data::Field::Scalars(schema::ScalarField {
+                data: Some(scalar_field::Data::GeometryWktData(_)),
+                ..
+            }))
+        ));
+
+        let timestamptz = FieldData::Timestamptz {
+            name: "observed_at".into(),
+            values: vec!["2026-07-15T12:30:00+08:00".into()],
+        }
+        .into_proto()
+        .unwrap();
+        assert_eq!(timestamptz.r#type, schema::DataType::Timestamptz as i32);
+        assert!(matches!(
+            timestamptz.field,
+            Some(field_data::Field::Scalars(schema::ScalarField {
+                data: Some(scalar_field::Data::StringData(_)),
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn narrow_integer_columns_keep_sdk_types_on_the_shared_int32_wire_array() {
+        for (field, expected_type, expected_values) in [
+            (
+                FieldData::Int8 {
+                    name: "int8_value".into(),
+                    values: vec![-128, 127],
+                },
+                schema::DataType::Int8,
+                vec![-128, 127],
+            ),
+            (
+                FieldData::Int16 {
+                    name: "int16_value".into(),
+                    values: vec![-32768, 32767],
+                },
+                schema::DataType::Int16,
+                vec![-32768, 32767],
+            ),
+        ] {
+            let encoded = field.into_proto().unwrap();
+            assert_eq!(encoded.r#type, expected_type as i32);
+            let Some(field_data::Field::Scalars(schema::ScalarField {
+                data: Some(scalar_field::Data::IntData(values)),
+                ..
+            })) = encoded.field
+            else {
+                panic!("expected integer scalar data")
+            };
+            assert_eq!(values.data, expected_values);
+        }
+    }
+
+    #[test]
+    fn typed_array_columns_encode_their_element_types() {
+        let cases = vec![
+            (
+                FieldData::ArrayBool {
+                    name: "values".into(),
+                    values: vec![vec![true, false]],
+                },
+                DataType::Bool,
+            ),
+            (
+                FieldData::ArrayInt8 {
+                    name: "values".into(),
+                    values: vec![vec![-128, 127]],
+                },
+                DataType::Int8,
+            ),
+            (
+                FieldData::ArrayInt16 {
+                    name: "values".into(),
+                    values: vec![vec![-32768, 32767]],
+                },
+                DataType::Int16,
+            ),
+            (
+                FieldData::ArrayInt32 {
+                    name: "values".into(),
+                    values: vec![vec![-1, 1]],
+                },
+                DataType::Int32,
+            ),
+            (
+                FieldData::ArrayInt64 {
+                    name: "values".into(),
+                    values: vec![vec![-1, 1]],
+                },
+                DataType::Int64,
+            ),
+            (
+                FieldData::ArrayFloat {
+                    name: "values".into(),
+                    values: vec![vec![0.5, 1.5]],
+                },
+                DataType::Float,
+            ),
+            (
+                FieldData::ArrayDouble {
+                    name: "values".into(),
+                    values: vec![vec![0.5, 1.5]],
+                },
+                DataType::Double,
+            ),
+            (
+                FieldData::ArrayVarChar {
+                    name: "values".into(),
+                    values: vec![vec!["a".into(), "b".into()]],
+                },
+                DataType::VarChar,
+            ),
+        ];
+
+        for (field, element_type) in cases {
+            assert_eq!(field.array_element_type(), Some(element_type));
+            let encoded = field.into_proto().unwrap();
+            assert_eq!(encoded.r#type, schema::DataType::Array as i32);
+            let Some(field_data::Field::Scalars(schema::ScalarField {
+                data: Some(scalar_field::Data::ArrayData(values)),
+                ..
+            })) = encoded.field
+            else {
+                panic!("expected array scalar data")
+            };
+            assert_eq!(values.element_type, element_type.into_proto() as i32);
+            assert_eq!(values.data.len(), 1);
+        }
+    }
+
+    #[test]
+    fn half_precision_columns_encode_u16_values_as_little_endian_bytes() {
+        let encoded = FieldData::Float16Vector {
+            name: "embedding".into(),
+            values: vec![vec![0x3c00, 0xbc00]],
+        }
+        .into_proto()
+        .unwrap();
+
+        let Some(field_data::Field::Vectors(schema::VectorField {
+            dim,
+            data: Some(vector_field::Data::Float16Vector(bytes)),
+            ..
+        })) = encoded.field
+        else {
+            panic!("expected float16 vector data")
+        };
+        assert_eq!(dim, 2);
+        assert_eq!(bytes, vec![0x00, 0x3c, 0x00, 0xbc]);
+    }
+
+    #[test]
+    fn vector_columns_derive_dimension_from_values() {
+        let encoded = FieldData::BinaryVector {
+            name: "embedding".into(),
+            values: vec![vec![0xaa, 0x55], vec![0x00, 0xff]],
+        }
+        .into_proto()
+        .unwrap();
+
+        let Some(field_data::Field::Vectors(vectors)) = encoded.field else {
+            panic!("expected binary vector data")
+        };
+        assert_eq!(vectors.dim, 16);
+    }
+
+    #[test]
+    fn vector_columns_reject_inconsistent_value_dimensions() {
+        let error = FieldData::FloatVector {
+            name: "embedding".into(),
+            values: vec![vec![0.1, 0.2], vec![0.3]],
+        }
+        .into_proto()
+        .unwrap_err();
+
+        assert!(matches!(error, Error::Validation(_)));
+    }
+
+    #[test]
+    fn all_null_vector_columns_use_the_schema_dimension() {
+        let data = FieldData::nullable(
+            FieldData::FloatVector {
+                name: "embedding".into(),
+                values: Vec::new(),
+            },
+            vec![false, false],
+        )
+        .unwrap();
+        let field = schema::FieldSchema {
+            data_type: schema::DataType::FloatVector as i32,
+            type_params: vec![crate::proto::common::KeyValuePair {
+                key: "dim".into(),
+                value: "4".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let encoded = data.into_proto_with_schema(&field).unwrap();
+        let Some(field_data::Field::Vectors(vectors)) = encoded.field else {
+            panic!("expected float vector data")
+        };
+        assert_eq!(vectors.dim, 4);
+        assert_eq!(encoded.valid_data, vec![false, false]);
+    }
+
+    #[test]
+    fn nullable_encoding_populates_field_specific_validity() {
+        let data = FieldData::nullable(FieldData::int64("id", vec![1, 3]), vec![true, false, true])
+            .unwrap();
+        let proto = data.into_proto().unwrap();
+        assert_eq!(proto.valid_data, vec![true, false, true]);
+        let Some(field_data::Field::Scalars(scalars)) = proto.field else {
+            panic!("expected scalar field")
+        };
+        assert_eq!(scalars.valid_data, vec![true, false, true]);
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Test Cases
+///////////////////////////////////////////////////////////////////////////////
+
+#[cfg(test)]
+mod constructor_value_tests {
+    use super::*;
+
+    #[test]
+    fn function_constructor_values() {
+        let value = Function::new()
+            .name("function")
+            .function_type(FunctionType::Unknown);
+
+        assert_eq!(value.get_name(), "function");
+        assert!(value.get_description().is_empty());
+        assert_eq!(value.get_function_type().to_owned(), FunctionType::Unknown);
+        assert!(value.get_input_fields().is_empty());
+        assert!(value.get_output_fields().is_empty());
+        assert!(value.get_params().is_empty());
+    }
+
+    #[test]
+    fn function_populated_values() {
+        let value = Function::new()
+            .name("bm25")
+            .function_type(FunctionType::Bm25)
+            .description("description")
+            .input_fields(["text"])
+            .output_fields(["sparse"])
+            .param("key", "value");
+
+        assert_eq!(value.get_name().to_owned(), "bm25");
+        assert_eq!(value.get_description().to_owned(), "description");
+        assert_eq!(value.get_function_type().to_owned(), FunctionType::Bm25);
+        assert_eq!(value.get_input_fields().to_owned(), ["text"]);
+        assert_eq!(value.get_output_fields().to_owned(), ["sparse"]);
+        assert_eq!(
+            value.get_params().get("key").map(String::as_str),
+            Some("value")
+        );
+        assert_eq!(Function::from_proto(value.clone().into_proto()), value);
+
+        let built = Function::new()
+            .name("bm25")
+            .function_type(FunctionType::Bm25)
+            .description("description")
+            .input_fields(["text"])
+            .output_fields(["sparse"])
+            .params(HashMap::from([("key".into(), "value".into())]));
+        assert_eq!(built, value);
+    }
+
+    #[test]
+    fn function_mutable_setters_update_existing_value() {
+        let mut value = Function::new()
+            .name("function")
+            .function_type(FunctionType::Unknown);
+        value
+            .set_name("bm25")
+            .set_description("description")
+            .set_function_type(FunctionType::Bm25)
+            .set_input_fields(["text"])
+            .set_output_fields(["sparse"])
+            .set_params(HashMap::from([("key".into(), "value".into())]));
+
+        assert_eq!(value.get_name(), "bm25");
+        assert_eq!(value.get_description(), "description");
+        assert_eq!(value.get_function_type(), FunctionType::Bm25);
+        assert_eq!(value.get_input_fields(), ["text"]);
+        assert_eq!(value.get_output_fields(), ["sparse"]);
+        assert_eq!(
+            value.get_params().get("key").map(String::as_str),
+            Some("value")
+        );
+    }
+
+    #[test]
+    fn retry_config_default_values() {
+        let value = RetryConfig::new();
+
+        assert_eq!(value.get_max_attempts().to_owned(), 75);
+        assert_eq!(value.get_max_retry_timeout().to_owned(), Duration::ZERO);
+        assert_eq!(
+            value.get_initial_backoff().to_owned(),
+            Duration::from_millis(10)
+        );
+        assert_eq!(value.get_max_backoff().to_owned(), Duration::from_secs(3));
+        assert_eq!(value.get_backoff_multiplier().to_owned(), 3.0);
+        assert!(value.get_retry_on_rate_limit());
+    }
+
+    #[test]
+    fn retry_config_populated_values() {
+        let value = RetryConfig::new()
+            .max_attempts(7)
+            .max_retry_timeout(Duration::from_secs(8))
+            .initial_backoff(Duration::from_millis(20))
+            .max_backoff(Duration::from_secs(2))
+            .backoff_multiplier(2.0)
+            .retry_on_rate_limit(false);
+
+        assert_eq!(value.get_max_attempts().to_owned(), 7);
+        assert_eq!(
+            value.get_max_retry_timeout().to_owned(),
+            Duration::from_secs(8)
+        );
+        assert_eq!(
+            value.get_initial_backoff().to_owned(),
+            Duration::from_millis(20)
+        );
+        assert_eq!(value.get_max_backoff().to_owned(), Duration::from_secs(2));
+        assert_eq!(value.get_backoff_multiplier().to_owned(), 2.0);
+        assert!(!value.get_retry_on_rate_limit());
+    }
+
+    #[test]
+    fn telemetry_config_builder_and_mutable_setters_match() {
+        let expected = TelemetryConfig::new()
+            .enabled(false)
+            .heartbeat_interval(Duration::from_secs(3))
+            .sampling_rate(0.25)
+            .error_max_count(12)
+            .client_id("worker-1");
+        let mut actual = TelemetryConfig::new();
+        actual
+            .set_enabled(false)
+            .set_heartbeat_interval(Duration::from_secs(3))
+            .set_sampling_rate(0.25)
+            .set_error_max_count(12)
+            .set_client_id("worker-1");
+
+        assert_eq!(actual, expected);
+        assert!(!actual.is_enabled());
+        assert_eq!(actual.get_heartbeat_interval(), Duration::from_secs(3));
+        assert_eq!(actual.get_sampling_rate(), 0.25);
+        assert_eq!(actual.get_error_max_count(), 12);
+        assert_eq!(actual.get_client_id(), "worker-1");
+
+        let raw_zeroes = TelemetryConfig::new()
+            .heartbeat_interval(Duration::ZERO)
+            .error_max_count(0);
+        assert_eq!(raw_zeroes.get_heartbeat_interval(), Duration::ZERO);
+        assert_eq!(raw_zeroes.get_error_max_count(), 0);
+    }
+
+    #[test]
+    fn connect_config_constructor_values() {
+        let value = ConnectConfig::new().uri("http://localhost:19530");
+
+        assert_eq!(value.get_uri().to_owned(), "http://localhost:19530");
+        assert_eq!(value.get_token().to_owned(), None);
+        assert_eq!(value.get_username().to_owned(), None);
+        assert_eq!(value.get_password().to_owned(), None);
+        assert!(!value.is_secure());
+        assert_eq!(value.get_tls_server_name().to_owned(), None);
+        assert_eq!(value.get_ca_certificate().to_owned(), None);
+        assert_eq!(value.get_client_certificate().to_owned(), None);
+        assert_eq!(value.get_client_key().to_owned(), None);
+        assert_eq!(
+            value.get_connect_timeout().to_owned(),
+            Duration::from_secs(10)
+        );
+        assert_eq!(value.get_rpc_timeout().to_owned(), Duration::ZERO);
+        assert_eq!(
+            value.get_keepalive_time().to_owned(),
+            Duration::from_secs(10)
+        );
+        assert_eq!(
+            value.get_keepalive_timeout().to_owned(),
+            Duration::from_secs(5)
+        );
+        assert!(value.get_keepalive_while_idle());
+        assert!(value.get_database().is_empty());
+        assert_eq!(value.get_retry().get_max_attempts().to_owned(), 75);
+        assert_eq!(
+            value.get_retry().get_initial_backoff(),
+            Duration::from_millis(10)
+        );
+    }
+
+    #[test]
+    fn connect_config_populated_values() {
+        let retry = RetryConfig::new().max_attempts(7);
+        let value = ConnectConfig::new()
+            .uri("http://milvus:19530")
+            .token("token")
+            .tls_server_name("milvus.example.com")
+            .ca_certificate("/certs/ca.pem")
+            .client_certificate("/certs/client.pem")
+            .client_key("/certs/client-key.pem")
+            .database("database")
+            .connect_timeout(Duration::from_secs(1))
+            .rpc_timeout(Duration::from_secs(2))
+            .keepalive_time(Duration::from_secs(3))
+            .keepalive_timeout(Duration::from_secs(4))
+            .keepalive_while_idle(false)
+            .retry(retry.clone());
+
+        assert_eq!(value.get_uri().to_owned(), "http://milvus:19530");
+        assert_eq!(value.get_token().as_deref(), Some("dG9rZW4="));
+        assert_eq!(
+            value.get_tls_server_name().as_deref(),
+            Some("milvus.example.com")
+        );
+        assert_eq!(value.get_ca_certificate().as_deref(), Some("/certs/ca.pem"));
+        assert_eq!(
+            value.get_client_certificate().as_deref(),
+            Some("/certs/client.pem")
+        );
+        assert_eq!(
+            value.get_client_key().as_deref(),
+            Some("/certs/client-key.pem")
+        );
+        assert_eq!(value.get_database().to_owned(), "database");
+        assert_eq!(
+            value.get_connect_timeout().to_owned(),
+            Duration::from_secs(1)
+        );
+        assert_eq!(value.get_rpc_timeout().to_owned(), Duration::from_secs(2));
+        assert_eq!(
+            value.get_keepalive_time().to_owned(),
+            Duration::from_secs(3)
+        );
+        assert_eq!(
+            value.get_keepalive_timeout().to_owned(),
+            Duration::from_secs(4)
+        );
+        assert!(!value.get_keepalive_while_idle());
+        assert_eq!(
+            value.get_retry().get_max_attempts(),
+            retry.get_max_attempts()
+        );
+
+        let credentials = ConnectConfig::new()
+            .uri("http://milvus:19530")
+            .username_password("user", "password");
+        assert_eq!(
+            credentials.get_token().as_deref(),
+            Some("dXNlcjpwYXNzd29yZA==")
+        );
+        assert_eq!(credentials.get_username().as_deref(), Some("user"));
+        assert_eq!(credentials.get_password().as_deref(), Some("password"));
+
+        let secure = ConnectConfig::new().uri("http://milvus:19530").secure(true);
+        assert!(secure.is_secure());
+
+        let split = ConnectConfig::new()
+            .uri("http://milvus:19530")
+            .username("user")
+            .password("password");
+        assert_eq!(split.get_token().as_deref(), Some("dXNlcjpwYXNzd29yZA=="));
+        assert_eq!(split.get_username().as_deref(), Some("user"));
+        assert_eq!(split.get_password().as_deref(), Some("password"));
+    }
+
+    #[test]
+    fn connect_config_explicit_token_takes_precedence_over_credentials() {
+        // An explicit token is never overwritten by later username/password settings.
+        let value = ConnectConfig::new()
+            .token("root:Milvus")
+            .username("user")
+            .password("password");
+        assert_eq!(value.get_token().as_deref(), Some("cm9vdDpNaWx2dXM="));
+
+        let value = ConnectConfig::new()
+            .username("user")
+            .password("password")
+            .token("root:Milvus");
+        assert_eq!(value.get_token().as_deref(), Some("cm9vdDpNaWx2dXM="));
+    }
+
+    #[test]
+    fn connect_config_derived_token_tracks_credential_changes() {
+        // A derived token stays in sync when a credential changes, but only until an explicit
+        // token is supplied.
+        let mut value = ConnectConfig::new();
+        value.set_username("user").set_password("old");
+        assert_eq!(value.get_token().as_deref(), Some("dXNlcjpvbGQ="));
+        value.set_password("new");
+        assert_eq!(value.get_token().as_deref(), Some("dXNlcjpuZXc="));
+        value.set_token("root:Milvus");
+        value.set_password("other");
+        assert_eq!(value.get_token().as_deref(), Some("cm9vdDpNaWx2dXM="));
+    }
+
+    #[test]
+    fn connect_config_debug_output_redacts_token() {
+        let value = ConnectConfig::new()
+            .uri("http://milvus:19530")
+            .token("root:Milvus")
+            .password("secret-password")
+            .client_key("/secret/client-key.pem")
+            .database("default");
+
+        let debug = format!("{value:?}");
+        assert!(debug.contains("http://milvus:19530"));
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains("root:Milvus"));
+        assert!(!debug.contains("cm9vdDpNaWx2dXM="));
+        assert!(!debug.contains("secret-password"));
+        assert!(!debug.contains("/secret/client-key.pem"));
+    }
+
+    #[test]
+    fn connect_config_mutable_setters_update_existing_value() {
+        let retry = RetryConfig::new().max_attempts(7);
+        let mut value = ConnectConfig::new().uri("http://localhost:19530");
+        value
+            .set_uri("http://milvus:19530")
+            .set_token("root:Milvus")
+            .set_tls_server_name("milvus.example.com")
+            .set_ca_certificate("/certs/ca.pem")
+            .set_client_certificate("/certs/client.pem")
+            .set_client_key("/certs/client-key.pem")
+            .set_database("database")
+            .set_connect_timeout(Duration::from_secs(1))
+            .set_rpc_timeout(Duration::from_secs(2))
+            .set_keepalive_time(Duration::from_secs(3))
+            .set_keepalive_timeout(Duration::from_secs(4))
+            .set_keepalive_while_idle(false)
+            .set_retry(retry.clone());
+
+        assert_eq!(value.get_uri(), "http://milvus:19530");
+        assert_eq!(value.get_token().as_deref(), Some("cm9vdDpNaWx2dXM="));
+        assert_eq!(
+            value.get_tls_server_name().as_deref(),
+            Some("milvus.example.com")
+        );
+        assert_eq!(value.get_ca_certificate().as_deref(), Some("/certs/ca.pem"));
+        assert_eq!(
+            value.get_client_certificate().as_deref(),
+            Some("/certs/client.pem")
+        );
+        assert_eq!(
+            value.get_client_key().as_deref(),
+            Some("/certs/client-key.pem")
+        );
+        assert_eq!(value.get_database(), "database");
+        assert_eq!(value.get_connect_timeout(), Duration::from_secs(1));
+        assert_eq!(value.get_rpc_timeout(), Duration::from_secs(2));
+        assert_eq!(value.get_keepalive_time(), Duration::from_secs(3));
+        assert_eq!(value.get_keepalive_timeout(), Duration::from_secs(4));
+        assert!(!value.get_keepalive_while_idle());
+        assert_eq!(
+            value.get_retry().get_max_attempts(),
+            retry.get_max_attempts()
+        );
+
+        value
+            .set_tls_server_name("")
+            .set_ca_certificate("")
+            .set_client_certificate("")
+            .set_client_key("");
+        assert_eq!(value.get_tls_server_name(), &None);
+        assert_eq!(value.get_ca_certificate(), &None);
+        assert_eq!(value.get_client_certificate(), &None);
+        assert_eq!(value.get_client_key(), &None);
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Test Cases
+///////////////////////////////////////////////////////////////////////////////
+
+#[cfg(test)]
+mod enum_conversion_tests {
+    use super::*;
+
+    #[test]
+    #[allow(deprecated)]
+    fn consistency_level_round_trips_proto() {
+        let values = [
+            ConsistencyLevel::Strong,
+            ConsistencyLevel::Session,
+            ConsistencyLevel::Bounded,
+            ConsistencyLevel::Eventually,
+            ConsistencyLevel::Customized,
+        ];
+
+        for value in values {
+            assert_eq!(
+                ConsistencyLevel::from_proto(value.into_proto() as i32),
+                value
+            );
+        }
+        assert_eq!(
+            ConsistencyLevel::from_proto(i32::MAX),
+            ConsistencyLevel::Customized
+        );
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn consistency_level_default_is_preserved() {
+        assert_eq!(ConsistencyLevel::default(), ConsistencyLevel::Customized);
+    }
+
+    #[test]
+    fn metric_type_round_trips_wire_name() {
+        let values = [
+            MetricType::Default,
+            MetricType::L2,
+            MetricType::Ip,
+            MetricType::Cosine,
+            MetricType::Hamming,
+            MetricType::Jaccard,
+            MetricType::MhJaccard,
+            MetricType::Bm25,
+            MetricType::MaxSimCosine,
+            MetricType::MaxSimIp,
+            MetricType::MaxSimL2,
+            MetricType::MaxSimJaccard,
+            MetricType::MaxSimHamming,
+        ];
+
+        for value in values {
+            assert_eq!(MetricType::from_str(value.as_str()), value);
+        }
+        assert_eq!(MetricType::from_str("INVALID"), MetricType::Default);
+        assert_eq!(MetricType::from_str("unknown"), MetricType::Default);
+    }
+
+    #[test]
+    fn data_type_round_trips_proto() {
+        let values = [
+            DataType::Unknown,
+            DataType::Bool,
+            DataType::Int8,
+            DataType::Int16,
+            DataType::Int32,
+            DataType::Int64,
+            DataType::Float,
+            DataType::Double,
+            DataType::VarChar,
+            DataType::Json,
+            DataType::Geometry,
+            DataType::Text,
+            DataType::Timestamptz,
+            DataType::Array,
+            DataType::Struct,
+            DataType::FloatVector,
+            DataType::BinaryVector,
+            DataType::Float16Vector,
+            DataType::BFloat16Vector,
+            DataType::SparseFloatVector,
+            DataType::Int8Vector,
+        ];
+
+        for value in values {
+            assert_eq!(DataType::try_from_proto(value.into_proto()).unwrap(), value);
+        }
+    }
+
+    #[test]
+    fn function_type_round_trips_through_function_proto() {
+        let values = [
+            FunctionType::Unknown,
+            FunctionType::Bm25,
+            FunctionType::TextEmbedding,
+            FunctionType::Rerank,
+            FunctionType::MinHash,
+            FunctionType::MolFingerprint,
+        ];
+
+        for value in values {
+            let function = Function::new().name("function").function_type(value);
+            assert_eq!(
+                Function::from_proto(function.into_proto()).get_function_type(),
+                value
+            );
+        }
+    }
+
+    #[test]
+    fn ids_convert_from_proto_and_into_json() {
+        let integer = Ids::Int64(vec![1, 2]);
+        assert_eq!(integer.clone().into_json(), serde_json::json!([1, 2]));
+        assert_eq!(
+            Ids::from_proto(Some(schema::IDs {
+                id_field: Some(schema::i_ds::IdField::IntId(schema::LongArray {
+                    data: vec![1, 2],
+                    ..Default::default()
+                })),
+            }))
+            .unwrap(),
+            integer
+        );
+
+        let strings = Ids::VarChar(vec!["a".to_owned(), "b".to_owned()]);
+        assert_eq!(strings.clone().into_json(), serde_json::json!(["a", "b"]));
+        assert_eq!(
+            Ids::from_proto(Some(schema::IDs {
+                id_field: Some(schema::i_ds::IdField::StrId(schema::StringArray {
+                    data: vec!["a".to_owned(), "b".to_owned()],
+                    ..Default::default()
+                })),
+            }))
+            .unwrap(),
+            strings
+        );
+    }
+
+    #[test]
+    fn ids_from_proto_rejects_uuid_primary_keys() {
+        let error = Ids::from_proto(Some(schema::IDs {
+            id_field: Some(schema::i_ds::IdField::UuidId(schema::UuidArray {
+                data: vec![vec![1u8; 16]],
+            })),
+        }))
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::MalformedResponse(message) if message.contains("uuid primary keys are not supported")
+        ));
+    }
+
+    #[test]
+    fn field_data_converts_to_proto() {
+        let value = FieldData::VarChar {
+            name: "text".to_owned(),
+            values: vec!["value".to_owned()],
+        };
+        let proto = value.into_proto().expect("field data conversion");
+
+        assert_eq!(proto.field_name, "text");
+        assert_eq!(proto.r#type, schema::DataType::VarChar as i32);
+    }
+}
+
+#[cfg(test)]
+mod select_field_data_rows_tests {
+    use super::*;
+
+    #[test]
+    fn prunes_nullable_fields_mapping_compacted_inner_rows() {
+        // Five logical rows, three valid; the inner payload is compacted to the three valid
+        // values. Keeping rows 1, 3, 4 keeps two null rows and the third valid row, which must
+        // map to compact inner index 2.
+        let data = FieldData::Nullable {
+            data: Box::new(FieldData::Int64 {
+                name: "id".to_owned(),
+                values: vec![10, 20, 30],
+            }),
+            valid_data: vec![true, false, true, false, true],
+        };
+        let pruned = select_field_data_rows(data, &[1, 3, 4]).expect("prune nullable field");
+        assert_eq!(pruned.valid_data(), Some([false, false, true].as_slice()));
+        assert!(matches!(
+            pruned.inner(),
+            FieldData::Int64 { values, .. } if values == &vec![30]
+        ));
+    }
+
+    #[test]
+    fn prunes_vector_and_array_fields() {
+        let vector = FieldData::FloatVector {
+            name: "vector".to_owned(),
+            values: vec![vec![0.1, 0.2], vec![0.3, 0.4], vec![0.5, 0.6]],
+        };
+        let pruned = select_field_data_rows(vector, &[0, 2]).expect("prune vector field");
+        assert!(matches!(
+            pruned,
+            FieldData::FloatVector { values, .. }
+                if values == vec![vec![0.1, 0.2], vec![0.5, 0.6]]
+        ));
+
+        let array = FieldData::ArrayInt64 {
+            name: "tags".to_owned(),
+            values: vec![vec![1], vec![2, 3], vec![4]],
+        };
+        let pruned = select_field_data_rows(array, &[1]).expect("prune array field");
+        assert!(matches!(
+            pruned,
+            FieldData::ArrayInt64 { values, .. } if values == vec![vec![2, 3]]
+        ));
+    }
+
+    #[test]
+    fn string_value_constraints_skip_max_length_for_text_fields() {
+        let varchar_field = schema::FieldSchema {
+            name: "note".into(),
+            data_type: schema::DataType::VarChar as i32,
+            type_params: vec![common::KeyValuePair {
+                key: "max_length".into(),
+                value: "5".into(),
+            }],
+            ..Default::default()
+        };
+        let too_long = FieldData::VarChar {
+            name: "note".into(),
+            values: vec!["longer than five".into()],
+        };
+        let error = too_long
+            .validate_value_constraints(&varchar_field)
+            .unwrap_err();
+        assert!(error.to_string().contains("max_length"));
+
+        let text_field = schema::FieldSchema {
+            name: "body".into(),
+            data_type: schema::DataType::Text as i32,
+            type_params: vec![common::KeyValuePair {
+                key: "max_length".into(),
+                value: "5".into(),
+            }],
+            ..Default::default()
+        };
+        FieldData::VarChar {
+            name: "body".into(),
+            values: vec!["longer than five".into()],
+        }
+        .validate_value_constraints(&text_field)
+        .expect("text values are not constrained by max_length");
+    }
+}
