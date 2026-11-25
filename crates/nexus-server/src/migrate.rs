@@ -313,12 +313,17 @@ mod tests {
 
         // --- seed via the real stores ---
         let auth_store = AuthStore::connect(&auth_sqlite_url).await.unwrap();
+        let password = uuid::Uuid::new_v4().to_string();
         auth_store
-            .create_user("alice", "hunter2", Role::Write)
+            .create_user("alice", &password, Role::Write)
             .await
             .unwrap();
 
-        let cipher = SecretCipher::from_hex_key(&"ab".repeat(32)).unwrap();
+        use rand_core::RngCore;
+        let mut key = [0u8; 32];
+        rand_core::OsRng.fill_bytes(&mut key);
+        let key_hex: String = key.iter().map(|byte| format!("{byte:02x}")).collect();
+        let cipher = SecretCipher::from_hex_key(&key_hex).unwrap();
         let pipeline_store = PipelineStore::connect(&pipelines_sqlite_url).await.unwrap();
         pipeline_store
             .create(&sample_spec("p1"), &cipher, "alice")
@@ -371,7 +376,7 @@ mod tests {
         // --- verify against the real stores, now pointed at Postgres ---
         let auth_pg = AuthStore::connect(&pg_url).await.unwrap();
         assert_eq!(
-            auth_pg.verify("alice", "hunter2").await.unwrap(),
+            auth_pg.verify("alice", &password).await.unwrap(),
             Some(Role::Write)
         );
 

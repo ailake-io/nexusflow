@@ -252,24 +252,11 @@ jobs:
           # bug this job ordering exists to fix.
           ref: ${{ needs.determine-version.outputs.sha }}
       - uses: dtolnay/rust-toolchain@stable
-      # CodeQL (2026-10-28, PR #137, actions/cache-poisoning/poisonable-step):
-      # this checkout's ref traces back to determine-version.outputs.sha,
-      # which workflow_dispatch's `version` input can influence — flagged
-      # as a cache-poisoning risk because this job can write to the
-      # default branch's shared cache scope. save-if restricts writes to
-      # the fully-automated workflow_run path (triggered only after
-      # connectors-heavy succeeds on main, no attacker-shaped input in that
-      # path); a manual workflow_dispatch run still reads the existing
-      # cache (faster rebuild) but never writes to it.
-      - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
-        with:
-          shared-key: release-${{ matrix.os }}-${{ matrix.arch }}
-          save-if: ${{ github.event_name != 'workflow_dispatch' }}
+      # Release executes a dynamically selected commit. Do not read or write
+      # shared dependency caches from this privileged workflow.
       - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
 
       # unixodbc-dev/libsasl2-dev/libssl-dev/zlib1g-dev are here for
       # connectors-all's two natively-linked connectors — nexus-connector-odbc

@@ -10,7 +10,7 @@ arrow-array = "58.4.0"
 arrow-schema = "58.4.0"
 arrow-select = "58.4.0"
 async-trait = "0.1.91"
-calamine = { version = "0.37.0", features = ["chrono"] }
+calamine = { version = "0.38.0", features = ["chrono"] }
 chrono = "0.4.45"
 futures = "0.3.33"
 object_store = { version = "0.10.2", features = ["aws", "gcp", "azure", "http"] }

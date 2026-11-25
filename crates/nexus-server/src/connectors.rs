@@ -59,6 +59,44 @@ use nexus_connector_redis::{RedisConnectorConfig, RedisSink, RedisSource};
 #[cfg(feature = "rest")]
 use nexus_connector_rest::{RestConnectorConfig, RestSource, WebhookSink, WebhookSinkConfig};
 
+// Bound work before cloning or deserializing configuration, including configs
+// loaded from storage and configs handed to dynamically registered connectors.
+fn validate_config_limits(config: &serde_json::Value) -> anyhow::Result<()> {
+    anyhow::ensure!(config.is_object(), "connector config must be an object");
+    fn visit(value: &serde_json::Value, depth: usize, budget: &mut usize) -> anyhow::Result<()> {
+        anyhow::ensure!(depth <= 32, "connector config nesting exceeds 32 levels");
+        let cost = match value {
+            serde_json::Value::String(s) => s.len().saturating_add(1),
+            _ => 1,
+        };
+        *budget = budget
+            .checked_sub(cost)
+            .ok_or_else(|| anyhow::anyhow!("connector config exceeds resource limit"))?;
+        match value {
+            serde_json::Value::Object(fields) => {
+                for (key, value) in fields {
+                    *budget = budget.checked_sub(key.len()).ok_or_else(|| {
+                        anyhow::anyhow!("connector config exceeds resource limit")
+                    })?;
+                    visit(value, depth + 1, budget)?;
+                }
+            }
+            serde_json::Value::Array(values) => {
+                anyhow::ensure!(
+                    values.len() <= 4096,
+                    "connector config array exceeds 4096 items"
+                );
+                for value in values {
+                    visit(value, depth + 1, budget)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    visit(config, 0, &mut (256 * 1024))
+}
+
 /// The only place that knows which connector names exist and how to build
 /// them — `nexus-core`/`PipelineEngine` never hardcode a connector list, see
 /// `ConnectorRegistry` (ARCHITECTURE.md §3). Adding an OSS connector means
@@ -80,6 +118,7 @@ use nexus_connector_rest::{RestConnectorConfig, RestSource, WebhookSink, Webhook
 /// required fields, and wrong types at pipeline create/update time, before
 /// the invalid config is persisted.
 pub fn validate_source_config(node: &NodeSpec) -> anyhow::Result<()> {
+    validate_config_limits(&node.config)?;
     match node.connector.as_str() {
         "postgres" => {
             let _: PostgresConnectorConfig = serde_json::from_value(node.config.clone())?;
@@ -190,6 +229,7 @@ pub async fn build_source(
     node: &NodeSpec,
     index: usize,
 ) -> anyhow::Result<(String, Box<dyn Source>)> {
+    validate_config_limits(&node.config)?;
     let name = node.resolved_name(index, "source")?;
     let source: Box<dyn Source> = match node.connector.as_str() {
         "postgres" => {
@@ -321,6 +361,7 @@ pub async fn build_source(
 /// Validates that a sink node's config can be deserialized into the
 /// connector's strongly-typed config struct. See `validate_source_config`.
 pub fn validate_sink_config(node: &NodeSpec) -> anyhow::Result<()> {
+    validate_config_limits(&node.config)?;
     match node.connector.as_str() {
         "postgres" => {
             let _: PostgresConnectorConfig = serde_json::from_value(node.config.clone())?;
@@ -453,6 +494,7 @@ pub async fn build_sink(
     index: usize,
     schema: &arrow_schema::SchemaRef,
 ) -> anyhow::Result<(String, Box<dyn Sink>)> {
+    validate_config_limits(&node.config)?;
     let name = node.resolved_name(index, "sink")?;
     // Most connectors below only ever needed the column *names* — kept as
     // `columns` so their call sites don't change. postgres/sqlite now take
@@ -601,6 +643,21 @@ pub async fn build_sink(
 mod tests {
     use super::*;
     use nexus_core::ConnectorCapability;
+
+    #[test]
+    fn config_limits_reject_excessive_resources() {
+        assert!(validate_config_limits(&serde_json::json!({"uri": "sqlite://local"})).is_ok());
+        assert!(validate_config_limits(&serde_json::json!([])).is_err());
+        assert!(
+            validate_config_limits(&serde_json::json!({"token": "x".repeat(256 * 1024)})).is_err()
+        );
+        assert!(validate_config_limits(&serde_json::json!({"items": vec![0; 4097]})).is_err());
+        let mut nested = serde_json::json!(null);
+        for _ in 0..34 {
+            nested = serde_json::json!({"nested": nested});
+        }
+        assert!(validate_config_limits(&nested).is_err());
+    }
 
     // --- Plugin builder fallback (ROADMAP.md Fase 12 Bloco 3 prerequisite) ---
     // Stands in for a connector crate (e.g. Excel) that has no match arm
