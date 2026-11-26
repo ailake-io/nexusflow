@@ -30,4 +30,13 @@ regexes = [
   # against a wiremock server that never checks the signature. Never paired
   # with a real GCP service account.
   '''MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQCdaPvqQKt02\+bG''',
+  # Vendored Apache object_store test vectors and documentation placeholders.
+  # These are public examples, not active credentials; matching exact strings
+  # avoids allowing any credential pattern in the vendored packages broadly.
+  '''H20ABqCkLZID4rLe''',
+  '''jMqRDgxSsBqqznfmddGdu1TmmZOJQxdM''',
+  '''OAUTH2_TOKEN''',
+  '''1234567890abcdef1234567890abcdef''',
+  '''AKIAIOSFODNN7EXAMPLE''',
+  '''ASIA4ZP5EXAMPLETOKEN''',
 ]
