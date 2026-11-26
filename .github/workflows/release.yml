@@ -46,54 +46,13 @@ name: Release
 # Actions artifact storage, which is what made the original quota problem
 # possible in the first place — this shouldn't recur.
 #
-# Continuous-release model, not tag-triggered: on `main`, this is the last
-# stage of a deliberate chain — CI -> connectors-heavy -> Release build ->
-# GitHub Release — so `build`/`github-release` only run once both of those
-# already succeeded on that commit (see the `workflow_run` trigger below and
-# each job's `if:`). No separate PR-time path — a PR only gets exercised by
-# this workflow if/when it's merged and runs the real chain; `workflow_dispatch`
-# is the only other way in (manual escape hatch, see below). `github-release` derives
-# its tag/name directly from the workspace version in Cargo.toml (currently
-# v0.1.0) rather than requiring a separate `git tag` push — every successful
-# run of the chain re-publishes that same version's release (the
-# `github-release` job's own release-and-upload step upserts: new assets
-# replace old ones on the existing tag via `gh release upload --clobber`
-# rather than erroring) until someone bumps the workspace version, at which
-# point a new tag/release is created instead.
+# main-pipeline.yml dispatches this workflow on main after CI and connector
+# checks pass. Manual dispatch remains available on main with an explicit version.
+# A release never checks out a commit taken from a workflow_run payload.
 
 on:
-  # Last step of the CI -> connectors-heavy -> Release chain on main (see
-  # connectors-heavy.yml's matching workflow_run trigger for step 2) —
-  # `workflow_run` is the only way to sequence separate workflow files,
-  # there's no cross-file `needs:`. The job-level `if:`s below only let
-  # github-release actually run when connectors-heavy's main-branch run
-  # succeeded, and connectors-heavy.yml itself only runs when CI succeeded
-  # — so this single trigger already transitively requires both CI and
-  # connectors-heavy to be green before Release does anything.
-  #
-  # No independent `pull_request:` trigger here on purpose (removed) — it
-  # used to race CI instead of depending on it, so a PR could show this
-  # workflow green while CI was still red on the very same commit. Release
-  # only ever runs as step 3 of the chain above, or via the manual dispatch
-  # below.
-  workflow_run:
-    workflows: ["connectors-heavy"]
-    types: [completed]
-    branches: [main]
-  # Manual escape hatch: `workflow_run` delivery from GitHub can lag several
-  # minutes behind the source workflow's completion (observed on this repo —
-  # see git history around this line), and re-running the upstream
-  # connectors-heavy run reuses its run id instead of emitting a fresh
-  # `completed` event, so it doesn't reliably re-fire this trigger either.
-  # `gh workflow run release.yml --ref main -f version=X.Y.Z` covers that gap
-  # without editing anything — same pattern as ci.yml/connectors-heavy.yml's
-  # own `workflow_dispatch`.
-  #
-  # `version` is required and has no default on purpose: this is the only
-  # path where the version is a human decision rather than derived from
-  # Cargo.toml (see the "Determine version" step) — forces whoever runs this
-  # by hand to say explicitly what they're publishing instead of silently
-  # reusing whatever happens to be committed.
+  # main-pipeline.yml dispatches this workflow after successful checks on main.
+  # Do not accept workflow_run payloads as a source of privileged checkout refs.
   workflow_dispatch:
     inputs:
       version:
@@ -121,7 +80,7 @@ jobs:
   # `github.sha` that might be stale or (per the "non-fast-forward"
   # failure this replaces) already behind another push.
   determine-version:
-    if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     # Was 5 — bumped for the two `cargo update --workspace` calls below
     # (metadata-only re-resolution, no compilation, but still needs a cold
@@ -135,11 +94,8 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          # workflow_run's default ref/sha is the repo's default branch, not
-          # the commit connectors-heavy just validated on main — pin
-          # explicitly. github.sha already resolves correctly for
-          # workflow_dispatch, so this is a no-op there.
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          # Pin the main commit selected by the trusted dispatch event.
+          ref: ${{ github.sha }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Determine version
@@ -154,14 +110,7 @@ jobs:
 
           current_version="$(grep -A3 '^\[workspace.package\]' Cargo.toml | grep '^version' | head -1 | cut -d '"' -f2)"
 
-          # workflow_dispatch: the version is whatever was typed in, full
-          # stop — never auto-derived. The automatic CI -> connectors-heavy
-          # -> Release chain has no way to take input (workflow_run doesn't
-          # carry one), so it always publishes/completes whatever version is
-          # currently committed to Cargo.toml — no auto-bump. Concretely:
-          # merging a change that doesn't touch Cargo.toml's version just
-          # re-completes that same tag's release (upsert via `--clobber`
-          # below) instead of minting a new one every single merge.
+          # The orchestrator supplies the committed version; manual dispatch may bump it.
           if [ -n "${DISPATCH_VERSION:-}" ]; then
             # Real injection risk flagged by CodeQL (2026-10-28, PR #137):
             # this raw string flows unsanitized into a `sed` replacement
@@ -211,7 +160,7 @@ jobs:
 
   build:
     needs: determine-version
-    if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     strategy:
       # A real run (2026-09-05) showed the cost of the default fail-fast:
       # macOS failed on a real, unrelated bug (libpq pkg-config path) and
@@ -246,30 +195,20 @@ jobs:
           df -h /
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          # Pinned to determine-version's exact output commit (post-bump if
-          # it bumped) — not github.sha/workflow_run.head_sha, which would
-          # be the pre-bump commit and re-introduce the version-mismatch
-          # bug this job ordering exists to fix.
-          ref: ${{ needs.determine-version.outputs.sha }}
+          # Only fetch code from the trusted release branch. The next step
+          # rejects a concurrent main update instead of building a different commit.
+          ref: main
+          persist-credentials: false
+      - name: Verify release commit
+        env:
+          EXPECTED_SHA: ${{ needs.determine-version.outputs.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - uses: dtolnay/rust-toolchain@stable
-      # CodeQL (2026-10-28, PR #137, actions/cache-poisoning/poisonable-step):
-      # this checkout's ref traces back to determine-version.outputs.sha,
-      # which workflow_dispatch's `version` input can influence — flagged
-      # as a cache-poisoning risk because this job can write to the
-      # default branch's shared cache scope. save-if restricts writes to
-      # the fully-automated workflow_run path (triggered only after
-      # connectors-heavy succeeds on main, no attacker-shaped input in that
-      # path); a manual workflow_dispatch run still reads the existing
-      # cache (faster rebuild) but never writes to it.
-      - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
-        with:
-          shared-key: release-${{ matrix.os }}-${{ matrix.arch }}
-          save-if: ${{ github.event_name != 'workflow_dispatch' }}
+      # Release executes a dynamically selected commit. Do not read or write
+      # shared dependency caches from this privileged workflow.
       - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
 
       # unixodbc-dev/libsasl2-dev/libssl-dev/zlib1g-dev are here for
       # connectors-all's two natively-linked connectors — nexus-connector-odbc
@@ -442,7 +381,7 @@ jobs:
   # job definition (last present as of this commit's parent).
 
   smoke-test:
-    if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     needs: [determine-version, build]
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -459,7 +398,7 @@ jobs:
           ./nexusflow-bin --version
 
   github-release:
-    if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     needs: [determine-version, build, smoke-test]
     runs-on: ubuntu-latest
     # ubuntu-latest ships `sha256sum` by default. GPG signing is
@@ -545,7 +484,7 @@ jobs:
   # unmerged on `develop` at release time is expected to already be in
   # `main` via the PR that triggered this chain in the first place.
   sync-develop:
-    if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     needs: [determine-version, github-release]
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -554,8 +493,12 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ needs.determine-version.outputs.sha }}
+          ref: main
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify release commit
+        env:
+          EXPECTED_SHA: ${{ needs.determine-version.outputs.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - name: Force-push main onto develop
-        run: git push origin ${{ needs.determine-version.outputs.sha }}:refs/heads/develop --force
+        run: git push origin HEAD:refs/heads/develop --force

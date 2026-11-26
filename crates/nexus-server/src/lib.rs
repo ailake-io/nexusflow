@@ -3324,7 +3324,7 @@ async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         config.jwt_secret.as_bytes(),
         config.jwt_ttl_seconds,
         token_blocklist,
-    );
+    )?;
     let secrets = SecretCipher::from_hex_key(&config.encryption_key_hex)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let masking_salt = config.masking_salt.as_ref().map(|s| s.as_bytes().to_vec());
@@ -3713,7 +3713,7 @@ pub(crate) mod tests {
         AppState {
             checkpoints: CheckpointStore::connect("sqlite::memory:").await.unwrap(),
             auth_store,
-            jwt: JwtCodec::new(b"test-secret", 3600),
+            jwt: JwtCodec::new(b"test-secret", 3600).unwrap(),
             secrets: SecretCipher::from_hex_key(&"ab".repeat(32)).unwrap(),
             masking_salt: Some(b"test-masking-salt".to_vec()),
             pipelines: PipelineStore::connect("sqlite::memory:").await.unwrap(),
@@ -5952,7 +5952,7 @@ pub(crate) mod tests {
         AppState {
             checkpoints: CheckpointStore::connect("sqlite::memory:").await.unwrap(),
             auth_store,
-            jwt: JwtCodec::new(b"test-secret", 3600),
+            jwt: JwtCodec::new(b"test-secret", 3600).unwrap(),
             secrets: SecretCipher::from_hex_key(&"ab".repeat(32)).unwrap(),
             masking_salt: Some(b"test-masking-salt".to_vec()),
             pipelines: PipelineStore::connect("sqlite::memory:").await.unwrap(),

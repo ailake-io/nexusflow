@@ -209,11 +209,11 @@ argon2 = "0.5.3"
 # "multipart" backs POST /system/upload (upload.rs) — the only route that
 # needs it; every other route is plain JSON.
 axum = { version = "0.8.9", features = ["ws", "multipart"] }
-# Neither crypto backend is enabled by default in jsonwebtoken 11 — without
+# Neither crypto backend is enabled by default in jsonwebtoken 12 — without
 # picking one, encode/decode panics at runtime ("Could not automatically
 # determine the process-level CryptoProvider"). rust_crypto is pure Rust
 # (no aws-lc-rs/C build), consistent with this workspace's other crates.
-jsonwebtoken = { version = "11.0.0", default-features = false, features = ["rust_crypto"] }
+jsonwebtoken = { version = "12.0.0", default-features = false, features = ["rust_crypto"] }
 # argon2's password-hash re-export of rand_core doesn't itself turn on
 # rand_core's "getrandom" feature (that's what makes `OsRng` exist at all) —
 # has to be requested directly here, at the exact rand_core 0.6.x version

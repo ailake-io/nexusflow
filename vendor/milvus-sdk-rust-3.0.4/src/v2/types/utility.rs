@@ -1,0 +1,2580 @@
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License. You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//! Utility, maintenance, analyzer, compaction, and segment types.
+
+use crate::proto::{common, milvus};
+
+///////////////////////////////////////////////////////////////////////////////
+// SegmentState
+///////////////////////////////////////////////////////////////////////////////
+/// Lifecycle state of a Milvus segment.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SegmentState {
+    #[default]
+    /// The segment state is unknown.
+    Unknown,
+    /// The segment does not exist.
+    NotExist,
+    /// The segment is actively accepting new inserts.
+    Growing,
+    /// The segment is sealed and no longer accepts inserts.
+    Sealed,
+    /// The segment is sealed and has been flushed to storage.
+    Flushed,
+    /// The segment is in the process of being flushed.
+    Flushing,
+    /// The segment has been dropped.
+    Dropped,
+    /// The segment is being imported from external data.
+    Importing,
+}
+
+impl SegmentState {
+    pub(crate) fn from_proto(value: i32) -> Self {
+        match common::SegmentState::try_from(value).ok() {
+            Some(common::SegmentState::NotExist) => Self::NotExist,
+            Some(common::SegmentState::Growing) => Self::Growing,
+            Some(common::SegmentState::Sealed) => Self::Sealed,
+            Some(common::SegmentState::Flushed) => Self::Flushed,
+            Some(common::SegmentState::Flushing) => Self::Flushing,
+            Some(common::SegmentState::Dropped) => Self::Dropped,
+            Some(common::SegmentState::Importing) => Self::Importing,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// SegmentLevel
+///////////////////////////////////////////////////////////////////////////////
+/// Compaction level assigned to a segment.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SegmentLevel {
+    #[default]
+    /// The segment level is unknown.
+    Unknown,
+    /// A legacy segment written before level-based segmentation.
+    Legacy,
+    /// Level-0 segment holding uncommitted or delta data.
+    L0,
+    /// Level-1 segment holding committed data.
+    L1,
+    /// Level-2 segment holding sealed, queryable data.
+    L2,
+}
+
+impl SegmentLevel {
+    pub(crate) fn from_proto(value: i32) -> Self {
+        match common::SegmentLevel::try_from(value).ok() {
+            Some(common::SegmentLevel::Legacy) => Self::Legacy,
+            Some(common::SegmentLevel::L0) => Self::L0,
+            Some(common::SegmentLevel::L1) => Self::L1,
+            Some(common::SegmentLevel::L2) => Self::L2,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// CompactionStateCode
+///////////////////////////////////////////////////////////////////////////////
+/// Execution state of a compaction task.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CompactionStateCode {
+    #[default]
+    /// The compaction state is unknown.
+    Unknown,
+    /// A compaction task is currently running.
+    Executing,
+    /// A compaction task has completed.
+    Completed,
+}
+
+impl CompactionStateCode {
+    pub(crate) fn from_proto(value: i32) -> Self {
+        match common::CompactionState::try_from(value).ok() {
+            Some(common::CompactionState::Executing) => Self::Executing,
+            Some(common::CompactionState::Completed) => Self::Completed,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// CompactionType
+///////////////////////////////////////////////////////////////////////////////
+/// Kind of a compaction task executed by the server.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CompactionType {
+    #[default]
+    /// The compaction type is undefined.
+    Undefined,
+    /// Merge compaction over sealed segments.
+    Merge,
+    /// Mixed compaction.
+    Mix,
+    /// Single-segment compaction.
+    Single,
+    /// Minor compaction.
+    Minor,
+    /// Major compaction.
+    Major,
+    /// Level-0 delete compaction.
+    Level0Delete,
+    /// Clustering compaction.
+    Clustering,
+    /// Sort compaction.
+    Sort,
+    /// Partition-key sort compaction.
+    PartitionKeySort,
+    /// Clustering and partition-key sort compaction.
+    ClusteringPartitionKeySort,
+    /// Compaction that bumps the schema version.
+    BumpSchemaVersion,
+}
+
+impl CompactionType {
+    pub(crate) fn from_proto(value: i32) -> Self {
+        match common::CompactionType::try_from(value).ok() {
+            Some(common::CompactionType::Merge) => Self::Merge,
+            Some(common::CompactionType::Mix) => Self::Mix,
+            Some(common::CompactionType::Single) => Self::Single,
+            Some(common::CompactionType::Minor) => Self::Minor,
+            Some(common::CompactionType::Major) => Self::Major,
+            Some(common::CompactionType::Level0Delete) => Self::Level0Delete,
+            Some(common::CompactionType::Clustering) => Self::Clustering,
+            Some(common::CompactionType::Sort) => Self::Sort,
+            Some(common::CompactionType::PartitionKeySort) => Self::PartitionKeySort,
+            Some(common::CompactionType::ClusteringPartitionKeySort) => {
+                Self::ClusteringPartitionKeySort
+            }
+            Some(common::CompactionType::BumpSchemaVersion) => Self::BumpSchemaVersion,
+            _ => Self::Undefined,
+        }
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// CompactionTaskState
+///////////////////////////////////////////////////////////////////////////////
+/// Lifecycle state of a single compaction task.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CompactionTaskState {
+    #[default]
+    /// The compaction task state is unknown.
+    Unknown,
+    /// The compaction task is currently running.
+    Executing,
+    /// The compaction task is waiting in the pipeline.
+    Pipelining,
+    /// The compaction task has completed.
+    Completed,
+    /// The compaction task has failed.
+    Failed,
+    /// The compaction task timed out.
+    Timeout,
+    /// The compaction task is analyzing segments.
+    Analyzing,
+    /// The compaction task is building indexes.
+    Indexing,
+    /// The compaction task has been cleaned up.
+    Cleaned,
+    /// The compaction task metadata has been saved.
+    MetaSaved,
+    /// The compaction task is collecting statistics.
+    Statistic,
+}
+
+impl CompactionTaskState {
+    pub(crate) fn from_proto(value: i32) -> Self {
+        match common::CompactionTaskState::try_from(value).ok() {
+            Some(common::CompactionTaskState::Executing) => Self::Executing,
+            Some(common::CompactionTaskState::Pipelining) => Self::Pipelining,
+            Some(common::CompactionTaskState::Completed) => Self::Completed,
+            Some(common::CompactionTaskState::Failed) => Self::Failed,
+            Some(common::CompactionTaskState::Timeout) => Self::Timeout,
+            Some(common::CompactionTaskState::Analyzing) => Self::Analyzing,
+            Some(common::CompactionTaskState::Indexing) => Self::Indexing,
+            Some(common::CompactionTaskState::Cleaned) => Self::Cleaned,
+            Some(common::CompactionTaskState::MetaSaved) => Self::MetaSaved,
+            Some(common::CompactionTaskState::Statistic) => Self::Statistic,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// TargetSizeUnit
+///////////////////////////////////////////////////////////////////////////////
+/// Storage-size unit used to interpret a compaction `target_size`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TargetSizeUnit {
+    /// Bytes.
+    B,
+    /// Kilobytes.
+    KB,
+    #[default]
+    /// Megabytes.
+    MB,
+    /// Gigabytes.
+    GB,
+    /// Terabytes.
+    TB,
+    /// Petabytes.
+    PB,
+}
+
+impl TargetSizeUnit {
+    /// Returns the number of bytes represented by one of this unit.
+    pub(crate) fn bytes_per_unit(self) -> i64 {
+        match self {
+            Self::B => 1,
+            Self::KB => 1024,
+            Self::MB => 1024 * 1024,
+            Self::GB => 1024 * 1024 * 1024,
+            Self::TB => 1024 * 1024 * 1024 * 1024,
+            Self::PB => 1024 * 1024 * 1024 * 1024 * 1024,
+        }
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// PersistentSegmentInfo
+///////////////////////////////////////////////////////////////////////////////
+/// Metadata for a persisted data segment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct PersistentSegmentInfo {
+    pub(crate) segment_id: i64,
+    pub(crate) collection_id: i64,
+    pub(crate) partition_id: i64,
+    pub(crate) row_count: i64,
+    pub(crate) state: SegmentState,
+    pub(crate) collection_name: String,
+    pub(crate) level: SegmentLevel,
+    pub(crate) sorted: bool,
+    pub(crate) storage_version: i64,
+    pub(crate) insert_channel: String,
+    pub(crate) compaction_from: Vec<i64>,
+}
+
+impl PersistentSegmentInfo {
+    /// Creates a value initialized with its SDK defaults.
+    pub fn new() -> Self {
+        Self {
+            segment_id: 0,
+            collection_id: 0,
+            partition_id: 0,
+            row_count: 0,
+            state: SegmentState::Unknown,
+            collection_name: String::new(),
+            level: SegmentLevel::Unknown,
+            sorted: false,
+            storage_version: 0,
+            insert_channel: String::new(),
+            compaction_from: Vec::new(),
+        }
+    }
+
+    /// Sets the segment id and returns the updated value.
+    pub fn segment_id(mut self, value: i64) -> Self {
+        self.segment_id = value;
+        self
+    }
+
+    /// Sets the segment id and returns this value for further mutation.
+    pub fn set_segment_id(&mut self, value: i64) -> &mut Self {
+        self.segment_id = value;
+        self
+    }
+
+    /// Returns the configured segment id.
+    pub fn get_segment_id(&self) -> i64 {
+        self.segment_id
+    }
+
+    /// Sets the collection id and returns the updated value.
+    pub fn collection_id(mut self, value: i64) -> Self {
+        self.collection_id = value;
+        self
+    }
+
+    /// Sets the collection id and returns this value for further mutation.
+    pub fn set_collection_id(&mut self, value: i64) -> &mut Self {
+        self.collection_id = value;
+        self
+    }
+
+    /// Returns the configured collection id.
+    pub fn get_collection_id(&self) -> i64 {
+        self.collection_id
+    }
+
+    /// Sets the partition id and returns the updated value.
+    pub fn partition_id(mut self, value: i64) -> Self {
+        self.partition_id = value;
+        self
+    }
+
+    /// Sets the partition id and returns this value for further mutation.
+    pub fn set_partition_id(&mut self, value: i64) -> &mut Self {
+        self.partition_id = value;
+        self
+    }
+
+    /// Returns the configured partition id.
+    pub fn get_partition_id(&self) -> i64 {
+        self.partition_id
+    }
+
+    /// Sets the row count and returns the updated value.
+    pub fn row_count(mut self, value: i64) -> Self {
+        self.row_count = value;
+        self
+    }
+
+    /// Sets the row count and returns this value for further mutation.
+    pub fn set_row_count(&mut self, value: i64) -> &mut Self {
+        self.row_count = value;
+        self
+    }
+
+    /// Returns the configured row count.
+    pub fn get_row_count(&self) -> i64 {
+        self.row_count
+    }
+
+    /// Sets the state and returns the updated value.
+    pub fn state(mut self, value: SegmentState) -> Self {
+        self.state = value;
+        self
+    }
+
+    /// Sets the state and returns this value for further mutation.
+    pub fn set_state(&mut self, value: SegmentState) -> &mut Self {
+        self.state = value;
+        self
+    }
+
+    /// Returns the configured state.
+    pub fn get_state(&self) -> SegmentState {
+        self.state
+    }
+
+    /// Sets the collection name and returns the updated value.
+    pub fn collection_name(mut self, value: impl Into<String>) -> Self {
+        self.collection_name = value.into();
+        self
+    }
+
+    /// Sets the collection name and returns this value for further mutation.
+    pub fn set_collection_name(&mut self, value: impl Into<String>) -> &mut Self {
+        self.collection_name = value.into();
+        self
+    }
+
+    /// Returns the configured collection name.
+    pub fn get_collection_name(&self) -> &str {
+        &self.collection_name
+    }
+
+    /// Sets the level and returns the updated value.
+    pub fn level(mut self, value: SegmentLevel) -> Self {
+        self.level = value;
+        self
+    }
+
+    /// Sets the level and returns this value for further mutation.
+    pub fn set_level(&mut self, value: SegmentLevel) -> &mut Self {
+        self.level = value;
+        self
+    }
+
+    /// Returns the configured level.
+    pub fn get_level(&self) -> SegmentLevel {
+        self.level
+    }
+
+    /// Sets the sorted and returns the updated value.
+    pub fn sorted(mut self, value: bool) -> Self {
+        self.sorted = value;
+        self
+    }
+
+    /// Sets the sorted and returns this value for further mutation.
+    pub fn set_sorted(&mut self, value: bool) -> &mut Self {
+        self.sorted = value;
+        self
+    }
+
+    /// Returns the configured sorted.
+    pub fn get_sorted(&self) -> bool {
+        self.sorted
+    }
+
+    /// Sets the storage version and returns the updated value.
+    pub fn storage_version(mut self, value: i64) -> Self {
+        self.storage_version = value;
+        self
+    }
+
+    /// Sets the storage version and returns this value for further mutation.
+    pub fn set_storage_version(&mut self, value: i64) -> &mut Self {
+        self.storage_version = value;
+        self
+    }
+
+    /// Returns the configured storage version.
+    pub fn get_storage_version(&self) -> i64 {
+        self.storage_version
+    }
+
+    /// Sets the insert channel and returns the updated value.
+    pub fn insert_channel(mut self, value: impl Into<String>) -> Self {
+        self.insert_channel = value.into();
+        self
+    }
+
+    /// Sets the insert channel and returns this value for further mutation.
+    pub fn set_insert_channel(&mut self, value: impl Into<String>) -> &mut Self {
+        self.insert_channel = value.into();
+        self
+    }
+
+    /// Returns the configured insert channel.
+    pub fn get_insert_channel(&self) -> &str {
+        &self.insert_channel
+    }
+
+    /// Sets the direct source segment ids consumed to create this segment and returns the updated
+    /// value.
+    pub fn compaction_from(mut self, value: Vec<i64>) -> Self {
+        self.compaction_from = value;
+        self
+    }
+
+    /// Sets the direct source segment ids consumed to create this segment and returns this value
+    /// for further mutation.
+    pub fn set_compaction_from(&mut self, value: Vec<i64>) -> &mut Self {
+        self.compaction_from = value;
+        self
+    }
+
+    /// Returns the direct source segment ids consumed to create this segment.
+    pub fn get_compaction_from(&self) -> &[i64] {
+        &self.compaction_from
+    }
+
+    /// Adds one direct source segment id to the existing values.
+    pub fn add_compaction_from(mut self, value: i64) -> Self {
+        self.compaction_from.push(value);
+        self
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// QuerySegmentInfo
+///////////////////////////////////////////////////////////////////////////////
+/// Metadata for a segment loaded by query nodes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct QuerySegmentInfo {
+    pub(crate) segment_id: i64,
+    pub(crate) collection_id: i64,
+    pub(crate) partition_id: i64,
+    pub(crate) memory_size: i64,
+    pub(crate) row_count: i64,
+    pub(crate) index_name: String,
+    pub(crate) index_id: i64,
+    pub(crate) node_ids: Vec<i64>,
+    pub(crate) state: SegmentState,
+    pub(crate) collection_name: String,
+    pub(crate) level: SegmentLevel,
+    pub(crate) sorted: bool,
+    pub(crate) storage_version: i64,
+}
+
+impl QuerySegmentInfo {
+    /// Creates a value initialized with its SDK defaults.
+    pub fn new() -> Self {
+        Self {
+            segment_id: 0,
+            collection_id: 0,
+            partition_id: 0,
+            memory_size: 0,
+            row_count: 0,
+            index_name: String::new(),
+            index_id: 0,
+            node_ids: Vec::new(),
+            state: SegmentState::Unknown,
+            collection_name: String::new(),
+            level: SegmentLevel::Unknown,
+            sorted: false,
+            storage_version: 0,
+        }
+    }
+
+    /// Sets the segment id and returns the updated value.
+    pub fn segment_id(mut self, value: i64) -> Self {
+        self.segment_id = value;
+        self
+    }
+
+    /// Sets the segment id and returns this value for further mutation.
+    pub fn set_segment_id(&mut self, value: i64) -> &mut Self {
+        self.segment_id = value;
+        self
+    }
+
+    /// Returns the configured segment id.
+    pub fn get_segment_id(&self) -> i64 {
+        self.segment_id
+    }
+
+    /// Sets the collection id and returns the updated value.
+    pub fn collection_id(mut self, value: i64) -> Self {
+        self.collection_id = value;
+        self
+    }
+
+    /// Sets the collection id and returns this value for further mutation.
+    pub fn set_collection_id(&mut self, value: i64) -> &mut Self {
+        self.collection_id = value;
+        self
+    }
+
+    /// Returns the configured collection id.
+    pub fn get_collection_id(&self) -> i64 {
+        self.collection_id
+    }
+
+    /// Sets the partition id and returns the updated value.
+    pub fn partition_id(mut self, value: i64) -> Self {
+        self.partition_id = value;
+        self
+    }
+
+    /// Sets the partition id and returns this value for further mutation.
+    pub fn set_partition_id(&mut self, value: i64) -> &mut Self {
+        self.partition_id = value;
+        self
+    }
+
+    /// Returns the configured partition id.
+    pub fn get_partition_id(&self) -> i64 {
+        self.partition_id
+    }
+
+    /// Sets the memory size and returns the updated value.
+    pub fn memory_size(mut self, value: i64) -> Self {
+        self.memory_size = value;
+        self
+    }
+
+    /// Sets the memory size and returns this value for further mutation.
+    pub fn set_memory_size(&mut self, value: i64) -> &mut Self {
+        self.memory_size = value;
+        self
+    }
+
+    /// Returns the configured memory size.
+    pub fn get_memory_size(&self) -> i64 {
+        self.memory_size
+    }
+
+    /// Sets the row count and returns the updated value.
+    pub fn row_count(mut self, value: i64) -> Self {
+        self.row_count = value;
+        self
+    }
+
+    /// Sets the row count and returns this value for further mutation.
+    pub fn set_row_count(&mut self, value: i64) -> &mut Self {
+        self.row_count = value;
+        self
+    }
+
+    /// Returns the configured row count.
+    pub fn get_row_count(&self) -> i64 {
+        self.row_count
+    }
+
+    /// Sets the index name and returns the updated value.
+    pub fn index_name(mut self, value: impl Into<String>) -> Self {
+        self.index_name = value.into();
+        self
+    }
+
+    /// Sets the index name and returns this value for further mutation.
+    pub fn set_index_name(&mut self, value: impl Into<String>) -> &mut Self {
+        self.index_name = value.into();
+        self
+    }
+
+    /// Returns the configured index name.
+    pub fn get_index_name(&self) -> &str {
+        &self.index_name
+    }
+
+    /// Sets the index id and returns the updated value.
+    pub fn index_id(mut self, value: i64) -> Self {
+        self.index_id = value;
+        self
+    }
+
+    /// Sets the index id and returns this value for further mutation.
+    pub fn set_index_id(&mut self, value: i64) -> &mut Self {
+        self.index_id = value;
+        self
+    }
+
+    /// Returns the configured index id.
+    pub fn get_index_id(&self) -> i64 {
+        self.index_id
+    }
+
+    /// Sets the node ids and returns the updated value.
+    pub fn node_ids(mut self, value: Vec<i64>) -> Self {
+        self.node_ids = value;
+        self
+    }
+
+    /// Sets the node ids and returns this value for further mutation.
+    pub fn set_node_ids(&mut self, value: Vec<i64>) -> &mut Self {
+        self.node_ids = value;
+        self
+    }
+
+    /// Returns the configured node ids.
+    pub fn get_node_ids(&self) -> &[i64] {
+        &self.node_ids
+    }
+
+    /// Sets the state and returns the updated value.
+    pub fn state(mut self, value: SegmentState) -> Self {
+        self.state = value;
+        self
+    }
+
+    /// Sets the state and returns this value for further mutation.
+    pub fn set_state(&mut self, value: SegmentState) -> &mut Self {
+        self.state = value;
+        self
+    }
+
+    /// Returns the configured state.
+    pub fn get_state(&self) -> SegmentState {
+        self.state
+    }
+
+    /// Sets the collection name and returns the updated value.
+    pub fn collection_name(mut self, value: impl Into<String>) -> Self {
+        self.collection_name = value.into();
+        self
+    }
+
+    /// Sets the collection name and returns this value for further mutation.
+    pub fn set_collection_name(&mut self, value: impl Into<String>) -> &mut Self {
+        self.collection_name = value.into();
+        self
+    }
+
+    /// Returns the configured collection name.
+    pub fn get_collection_name(&self) -> &str {
+        &self.collection_name
+    }
+
+    /// Sets the level and returns the updated value.
+    pub fn level(mut self, value: SegmentLevel) -> Self {
+        self.level = value;
+        self
+    }
+
+    /// Sets the level and returns this value for further mutation.
+    pub fn set_level(&mut self, value: SegmentLevel) -> &mut Self {
+        self.level = value;
+        self
+    }
+
+    /// Returns the configured level.
+    pub fn get_level(&self) -> SegmentLevel {
+        self.level
+    }
+
+    /// Sets the sorted and returns the updated value.
+    pub fn sorted(mut self, value: bool) -> Self {
+        self.sorted = value;
+        self
+    }
+
+    /// Sets the sorted and returns this value for further mutation.
+    pub fn set_sorted(&mut self, value: bool) -> &mut Self {
+        self.sorted = value;
+        self
+    }
+
+    /// Returns the configured sorted.
+    pub fn get_sorted(&self) -> bool {
+        self.sorted
+    }
+
+    /// Sets the storage version and returns the updated value.
+    pub fn storage_version(mut self, value: i64) -> Self {
+        self.storage_version = value;
+        self
+    }
+
+    /// Sets the storage version and returns this value for further mutation.
+    pub fn set_storage_version(&mut self, value: i64) -> &mut Self {
+        self.storage_version = value;
+        self
+    }
+
+    /// Returns the configured storage version.
+    pub fn get_storage_version(&self) -> i64 {
+        self.storage_version
+    }
+
+    /// Adds one node id to the existing values.
+    pub fn add_node_id(mut self, value: i64) -> Self {
+        self.node_ids.push(value);
+        self
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// CompactionMerge
+///////////////////////////////////////////////////////////////////////////////
+/// Input and output segments participating in a compaction plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct CompactionMerge {
+    pub(crate) source_segment_ids: Vec<i64>,
+    pub(crate) target_segment_id: i64,
+    pub(crate) plan_id: i64,
+    pub(crate) trigger_id: i64,
+    pub(crate) collection_id: i64,
+    pub(crate) partition_id: i64,
+    pub(crate) channel: String,
+    pub(crate) compaction_type: CompactionType,
+    pub(crate) state: CompactionTaskState,
+    pub(crate) failure_reason: String,
+    pub(crate) target_segment_ids: Vec<i64>,
+}
+
+impl CompactionMerge {
+    /// Creates a value initialized with its SDK defaults.
+    pub fn new() -> Self {
+        Self {
+            source_segment_ids: Vec::new(),
+            target_segment_id: 0,
+            plan_id: 0,
+            trigger_id: 0,
+            collection_id: 0,
+            partition_id: 0,
+            channel: String::new(),
+            compaction_type: CompactionType::Undefined,
+            state: CompactionTaskState::Unknown,
+            failure_reason: String::new(),
+            target_segment_ids: Vec::new(),
+        }
+    }
+
+    /// Sets the source segment ids and returns the updated value.
+    pub fn source_segment_ids(mut self, value: Vec<i64>) -> Self {
+        self.source_segment_ids = value;
+        self
+    }
+
+    /// Sets the source segment ids and returns this value for further mutation.
+    pub fn set_source_segment_ids(&mut self, value: Vec<i64>) -> &mut Self {
+        self.source_segment_ids = value;
+        self
+    }
+
+    /// Returns the configured source segment ids.
+    pub fn get_source_segment_ids(&self) -> &[i64] {
+        &self.source_segment_ids
+    }
+
+    /// Sets the target segment id and returns the updated value.
+    pub fn target_segment_id(mut self, value: i64) -> Self {
+        self.target_segment_id = value;
+        self
+    }
+
+    /// Sets the target segment id and returns this value for further mutation.
+    pub fn set_target_segment_id(&mut self, value: i64) -> &mut Self {
+        self.target_segment_id = value;
+        self
+    }
+
+    /// Returns the configured target segment id.
+    pub fn get_target_segment_id(&self) -> i64 {
+        self.target_segment_id
+    }
+
+    /// Sets the plan id and returns the updated value.
+    pub fn plan_id(mut self, value: i64) -> Self {
+        self.plan_id = value;
+        self
+    }
+
+    /// Sets the plan id and returns this value for further mutation.
+    pub fn set_plan_id(&mut self, value: i64) -> &mut Self {
+        self.plan_id = value;
+        self
+    }
+
+    /// Returns the configured plan id.
+    pub fn get_plan_id(&self) -> i64 {
+        self.plan_id
+    }
+
+    /// Sets the trigger id and returns the updated value.
+    pub fn trigger_id(mut self, value: i64) -> Self {
+        self.trigger_id = value;
+        self
+    }
+
+    /// Sets the trigger id and returns this value for further mutation.
+    pub fn set_trigger_id(&mut self, value: i64) -> &mut Self {
+        self.trigger_id = value;
+        self
+    }
+
+    /// Returns the configured trigger id.
+    pub fn get_trigger_id(&self) -> i64 {
+        self.trigger_id
+    }
+
+    /// Sets the collection id and returns the updated value.
+    pub fn collection_id(mut self, value: i64) -> Self {
+        self.collection_id = value;
+        self
+    }
+
+    /// Sets the collection id and returns this value for further mutation.
+    pub fn set_collection_id(&mut self, value: i64) -> &mut Self {
+        self.collection_id = value;
+        self
+    }
+
+    /// Returns the configured collection id.
+    pub fn get_collection_id(&self) -> i64 {
+        self.collection_id
+    }
+
+    /// Sets the partition id and returns the updated value.
+    pub fn partition_id(mut self, value: i64) -> Self {
+        self.partition_id = value;
+        self
+    }
+
+    /// Sets the partition id and returns this value for further mutation.
+    pub fn set_partition_id(&mut self, value: i64) -> &mut Self {
+        self.partition_id = value;
+        self
+    }
+
+    /// Returns the configured partition id.
+    pub fn get_partition_id(&self) -> i64 {
+        self.partition_id
+    }
+
+    /// Sets the channel and returns the updated value.
+    pub fn channel(mut self, value: impl Into<String>) -> Self {
+        self.channel = value.into();
+        self
+    }
+
+    /// Sets the channel and returns this value for further mutation.
+    pub fn set_channel(&mut self, value: impl Into<String>) -> &mut Self {
+        self.channel = value.into();
+        self
+    }
+
+    /// Returns the configured channel.
+    pub fn get_channel(&self) -> &str {
+        &self.channel
+    }
+
+    /// Sets the compaction type and returns the updated value.
+    pub fn compaction_type(mut self, value: CompactionType) -> Self {
+        self.compaction_type = value;
+        self
+    }
+
+    /// Sets the compaction type and returns this value for further mutation.
+    pub fn set_compaction_type(&mut self, value: CompactionType) -> &mut Self {
+        self.compaction_type = value;
+        self
+    }
+
+    /// Returns the configured compaction type.
+    pub fn get_compaction_type(&self) -> CompactionType {
+        self.compaction_type
+    }
+
+    /// Sets the compaction task state and returns the updated value.
+    pub fn state(mut self, value: CompactionTaskState) -> Self {
+        self.state = value;
+        self
+    }
+
+    /// Sets the compaction task state and returns this value for further mutation.
+    pub fn set_state(&mut self, value: CompactionTaskState) -> &mut Self {
+        self.state = value;
+        self
+    }
+
+    /// Returns the configured compaction task state.
+    pub fn get_state(&self) -> CompactionTaskState {
+        self.state
+    }
+
+    /// Sets the failure reason and returns the updated value.
+    pub fn failure_reason(mut self, value: impl Into<String>) -> Self {
+        self.failure_reason = value.into();
+        self
+    }
+
+    /// Sets the failure reason and returns this value for further mutation.
+    pub fn set_failure_reason(&mut self, value: impl Into<String>) -> &mut Self {
+        self.failure_reason = value.into();
+        self
+    }
+
+    /// Returns the configured failure reason.
+    pub fn get_failure_reason(&self) -> &str {
+        &self.failure_reason
+    }
+
+    /// Sets the target segment ids and returns the updated value.
+    pub fn target_segment_ids(mut self, value: Vec<i64>) -> Self {
+        self.target_segment_ids = value;
+        self
+    }
+
+    /// Sets the target segment ids and returns this value for further mutation.
+    pub fn set_target_segment_ids(&mut self, value: Vec<i64>) -> &mut Self {
+        self.target_segment_ids = value;
+        self
+    }
+
+    /// Returns the configured target segment ids.
+    pub fn get_target_segment_ids(&self) -> &[i64] {
+        &self.target_segment_ids
+    }
+
+    /// Adds one source segment id to the existing values.
+    pub fn add_source_segment_id(mut self, value: i64) -> Self {
+        self.source_segment_ids.push(value);
+        self
+    }
+
+    /// Adds one target segment id to the existing values.
+    pub fn add_target_segment_id(mut self, value: i64) -> Self {
+        self.target_segment_ids.push(value);
+        self
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// AnalyzerToken
+///////////////////////////////////////////////////////////////////////////////
+/// One token produced by a text analyzer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct AnalyzerToken {
+    pub(crate) text: String,
+    pub(crate) start_offset: i64,
+    pub(crate) end_offset: i64,
+    pub(crate) position: i64,
+    pub(crate) position_length: i64,
+    pub(crate) hash: u32,
+}
+
+impl AnalyzerToken {
+    /// Creates a value initialized with its SDK defaults.
+    pub fn new() -> Self {
+        Self {
+            text: String::new(),
+            start_offset: 0,
+            end_offset: 0,
+            position: 0,
+            position_length: 0,
+            hash: 0,
+        }
+    }
+
+    /// Sets the text and returns the updated value.
+    pub fn text(mut self, value: impl Into<String>) -> Self {
+        self.text = value.into();
+        self
+    }
+
+    /// Sets the text and returns this value for further mutation.
+    pub fn set_text(&mut self, value: impl Into<String>) -> &mut Self {
+        self.text = value.into();
+        self
+    }
+
+    /// Returns the configured text.
+    pub fn get_text(&self) -> &str {
+        &self.text
+    }
+
+    /// Sets the start offset and returns the updated value.
+    pub fn start_offset(mut self, value: i64) -> Self {
+        self.start_offset = value;
+        self
+    }
+
+    /// Sets the start offset and returns this value for further mutation.
+    pub fn set_start_offset(&mut self, value: i64) -> &mut Self {
+        self.start_offset = value;
+        self
+    }
+
+    /// Returns the configured start offset.
+    pub fn get_start_offset(&self) -> i64 {
+        self.start_offset
+    }
+
+    /// Sets the end offset and returns the updated value.
+    pub fn end_offset(mut self, value: i64) -> Self {
+        self.end_offset = value;
+        self
+    }
+
+    /// Sets the end offset and returns this value for further mutation.
+    pub fn set_end_offset(&mut self, value: i64) -> &mut Self {
+        self.end_offset = value;
+        self
+    }
+
+    /// Returns the configured end offset.
+    pub fn get_end_offset(&self) -> i64 {
+        self.end_offset
+    }
+
+    /// Sets the position and returns the updated value.
+    pub fn position(mut self, value: i64) -> Self {
+        self.position = value;
+        self
+    }
+
+    /// Sets the position and returns this value for further mutation.
+    pub fn set_position(&mut self, value: i64) -> &mut Self {
+        self.position = value;
+        self
+    }
+
+    /// Returns the configured position.
+    pub fn get_position(&self) -> i64 {
+        self.position
+    }
+
+    /// Sets the position length and returns the updated value.
+    pub fn position_length(mut self, value: i64) -> Self {
+        self.position_length = value;
+        self
+    }
+
+    /// Sets the position length and returns this value for further mutation.
+    pub fn set_position_length(&mut self, value: i64) -> &mut Self {
+        self.position_length = value;
+        self
+    }
+
+    /// Returns the configured position length.
+    pub fn get_position_length(&self) -> i64 {
+        self.position_length
+    }
+
+    /// Sets the hash and returns the updated value.
+    pub fn hash(mut self, value: u32) -> Self {
+        self.hash = value;
+        self
+    }
+
+    /// Sets the hash and returns this value for further mutation.
+    pub fn set_hash(&mut self, value: u32) -> &mut Self {
+        self.hash = value;
+        self
+    }
+
+    /// Returns the configured hash.
+    pub fn get_hash(&self) -> u32 {
+        self.hash
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// AnalyzerResult
+///////////////////////////////////////////////////////////////////////////////
+/// Tokens produced for one analyzed input string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct AnalyzerResult {
+    pub(crate) tokens: Vec<AnalyzerToken>,
+}
+
+impl AnalyzerResult {
+    /// Creates a value initialized with its SDK defaults.
+    pub fn new() -> Self {
+        Self { tokens: Vec::new() }
+    }
+
+    /// Sets the tokens and returns the updated value.
+    pub fn tokens(mut self, value: Vec<AnalyzerToken>) -> Self {
+        self.tokens = value;
+        self
+    }
+
+    /// Sets the tokens and returns this value for further mutation.
+    pub fn set_tokens(&mut self, value: Vec<AnalyzerToken>) -> &mut Self {
+        self.tokens = value;
+        self
+    }
+
+    /// Returns the configured tokens.
+    pub fn get_tokens(&self) -> &[AnalyzerToken] {
+        &self.tokens
+    }
+
+    /// Adds one token to the existing values.
+    pub fn add_token(mut self, value: AnalyzerToken) -> Self {
+        self.tokens.push(value);
+        self
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// RefreshExternalCollectionStateCode
+///////////////////////////////////////////////////////////////////////////////
+/// Execution state of a refresh-external-collection job.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RefreshExternalCollectionStateCode {
+    #[default]
+    /// The refresh state is unknown.
+    Unknown,
+    /// The refresh task has been created but has not started running.
+    Pending,
+    /// The refresh task is running.
+    InProgress,
+    /// The refresh task completed successfully.
+    Completed,
+    /// The refresh task failed.
+    Failed,
+}
+
+impl RefreshExternalCollectionStateCode {
+    /// Returns the wire/display name of this state.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Unknown => "RefreshUnknown",
+            Self::Pending => "RefreshPending",
+            Self::InProgress => "RefreshInProgress",
+            Self::Completed => "RefreshCompleted",
+            Self::Failed => "RefreshFailed",
+        }
+    }
+
+    pub(crate) fn from_proto(value: i32) -> Self {
+        match milvus::RefreshExternalCollectionState::try_from(value).ok() {
+            Some(milvus::RefreshExternalCollectionState::RefreshPending) => Self::Pending,
+            Some(milvus::RefreshExternalCollectionState::RefreshInProgress) => Self::InProgress,
+            Some(milvus::RefreshExternalCollectionState::RefreshCompleted) => Self::Completed,
+            Some(milvus::RefreshExternalCollectionState::RefreshFailed) => Self::Failed,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+impl std::fmt::Display for RefreshExternalCollectionStateCode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// RefreshExternalCollectionJobInfo
+///////////////////////////////////////////////////////////////////////////////
+/// Metadata and progress of a refresh-external-collection job.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RefreshExternalCollectionJobInfo {
+    pub(crate) job_id: i64,
+    pub(crate) collection_name: String,
+    pub(crate) state: RefreshExternalCollectionStateCode,
+    pub(crate) progress: i32,
+    pub(crate) reason: String,
+    pub(crate) external_source: String,
+    pub(crate) external_spec: String,
+    pub(crate) start_time: u64,
+    pub(crate) end_time: u64,
+}
+
+impl RefreshExternalCollectionJobInfo {
+    /// Creates a value initialized with its SDK defaults.
+    pub fn new() -> Self {
+        Self {
+            job_id: 0,
+            collection_name: String::new(),
+            state: RefreshExternalCollectionStateCode::Unknown,
+            progress: 0,
+            reason: String::new(),
+            external_source: String::new(),
+            external_spec: String::new(),
+            start_time: 0,
+            end_time: 0,
+        }
+    }
+
+    /// Sets the job id and returns the updated value.
+    pub fn job_id(mut self, value: i64) -> Self {
+        self.job_id = value;
+        self
+    }
+
+    /// Sets the job id and returns this value for further mutation.
+    pub fn set_job_id(&mut self, value: i64) -> &mut Self {
+        self.job_id = value;
+        self
+    }
+
+    /// Returns the job id.
+    pub fn get_job_id(&self) -> i64 {
+        self.job_id
+    }
+
+    /// Sets the collection name and returns the updated value.
+    pub fn collection_name(mut self, value: impl Into<String>) -> Self {
+        self.collection_name = value.into();
+        self
+    }
+
+    /// Sets the collection name and returns this value for further mutation.
+    pub fn set_collection_name(&mut self, value: impl Into<String>) -> &mut Self {
+        self.collection_name = value.into();
+        self
+    }
+
+    /// Returns the collection name.
+    pub fn get_collection_name(&self) -> &str {
+        &self.collection_name
+    }
+
+    /// Sets the state and returns the updated value.
+    pub fn state(mut self, value: RefreshExternalCollectionStateCode) -> Self {
+        self.state = value;
+        self
+    }
+
+    /// Sets the state and returns this value for further mutation.
+    pub fn set_state(&mut self, value: RefreshExternalCollectionStateCode) -> &mut Self {
+        self.state = value;
+        self
+    }
+
+    /// Returns the state.
+    pub fn get_state(&self) -> RefreshExternalCollectionStateCode {
+        self.state
+    }
+
+    /// Sets the progress percentage and returns the updated value.
+    pub fn progress(mut self, value: i32) -> Self {
+        self.progress = value;
+        self
+    }
+
+    /// Sets the progress percentage and returns this value for further mutation.
+    pub fn set_progress(&mut self, value: i32) -> &mut Self {
+        self.progress = value;
+        self
+    }
+
+    /// Returns the progress percentage in the range `0..=100`.
+    pub fn get_progress(&self) -> i32 {
+        self.progress
+    }
+
+    /// Sets the failure reason and returns the updated value.
+    pub fn reason(mut self, value: impl Into<String>) -> Self {
+        self.reason = value.into();
+        self
+    }
+
+    /// Sets the failure reason and returns this value for further mutation.
+    pub fn set_reason(&mut self, value: impl Into<String>) -> &mut Self {
+        self.reason = value.into();
+        self
+    }
+
+    /// Returns the failure reason.
+    pub fn get_reason(&self) -> &str {
+        &self.reason
+    }
+
+    /// Sets the external source and returns the updated value.
+    pub fn external_source(mut self, value: impl Into<String>) -> Self {
+        self.external_source = value.into();
+        self
+    }
+
+    /// Sets the external source and returns this value for further mutation.
+    pub fn set_external_source(&mut self, value: impl Into<String>) -> &mut Self {
+        self.external_source = value.into();
+        self
+    }
+
+    /// Returns the external source.
+    pub fn get_external_source(&self) -> &str {
+        &self.external_source
+    }
+
+    /// Sets the external spec and returns the updated value.
+    pub fn external_spec(mut self, value: impl Into<String>) -> Self {
+        self.external_spec = value.into();
+        self
+    }
+
+    /// Sets the external spec and returns this value for further mutation.
+    pub fn set_external_spec(&mut self, value: impl Into<String>) -> &mut Self {
+        self.external_spec = value.into();
+        self
+    }
+
+    /// Returns the external spec.
+    pub fn get_external_spec(&self) -> &str {
+        &self.external_spec
+    }
+
+    /// Sets the start time and returns the updated value.
+    pub fn start_time(mut self, value: u64) -> Self {
+        self.start_time = value;
+        self
+    }
+
+    /// Sets the start time and returns this value for further mutation.
+    pub fn set_start_time(&mut self, value: u64) -> &mut Self {
+        self.start_time = value;
+        self
+    }
+
+    /// Returns the start time.
+    pub fn get_start_time(&self) -> u64 {
+        self.start_time
+    }
+
+    /// Sets the end time and returns the updated value.
+    pub fn end_time(mut self, value: u64) -> Self {
+        self.end_time = value;
+        self
+    }
+
+    /// Sets the end time and returns this value for further mutation.
+    pub fn set_end_time(&mut self, value: u64) -> &mut Self {
+        self.end_time = value;
+        self
+    }
+
+    /// Returns the end time.
+    pub fn get_end_time(&self) -> u64 {
+        self.end_time
+    }
+
+    pub(crate) fn from_proto(value: milvus::RefreshExternalCollectionJobInfo) -> Self {
+        Self {
+            job_id: value.job_id,
+            collection_name: value.collection_name,
+            state: RefreshExternalCollectionStateCode::from_proto(value.state),
+            progress: value.progress as i32,
+            reason: value.reason,
+            external_source: value.external_source,
+            external_spec: value.external_spec,
+            start_time: value.start_time as u64,
+            end_time: value.end_time as u64,
+        }
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// FileResourceInfo
+///////////////////////////////////////////////////////////////////////////////
+/// Metadata of a named file resource registered for external-table workflows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct FileResourceInfo {
+    pub(crate) name: String,
+    pub(crate) path: String,
+}
+
+impl FileResourceInfo {
+    /// Creates a value initialized with its SDK defaults.
+    pub fn new() -> Self {
+        Self {
+            name: String::new(),
+            path: String::new(),
+        }
+    }
+
+    /// Sets the name and returns the updated value.
+    pub fn name(mut self, value: impl Into<String>) -> Self {
+        self.name = value.into();
+        self
+    }
+
+    /// Sets the name and returns this value for further mutation.
+    pub fn set_name(&mut self, value: impl Into<String>) -> &mut Self {
+        self.name = value.into();
+        self
+    }
+
+    /// Returns the name.
+    pub fn get_name(&self) -> &str {
+        &self.name
+    }
+
+    /// Sets the path and returns the updated value.
+    pub fn path(mut self, value: impl Into<String>) -> Self {
+        self.path = value.into();
+        self
+    }
+
+    /// Sets the path and returns this value for further mutation.
+    pub fn set_path(&mut self, value: impl Into<String>) -> &mut Self {
+        self.path = value.into();
+        self
+    }
+
+    /// Returns the path.
+    pub fn get_path(&self) -> &str {
+        &self.path
+    }
+
+    pub(crate) fn from_proto(value: milvus::FileResourceInfo) -> Self {
+        Self {
+            name: value.name,
+            path: value.path,
+        }
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// RunningRequestInfo
+///////////////////////////////////////////////////////////////////////////////
+/// One Search, HybridSearch or Query request that a proxy is executing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RunningRequestInfo {
+    pub(crate) request_id: String,
+    pub(crate) proxy_id: i64,
+    pub(crate) request_type: String,
+    pub(crate) database_name: String,
+    pub(crate) collection_name: String,
+    pub(crate) user: String,
+    pub(crate) client_addr: String,
+    pub(crate) nq: i64,
+    pub(crate) top_k: i64,
+    pub(crate) expr: String,
+    pub(crate) start_time_ms: i64,
+    pub(crate) queued_ms: i64,
+    pub(crate) elapsed_ms: i64,
+    pub(crate) state: String,
+    pub(crate) task_ids: Vec<i64>,
+    pub(crate) trace_id: String,
+    pub(crate) cancellable: bool,
+}
+
+impl RunningRequestInfo {
+    /// Creates a value initialized with its SDK defaults.
+    pub fn new() -> Self {
+        Self {
+            request_id: String::new(),
+            proxy_id: 0,
+            request_type: String::new(),
+            database_name: String::new(),
+            collection_name: String::new(),
+            user: String::new(),
+            client_addr: String::new(),
+            nq: 0,
+            top_k: 0,
+            expr: String::new(),
+            start_time_ms: 0,
+            queued_ms: 0,
+            elapsed_ms: 0,
+            state: String::new(),
+            task_ids: Vec::new(),
+            trace_id: String::new(),
+            cancellable: false,
+        }
+    }
+
+    /// Sets the request id and returns the updated value.
+    pub fn request_id(mut self, value: impl Into<String>) -> Self {
+        self.request_id = value.into();
+        self
+    }
+
+    /// Sets the request id and returns this value for further mutation.
+    pub fn set_request_id(&mut self, value: impl Into<String>) -> &mut Self {
+        self.request_id = value.into();
+        self
+    }
+
+    /// Returns the request id, an opaque string such as `"25-to03zu-rs"`; pass
+    /// it to `cancel_requests` unchanged.
+    pub fn get_request_id(&self) -> &str {
+        &self.request_id
+    }
+
+    /// Sets the node id of the proxy that holds the request and returns the
+    /// updated value.
+    pub fn proxy_id(mut self, value: i64) -> Self {
+        self.proxy_id = value;
+        self
+    }
+
+    /// Sets the node id of the proxy that holds the request and returns this
+    /// value for further mutation.
+    pub fn set_proxy_id(&mut self, value: i64) -> &mut Self {
+        self.proxy_id = value;
+        self
+    }
+
+    /// Returns the node id of the proxy that holds the request.
+    pub fn get_proxy_id(&self) -> i64 {
+        self.proxy_id
+    }
+
+    /// Sets the request type and returns the updated value.
+    pub fn request_type(mut self, value: impl Into<String>) -> Self {
+        self.request_type = value.into();
+        self
+    }
+
+    /// Sets the request type and returns this value for further mutation.
+    pub fn set_request_type(&mut self, value: impl Into<String>) -> &mut Self {
+        self.request_type = value.into();
+        self
+    }
+
+    /// Returns the request type: `Search`, `HybridSearch` or `Query`.
+    pub fn get_type(&self) -> &str {
+        &self.request_type
+    }
+
+    /// Sets the database name and returns the updated value.
+    pub fn database_name(mut self, value: impl Into<String>) -> Self {
+        self.database_name = value.into();
+        self
+    }
+
+    /// Sets the database name and returns this value for further mutation.
+    pub fn set_database_name(&mut self, value: impl Into<String>) -> &mut Self {
+        self.database_name = value.into();
+        self
+    }
+
+    /// Returns the database name.
+    pub fn get_database_name(&self) -> &str {
+        &self.database_name
+    }
+
+    /// Sets the collection name and returns the updated value.
+    pub fn collection_name(mut self, value: impl Into<String>) -> Self {
+        self.collection_name = value.into();
+        self
+    }
+
+    /// Sets the collection name and returns this value for further mutation.
+    pub fn set_collection_name(&mut self, value: impl Into<String>) -> &mut Self {
+        self.collection_name = value.into();
+        self
+    }
+
+    /// Returns the collection name.
+    pub fn get_collection_name(&self) -> &str {
+        &self.collection_name
+    }
+
+    /// Sets the user who issued the request and returns the updated value.
+    pub fn user(mut self, value: impl Into<String>) -> Self {
+        self.user = value.into();
+        self
+    }
+
+    /// Sets the user who issued the request and returns this value for further
+    /// mutation.
+    pub fn set_user(&mut self, value: impl Into<String>) -> &mut Self {
+        self.user = value.into();
+        self
+    }
+
+    /// Returns the user who issued the request.
+    pub fn get_user(&self) -> &str {
+        &self.user
+    }
+
+    /// Sets the client address seen by the proxy and returns the updated value.
+    pub fn client_addr(mut self, value: impl Into<String>) -> Self {
+        self.client_addr = value.into();
+        self
+    }
+
+    /// Sets the client address seen by the proxy and returns this value for
+    /// further mutation.
+    pub fn set_client_addr(&mut self, value: impl Into<String>) -> &mut Self {
+        self.client_addr = value.into();
+        self
+    }
+
+    /// Returns the client address seen by the proxy.
+    pub fn get_client_addr(&self) -> &str {
+        &self.client_addr
+    }
+
+    /// Sets the number of query vectors and returns the updated value.
+    pub fn nq(mut self, value: i64) -> Self {
+        self.nq = value;
+        self
+    }
+
+    /// Sets the number of query vectors and returns this value for further
+    /// mutation.
+    pub fn set_nq(&mut self, value: i64) -> &mut Self {
+        self.nq = value;
+        self
+    }
+
+    /// Returns the number of query vectors.
+    pub fn get_nq(&self) -> i64 {
+        self.nq
+    }
+
+    /// Sets the top-k of the request and returns the updated value.
+    pub fn top_k(mut self, value: i64) -> Self {
+        self.top_k = value;
+        self
+    }
+
+    /// Sets the top-k of the request and returns this value for further
+    /// mutation.
+    pub fn set_top_k(&mut self, value: i64) -> &mut Self {
+        self.top_k = value;
+        self
+    }
+
+    /// Returns the top-k of the request.
+    pub fn get_top_k(&self) -> i64 {
+        self.top_k
+    }
+
+    /// Sets the leading part of the filter expression and returns the updated
+    /// value.
+    pub fn expr(mut self, value: impl Into<String>) -> Self {
+        self.expr = value.into();
+        self
+    }
+
+    /// Sets the leading part of the filter expression and returns this value
+    /// for further mutation.
+    pub fn set_expr(&mut self, value: impl Into<String>) -> &mut Self {
+        self.expr = value.into();
+        self
+    }
+
+    /// Returns the leading part (at most 256 bytes) of the filter expression.
+    pub fn get_expr(&self) -> &str {
+        &self.expr
+    }
+
+    /// Sets the start time in milliseconds since the Unix epoch and returns the
+    /// updated value.
+    pub fn start_time_ms(mut self, value: i64) -> Self {
+        self.start_time_ms = value;
+        self
+    }
+
+    /// Sets the start time in milliseconds since the Unix epoch and returns
+    /// this value for further mutation.
+    pub fn set_start_time_ms(&mut self, value: i64) -> &mut Self {
+        self.start_time_ms = value;
+        self
+    }
+
+    /// Returns the time the request started, in milliseconds since the Unix
+    /// epoch.
+    pub fn get_start_time_ms(&self) -> i64 {
+        self.start_time_ms
+    }
+
+    /// Sets the queued time in milliseconds and returns the updated value.
+    pub fn queued_ms(mut self, value: i64) -> Self {
+        self.queued_ms = value;
+        self
+    }
+
+    /// Sets the queued time in milliseconds and returns this value for further
+    /// mutation.
+    pub fn set_queued_ms(&mut self, value: i64) -> &mut Self {
+        self.queued_ms = value;
+        self
+    }
+
+    /// Returns how long the request's first task waited in the proxy queue, in
+    /// milliseconds; 0 until that task starts.
+    pub fn get_queued_ms(&self) -> i64 {
+        self.queued_ms
+    }
+
+    /// Sets the elapsed time in milliseconds and returns the updated value.
+    pub fn elapsed_ms(mut self, value: i64) -> Self {
+        self.elapsed_ms = value;
+        self
+    }
+
+    /// Sets the elapsed time in milliseconds and returns this value for further
+    /// mutation.
+    pub fn set_elapsed_ms(&mut self, value: i64) -> &mut Self {
+        self.elapsed_ms = value;
+        self
+    }
+
+    /// Returns how long the request has been running, in milliseconds. In a
+    /// `cancel_requests` answer it is how long the request had been running when
+    /// it was canceled.
+    pub fn get_elapsed_ms(&self) -> i64 {
+        self.elapsed_ms
+    }
+
+    /// Sets the request state and returns the updated value.
+    pub fn state(mut self, value: impl Into<String>) -> Self {
+        self.state = value.into();
+        self
+    }
+
+    /// Sets the request state and returns this value for further mutation.
+    pub fn set_state(&mut self, value: impl Into<String>) -> &mut Self {
+        self.state = value.into();
+        self
+    }
+
+    /// Returns the request state: `Queued`, `Running` or `Canceling`. In a
+    /// `cancel_requests` answer it is the state before the cancel, or
+    /// `Canceling` when the call repeated an earlier cancel.
+    pub fn get_state(&self) -> &str {
+        &self.state
+    }
+
+    /// Sets the task ids and returns the updated value.
+    pub fn task_ids(mut self, values: Vec<i64>) -> Self {
+        self.task_ids = values;
+        self
+    }
+
+    /// Sets the task ids and returns this value for further mutation.
+    pub fn set_task_ids(&mut self, values: Vec<i64>) -> &mut Self {
+        self.task_ids = values;
+        self
+    }
+
+    /// Adds a single task id and returns the updated value.
+    pub fn add_task_id(mut self, value: i64) -> Self {
+        self.task_ids.push(value);
+        self
+    }
+
+    /// Returns the ids of the proxy tasks the request has created.
+    pub fn get_task_ids(&self) -> &[i64] {
+        &self.task_ids
+    }
+
+    /// Sets the trace id and returns the updated value.
+    pub fn trace_id(mut self, value: impl Into<String>) -> Self {
+        self.trace_id = value.into();
+        self
+    }
+
+    /// Sets the trace id and returns this value for further mutation.
+    pub fn set_trace_id(&mut self, value: impl Into<String>) -> &mut Self {
+        self.trace_id = value.into();
+        self
+    }
+
+    /// Returns the trace id of the request.
+    pub fn get_trace_id(&self) -> &str {
+        &self.trace_id
+    }
+
+    /// Sets whether the request can be canceled and returns the updated value.
+    pub fn cancellable(mut self, value: bool) -> Self {
+        self.cancellable = value;
+        self
+    }
+
+    /// Sets whether the request can be canceled and returns this value for
+    /// further mutation.
+    pub fn set_cancellable(&mut self, value: bool) -> &mut Self {
+        self.cancellable = value;
+        self
+    }
+
+    /// Returns whether the request can be canceled.
+    pub fn is_cancellable(&self) -> bool {
+        self.cancellable
+    }
+
+    pub(crate) fn from_proto(value: milvus::RunningRequestInfo) -> Self {
+        Self {
+            request_id: value.request_id,
+            proxy_id: value.proxy_id,
+            request_type: value.r#type,
+            database_name: value.db_name,
+            collection_name: value.collection_name,
+            user: value.user,
+            client_addr: value.client_addr,
+            nq: value.nq,
+            top_k: value.topk,
+            expr: value.expr,
+            start_time_ms: value.start_time_ms,
+            queued_ms: value.queued_ms,
+            elapsed_ms: value.elapsed_ms,
+            state: value.state,
+            task_ids: value.task_ids,
+            trace_id: value.trace_id,
+            cancellable: value.cancellable,
+        }
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// RunningRequestNodeResult
+///////////////////////////////////////////////////////////////////////////////
+/// The outcome of a `list_running_requests` or `cancel_requests` call on one
+/// proxy.
+///
+/// Both calls are sent to every proxy. A proxy that did not answer contributed
+/// nothing to the result; its requests are missing from it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RunningRequestNodeResult {
+    pub(crate) node_id: i64,
+    pub(crate) error_code: i32,
+    pub(crate) reason: String,
+    pub(crate) unimplemented: bool,
+}
+
+impl RunningRequestNodeResult {
+    /// Creates a value initialized with its SDK defaults.
+    pub fn new() -> Self {
+        Self {
+            node_id: 0,
+            error_code: 0,
+            reason: String::new(),
+            unimplemented: false,
+        }
+    }
+
+    /// Sets the node id and returns the updated value.
+    pub fn node_id(mut self, value: i64) -> Self {
+        self.node_id = value;
+        self
+    }
+
+    /// Sets the node id and returns this value for further mutation.
+    pub fn set_node_id(&mut self, value: i64) -> &mut Self {
+        self.node_id = value;
+        self
+    }
+
+    /// Returns the node id of the proxy.
+    pub fn get_node_id(&self) -> i64 {
+        self.node_id
+    }
+
+    /// Sets the error code and returns the updated value.
+    pub fn error_code(mut self, value: i32) -> Self {
+        self.error_code = value;
+        self
+    }
+
+    /// Sets the error code and returns this value for further mutation.
+    pub fn set_error_code(&mut self, value: i32) -> &mut Self {
+        self.error_code = value;
+        self
+    }
+
+    /// Returns the error code of the proxy's answer; 0 means the proxy answered.
+    pub fn get_error_code(&self) -> i32 {
+        self.error_code
+    }
+
+    /// Sets the reason and returns the updated value.
+    pub fn reason(mut self, value: impl Into<String>) -> Self {
+        self.reason = value.into();
+        self
+    }
+
+    /// Sets the reason and returns this value for further mutation.
+    pub fn set_reason(&mut self, value: impl Into<String>) -> &mut Self {
+        self.reason = value.into();
+        self
+    }
+
+    /// Returns the error message when the proxy did not answer.
+    pub fn get_reason(&self) -> &str {
+        &self.reason
+    }
+
+    /// Sets whether the proxy is too old to serve the call and returns the
+    /// updated value.
+    pub fn unimplemented(mut self, value: bool) -> Self {
+        self.unimplemented = value;
+        self
+    }
+
+    /// Sets whether the proxy is too old to serve the call and returns this
+    /// value for further mutation.
+    pub fn set_unimplemented(&mut self, value: bool) -> &mut Self {
+        self.unimplemented = value;
+        self
+    }
+
+    /// Returns whether the proxy is too old to serve the call, as during a
+    /// rolling upgrade. Such a proxy holds no listable requests.
+    pub fn is_unimplemented(&self) -> bool {
+        self.unimplemented
+    }
+
+    /// Returns whether the proxy answered the call.
+    pub fn is_success(&self) -> bool {
+        self.error_code == 0
+    }
+
+    pub(crate) fn from_proto(value: milvus::RunningRequestNodeResult) -> Self {
+        let status = value.status.unwrap_or_default();
+        #[allow(deprecated)]
+        let error_code =
+            if status.code == 0 && status.error_code != common::ErrorCode::Success as i32 {
+                status.error_code
+            } else {
+                status.code
+            };
+        Self {
+            node_id: value.node_id,
+            error_code,
+            reason: status.reason,
+            unimplemented: value.unimplemented,
+        }
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Test Cases
+///////////////////////////////////////////////////////////////////////////////
+
+#[cfg(test)]
+mod state_enum_tests {
+    use super::{
+        CompactionStateCode, CompactionTaskState, CompactionType, SegmentLevel, SegmentState,
+    };
+    use crate::proto::common;
+
+    #[test]
+    fn segment_state_converts_from_proto() {
+        assert_eq!(
+            SegmentState::from_proto(common::SegmentState::Flushed as i32),
+            SegmentState::Flushed
+        );
+        assert_eq!(
+            SegmentState::from_proto(common::SegmentState::Importing as i32),
+            SegmentState::Importing
+        );
+    }
+
+    #[test]
+    fn segment_level_converts_from_proto() {
+        assert_eq!(
+            SegmentLevel::from_proto(common::SegmentLevel::L2 as i32),
+            SegmentLevel::L2
+        );
+        assert_eq!(SegmentLevel::from_proto(i32::MAX), SegmentLevel::Unknown);
+    }
+
+    #[test]
+    fn compaction_state_code_converts_from_proto() {
+        assert_eq!(
+            CompactionStateCode::from_proto(common::CompactionState::Completed as i32),
+            CompactionStateCode::Completed
+        );
+        assert_eq!(
+            CompactionStateCode::from_proto(i32::MAX),
+            CompactionStateCode::Unknown
+        );
+    }
+
+    #[test]
+    fn compaction_type_converts_from_proto() {
+        assert_eq!(
+            CompactionType::from_proto(common::CompactionType::Major as i32),
+            CompactionType::Major
+        );
+        assert_eq!(
+            CompactionType::from_proto(common::CompactionType::Level0Delete as i32),
+            CompactionType::Level0Delete
+        );
+        assert_eq!(
+            CompactionType::from_proto(i32::MAX),
+            CompactionType::Undefined
+        );
+    }
+
+    #[test]
+    fn compaction_task_state_converts_from_proto() {
+        assert_eq!(
+            CompactionTaskState::from_proto(common::CompactionTaskState::Completed as i32),
+            CompactionTaskState::Completed
+        );
+        assert_eq!(
+            CompactionTaskState::from_proto(common::CompactionTaskState::Failed as i32),
+            CompactionTaskState::Failed
+        );
+        assert_eq!(
+            CompactionTaskState::from_proto(i32::MAX),
+            CompactionTaskState::Unknown
+        );
+    }
+}
+
+#[cfg(test)]
+mod refresh_external_collection_state_tests {
+    use super::RefreshExternalCollectionStateCode;
+    use crate::proto::milvus;
+
+    #[test]
+    fn refresh_external_collection_state_as_str_and_display() {
+        let cases = [
+            (
+                RefreshExternalCollectionStateCode::Unknown,
+                "RefreshUnknown",
+            ),
+            (
+                RefreshExternalCollectionStateCode::Pending,
+                "RefreshPending",
+            ),
+            (
+                RefreshExternalCollectionStateCode::InProgress,
+                "RefreshInProgress",
+            ),
+            (
+                RefreshExternalCollectionStateCode::Completed,
+                "RefreshCompleted",
+            ),
+            (RefreshExternalCollectionStateCode::Failed, "RefreshFailed"),
+        ];
+        for (state, expected) in cases {
+            assert_eq!(state.as_str(), expected);
+            assert_eq!(state.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn refresh_external_collection_state_maps_unknown_proto_values() {
+        assert_eq!(
+            RefreshExternalCollectionStateCode::from_proto(
+                milvus::RefreshExternalCollectionState::RefreshPending as i32
+            ),
+            RefreshExternalCollectionStateCode::Pending
+        );
+        assert_eq!(
+            RefreshExternalCollectionStateCode::from_proto(i32::MAX),
+            RefreshExternalCollectionStateCode::Unknown
+        );
+    }
+}
+
+#[cfg(test)]
+mod refresh_external_collection_job_info_tests {
+    use super::RefreshExternalCollectionJobInfo;
+    use crate::proto::milvus;
+
+    #[test]
+    fn job_info_defaults_to_empty_external_spec() {
+        let value = RefreshExternalCollectionJobInfo::new();
+        assert!(value.get_external_spec().is_empty());
+    }
+
+    #[test]
+    fn job_info_decodes_external_spec_from_proto() {
+        let value = RefreshExternalCollectionJobInfo::from_proto(
+            milvus::RefreshExternalCollectionJobInfo {
+                external_spec: r#"{"format":"parquet"}"#.into(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(value.get_external_spec(), r#"{"format":"parquet"}"#);
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Test Cases
+///////////////////////////////////////////////////////////////////////////////
+
+#[cfg(test)]
+mod direct_value_tests {
+    use super::*;
+
+    #[test]
+    fn persistent_segment_info_default_values() {
+        let value = PersistentSegmentInfo::new();
+        let expected_segment_id: i64 = 0;
+        let expected_collection_id: i64 = 0;
+        let expected_partition_id: i64 = 0;
+        let expected_row_count: i64 = 0;
+        let expected_state: SegmentState = Default::default();
+        let expected_collection_name: String = String::new();
+        let expected_level: SegmentLevel = Default::default();
+        let expected_sorted: bool = false;
+        let expected_storage_version: i64 = 0;
+        let expected_insert_channel: String = String::new();
+        let expected_compaction_from: Vec<i64> = Default::default();
+
+        assert_eq!(value.get_segment_id().to_owned(), expected_segment_id);
+        assert_eq!(value.get_collection_id().to_owned(), expected_collection_id);
+        assert_eq!(value.get_partition_id().to_owned(), expected_partition_id);
+        assert_eq!(value.get_row_count().to_owned(), expected_row_count);
+        assert_eq!(value.get_state().to_owned(), expected_state);
+        assert_eq!(
+            value.get_collection_name().to_owned(),
+            expected_collection_name
+        );
+        assert_eq!(value.get_level().to_owned(), expected_level);
+        assert_eq!(value.get_sorted().to_owned(), expected_sorted);
+        assert_eq!(
+            value.get_storage_version().to_owned(),
+            expected_storage_version
+        );
+        assert_eq!(
+            value.get_insert_channel().to_owned(),
+            expected_insert_channel
+        );
+        assert_eq!(
+            value.get_compaction_from().to_owned(),
+            expected_compaction_from
+        );
+    }
+
+    #[test]
+    fn persistent_segment_info_populated_values() {
+        let segment_id = 7;
+        let collection_id = 7;
+        let partition_id = 7;
+        let row_count = 7;
+        let state = SegmentState::Flushed;
+        let collection_name = "collection_name-value".to_owned();
+        let level = SegmentLevel::L1;
+        let sorted = true;
+        let storage_version = 7;
+        let insert_channel = "insert_channel-value".to_owned();
+        let compaction_from = vec![7];
+        let value = PersistentSegmentInfo::new()
+            .segment_id(segment_id.clone())
+            .collection_id(collection_id.clone())
+            .partition_id(partition_id.clone())
+            .row_count(row_count.clone())
+            .state(state.clone())
+            .collection_name(collection_name.clone())
+            .level(level.clone())
+            .sorted(sorted.clone())
+            .storage_version(storage_version.clone())
+            .insert_channel(insert_channel.clone())
+            .compaction_from(compaction_from.clone());
+
+        assert_eq!(value.get_segment_id().to_owned(), segment_id);
+        assert_eq!(value.get_collection_id().to_owned(), collection_id);
+        assert_eq!(value.get_partition_id().to_owned(), partition_id);
+        assert_eq!(value.get_row_count().to_owned(), row_count);
+        assert_eq!(value.get_state().to_owned(), state);
+        assert_eq!(value.get_collection_name().to_owned(), collection_name);
+        assert_eq!(value.get_level().to_owned(), level);
+        assert_eq!(value.get_sorted().to_owned(), sorted);
+        assert_eq!(value.get_storage_version().to_owned(), storage_version);
+        assert_eq!(value.get_insert_channel().to_owned(), insert_channel);
+        assert_eq!(value.get_compaction_from().to_owned(), compaction_from);
+    }
+
+    #[test]
+    fn query_segment_info_default_values() {
+        let value = QuerySegmentInfo::new();
+        let expected_segment_id: i64 = 0;
+        let expected_collection_id: i64 = 0;
+        let expected_partition_id: i64 = 0;
+        let expected_memory_size: i64 = 0;
+        let expected_row_count: i64 = 0;
+        let expected_index_name: String = String::new();
+        let expected_index_id: i64 = 0;
+        let expected_node_ids: Vec<i64> = Default::default();
+        let expected_state: SegmentState = Default::default();
+        let expected_collection_name: String = String::new();
+        let expected_level: SegmentLevel = Default::default();
+        let expected_sorted: bool = false;
+        let expected_storage_version: i64 = 0;
+
+        assert_eq!(value.get_segment_id().to_owned(), expected_segment_id);
+        assert_eq!(value.get_collection_id().to_owned(), expected_collection_id);
+        assert_eq!(value.get_partition_id().to_owned(), expected_partition_id);
+        assert_eq!(value.get_memory_size().to_owned(), expected_memory_size);
+        assert_eq!(value.get_row_count().to_owned(), expected_row_count);
+        assert_eq!(value.get_index_name().to_owned(), expected_index_name);
+        assert_eq!(value.get_index_id().to_owned(), expected_index_id);
+        assert_eq!(value.get_node_ids().to_owned(), expected_node_ids);
+        assert_eq!(value.get_state().to_owned(), expected_state);
+        assert_eq!(
+            value.get_collection_name().to_owned(),
+            expected_collection_name
+        );
+        assert_eq!(value.get_level().to_owned(), expected_level);
+        assert_eq!(value.get_sorted().to_owned(), expected_sorted);
+        assert_eq!(
+            value.get_storage_version().to_owned(),
+            expected_storage_version
+        );
+    }
+
+    #[test]
+    fn query_segment_info_populated_values() {
+        let segment_id = 7;
+        let collection_id = 7;
+        let partition_id = 7;
+        let memory_size = 7;
+        let row_count = 7;
+        let index_name = "index_name-value".to_owned();
+        let index_id = 7;
+        let node_ids = vec![7];
+        let state = SegmentState::Flushed;
+        let collection_name = "collection_name-value".to_owned();
+        let level = SegmentLevel::L1;
+        let sorted = true;
+        let storage_version = 7;
+        let value = QuerySegmentInfo::new()
+            .segment_id(segment_id.clone())
+            .collection_id(collection_id.clone())
+            .partition_id(partition_id.clone())
+            .memory_size(memory_size.clone())
+            .row_count(row_count.clone())
+            .index_name(index_name.clone())
+            .index_id(index_id.clone())
+            .node_ids(node_ids.clone())
+            .state(state.clone())
+            .collection_name(collection_name.clone())
+            .level(level.clone())
+            .sorted(sorted.clone())
+            .storage_version(storage_version.clone());
+
+        assert_eq!(value.get_segment_id().to_owned(), segment_id);
+        assert_eq!(value.get_collection_id().to_owned(), collection_id);
+        assert_eq!(value.get_partition_id().to_owned(), partition_id);
+        assert_eq!(value.get_memory_size().to_owned(), memory_size);
+        assert_eq!(value.get_row_count().to_owned(), row_count);
+        assert_eq!(value.get_index_name().to_owned(), index_name);
+        assert_eq!(value.get_index_id().to_owned(), index_id);
+        assert_eq!(value.get_node_ids().to_owned(), node_ids);
+        assert_eq!(value.get_state().to_owned(), state);
+        assert_eq!(value.get_collection_name().to_owned(), collection_name);
+        assert_eq!(value.get_level().to_owned(), level);
+        assert_eq!(value.get_sorted().to_owned(), sorted);
+        assert_eq!(value.get_storage_version().to_owned(), storage_version);
+    }
+
+    #[test]
+    fn compaction_merge_default_values() {
+        let value = CompactionMerge::new();
+        let expected_source_segment_ids: Vec<i64> = Default::default();
+        let expected_target_segment_id: i64 = 0;
+        let expected_plan_id: i64 = 0;
+        let expected_trigger_id: i64 = 0;
+        let expected_collection_id: i64 = 0;
+        let expected_partition_id: i64 = 0;
+        let expected_channel: String = String::new();
+        let expected_compaction_type: CompactionType = Default::default();
+        let expected_state: CompactionTaskState = Default::default();
+        let expected_failure_reason: String = String::new();
+        let expected_target_segment_ids: Vec<i64> = Default::default();
+
+        assert_eq!(
+            value.get_source_segment_ids().to_owned(),
+            expected_source_segment_ids
+        );
+        assert_eq!(
+            value.get_target_segment_id().to_owned(),
+            expected_target_segment_id
+        );
+        assert_eq!(value.get_plan_id().to_owned(), expected_plan_id);
+        assert_eq!(value.get_trigger_id().to_owned(), expected_trigger_id);
+        assert_eq!(value.get_collection_id().to_owned(), expected_collection_id);
+        assert_eq!(value.get_partition_id().to_owned(), expected_partition_id);
+        assert_eq!(value.get_channel().to_owned(), expected_channel);
+        assert_eq!(
+            value.get_compaction_type().to_owned(),
+            expected_compaction_type
+        );
+        assert_eq!(value.get_state().to_owned(), expected_state);
+        assert_eq!(
+            value.get_failure_reason().to_owned(),
+            expected_failure_reason
+        );
+        assert_eq!(
+            value.get_target_segment_ids().to_owned(),
+            expected_target_segment_ids
+        );
+    }
+
+    #[test]
+    fn compaction_merge_populated_values() {
+        let source_segment_ids = vec![7];
+        let target_segment_id = 7;
+        let plan_id = 7;
+        let trigger_id = 7;
+        let collection_id = 7;
+        let partition_id = 7;
+        let channel = "channel-value".to_owned();
+        let compaction_type = CompactionType::Major;
+        let state = CompactionTaskState::Completed;
+        let failure_reason = "failure_reason-value".to_owned();
+        let target_segment_ids = vec![7];
+        let value = CompactionMerge::new()
+            .source_segment_ids(source_segment_ids.clone())
+            .target_segment_id(target_segment_id.clone())
+            .plan_id(plan_id.clone())
+            .trigger_id(trigger_id.clone())
+            .collection_id(collection_id.clone())
+            .partition_id(partition_id.clone())
+            .channel(channel.clone())
+            .compaction_type(compaction_type.clone())
+            .state(state.clone())
+            .failure_reason(failure_reason.clone())
+            .target_segment_ids(target_segment_ids.clone());
+
+        assert_eq!(
+            value.get_source_segment_ids().to_owned(),
+            source_segment_ids
+        );
+        assert_eq!(value.get_target_segment_id().to_owned(), target_segment_id);
+        assert_eq!(value.get_plan_id().to_owned(), plan_id);
+        assert_eq!(value.get_trigger_id().to_owned(), trigger_id);
+        assert_eq!(value.get_collection_id().to_owned(), collection_id);
+        assert_eq!(value.get_partition_id().to_owned(), partition_id);
+        assert_eq!(value.get_channel().to_owned(), channel);
+        assert_eq!(value.get_compaction_type().to_owned(), compaction_type);
+        assert_eq!(value.get_state().to_owned(), state);
+        assert_eq!(value.get_failure_reason().to_owned(), failure_reason);
+        assert_eq!(
+            value.get_target_segment_ids().to_owned(),
+            target_segment_ids
+        );
+    }
+
+    #[test]
+    fn analyzer_token_default_values() {
+        let value = AnalyzerToken::new();
+        let expected_text: String = String::new();
+        let expected_start_offset: i64 = 0;
+        let expected_end_offset: i64 = 0;
+        let expected_position: i64 = 0;
+        let expected_position_length: i64 = 0;
+        let expected_hash: u32 = 0;
+
+        assert_eq!(value.get_text().to_owned(), expected_text);
+        assert_eq!(value.get_start_offset().to_owned(), expected_start_offset);
+        assert_eq!(value.get_end_offset().to_owned(), expected_end_offset);
+        assert_eq!(value.get_position().to_owned(), expected_position);
+        assert_eq!(
+            value.get_position_length().to_owned(),
+            expected_position_length
+        );
+        assert_eq!(value.get_hash().to_owned(), expected_hash);
+    }
+
+    #[test]
+    fn analyzer_token_populated_values() {
+        let text = "text-value".to_owned();
+        let start_offset = 7;
+        let end_offset = 7;
+        let position = 7;
+        let position_length = 7;
+        let hash = 7;
+        let value = AnalyzerToken::new()
+            .text(text.clone())
+            .start_offset(start_offset.clone())
+            .end_offset(end_offset.clone())
+            .position(position.clone())
+            .position_length(position_length.clone())
+            .hash(hash.clone());
+
+        assert_eq!(value.get_text().to_owned(), text);
+        assert_eq!(value.get_start_offset().to_owned(), start_offset);
+        assert_eq!(value.get_end_offset().to_owned(), end_offset);
+        assert_eq!(value.get_position().to_owned(), position);
+        assert_eq!(value.get_position_length().to_owned(), position_length);
+        assert_eq!(value.get_hash().to_owned(), hash);
+    }
+
+    #[test]
+    fn analyzer_result_default_values() {
+        let value = AnalyzerResult::new();
+        let expected_tokens: Vec<AnalyzerToken> = Default::default();
+
+        assert_eq!(value.get_tokens().to_owned(), expected_tokens);
+    }
+
+    #[test]
+    fn analyzer_result_populated_values() {
+        let tokens = vec![AnalyzerToken::new()];
+        let value = AnalyzerResult::new().tokens(tokens.clone());
+
+        assert_eq!(value.get_tokens().to_owned(), tokens);
+    }
+}
+
+#[cfg(test)]
+mod running_request_type_tests {
+    use super::{RunningRequestInfo, RunningRequestNodeResult};
+    use crate::proto::common;
+
+    fn grpc_running_request(id: &str, state: &str) -> crate::proto::milvus::RunningRequestInfo {
+        crate::proto::milvus::RunningRequestInfo {
+            request_id: id.into(),
+            proxy_id: 7,
+            r#type: "Search".into(),
+            db_name: "db".into(),
+            collection_name: "coll".into(),
+            user: "alice".into(),
+            client_addr: "10.0.0.1:5000".into(),
+            nq: 4_000,
+            topk: 100,
+            expr: "id > 0".into(),
+            start_time_ms: 1_700_000_000_000,
+            queued_ms: 3,
+            elapsed_ms: 1_500,
+            state: state.into(),
+            task_ids: vec![11, 12],
+            trace_id: "trace-1".into(),
+            cancellable: true,
+        }
+    }
+
+    #[test]
+    fn running_request_info_converts_from_proto() {
+        let value = RunningRequestInfo::from_proto(grpc_running_request("7-to03zu-1", "Running"));
+        assert_eq!(value.get_request_id(), "7-to03zu-1");
+        assert_eq!(value.get_proxy_id(), 7);
+        assert_eq!(value.get_type(), "Search");
+        assert_eq!(value.get_database_name(), "db");
+        assert_eq!(value.get_collection_name(), "coll");
+        assert_eq!(value.get_user(), "alice");
+        assert_eq!(value.get_client_addr(), "10.0.0.1:5000");
+        assert_eq!(value.get_nq(), 4_000);
+        assert_eq!(value.get_top_k(), 100);
+        assert_eq!(value.get_expr(), "id > 0");
+        assert_eq!(value.get_start_time_ms(), 1_700_000_000_000);
+        assert_eq!(value.get_queued_ms(), 3);
+        assert_eq!(value.get_elapsed_ms(), 1_500);
+        assert_eq!(value.get_state(), "Running");
+        assert_eq!(value.get_task_ids(), &[11, 12]);
+        assert_eq!(value.get_trace_id(), "trace-1");
+        assert!(value.is_cancellable());
+    }
+
+    #[test]
+    fn running_request_info_default_values() {
+        let value = RunningRequestInfo::new();
+        assert_eq!(value.get_request_id(), "");
+        assert_eq!(value.get_proxy_id(), 0);
+        assert_eq!(value.get_type(), "");
+        assert!(value.get_task_ids().is_empty());
+        assert!(!value.is_cancellable());
+    }
+
+    #[test]
+    fn running_request_node_result_default_values() {
+        let value = RunningRequestNodeResult::new();
+        assert_eq!(value.get_node_id(), 0);
+        assert_eq!(value.get_error_code(), 0);
+        assert!(value.is_success());
+        assert!(!value.is_unimplemented());
+        assert_eq!(value.get_reason(), "");
+    }
+
+    #[test]
+    fn running_request_node_result_error_code_follows_status() {
+        let success =
+            RunningRequestNodeResult::from_proto(crate::proto::milvus::RunningRequestNodeResult {
+                node_id: 7,
+                status: Some(common::Status {
+                    code: 0,
+                    ..Default::default()
+                }),
+                unimplemented: false,
+            });
+        assert!(success.is_success());
+        assert_eq!(success.get_error_code(), 0);
+
+        let silent =
+            RunningRequestNodeResult::from_proto(crate::proto::milvus::RunningRequestNodeResult {
+                node_id: 8,
+                status: Some(common::Status {
+                    code: 65_535,
+                    reason: "node unreachable".into(),
+                    ..Default::default()
+                }),
+                unimplemented: false,
+            });
+        assert!(!silent.is_success());
+        assert_eq!(silent.get_error_code(), 65_535);
+        assert_eq!(silent.get_reason(), "node unreachable");
+
+        #[allow(deprecated)]
+        let old =
+            RunningRequestNodeResult::from_proto(crate::proto::milvus::RunningRequestNodeResult {
+                node_id: 9,
+                status: Some(common::Status {
+                    code: 0,
+                    error_code: common::ErrorCode::UnexpectedError as i32,
+                    reason: "unimplemented".into(),
+                    ..Default::default()
+                }),
+                unimplemented: true,
+            });
+        assert!(!old.is_success());
+        assert_eq!(
+            old.get_error_code(),
+            common::ErrorCode::UnexpectedError as i32
+        );
+        assert!(old.is_unimplemented());
+    }
+}

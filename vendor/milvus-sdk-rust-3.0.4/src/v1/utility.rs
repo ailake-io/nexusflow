@@ -1,0 +1,342 @@
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License. You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+use crate::proto::common::{MsgBase, MsgType, SegmentLevel, SegmentState};
+use crate::proto::milvus::{
+    ConnectRequest, FlushAllRequest, FlushRequest, GetCompactionPlansRequest,
+    GetCompactionStateRequest, GetFlushAllStateRequest, GetPersistentSegmentInfoRequest,
+    GetQuerySegmentInfoRequest, ManualCompactionRequest,
+    PersistentSegmentInfo as ProtoPersistentSegmentInfo, QuerySegmentInfo as ProtoQuerySegmentInfo,
+};
+use crate::proto::{self};
+use crate::v1::client::{Client, ServerVersion};
+use crate::v1::collection::{CompactionInfo, CompactionPlans, CompactionState};
+use crate::v1::error::status_to_result;
+use crate::v1::error::{Error, Result};
+use std::collections::HashMap;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PersistentSegmentInfo {
+    pub segment_id: i64,
+    pub collection_id: i64,
+    pub partition_id: i64,
+    pub num_rows: i64,
+    pub state: SegmentState,
+    pub level: SegmentLevel,
+    pub is_sorted: bool,
+    pub storage_version: i64,
+}
+
+impl From<ProtoPersistentSegmentInfo> for PersistentSegmentInfo {
+    fn from(value: ProtoPersistentSegmentInfo) -> Self {
+        Self {
+            segment_id: value.segment_id,
+            collection_id: value.collection_id,
+            partition_id: value.partition_id,
+            num_rows: value.num_rows,
+            state: SegmentState::try_from(value.state).unwrap_or(SegmentState::None),
+            level: SegmentLevel::try_from(value.level).unwrap_or(SegmentLevel::Legacy),
+            is_sorted: value.is_sorted,
+            storage_version: value.storage_version,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuerySegmentInfo {
+    pub segment_id: i64,
+    pub collection_id: i64,
+    pub partition_id: i64,
+    pub mem_size: i64,
+    pub num_rows: i64,
+    pub index_name: String,
+    pub index_id: i64,
+    #[deprecated]
+    pub node_id: i64,
+    pub state: SegmentState,
+    pub node_ids: Vec<i64>,
+    pub level: SegmentLevel,
+    pub is_sorted: bool,
+    pub storage_version: i64,
+}
+
+#[allow(deprecated)]
+impl From<ProtoQuerySegmentInfo> for QuerySegmentInfo {
+    fn from(value: ProtoQuerySegmentInfo) -> Self {
+        Self {
+            segment_id: value.segment_id,
+            collection_id: value.collection_id,
+            partition_id: value.partition_id,
+            mem_size: value.mem_size,
+            num_rows: value.num_rows,
+            index_name: value.index_name,
+            index_id: value.index_id,
+            node_id: value.node_id,
+            state: SegmentState::try_from(value.state).unwrap_or(SegmentState::None),
+            node_ids: value.node_ids,
+            level: SegmentLevel::try_from(value.level).unwrap_or(SegmentLevel::Legacy),
+            is_sorted: value.is_sorted,
+            storage_version: value.storage_version,
+        }
+    }
+}
+
+impl Client {
+    pub async fn flush_collections<C>(&self, collections: C) -> Result<HashMap<String, Vec<i64>>>
+    where
+        C: IntoIterator,
+        C::Item: ToString,
+    {
+        let res = self
+            .client
+            .clone()
+            .flush(FlushRequest {
+                base: Some(MsgBase::new(MsgType::Flush)),
+                db_name: "".to_string(),
+                collection_names: collections.into_iter().map(|x| x.to_string()).collect(),
+            })
+            .await?
+            .into_inner();
+
+        status_to_result(&res.status)?;
+
+        Ok(res
+            .coll_seg_i_ds
+            .into_iter()
+            .map(|(k, v)| (k, v.data))
+            .collect())
+    }
+
+    pub async fn get_server_version(&self) -> Result<ServerVersion> {
+        let res = self
+            .client
+            .clone()
+            .connect(ConnectRequest {
+                base: Some(MsgBase::new(MsgType::Connect)),
+                client_info: None,
+            })
+            .await?
+            .into_inner();
+
+        status_to_result(&res.status)?;
+        let info = res.server_info.ok_or_else(|| {
+            Error::Unexpected("server version response missing server info".to_string())
+        })?;
+
+        Ok(ServerVersion {
+            version: info.build_tags,
+            build_time: info.build_time,
+            git_commit: info.git_commit,
+            go_version: info.go_version,
+            deploy_mode: info.deploy_mode,
+        })
+    }
+
+    pub async fn flush<S>(&self, collection_name: S) -> Result<()>
+    where
+        S: Into<String>,
+    {
+        let res = self
+            .client
+            .clone()
+            .flush(FlushRequest {
+                base: Some(MsgBase::new(MsgType::Flush)),
+                db_name: "".to_string(),
+                collection_names: vec![collection_name.into()],
+            })
+            .await?
+            .into_inner();
+
+        status_to_result(&res.status)?;
+
+        Ok(())
+    }
+
+    #[allow(deprecated)]
+    pub async fn flush_all(&self) -> Result<u64> {
+        let resp = self
+            .client
+            .clone()
+            .flush_all(FlushAllRequest {
+                base: Some(MsgBase::new(MsgType::FlushAll)),
+                ..Default::default()
+            })
+            .await?
+            .into_inner();
+
+        status_to_result(&resp.status)?;
+        Ok(resp.flush_all_ts)
+    }
+
+    #[allow(deprecated)]
+    pub async fn get_flush_all_state(&self, flush_all_ts: u64) -> Result<bool> {
+        let resp = self
+            .client
+            .clone()
+            .get_flush_all_state(GetFlushAllStateRequest {
+                flush_all_ts,
+                ..Default::default()
+            })
+            .await?
+            .into_inner();
+
+        status_to_result(&resp.status)?;
+        Ok(resp.flushed)
+    }
+
+    pub async fn list_persistent_segments<S>(
+        &self,
+        collection_name: S,
+    ) -> Result<Vec<PersistentSegmentInfo>>
+    where
+        S: Into<String>,
+    {
+        let resp = self
+            .client
+            .clone()
+            .get_persistent_segment_info(GetPersistentSegmentInfoRequest {
+                collection_name: collection_name.into(),
+                db_name: "".to_string(),
+                ..Default::default()
+            })
+            .await?
+            .into_inner();
+
+        status_to_result(&resp.status)?;
+        Ok(resp.infos.into_iter().map(Into::into).collect())
+    }
+
+    pub async fn list_loaded_segments<S>(&self, collection_name: S) -> Result<Vec<QuerySegmentInfo>>
+    where
+        S: Into<String>,
+    {
+        let resp = self
+            .client
+            .clone()
+            .get_query_segment_info(GetQuerySegmentInfoRequest {
+                collection_name: collection_name.into(),
+                db_name: "".to_string(),
+                ..Default::default()
+            })
+            .await?
+            .into_inner();
+
+        status_to_result(&resp.status)?;
+        Ok(resp.infos.into_iter().map(Into::into).collect())
+    }
+
+    /// manual compaction
+    ///
+    /// # Arguments
+    ///
+    /// * `collection_name` - The name of the collection
+    /// * `is_clustering` - Whether to perform clustering compaction
+    ///
+    /// # Returns
+    ///
+    /// Returns a `Result` containing the `CompactionInfo` if successful, or an error if the compaction fails.
+    pub async fn manual_compaction<S>(
+        &self,
+        collection_name: S,
+        is_clustering: Option<bool>,
+    ) -> Result<CompactionInfo>
+    where
+        S: Into<String>,
+    {
+        let collection_name = collection_name.into();
+        let collection = self
+            .collection_cache
+            .get(
+                crate::v1::collection::current_db_name(self),
+                &collection_name,
+            )
+            .await?;
+        let major_compaction = is_clustering.unwrap_or(false);
+
+        let resp = self
+            .client
+            .clone()
+            .manual_compaction(ManualCompactionRequest {
+                collection_id: collection.id,
+                timetravel: 0,
+                major_compaction,
+                collection_name: collection.name,
+                db_name: "".to_string(),
+                partition_id: 0,
+                segment_ids: vec![],
+                channel: "".to_string(),
+                l0_compaction: false,
+                target_size: 0,
+            })
+            .await?
+            .into_inner();
+        status_to_result(&resp.status)?;
+        Ok(resp.into())
+    }
+
+    pub async fn get_compaction_state(&self, compaction_id: i64) -> Result<CompactionState> {
+        let resp = self
+            .client
+            .clone()
+            .get_compaction_state(GetCompactionStateRequest { compaction_id })
+            .await?
+            .into_inner();
+        status_to_result(&resp.status)?;
+        Ok(resp.into())
+    }
+
+    pub async fn get_compaction_plans(&self, compaction_id: i64) -> Result<CompactionPlans> {
+        let resp = self
+            .client
+            .clone()
+            .get_compaction_state_with_plans(GetCompactionPlansRequest {
+                compaction_id,
+                ..Default::default()
+            })
+            .await?
+            .into_inner();
+        status_to_result(&resp.status)?;
+        Ok(resp.into())
+    }
+
+    /// Test text analyzers. Returns tokenized results.
+    /// Requires Milvus 2.6+.
+    pub async fn run_analyzer(
+        &self,
+        texts: Vec<String>,
+        analyzer_params: &str,
+    ) -> Result<Vec<proto::milvus::AnalyzerResult>> {
+        let resp = self
+            .client
+            .clone()
+            .run_analyzer(proto::milvus::RunAnalyzerRequest {
+                base: Some(MsgBase::new(MsgType::RunAnalyzer)),
+                analyzer_params: analyzer_params.to_string(),
+                placeholder: texts.into_iter().map(|t| t.into_bytes()).collect(),
+                with_detail: true,
+                with_hash: false,
+                db_name: "".to_string(),
+                collection_name: "".to_string(),
+                field_name: "".to_string(),
+                analyzer_names: vec![],
+                ..Default::default()
+            })
+            .await?
+            .into_inner();
+        status_to_result(&resp.status)?;
+        Ok(resp.results)
+    }
+}

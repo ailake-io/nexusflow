@@ -91,7 +91,7 @@ pub struct JwtCodec {
 
 impl JwtCodec {
     #[allow(dead_code)]
-    pub fn new(secret: &[u8], token_ttl_seconds: u64) -> Self {
+    pub fn new(secret: &[u8], token_ttl_seconds: u64) -> Result<Self, jsonwebtoken::errors::Error> {
         Self::with_blocklist(secret, token_ttl_seconds, TokenBlocklist::new())
     }
 
@@ -99,17 +99,17 @@ impl JwtCodec {
         secret: &[u8],
         token_ttl_seconds: u64,
         blocklist: TokenBlocklist,
-    ) -> Self {
+    ) -> Result<Self, jsonwebtoken::errors::Error> {
         let mut validation = Validation::new(Algorithm::HS256);
         validation.set_audience(&[NEXUS_AUDIENCE]);
         validation.set_issuer(&[NEXUS_ISSUER]);
-        Self {
-            encoding_key: EncodingKey::from_secret(secret),
-            decoding_key: DecodingKey::from_secret(secret),
+        Ok(Self {
+            encoding_key: EncodingKey::from_secret(secret)?,
+            decoding_key: DecodingKey::from_secret(secret)?,
             validation,
             token_ttl_seconds,
             blocklist,
-        }
+        })
     }
 
     pub fn issue(&self, subject: &str, role: Role) -> Result<String, ApiError> {
@@ -207,7 +207,7 @@ mod tests {
 
     #[test]
     fn issued_token_round_trips_with_correct_role() {
-        let jwt = JwtCodec::new(b"test-secret", 3600);
+        let jwt = JwtCodec::new(b"test-secret", 3600).unwrap();
         let token = jwt.issue("alice", Role::Write).unwrap();
         let claims = jwt.verify(&token).unwrap();
         assert_eq!(claims.sub, "alice");
@@ -216,37 +216,37 @@ mod tests {
 
     #[test]
     fn tampered_token_is_rejected() {
-        let jwt = JwtCodec::new(b"test-secret", 3600);
+        let jwt = JwtCodec::new(b"test-secret", 3600).unwrap();
         let token = jwt.issue("alice", Role::Read).unwrap();
-        let other_jwt = JwtCodec::new(b"different-secret", 3600);
+        let other_jwt = JwtCodec::new(b"different-secret", 3600).unwrap();
         assert!(other_jwt.verify(&token).is_err());
     }
 
     #[test]
     fn token_with_wrong_audience_is_rejected() {
-        let jwt = JwtCodec::new(b"test-secret", 3600);
+        let jwt = JwtCodec::new(b"test-secret", 3600).unwrap();
         let token = jwt.issue("alice", Role::Read).unwrap();
         let mut validation = Validation::new(Algorithm::HS256);
         validation.set_audience(&["other-audience"]);
         validation.set_issuer(&[NEXUS_ISSUER]);
-        let decoding_key = DecodingKey::from_secret(b"test-secret");
+        let decoding_key = DecodingKey::from_secret(b"test-secret").unwrap();
         assert!(decode::<Claims>(&token, &decoding_key, &validation).is_err());
     }
 
     #[test]
     fn token_with_wrong_issuer_is_rejected() {
-        let jwt = JwtCodec::new(b"test-secret", 3600);
+        let jwt = JwtCodec::new(b"test-secret", 3600).unwrap();
         let token = jwt.issue("alice", Role::Read).unwrap();
         let mut validation = Validation::new(Algorithm::HS256);
         validation.set_audience(&[NEXUS_AUDIENCE]);
         validation.set_issuer(&["other-issuer"]);
-        let decoding_key = DecodingKey::from_secret(b"test-secret");
+        let decoding_key = DecodingKey::from_secret(b"test-secret").unwrap();
         assert!(decode::<Claims>(&token, &decoding_key, &validation).is_err());
     }
 
     #[test]
     fn revoked_token_is_rejected() {
-        let jwt = JwtCodec::new(b"test-secret", 3600);
+        let jwt = JwtCodec::new(b"test-secret", 3600).unwrap();
         let token = jwt.issue("alice", Role::Read).unwrap();
         let claims = jwt.verify(&token).unwrap();
         jwt.blocklist().revoke(token.clone(), claims.exp);
@@ -257,7 +257,7 @@ mod tests {
     fn expired_token_is_rejected() {
         // Built directly (not via `issue`) with `exp` in the distant past,
         // so this doesn't depend on wall-clock timing or sleeping.
-        let encoding_key = EncodingKey::from_secret(b"test-secret");
+        let encoding_key = EncodingKey::from_secret(b"test-secret").unwrap();
         let expired_claims = Claims {
             sub: "alice".to_string(),
             role: Role::Read,
@@ -274,7 +274,7 @@ mod tests {
 
         let mut validation = Validation::new(Algorithm::HS256);
         validation.leeway = 0;
-        let decoding_key = DecodingKey::from_secret(b"test-secret");
+        let decoding_key = DecodingKey::from_secret(b"test-secret").unwrap();
         assert!(decode::<Claims>(&expired_token, &decoding_key, &validation).is_err());
     }
 }
