@@ -446,7 +446,11 @@ jobs:
 
           # Never attach new binaries to an old tag. Re-running this workflow
           # is safe only when the existing tag resolves to the same commit.
-          tag_sha="$(gh api "repos/$GH_REPO/commits/$tag" --jq .sha 2>/dev/null || true)"
+          # A missing tag returns HTTP 422 with a JSON error body. Only a
+          # successful API response may supply a commit SHA.
+          if ! tag_sha="$(gh api "repos/$GH_REPO/commits/$tag" --jq .sha 2>/dev/null)"; then
+            tag_sha=""
+          fi
           if [ -n "$tag_sha" ] && [ "$tag_sha" != "$EXPECTED_SHA" ]; then
             echo "::error::Refusing to publish $tag: it points to $tag_sha, expected $EXPECTED_SHA."
             exit 1
