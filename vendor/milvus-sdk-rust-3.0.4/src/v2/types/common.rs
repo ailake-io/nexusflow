@@ -4079,6 +4079,16 @@ mod field_data_tests {
 mod constructor_value_tests {
     use super::*;
 
+    fn fresh_credentials() -> (String, String) {
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        (format!("test-user-{id}"), format!("test-pass-{id}"))
+    }
+
+    fn encoded_token(value: &str) -> String {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.encode(value)
+    }
+
     #[test]
     fn function_constructor_values() {
         let value = Function::new()
@@ -4305,73 +4315,86 @@ mod constructor_value_tests {
             retry.get_max_attempts()
         );
 
+        let (username, password) = fresh_credentials();
+        let expected_token = encoded_token(&format!("{username}:{password}"));
         let credentials = ConnectConfig::new()
             .uri("http://milvus:19530")
-            .username_password("user", "password");
-        assert_eq!(
-            credentials.get_token().as_deref(),
-            Some("dXNlcjpwYXNzd29yZA==")
-        );
-        assert_eq!(credentials.get_username().as_deref(), Some("user"));
-        assert_eq!(credentials.get_password().as_deref(), Some("password"));
+            .username_password(&username, &password);
+        assert_eq!(credentials.get_token().as_deref(), Some(expected_token.as_str()));
+        assert_eq!(credentials.get_username().as_deref(), Some(username.as_str()));
+        assert_eq!(credentials.get_password().as_deref(), Some(password.as_str()));
 
         let secure = ConnectConfig::new().uri("http://milvus:19530").secure(true);
         assert!(secure.is_secure());
 
+        let (username, password) = fresh_credentials();
+        let expected_token = encoded_token(&format!("{username}:{password}"));
         let split = ConnectConfig::new()
             .uri("http://milvus:19530")
-            .username("user")
-            .password("password");
-        assert_eq!(split.get_token().as_deref(), Some("dXNlcjpwYXNzd29yZA=="));
-        assert_eq!(split.get_username().as_deref(), Some("user"));
-        assert_eq!(split.get_password().as_deref(), Some("password"));
+            .username(&username)
+            .password(&password);
+        assert_eq!(split.get_token().as_deref(), Some(expected_token.as_str()));
+        assert_eq!(split.get_username().as_deref(), Some(username.as_str()));
+        assert_eq!(split.get_password().as_deref(), Some(password.as_str()));
     }
 
     #[test]
     fn connect_config_explicit_token_takes_precedence_over_credentials() {
         // An explicit token is never overwritten by later username/password settings.
+        let explicit_token = format!("token-{}", uuid::Uuid::new_v4().simple());
+        let explicit_encoded = encoded_token(&explicit_token);
+        let (username, password) = fresh_credentials();
         let value = ConnectConfig::new()
-            .token("root:Milvus")
-            .username("user")
-            .password("password");
-        assert_eq!(value.get_token().as_deref(), Some("cm9vdDpNaWx2dXM="));
+            .token(&explicit_token)
+            .username(&username)
+            .password(&password);
+        assert_eq!(value.get_token().as_deref(), Some(explicit_encoded.as_str()));
 
+        let (username, password) = fresh_credentials();
         let value = ConnectConfig::new()
-            .username("user")
-            .password("password")
-            .token("root:Milvus");
-        assert_eq!(value.get_token().as_deref(), Some("cm9vdDpNaWx2dXM="));
+            .username(&username)
+            .password(&password)
+            .token(&explicit_token);
+        assert_eq!(value.get_token().as_deref(), Some(explicit_encoded.as_str()));
     }
 
     #[test]
     fn connect_config_derived_token_tracks_credential_changes() {
         // A derived token stays in sync when a credential changes, but only until an explicit
         // token is supplied.
+        let (username, old_password) = fresh_credentials();
+        let new_password = format!("next-{}", uuid::Uuid::new_v4().simple());
         let mut value = ConnectConfig::new();
-        value.set_username("user").set_password("old");
-        assert_eq!(value.get_token().as_deref(), Some("dXNlcjpvbGQ="));
-        value.set_password("new");
-        assert_eq!(value.get_token().as_deref(), Some("dXNlcjpuZXc="));
-        value.set_token("root:Milvus");
-        value.set_password("other");
-        assert_eq!(value.get_token().as_deref(), Some("cm9vdDpNaWx2dXM="));
+        value.set_username(&username).set_password(&old_password);
+        let old_token = encoded_token(&format!("{username}:{old_password}"));
+        assert_eq!(value.get_token().as_deref(), Some(old_token.as_str()));
+        value.set_password(&new_password);
+        let new_token = encoded_token(&format!("{username}:{new_password}"));
+        assert_eq!(value.get_token().as_deref(), Some(new_token.as_str()));
+        let explicit_token = format!("token-{}", uuid::Uuid::new_v4().simple());
+        let explicit_encoded = encoded_token(&explicit_token);
+        value.set_token(&explicit_token);
+        value.set_password(format!("changed-{}", uuid::Uuid::new_v4().simple()));
+        assert_eq!(value.get_token().as_deref(), Some(explicit_encoded.as_str()));
     }
 
     #[test]
     fn connect_config_debug_output_redacts_token() {
+        let token = format!("token-{}", uuid::Uuid::new_v4().simple());
+        let password = format!("password-{}", uuid::Uuid::new_v4().simple());
         let value = ConnectConfig::new()
             .uri("http://milvus:19530")
-            .token("root:Milvus")
-            .password("secret-password")
+            .token(&token)
+            .password(&password)
             .client_key("/secret/client-key.pem")
             .database("default");
 
         let debug = format!("{value:?}");
         assert!(debug.contains("http://milvus:19530"));
         assert!(debug.contains("[REDACTED]"));
-        assert!(!debug.contains("root:Milvus"));
-        assert!(!debug.contains("cm9vdDpNaWx2dXM="));
-        assert!(!debug.contains("secret-password"));
+        assert!(!debug.contains(&token));
+        assert!(!debug.contains(&encoded_token(&token)));
+        assert!(!debug.contains(&password));
         assert!(!debug.contains("/secret/client-key.pem"));
     }
 
