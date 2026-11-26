@@ -99,9 +99,41 @@ jobs:
 
       - name: Determine release version
         id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          version="$(grep -A3 '^\[workspace.package\]' Cargo.toml | grep '^version' | head -1 | cut -d '"' -f2)"
+          current_version="$(grep -A3 '^\[workspace.package\]' Cargo.toml | grep '^version' | head -1 | cut -d '"' -f2)"
+          semver_re='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          if ! [[ "$current_version" =~ $semver_re ]]; then
+            echo "::error::Cargo workspace version must be plain semver (got: $current_version)"
+            exit 1
+          fi
+
+          # A merge can leave Cargo.toml at the latest published version.
+          # Use that version only when it has never been released; otherwise
+          # advance the patch so the release gets a fresh immutable tag.
+          latest_tag="$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name 2>/dev/null || true)"
+          latest_version="${latest_tag#v}"
+          base_version="$current_version"
+          if [[ "$latest_version" =~ $semver_re ]]; then
+            IFS=. read -r current_major current_minor current_patch <<< "$current_version"
+            IFS=. read -r latest_major latest_minor latest_patch <<< "$latest_version"
+            if (( current_major < latest_major || \
+                  (current_major == latest_major && current_minor < latest_minor) || \
+                  (current_major == latest_major && current_minor == latest_minor && current_patch <= latest_patch) )); then
+              base_version="$latest_version"
+            fi
+          fi
+
+          version="$base_version"
+          while gh api "repos/$GH_REPO/git/ref/tags/v$version" >/dev/null 2>&1; do
+            IFS=. read -r major minor patch <<< "$version"
+            version="$major.$minor.$((patch + 1))"
+          done
+
+          echo "Release version: $version (Cargo: $current_version; latest release: ${latest_tag:-none})"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Run Release and wait
