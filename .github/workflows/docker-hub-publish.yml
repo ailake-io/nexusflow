@@ -13,14 +13,9 @@ name: Docker Hub Publish
 # together. This workflow never mutates Cargo.toml or pushes a commit.
 #
 # The version and the commit to build both come from the GitHub Release's
-# *tag* — never from the commit that triggered this run. On a manual
-# Release dispatch with a new version, `determine-version` pushes a bump
-# commit AFTER the run started, so `workflow_run.head_sha` (and `main` at
-# trigger time) still says the previous version: real bug 2026-09-19, the
-# automatic run after the v0.1.7 release re-built and re-pushed the
-# already-published `v0.1.6` tag from the new code. Resolving via the tag
-# makes the image always match the release it is named after, and makes a
-# manual dispatch for an old version rebuild *that* version's commit.
+# *tag* — never from the commit that triggered this run. Resolving via the
+# tag makes the image match the release it is named after, including a
+# manual dispatch for an older version.
 #
 # Requires two repo secrets that don't exist yet as of this writing:
 # DOCKERHUB_USERNAME and DOCKERHUB_TOKEN (a Docker Hub access token, not
@@ -30,18 +25,8 @@ name: Docker Hub Publish
 # step.
 
 on:
-  # Runs after Release finishes on main — same commit Release just
-  # tagged, so the image and that GitHub Release always match. `workflow_run`
-  # is the only way to sequence separate workflow files; there's no
-  # cross-file `needs:`.
-  workflow_run:
-    workflows: ["Release"]
-    types: [completed]
-    branches: [main]
-  # Manual escape hatch from main only, e.g. to re-push an image for a
-  # version already released (a failed push, a Docker Hub outage during
-  # the automatic run, etc.) without re-running the entire Release chain. `version` must
-  # already exist as a GitHub Release — this workflow does not create one.
+  # Dispatched once by main-pipeline.yml after Release, or manually from
+  # main to re-push an existing version.
   workflow_dispatch:
     inputs:
       version:
@@ -54,7 +39,7 @@ permissions:
 
 jobs:
   docker-publish:
-    if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:

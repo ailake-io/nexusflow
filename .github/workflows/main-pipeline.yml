@@ -2,9 +2,8 @@ name: Main Pipeline Orchestrator
 
 # Why this exists: the intended chain on `main` is CI -> connectors-heavy ->
 # Release -> {docker-hub-publish, build-windows-installer,
-# build-macos-installer}, sequenced across separate workflow files via
-# `workflow_run` (there's no cross-file `needs:`, so that event was the only
-# built-in option). In practice `workflow_run` has proven unreliable on this
+# build-macos-installer}, sequenced across separate workflow files. In
+# practice `workflow_run` has proven unreliable on this
 # repo: `gh api repos/.../actions/workflows/release.yml/runs` shows zero
 # `workflow_run`-triggered runs since 2026-09-26 — every Release since then
 # was a manual `workflow_dispatch` — and connectors-heavy has never once
@@ -19,12 +18,8 @@ name: Main Pipeline Orchestrator
 # (it never fired anyway, and CodeQL flagged a real cache-poisoning gap in
 # its untrusted-sha checkout once it also gained a workflow_dispatch path —
 # simplest fix was deleting the dead trigger). Release also accepts only
-# dispatch from main. Docker-hub-publish/
-# build-windows-installer/build-macos-installer keep their old
-# `workflow_run` triggers as a harmless redundant path (each job's
-# upsert-style publish step is idempotent, so a double-fire just
-# republishes the same artifacts) — this file is the reliable primary
-# path, not a replacement that requires touching every other workflow.
+# dispatch from main. Docker Hub and installer workflows are dispatched
+# here once after Release succeeds.
 on:
   push:
     branches: [main]
