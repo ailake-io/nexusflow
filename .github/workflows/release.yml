@@ -439,9 +439,18 @@ jobs:
           # remote, which no longer exists here, so every call below is
           # explicit about `--repo` instead.
           GH_REPO: ${{ github.repository }}
+          EXPECTED_SHA: ${{ needs.determine-version.outputs.sha }}
         run: |
           set -euo pipefail
           tag="v${{ needs.determine-version.outputs.version }}"
+
+          # Never attach new binaries to an old tag. Re-running this workflow
+          # is safe only when the existing tag resolves to the same commit.
+          tag_sha="$(gh api "repos/$GH_REPO/commits/$tag" --jq .sha 2>/dev/null || true)"
+          if [ -n "$tag_sha" ] && [ "$tag_sha" != "$EXPECTED_SHA" ]; then
+            echo "::error::Refusing to publish $tag: it points to $tag_sha, expected $EXPECTED_SHA."
+            exit 1
+          fi
 
           # softprops/action-gh-release uploads every asset concurrently in
           # one call, which repeatedly failed on this runner's connection to
@@ -456,7 +465,13 @@ jobs:
           # assets exist from that attempt.
           if ! gh release view "$tag" >/dev/null 2>&1; then
             gh release create "$tag" --title "$tag" --generate-notes \
-              --target "${{ needs.determine-version.outputs.sha }}"
+              --target "$EXPECTED_SHA"
+          fi
+
+          tag_sha="$(gh api "repos/$GH_REPO/commits/$tag" --jq .sha)"
+          if [ "$tag_sha" != "$EXPECTED_SHA" ]; then
+            echo "::error::Release tag $tag resolves to $tag_sha, expected $EXPECTED_SHA."
+            exit 1
           fi
 
           for f in dist/*.tar.gz dist/*.deb dist/*.rpm dist/*.AppImage dist/SHA256SUMS; do
@@ -468,9 +483,8 @@ jobs:
   # image's home is now Docker Hub (thiagolange/nexusflow) instead, in its
   # own workflow file so it doesn't share a runner slot with the rest of
   # this release chain and can be re-run independently. That workflow
-  # triggers off this one's completion (`workflow_run: ["Release"]`) rather
-  # than duplicating `determine-version`'s Cargo.toml-bump-and-push logic —
-  # it just reads the already-determined version back out.
+  # is dispatched by main-pipeline.yml after this release succeeds; it does
+  # not duplicate `determine-version`'s Cargo.toml-bump-and-push logic.
 
   # Keeps `develop` from drifting behind `main` after a release —
   # `determine-version` may have pushed a version-bump commit straight to
